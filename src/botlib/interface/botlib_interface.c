@@ -202,6 +202,17 @@ int BotSetupLibrary(void)
 
     Botlib_SetupAASSubsystem();
     Botlib_SetupEASubsystem();
+
+    /*
+     * The Gladiator HLIL initialises shared data before exposing the bot state
+     * table: item configuration is loaded via sub_100309d0 ("itemconfig") and
+     * the weapon library comes online through sub_10035680 ("weaponconfig")
+     * prior to character setup routines that request per-bot weight handles and
+     * chat files. When the AI subsystem grows beyond stubs, its setup function
+     * will need to honour that order so movement, weight, and character modules
+     * can acquire their dependencies deterministically.
+     *【F:dev_tools/gladiator.dll.bndb_hlil.txt†L38344-L38405】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L41398-L41415】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32483-L32552】
+     */
     Botlib_SetupAISubsystem();
     Botlib_SetupUtilities();
 
