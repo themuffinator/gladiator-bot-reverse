@@ -94,7 +94,7 @@ int PC_ReadToken(pc_source_t *source, pc_token_t *token);
 int PC_PeekToken(pc_source_t *source, pc_token_t *token);
 
 // Pushes the last token read back into the stream.
-void PC_UnreadToken(pc_source_t *source);
+void PC_UnreadToken(pc_source_t *source, pc_token_t *token);
 
 // Returns the head of the diagnostic chain built while lexing the supplied
 // source.  Callers can iterate the list and display the messages using their
