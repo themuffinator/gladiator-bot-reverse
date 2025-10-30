@@ -2,6 +2,7 @@
 #include <stddef.h>
 
 #include "../../../dev_tools/game_source/botlib.h"
+#include "../aas/aas_map.h"
 #include "bot_interface.h"
 
 
@@ -39,6 +40,7 @@ static int BotShutdownLibraryStub(void)
 {
     assert(g_botImport != NULL);
     BotInterface_Log(PRT_WARNING, __func__);
+    AAS_Shutdown();
     return BLERR_NOERROR;
 }
 
@@ -71,17 +73,9 @@ static int BotDefineStub(char *string)
 static int BotLoadMapStub(char *mapname, int modelindexes, char *modelindex[], int soundindexes,
                           char *soundindex[], int imageindexes, char *imageindex[])
 {
-    (void)mapname;
-    (void)modelindexes;
-    (void)modelindex;
-    (void)soundindexes;
-    (void)soundindex;
-    (void)imageindexes;
-    (void)imageindex;
-
     assert(g_botImport != NULL);
     BotInterface_Log(PRT_WARNING, __func__);
-    return BLERR_NOERROR;
+    return AAS_LoadMap(mapname, modelindexes, modelindex, soundindexes, soundindex, imageindexes, imageindex);
 }
 
 static int BotSetupClientStub(int client, bot_settings_t *settings)
@@ -154,12 +148,9 @@ static int BotUpdateClientStub(int client, bot_updateclient_t *buc)
 
 static int BotUpdateEntityStub(int ent, bot_updateentity_t *bue)
 {
-    (void)ent;
-    (void)bue;
-
     assert(g_botImport != NULL);
     BotInterface_Log(PRT_WARNING, __func__);
-    return BLERR_NOERROR;
+    return AAS_UpdateEntity(ent, bue);
 }
 
 static int BotAddSoundStub(vec3_t origin, int ent, int channel, int soundindex, float volume, float attenuation,
