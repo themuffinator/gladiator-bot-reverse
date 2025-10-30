@@ -4,6 +4,7 @@ endif()
 
 set(AI_TEST_SOURCES
     test_ai_character.c
+    test_ai_weight.c
 )
 
 add_executable(ai_character_tests ${AI_TEST_SOURCES})
@@ -12,6 +13,7 @@ target_include_directories(ai_character_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/dev_tools/assets
 )
+target_compile_definitions(ai_character_tests PRIVATE PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 if(UNIX AND NOT APPLE)
     target_link_libraries(ai_character_tests PRIVATE m)
 endif()
