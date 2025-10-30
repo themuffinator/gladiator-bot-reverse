@@ -66,3 +66,19 @@ sequence ordering, argument capture, and log comparison.
 3. **Contract capture** &mdash; Convert the outline above into concrete `cmocka_unit_test()` registrations once the production modules expose
    hooks for dependency injection.
 
+## Diagnostic catalogue integration
+
+The `dev_tools/extract_botlib_contract.py` utility parses the HLIL dump from the
+original Gladiator DLL and emits `tests/reference/botlib_contract.json`. The
+catalogue records, for every exported botlib function and guard helper,
+
+* the severity and text of each `Print` invocation observed in the binary, and
+* the literal error codes returned along each guard path.
+
+Upcoming parity tests will load this JSON file during fixture setup. The cmocka
+harness will compare the strings captured by the mocked `Print` callback against
+the catalogue entries keyed by function name, and it will assert that the stub
+returns reported by the reimplementation match the reference error codes. The
+libvar default block in the same JSON document also seeds expectations for the
+cached configuration values exercised by `BotSetupLibrary` tests.
+
