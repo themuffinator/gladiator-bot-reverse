@@ -3,7 +3,13 @@
 #include "../common/l_log.h"
 #include "weight/bot_weight.h"
 
+#include <ctype.h>
+#include <errno.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /*
  * HLIL traces show each bot client owning a packed character profile with
@@ -25,7 +31,35 @@
  * order, matching the cleanup observed during shutdown (sub_10029690).
  *【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32483-L32566】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32514-L32599】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32599-L32656】
  */
-typedef struct ai_character_profile_s {
+/**
+ * Maximum number of characteristics surfaced by chars.h. The Gladiator assets
+ * define indices up to 53 so a 64 entry table comfortably mirrors the HLIL
+ * buffer sizing with room for future discoveries.
+ */
+#define AI_MAX_CHARACTERISTICS 64
+
+typedef enum ai_character_value_type_e {
+    AI_CHARACTER_VALUE_NONE = 0,
+    AI_CHARACTER_VALUE_INTEGER = 1,
+    AI_CHARACTER_VALUE_FLOAT = 2,
+    AI_CHARACTER_VALUE_STRING = 3,
+} ai_character_value_type_t;
+
+typedef struct ai_characteristic_s {
+    ai_character_value_type_t type;
+    union {
+        int integer_value;
+        float float_value;
+        char *string_value;
+    } data;
+} ai_characteristic_t;
+
+typedef struct ai_character_definition_s {
+    char identifier[64];
+    ai_characteristic_t characteristics[AI_MAX_CHARACTERISTICS];
+} ai_character_definition_t;
+
+struct ai_character_profile_s {
     char character_filename[128];
     float requested_skill;
     bot_weight_config_t *item_weights;
@@ -33,67 +67,594 @@ typedef struct ai_character_profile_s {
     bot_weight_config_t *weapon_weights;
     void *weapon_weight_index;
     void *chat_state;
-    void *definition_blob;
-} ai_character_profile_t;
+    ai_character_definition_t *definition_blob;
+};
 
-/*
- * Future translation of sub_10029eb0 (LoadCharacter) will populate the
- * definition blob by parsing Gladiator .chr files, resolving filesystem paths,
- * and evaluating characteristic blocks (floats, ints, and strings). For now the
- * stub surfaces the intended signature so higher-level code can link.
- */
+typedef struct macro_entry_s {
+    char name[64];
+    int value;
+    ai_character_value_type_t type;
+    bool has_type;
+} macro_entry_t;
+
+typedef struct macro_table_s {
+    macro_entry_t entries[256];
+    size_t count;
+} macro_table_t;
+
+static char *ai_trim_whitespace(char *text)
+{
+    if (!text) {
+        return NULL;
+    }
+
+    while (*text && isspace((unsigned char)*text)) {
+        ++text;
+    }
+
+    if (!*text) {
+        return text;
+    }
+
+    char *end = text + strlen(text) - 1;
+    while (end > text && isspace((unsigned char)*end)) {
+        *end-- = '\0';
+    }
+
+    return text;
+}
+
+static char *ai_duplicate_string(const char *text)
+{
+    if (!text) {
+        return NULL;
+    }
+
+    size_t length = strlen(text) + 1;
+    char *copy = (char *)malloc(length);
+    if (!copy) {
+        return NULL;
+    }
+
+    memcpy(copy, text, length);
+    return copy;
+}
+
+static ai_character_value_type_t ai_type_from_comment(const char *comment)
+{
+    if (!comment) {
+        return AI_CHARACTER_VALUE_NONE;
+    }
+
+    char buffer[128];
+    size_t length = strlen(comment);
+    if (length >= sizeof(buffer)) {
+        length = sizeof(buffer) - 1;
+    }
+    memcpy(buffer, comment, length);
+    buffer[length] = '\0';
+
+    for (size_t i = 0; buffer[i]; ++i) {
+        buffer[i] = (char)tolower((unsigned char)buffer[i]);
+    }
+
+    if (strstr(buffer, "string")) {
+        return AI_CHARACTER_VALUE_STRING;
+    }
+    if (strstr(buffer, "integer")) {
+        return AI_CHARACTER_VALUE_INTEGER;
+    }
+    if (strstr(buffer, "float")) {
+        return AI_CHARACTER_VALUE_FLOAT;
+    }
+
+    return AI_CHARACTER_VALUE_NONE;
+}
+
+static void ai_macro_table_set(macro_table_t *table, const char *name, int value,
+                               ai_character_value_type_t type, bool has_type)
+{
+    if (!table || !name) {
+        return;
+    }
+
+    for (size_t i = 0; i < table->count; ++i) {
+        if (strcmp(table->entries[i].name, name) == 0) {
+            table->entries[i].value = value;
+            if (has_type) {
+                table->entries[i].type = type;
+                table->entries[i].has_type = true;
+            }
+            return;
+        }
+    }
+
+    if (table->count >= sizeof(table->entries) / sizeof(table->entries[0])) {
+        BotLib_Print(PRT_WARNING,
+                     "[ai_character] macro table full, ignoring %s.\n", name);
+        return;
+    }
+
+    macro_entry_t *entry = &table->entries[table->count++];
+    strncpy(entry->name, name, sizeof(entry->name) - 1);
+    entry->name[sizeof(entry->name) - 1] = '\0';
+    entry->value = value;
+    entry->type = type;
+    entry->has_type = has_type;
+}
+
+static const macro_entry_t *ai_macro_table_lookup(const macro_table_t *table,
+                                                  const char *name)
+{
+    if (!table || !name) {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < table->count; ++i) {
+        if (strcmp(table->entries[i].name, name) == 0) {
+            return &table->entries[i];
+        }
+    }
+
+    return NULL;
+}
+
+static bool ai_parse_include(const char *base_dir, const char *include_name,
+                             macro_table_t *table)
+{
+    if (!include_name || !table) {
+        return false;
+    }
+
+    char path[512];
+    if (include_name[0] == '/' || (include_name[0] && include_name[1] == ':')) {
+        strncpy(path, include_name, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+    } else {
+        snprintf(path, sizeof(path), "%s/%s", base_dir, include_name);
+    }
+
+    FILE *file = fopen(path, "r");
+    if (!file) {
+        BotLib_Print(PRT_WARNING,
+                     "[ai_character] failed to open include %s: %s\n",
+                     path, strerror(errno));
+        return false;
+    }
+
+    char line[512];
+    while (fgets(line, sizeof(line), file)) {
+        char *trimmed = ai_trim_whitespace(line);
+        if (!trimmed || !*trimmed) {
+            continue;
+        }
+
+        char *comment = strstr(trimmed, "//");
+        if (comment) {
+            *comment = '\0';
+            comment = ai_trim_whitespace(comment + 2);
+        }
+
+        if (strncmp(trimmed, "#define", 7) != 0) {
+            continue;
+        }
+
+        trimmed += 7;
+        trimmed = ai_trim_whitespace(trimmed);
+        if (!trimmed || !*trimmed) {
+            continue;
+        }
+
+        char *name_end = trimmed;
+        while (*name_end && !isspace((unsigned char)*name_end)) {
+            ++name_end;
+        }
+        if (*name_end) {
+            *name_end = '\0';
+            ++name_end;
+        }
+
+        char *value_str = ai_trim_whitespace(name_end);
+        if (!value_str || !*value_str) {
+            continue;
+        }
+
+        char *value_end = value_str;
+        while (*value_end && !isspace((unsigned char)*value_end)) {
+            ++value_end;
+        }
+        if (*value_end) {
+            *value_end = '\0';
+        }
+
+        errno = 0;
+        long parsed_value = strtol(value_str, NULL, 0);
+        if (errno != 0) {
+            continue;
+        }
+
+        ai_character_value_type_t type = AI_CHARACTER_VALUE_NONE;
+        bool has_type = false;
+        if (comment) {
+            type = ai_type_from_comment(comment);
+            has_type = type != AI_CHARACTER_VALUE_NONE;
+        }
+
+        if (strncmp(trimmed, "CHARACTERISTIC_", 15) == 0) {
+            ai_macro_table_set(table, trimmed, (int)parsed_value, type, has_type);
+        }
+    }
+
+    fclose(file);
+    return true;
+}
+
+static bool ai_store_characteristic(ai_character_definition_t *definition, int index,
+                                    ai_character_value_type_t type, const char *value_str)
+{
+    if (!definition || index < 0 || index >= AI_MAX_CHARACTERISTICS) {
+        BotLib_Print(PRT_WARNING,
+                     "[ai_character] characteristic index %d out of range.\n",
+                     index);
+        return false;
+    }
+
+    ai_characteristic_t *slot = &definition->characteristics[index];
+    if (slot->type == AI_CHARACTER_VALUE_STRING && slot->data.string_value) {
+        free(slot->data.string_value);
+        slot->data.string_value = NULL;
+    }
+
+    switch (type) {
+    case AI_CHARACTER_VALUE_STRING:
+        slot->type = AI_CHARACTER_VALUE_STRING;
+        slot->data.string_value = ai_duplicate_string(value_str);
+        if (!slot->data.string_value) {
+            BotLib_Print(PRT_WARNING,
+                         "[ai_character] failed to allocate string value.\n");
+            slot->type = AI_CHARACTER_VALUE_NONE;
+            return false;
+        }
+        return true;
+    case AI_CHARACTER_VALUE_INTEGER:
+        slot->type = AI_CHARACTER_VALUE_INTEGER;
+        slot->data.integer_value = (int)strtol(value_str, NULL, 0);
+        return true;
+    case AI_CHARACTER_VALUE_FLOAT:
+        slot->type = AI_CHARACTER_VALUE_FLOAT;
+        slot->data.float_value = strtof(value_str, NULL);
+        return true;
+    case AI_CHARACTER_VALUE_NONE:
+    default:
+        break;
+    }
+
+    if (value_str && strchr(value_str, '.')) {
+        slot->type = AI_CHARACTER_VALUE_FLOAT;
+        slot->data.float_value = strtof(value_str, NULL);
+    } else {
+        slot->type = AI_CHARACTER_VALUE_INTEGER;
+        slot->data.integer_value = (int)strtol(value_str, NULL, 0);
+    }
+
+    return true;
+}
+
+static bool ai_store_characteristic_string(ai_character_definition_t *definition,
+                                           int index, const char *value)
+{
+    return ai_store_characteristic(definition, index,
+                                   AI_CHARACTER_VALUE_STRING, value);
+}
+
+static bool ai_parse_character_file(const char *full_path,
+                                    const char *base_dir,
+                                    macro_table_t *macros,
+                                    ai_character_definition_t *definition)
+{
+    FILE *file = fopen(full_path, "r");
+    if (!file) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to open %s: %s\n",
+                     full_path, strerror(errno));
+        return false;
+    }
+
+    char line[1024];
+    bool inside_block = false;
+
+    while (fgets(line, sizeof(line), file)) {
+        char *trimmed = ai_trim_whitespace(line);
+        if (!trimmed) {
+            continue;
+        }
+
+        char *comment = strstr(trimmed, "//");
+        if (comment) {
+            *comment = '\0';
+        }
+
+        trimmed = ai_trim_whitespace(trimmed);
+        if (!trimmed || !*trimmed) {
+            continue;
+        }
+
+        if (strncmp(trimmed, "#include", 8) == 0) {
+            char *start = strchr(trimmed, '"');
+            char *end = start ? strchr(start + 1, '"') : NULL;
+            if (start && end && end > start + 1) {
+                char include_name[256];
+                size_t len = (size_t)(end - start - 1);
+                if (len >= sizeof(include_name)) {
+                    len = sizeof(include_name) - 1;
+                }
+                memcpy(include_name, start + 1, len);
+                include_name[len] = '\0';
+                ai_parse_include(base_dir, include_name, macros);
+            }
+            continue;
+        }
+
+        if (!inside_block) {
+            if (strncmp(trimmed, "character", 9) == 0) {
+                char *start = strchr(trimmed, '"');
+                char *end = start ? strchr(start + 1, '"') : NULL;
+                if (start && end && end > start + 1) {
+                    size_t len = (size_t)(end - start - 1);
+                    if (len >= sizeof(definition->identifier)) {
+                        len = sizeof(definition->identifier) - 1;
+                    }
+                    memcpy(definition->identifier, start + 1, len);
+                    definition->identifier[len] = '\0';
+                }
+            }
+
+            if (strchr(trimmed, '{')) {
+                inside_block = true;
+            }
+            continue;
+        }
+
+        if (strchr(trimmed, '}')) {
+            break;
+        }
+
+        char *token_end = trimmed;
+        while (*token_end && !isspace((unsigned char)*token_end)) {
+            ++token_end;
+        }
+        if (*token_end) {
+            *token_end = '\0';
+            ++token_end;
+        }
+
+        const macro_entry_t *macro = ai_macro_table_lookup(macros, trimmed);
+        if (!macro) {
+            continue;
+        }
+
+        char *value_part = ai_trim_whitespace(token_end);
+        if (!value_part || !*value_part) {
+            continue;
+        }
+
+        if (*value_part == '"') {
+            char *end = strrchr(value_part + 1, '"');
+            if (!end) {
+                continue;
+            }
+            *end = '\0';
+            ++value_part;
+            ai_store_characteristic_string(definition, macro->value, value_part);
+        } else {
+            ai_character_value_type_t type = macro->has_type ? macro->type : AI_CHARACTER_VALUE_NONE;
+            ai_store_characteristic(definition, macro->value, type, value_part);
+        }
+    }
+
+    fclose(file);
+    return true;
+}
+
+static bool ai_locate_asset_root(char *buffer, size_t size)
+{
+    if (!buffer || size == 0) {
+        return false;
+    }
+
+    const char *env = getenv("GLADIATOR_ASSET_DIR");
+    if (env && *env) {
+        char probe[512];
+        snprintf(probe, sizeof(probe), "%s/chars.h", env);
+        FILE *file = fopen(probe, "r");
+        if (file) {
+            fclose(file);
+            snprintf(buffer, size, "%s", env);
+            return true;
+        }
+    }
+
+    const char *candidates[] = {
+        "dev_tools/assets",
+        "../dev_tools/assets",
+        "../../dev_tools/assets",
+    };
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        char probe[512];
+        snprintf(probe, sizeof(probe), "%s/chars.h", candidates[i]);
+        FILE *file = fopen(probe, "r");
+        if (file) {
+            fclose(file);
+            snprintf(buffer, size, "%s", candidates[i]);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static ai_character_definition_t *ai_parse_definition(const char *filename)
+{
+    if (!filename) {
+        return NULL;
+    }
+
+    char base_dir[512];
+    if (!ai_locate_asset_root(base_dir, sizeof(base_dir))) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] unable to locate asset directory for %s.\n",
+                     filename);
+        return NULL;
+    }
+
+    char full_path[512];
+
+    FILE *file = fopen(filename, "r");
+    if (file) {
+        fclose(file);
+        snprintf(full_path, sizeof(full_path), "%s", filename);
+    } else {
+        snprintf(full_path, sizeof(full_path), "%s/%s", base_dir, filename);
+    }
+
+    ai_character_definition_t *definition = (ai_character_definition_t *)calloc(1, sizeof(*definition));
+    if (!definition) {
+        return NULL;
+    }
+
+    macro_table_t macros = {0};
+    ai_parse_include(base_dir, "chars.h", &macros);
+    ai_parse_include(base_dir, "game.h", &macros);
+
+    if (!ai_parse_character_file(full_path, base_dir, &macros, definition)) {
+        free(definition);
+        return NULL;
+    }
+
+    return definition;
+}
+
 ai_character_profile_t *AI_LoadCharacter(const char *filename, float skill)
 {
-    (void)filename;
-    (void)skill;
+    ai_character_definition_t *definition = ai_parse_definition(filename);
+    if (!definition) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to parse character %s.\n",
+                     filename ? filename : "<null>");
+        return NULL;
+    }
 
-    BotLib_Print(PRT_WARNING, "[ai_character] TODO: implement AI_LoadCharacter.\n");
-    return NULL;
+    ai_character_profile_t *profile = (ai_character_profile_t *)calloc(1, sizeof(*profile));
+    if (!profile) {
+        free(definition);
+        return NULL;
+    }
+
+    profile->requested_skill = skill;
+    profile->definition_blob = definition;
+
+    if (filename) {
+        strncpy(profile->character_filename, filename,
+                sizeof(profile->character_filename) - 1);
+        profile->character_filename[sizeof(profile->character_filename) - 1] = '\0';
+    }
+
+    return profile;
 }
 
-/*
- * Cleanup must mirror the shutdown flow in sub_10029690, releasing weight
- * configs, chat allocations, and finally the character definition blob before
- * zeroing the bot state. The stub stands in place until the HLIL logic is
- * implemented.
- */
 void AI_FreeCharacter(ai_character_profile_t *profile)
 {
-    (void)profile;
+    if (!profile) {
+        return;
+    }
 
-    BotLib_Print(PRT_WARNING, "[ai_character] TODO: implement AI_FreeCharacter.\n");
+    if (profile->definition_blob) {
+        for (size_t i = 0; i < AI_MAX_CHARACTERISTICS; ++i) {
+            ai_characteristic_t *slot = &profile->definition_blob->characteristics[i];
+            if (slot->type == AI_CHARACTER_VALUE_STRING && slot->data.string_value) {
+                free(slot->data.string_value);
+                slot->data.string_value = NULL;
+            }
+            slot->type = AI_CHARACTER_VALUE_NONE;
+        }
+        free(profile->definition_blob);
+        profile->definition_blob = NULL;
+    }
+
+    free(profile);
 }
 
-/*
- * Skill-specific character variants (Gladiator loads alternate weight files via
- * indices like 0x1c and 5 inside the profile) will eventually forward to the
- * weight module once parsing lands. Stubbed for now.
- */
 bot_weight_config_t *AI_ItemWeightsForCharacter(const ai_character_profile_t *profile)
 {
-    (void)profile;
+    if (!profile) {
+        return NULL;
+    }
 
-    BotLib_Print(PRT_WARNING, "[ai_character] TODO: implement AI_ItemWeightsForCharacter.\n");
-    return NULL;
+    return profile->item_weights;
 }
 
 bot_weight_config_t *AI_WeaponWeightsForCharacter(const ai_character_profile_t *profile)
 {
-    (void)profile;
+    if (!profile) {
+        return NULL;
+    }
 
-    BotLib_Print(PRT_WARNING, "[ai_character] TODO: implement AI_WeaponWeightsForCharacter.\n");
-    return NULL;
+    return profile->weapon_weights;
 }
 
-/*
- * Placeholder for characteristic lookup helpers (float/int/string) that will be
- * required by goal selection and weapon heuristics.
- */
+static const ai_character_definition_t *ai_definition(const ai_character_profile_t *profile)
+{
+    return profile ? profile->definition_blob : NULL;
+}
+
 float AI_CharacteristicAsFloat(const ai_character_profile_t *profile, int index)
 {
-    (void)profile;
-    (void)index;
+    const ai_character_definition_t *definition = ai_definition(profile);
+    if (!definition || index < 0 || index >= AI_MAX_CHARACTERISTICS) {
+        return 0.0f;
+    }
 
-    BotLib_Print(PRT_WARNING, "[ai_character] TODO: implement AI_CharacteristicAsFloat.\n");
-    return 0.0f;
+    const ai_characteristic_t *slot = &definition->characteristics[index];
+    switch (slot->type) {
+    case AI_CHARACTER_VALUE_FLOAT:
+        return slot->data.float_value;
+    case AI_CHARACTER_VALUE_INTEGER:
+        return (float)slot->data.integer_value;
+    default:
+        return 0.0f;
+    }
+}
+
+int AI_CharacteristicAsInteger(const ai_character_profile_t *profile, int index)
+{
+    const ai_character_definition_t *definition = ai_definition(profile);
+    if (!definition || index < 0 || index >= AI_MAX_CHARACTERISTICS) {
+        return 0;
+    }
+
+    const ai_characteristic_t *slot = &definition->characteristics[index];
+    switch (slot->type) {
+    case AI_CHARACTER_VALUE_INTEGER:
+        return slot->data.integer_value;
+    case AI_CHARACTER_VALUE_FLOAT:
+        return (int)(slot->data.float_value + (slot->data.float_value >= 0.0f ? 0.5f : -0.5f));
+    default:
+        return 0;
+    }
+}
+
+const char *AI_CharacteristicAsString(const ai_character_profile_t *profile, int index)
+{
+    const ai_character_definition_t *definition = ai_definition(profile);
+    if (!definition || index < 0 || index >= AI_MAX_CHARACTERISTICS) {
+        return NULL;
+    }
+
+    const ai_characteristic_t *slot = &definition->characteristics[index];
+    if (slot->type == AI_CHARACTER_VALUE_STRING) {
+        return slot->data.string_value;
+    }
+
+    return NULL;
 }
