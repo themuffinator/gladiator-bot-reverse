@@ -14,6 +14,11 @@ add_subdirectory(src/botlib/ai)
 add_subdirectory(src/q2bridge)
 add_subdirectory(src/botlib/interface)
 
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
 # Test integration plan:
 # * Once the production targets above exist, expose them to the tests via
 #   add_subdirectory(src/shared ...), add_subdirectory(src/q2bridge ...), and
