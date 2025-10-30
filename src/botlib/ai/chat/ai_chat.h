@@ -66,6 +66,12 @@ int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int 
 /** Utility helper matching the legacy botlib export. */
 int BotChatLength(const char *message);
 
+/** Returns 1 when the supplied phrase is registered for the synonym context. */
+int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_name, const char *phrase);
+
+/** Returns 1 when the reply table contains the provided template for the context. */
+int BotChat_HasReplyTemplate(const bot_chatstate_t *state, unsigned long int context, const char *template_text);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
