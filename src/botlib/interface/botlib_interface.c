@@ -7,6 +7,7 @@
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
+#include "q2bridge/bridge_config.h"
 
 /**
  * Internal bookkeeping for the subsystem lifecycle so shutdown can unwind the
@@ -35,56 +36,36 @@ static void Botlib_ResetLibraryVariables(void)
     memset(&g_library_variables, 0, sizeof(g_library_variables));
 }
 
-static bool Botlib_ReadIntLibVar(const char *name, int *dest)
+static int Botlib_ReadIntLibVarCached(libvar_t *var, int fallback)
 {
-    if (dest == NULL) {
-        return false;
-    }
-
-    libvar_t *var = LibVarGet(name);
-    if (var == NULL) {
-        return false;
-    }
-
-    *dest = (int)var->value;
-    return true;
+    return (var != NULL) ? (int)var->value : fallback;
 }
 
-static bool Botlib_ReadFloatLibVar(const char *name, float *dest)
+static float Botlib_ReadFloatLibVarCached(libvar_t *var, float fallback)
 {
-    if (dest == NULL) {
-        return false;
-    }
-
-    libvar_t *var = LibVarGet(name);
-    if (var == NULL) {
-        return false;
-    }
-
-    *dest = var->value;
-    return true;
+    return (var != NULL) ? var->value : fallback;
 }
 
 static void Botlib_CacheLibraryVariables(void)
 {
-    (void)Botlib_ReadIntLibVar("maxclients", &g_library_variables.maxclients);
-    (void)Botlib_ReadIntLibVar("maxentities", &g_library_variables.maxentities);
-    (void)Botlib_ReadFloatLibVar("sv_gravity", &g_library_variables.sv_gravity);
-    (void)Botlib_ReadFloatLibVar("sv_maxvelocity", &g_library_variables.sv_maxvelocity);
-    (void)Botlib_ReadFloatLibVar("sv_airaccelerate", &g_library_variables.sv_airaccelerate);
-    (void)Botlib_ReadFloatLibVar("sv_maxwalkvelocity", &g_library_variables.sv_maxwalkvelocity);
-    (void)Botlib_ReadFloatLibVar("sv_maxcrouchvelocity", &g_library_variables.sv_maxcrouchvelocity);
-    (void)Botlib_ReadFloatLibVar("sv_maxswimvelocity", &g_library_variables.sv_maxswimvelocity);
-    (void)Botlib_ReadFloatLibVar("sv_jumpvel", &g_library_variables.sv_jumpvel);
-    (void)Botlib_ReadFloatLibVar("sv_maxacceleration", &g_library_variables.sv_maxacceleration);
-    (void)Botlib_ReadFloatLibVar("sv_friction", &g_library_variables.sv_friction);
-    (void)Botlib_ReadFloatLibVar("sv_stopspeed", &g_library_variables.sv_stopspeed);
-    (void)Botlib_ReadFloatLibVar("sv_maxstep", &g_library_variables.sv_maxstep);
-    (void)Botlib_ReadFloatLibVar("sv_maxbarrier", &g_library_variables.sv_maxbarrier);
-    (void)Botlib_ReadFloatLibVar("sv_maxsteepness", &g_library_variables.sv_maxsteepness);
-    (void)Botlib_ReadFloatLibVar("sv_maxwaterjump", &g_library_variables.sv_maxwaterjump);
-    (void)Botlib_ReadFloatLibVar("sv_watergravity", &g_library_variables.sv_watergravity);
-    (void)Botlib_ReadFloatLibVar("sv_waterfriction", &g_library_variables.sv_waterfriction);
+    g_library_variables.maxclients = Botlib_ReadIntLibVarCached(Bridge_MaxClients(), 4);
+    g_library_variables.maxentities = Botlib_ReadIntLibVarCached(Bridge_MaxEntities(), 1024);
+    g_library_variables.sv_gravity = Botlib_ReadFloatLibVarCached(Bridge_Gravity(), 800.0f);
+    g_library_variables.sv_maxvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxVelocity(), 300.0f);
+    g_library_variables.sv_airaccelerate = Botlib_ReadFloatLibVarCached(Bridge_AirAccelerate(), 0.0f);
+    g_library_variables.sv_maxwalkvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxWalkVelocity(), 300.0f);
+    g_library_variables.sv_maxcrouchvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxCrouchVelocity(), 100.0f);
+    g_library_variables.sv_maxswimvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxSwimVelocity(), 150.0f);
+    g_library_variables.sv_jumpvel = Botlib_ReadFloatLibVarCached(Bridge_JumpVelocity(), 224.0f);
+    g_library_variables.sv_maxacceleration = Botlib_ReadFloatLibVarCached(Bridge_MaxAcceleration(), 2200.0f);
+    g_library_variables.sv_friction = Botlib_ReadFloatLibVarCached(Bridge_Friction(), 6.0f);
+    g_library_variables.sv_stopspeed = Botlib_ReadFloatLibVarCached(Bridge_StopSpeed(), 100.0f);
+    g_library_variables.sv_maxstep = Botlib_ReadFloatLibVarCached(Bridge_MaxStep(), 18.0f);
+    g_library_variables.sv_maxbarrier = Botlib_ReadFloatLibVarCached(Bridge_MaxBarrier(), 50.0f);
+    g_library_variables.sv_maxsteepness = Botlib_ReadFloatLibVarCached(Bridge_MaxSteepness(), 0.7f);
+    g_library_variables.sv_maxwaterjump = Botlib_ReadFloatLibVarCached(Bridge_MaxWaterJump(), 20.0f);
+    g_library_variables.sv_watergravity = Botlib_ReadFloatLibVarCached(Bridge_WaterGravity(), 400.0f);
+    g_library_variables.sv_waterfriction = Botlib_ReadFloatLibVarCached(Bridge_WaterFriction(), 1.0f);
 }
 
 static void Botlib_SetupAASSubsystem(void)
@@ -198,6 +179,7 @@ int BotSetupLibrary(void)
 
     BotLib_Print(PRT_MESSAGE, "------- BotLib Initialization -------\n");
 
+    BridgeConfig_Init();
     Botlib_CacheLibraryVariables();
 
     Botlib_SetupAASSubsystem();
@@ -233,6 +215,7 @@ int BotShutdownLibrary(void)
 
     Botlib_ResetLibraryVariables();
     Botlib_ResetSubsystemState();
+    BridgeConfig_Shutdown();
     LibVar_Shutdown();
     BotLib_LogShutdown();
 
