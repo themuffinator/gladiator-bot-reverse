@@ -8,6 +8,7 @@ project(gladiator-bot-reverse LANGUAGES C CXX)
 # Temporary target that keeps the reconstructed botlib utility sources building
 # while their functionality is filled in.
 add_subdirectory(src/botlib/common)
+add_subdirectory(src/botlib/precomp)
 
 # Test integration plan:
 # * Once the production targets above exist, expose them to the tests via

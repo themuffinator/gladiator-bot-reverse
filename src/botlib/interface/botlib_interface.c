@@ -6,6 +6,7 @@
 
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
+#include "../common/l_memory.h"
 
 /**
  * Internal bookkeeping for the subsystem lifecycle so shutdown can unwind the
@@ -186,6 +187,10 @@ int BotSetupLibrary(void)
         return BLERR_INVALIDIMPORT;
     }
 
+    if (!BotMemory_Init(BOT_MEMORY_DEFAULT_HEAP_SIZE)) {
+        return BLERR_INVALIDIMPORT;
+    }
+
     Botlib_ResetSubsystemState();
     Botlib_ResetLibraryVariables();
     LibVar_ResetCache();
@@ -223,6 +228,8 @@ int BotShutdownLibrary(void)
     BotLib_Print(PRT_MESSAGE, "------- BotLib Shutdown -------\n");
 
     g_library_initialised = false;
+
+    BotMemory_Shutdown();
     return BLERR_NOERROR;
 }
 
