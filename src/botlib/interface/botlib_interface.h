@@ -24,7 +24,10 @@ extern "C" {
  * understood.
  */
 typedef struct botlib_import_table_s {
+    void (*Print)(int type, const char *fmt, ...);
+    void (*DPrint)(const char *fmt, ...);
     int (*BotLibVarGet)(const char *var_name, char *value, size_t size);
+    int (*BotLibVarSet)(const char *var_name, const char *value);
 } botlib_import_table_t;
 
 /**
