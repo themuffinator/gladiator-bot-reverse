@@ -5,6 +5,10 @@ project(gladiator-bot-reverse LANGUAGES C CXX)
 # TODO: Implement the Q2 bridge components located in src/q2bridge.
 # TODO: Add botlib interface sources from src/botlib/interface.
 
+# Temporary target that keeps the reconstructed botlib utility sources building
+# while their functionality is filled in.
+add_subdirectory(src/botlib/common)
+
 # Test integration plan:
 # * Once the production targets above exist, expose them to the tests via
 #   add_subdirectory(src/shared ...), add_subdirectory(src/q2bridge ...), and
