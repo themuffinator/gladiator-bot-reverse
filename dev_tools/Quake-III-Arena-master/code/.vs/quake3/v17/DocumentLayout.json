@@ -1,0 +1,118 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{F9EE10DA-2404-4154-B904-F93C936C040A}|game\\game.vcxproj|C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_pmove.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{F9EE10DA-2404-4154-B904-F93C936C040A}|game\\game.vcxproj|solutionrelative:game\\bg_pmove.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{F9EE10DA-2404-4154-B904-F93C936C040A}|game\\game.vcxproj|C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_public.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{F9EE10DA-2404-4154-B904-F93C936C040A}|game\\game.vcxproj|solutionrelative:game\\bg_public.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{C878E295-CB82-4B40-8ECF-5CE5525466FA}|cgame\\cgame.vcxproj|C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\cgame\\cg_ents.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{C878E295-CB82-4B40-8ECF-5CE5525466FA}|cgame\\cgame.vcxproj|solutionrelative:cgame\\cg_ents.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{C878E295-CB82-4B40-8ECF-5CE5525466FA}|cgame\\cgame.vcxproj|C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_misc.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{C878E295-CB82-4B40-8ECF-5CE5525466FA}|cgame\\cgame.vcxproj|solutionrelative:game\\bg_misc.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{F9EE10DA-2404-4154-B904-F93C936C040A}|game\\game.vcxproj|C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_slidemove.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{F9EE10DA-2404-4154-B904-F93C936C040A}|game\\game.vcxproj|solutionrelative:game\\bg_slidemove.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{F9EE10DA-2404-4154-B904-F93C936C040A}|game\\game.vcxproj|C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\g_main.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{F9EE10DA-2404-4154-B904-F93C936C040A}|game\\game.vcxproj|solutionrelative:game\\g_main.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 3,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "cg_ents.c",
+              "DocumentMoniker": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\cgame\\cg_ents.c",
+              "RelativeDocumentMoniker": "cgame\\cg_ents.c",
+              "ToolTip": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\cgame\\cg_ents.c",
+              "RelativeToolTip": "cgame\\cg_ents.c",
+              "ViewState": "AQIAALUBAAAAAAAAAAAYwMMBAAAaAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2025-05-25T21:22:10.731Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "bg_public.h",
+              "DocumentMoniker": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_public.h",
+              "RelativeDocumentMoniker": "game\\bg_public.h",
+              "ToolTip": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_public.h",
+              "RelativeToolTip": "game\\bg_public.h",
+              "ViewState": "AQIAAKIAAAAAAAAAAAAtwLIAAAAQAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
+              "WhenOpened": "2025-05-25T19:20:45.717Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "bg_slidemove.c",
+              "DocumentMoniker": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_slidemove.c",
+              "RelativeDocumentMoniker": "game\\bg_slidemove.c",
+              "ToolTip": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_slidemove.c",
+              "RelativeToolTip": "game\\bg_slidemove.c",
+              "ViewState": "AQIAABQAAAAAAAAAAAAYwB4AAAA8AAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2025-05-25T19:12:46.448Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "bg_pmove.c",
+              "DocumentMoniker": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_pmove.c",
+              "RelativeDocumentMoniker": "game\\bg_pmove.c",
+              "ToolTip": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_pmove.c",
+              "RelativeToolTip": "game\\bg_pmove.c",
+              "ViewState": "AQIAAMUEAAAAAAAAAAAtwLQEAAAcAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2025-05-25T18:56:02.678Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "g_main.c",
+              "DocumentMoniker": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\g_main.c",
+              "RelativeDocumentMoniker": "game\\g_main.c",
+              "ToolTip": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\g_main.c",
+              "RelativeToolTip": "game\\g_main.c",
+              "ViewState": "AQIAAP4EAAAAAAAAAAAYwAsFAAATAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2025-05-25T18:48:46.067Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "bg_misc.c",
+              "DocumentMoniker": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_misc.c",
+              "RelativeDocumentMoniker": "game\\bg_misc.c",
+              "ToolTip": "C:\\_SOURCE\\_CODE\\Quake-III-Arena-master\\code\\game\\bg_misc.c",
+              "RelativeToolTip": "game\\bg_misc.c",
+              "ViewState": "AQIAAN8EAAAAAAAAAAAtwOIEAAANAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2025-05-25T18:44:19.202Z"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
