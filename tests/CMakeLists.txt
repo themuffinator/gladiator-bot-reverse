@@ -29,3 +29,4 @@ endif()
 
 add_subdirectory(parity)
 add_subdirectory(chat)
+add_subdirectory(ai)
