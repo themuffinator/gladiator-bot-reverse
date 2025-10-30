@@ -26,3 +26,4 @@ else()
 endif()
 
 add_subdirectory(parity)
+add_subdirectory(ai)
