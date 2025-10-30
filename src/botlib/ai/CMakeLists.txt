@@ -1,0 +1,15 @@
+set(BOTLIB_AI_SOURCES
+    goal/bot_goal.c
+    weight/bot_weight.c
+    move/bot_move.c
+    weapon/bot_weapon.c
+    character/bot_character.c
+    chat/ai_chat.c
+)
+
+add_library(botlib_ai OBJECT ${BOTLIB_AI_SOURCES})
+
+target_include_directories(botlib_ai
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
