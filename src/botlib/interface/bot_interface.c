@@ -3,6 +3,7 @@
 
 #include "../../../dev_tools/game_source/botlib.h"
 #include "../aas/aas_map.h"
+#include "../ai/chat/ai_chat.h"
 #include "bot_interface.h"
 
 
@@ -11,6 +12,21 @@ static int g_bot_initialized = 0;
 static const int kBotLibApiVersion = BOTLIB_API_VERSION;
 
 static bot_import_t *g_botImport = NULL;
+static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;
+
+static bot_chatstate_t *BotInterface_EnsureConsoleChatState(void)
+{
+    if (g_botInterfaceConsoleChat == NULL) {
+        g_botInterfaceConsoleChat = BotAllocChatState();
+        if (g_botInterfaceConsoleChat == NULL) {
+            if (g_botImport != NULL && g_botImport->Print != NULL) {
+                g_botImport->Print(PRT_ERROR, "[bot_interface] failed to allocate console chat state\n");
+            }
+        }
+    }
+
+    return g_botInterfaceConsoleChat;
+}
 
 static void BotInterface_Log(int priority, const char *functionName)
 {
@@ -40,6 +56,11 @@ static int BotShutdownLibraryStub(void)
 {
     assert(g_botImport != NULL);
     BotInterface_Log(PRT_WARNING, __func__);
+    if (g_botInterfaceConsoleChat != NULL)
+    {
+        BotFreeChatState(g_botInterfaceConsoleChat);
+        g_botInterfaceConsoleChat = NULL;
+    }
     AAS_Shutdown();
     return BLERR_NOERROR;
 }
@@ -199,11 +220,14 @@ static int BotAIStub(int client, float thinktime)
 static int BotConsoleMessageStub(int client, int type, char *message)
 {
     (void)client;
-    (void)type;
-    (void)message;
 
     assert(g_botImport != NULL);
     BotInterface_Log(PRT_WARNING, __func__);
+    bot_chatstate_t *chat_state = BotInterface_EnsureConsoleChatState();
+    if (chat_state != NULL && message != NULL)
+    {
+        BotQueueConsoleMessage(chat_state, type, message);
+    }
     return BLERR_NOERROR;
 }
 
@@ -216,6 +240,25 @@ static int TestStub(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 
     assert(g_botImport != NULL);
     BotInterface_Log(PRT_WARNING, __func__);
+    bot_chatstate_t *chat_state = BotInterface_EnsureConsoleChatState();
+    if (chat_state != NULL && g_botImport->Print != NULL)
+    {
+        int message_type = 0;
+        char buffer[256];
+        if (BotNextConsoleMessage(chat_state, &message_type, buffer, sizeof(buffer)))
+        {
+            g_botImport->Print(PRT_MESSAGE,
+                               "[bot_interface] console chat (%d): %s\n",
+                               message_type,
+                               buffer);
+        }
+        else
+        {
+            g_botImport->Print(PRT_MESSAGE,
+                               "[bot_interface] console chat queue empty (%zu pending)\n",
+                               BotNumConsoleMessages(chat_state));
+        }
+    }
     return 0;
 }
 
