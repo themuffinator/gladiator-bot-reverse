@@ -1,5 +1,37 @@
 # Tests Guide
 
+## Bridge wrapper validation roadmap
+
+Once the mocked `bot_import_t` callbacks are wired into automated suites they
+will exercise the bridge wrappers, translation shims, and the eventual libvar
+cache in three complementary passes:
+
+1. **Wrapper verification** &mdash; Recording doubles will assert that each wrapper
+   forwards arguments to the correct import slot, preserves constness, and
+   performs any marshalling required by the Quake II bridge before releasing the
+   call.  Mismatch alarms will flag regressions in `src/q2bridge/` helpers as new
+   wrapper implementations come online.
+2. **Translator synchronization** &mdash; Planned harness hooks will compare the
+   data passed to the import table against translator outputs (e.g.,
+   `bot_input_t` assembly, movement command translators).  Divergences will be
+   surfaced through focused assertions so translator upgrades can be validated
+   without running a full game loop.
+3. **Libvar caching checks** &mdash; Once the configuration cache lands, the mocks
+   will simulate cache invalidation and confirm that updates propagate back
+   through the bridge.  This allows us to pin down stale-cache edge cases before
+   the caching layer ships.
+
+The upcoming helpers will be shared by the **AAS navigation stack** and the
+broader **AI module orchestration** so that integration tests can cover
+cross-module behaviors (navigation planning, decision loops, and command
+issuance) from the outset.
+
+To streamline build-system integration, we anticipate driving these tests via
+`CTest` invoking a lightweight **GoogleTest** harness.  The harness will provide
+fixtures for seeding the mocked `bot_import_t` table, helpers for table diffing,
+and adapters so future Lua- or Python-based smoke tests can reuse the same
+recording doubles.
+
 ## Mocking `bot_import_t`
 
 The Quake II bridge exposes `bot_import_t` as a table of callbacks that the game
