@@ -1,5 +1,6 @@
 set(BOTLIB_AI_SOURCES
     goal/bot_goal.c
+    weight/ai_weight.c
     weight/bot_weight.c
     move/bot_move.c
     weapon/bot_weapon.c
