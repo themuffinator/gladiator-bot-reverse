@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(gladiator-bot-reverse LANGUAGES C CXX)
 
 # TODO: Define targets for shared utilities under src/shared.
-# TODO: Implement the Q2 bridge components located in src/q2bridge.
-# TODO: Add botlib interface sources from src/botlib/interface.
+# TODO: Flesh out the remaining Q2 bridge entry points in src/q2bridge.
+# TODO: Expand the botlib interface implementation in src/botlib/interface.
 
 # Temporary target that keeps the reconstructed botlib utility sources building
 # while their functionality is filled in.
@@ -11,6 +11,8 @@ add_subdirectory(src/botlib/common)
 add_subdirectory(src/botlib/precomp)
 add_subdirectory(src/botlib/aas)
 add_subdirectory(src/botlib/ai)
+add_subdirectory(src/q2bridge)
+add_subdirectory(src/botlib/interface)
 
 # Test integration plan:
 # * Once the production targets above exist, expose them to the tests via

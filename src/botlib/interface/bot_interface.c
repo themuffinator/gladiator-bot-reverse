@@ -1,15 +1,14 @@
 #include <assert.h>
 #include <stddef.h>
 
-#include "../../../dev_tools/game_source/botlib.h"
+#include "../../q2bridge/botlib.h"
+#include "../../q2bridge/bridge.h"
 #include "../aas/aas_map.h"
 #include "../ai/chat/ai_chat.h"
 #include "bot_interface.h"
 
 
-static bot_import_t *g_bot_import = NULL;
 static int g_bot_initialized = 0;
-static const int kBotLibApiVersion = BOTLIB_API_VERSION;
 
 static bot_import_t *g_botImport = NULL;
 static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;
@@ -267,6 +266,7 @@ bot_export_t *GetBotAPI(bot_import_t *import)
     static bot_export_t exportTable;
 
     g_botImport = import;
+    Q2Bridge_SetImportTable(import);
     assert(g_botImport != NULL);
 
     exportTable.BotVersion = BotVersionStub;
@@ -291,10 +291,10 @@ bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.Test = TestStub;
 
     return &exportTable;
+}
 
 static bot_status_t BotLibSetupStub(void)
 {
-    (void)g_bot_import;
     g_bot_initialized = 1;
     return BOT_STATUS_NOT_IMPLEMENTED;
 }
@@ -322,26 +322,3 @@ static bot_status_t BotLibFreeMapStub(void)
     return BOT_STATUS_NOT_IMPLEMENTED;
 }
 
-bot_export_t *GetBotAPI(int api_version, bot_import_t *import_table)
-{
-    static bot_export_t exports;
-
-    if (!import_table) {
-        return NULL;
-    }
-
-    if (api_version != kBotLibApiVersion) {
-        return NULL;
-    }
-
-    g_bot_import = import_table;
-    g_bot_initialized = 0;
-
-    exports.api_version = kBotLibApiVersion;
-    exports.BotLibSetup = BotLibSetupStub;
-    exports.BotLibShutdown = BotLibShutdownStub;
-    exports.BotLibLoadMap = BotLibLoadMapStub;
-    exports.BotLibFreeMap = BotLibFreeMapStub;
-
-    return &exports;
-}

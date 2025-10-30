@@ -1,7 +1,7 @@
 #ifndef GLADIATOR_BOTLIB_AAS_AAS_MAP_H
 #define GLADIATOR_BOTLIB_AAS_AAS_MAP_H
 
-#include "../../../dev_tools/game_source/botlib.h"
+#include "../../q2bridge/botlib.h"
 
 #ifdef __cplusplus
 extern "C" {
