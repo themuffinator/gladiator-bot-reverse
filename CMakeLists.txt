@@ -9,6 +9,7 @@ project(gladiator-bot-reverse LANGUAGES C CXX)
 # while their functionality is filled in.
 add_subdirectory(src/botlib/common)
 add_subdirectory(src/botlib/precomp)
+add_subdirectory(src/botlib/aas)
 
 # Test integration plan:
 # * Once the production targets above exist, expose them to the tests via
