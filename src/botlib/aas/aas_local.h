@@ -4,7 +4,7 @@
 #include <stddef.h>
 
 #include "../../shared/q_shared.h"
-#include "../../../dev_tools/game_source/botlib.h"
+#include "../../q2bridge/botlib.h"
 
 #ifdef __cplusplus
 extern "C" {

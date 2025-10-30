@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-bot_export_t *GetBotAPI(int api_version, bot_import_t *import_table);
+bot_export_t *GetBotAPI(bot_import_t *import_table);
 
 #ifdef __cplusplus
 } /* extern "C" */
