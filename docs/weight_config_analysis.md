@@ -1,0 +1,20 @@
+# Gladiator Weight Configuration Analysis
+
+## HLIL Observations
+
+- The loader allocates a 0x404-byte block for the weight configuration, zeroes the entry count at offset 0, and repeatedly pulls tokens from the script precompiler. Each valid `weight` block appends a name pointer and associated tree handle; hitting 0x80 entries triggers the `"too many fuzzy weights\n"` error observed in the binary.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42083-L42171】
+- Weight definitions begin with the literal `weight "<name>"` followed by a fuzzy definition or switch block. Invalid identifiers emit `"invalid name %s\n"` and the parser aborts by freeing the partially built config.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42123-L42174】
+- When encountering nested `switch` constructs the parser defers to helper routines that print `"} //end case\n"` / `"} //end default\n"` markers, mirroring Quake III’s recursive fuzzy separator builder. Failure paths converge on diagnostics like `"can't merge weight configs\n"` during configuration merges.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42175-L42248】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42884-L42938】
+- Consumers that request multiple configurations log size statistics (`"%6d bytes item weights\n"`, `"%6d bytes weapon weights\n"`) before storing item/weapon indices. Missing data yields `"couldn't load weights\n"` and cascades into `"item info %d \"%s\" has no fuzzy weight"` when a character profile references a non-existent block.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32481-L32489】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L38348-L38380】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L37080-L37168】
+
+## Comparison with Quake III Arena
+
+- Quake III’s `ReadWeightConfig` performs the same token loop, limiting configurations to 128 weights and reporting identical diagnostics when a switch block lacks a default or exceeds bounds.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_weight.c†L153-L209】
+- The recursive `FreeWeightConfig` path frees each fuzzy separator and the owning name string, matching the Gladiator helper that walks child/next pointers before calling the allocator’s `FreeMemory` equivalent.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_weight.c†L112-L146】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42884-L42913】
+- Gladiator’s merge routine enforces identical weight counts prior to averaging terminal nodes—this mirrors Quake III’s `InterbreedWeightConfigs` helper that rejects mismatched arrays before recursing through each tree.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_weight.c†L440-L512】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42884-L42938】
+
+## Integration Notes
+
+- Parsing relies on the lightweight script precompiler: token fetches route through the `PC_*` style wrappers currently prototyped in `src/botlib/precomp/l_precomp.h`. The HLIL shows repeated calls to functions equivalent to `PC_ReadToken` and `PC_ExpectTokenString`, so a faithful implementation must sit on top of that interface when the lexer lands.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42083-L42248】【F:src/botlib/precomp/l_precomp.h†L8-L89】
+- Memory management maps directly to the botlib allocator wrappers restored under `src/botlib/common/l_memory.c`. Allocation sites call helpers that resemble `GetClearedMemory`/`AllocMemory`, while cleanup paths dispatch to a `FreeMemory` analogue. The final implementation should therefore use the l_memory API to remain ABI-compatible with other bot subsystems.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42083-L42174】【F:src/botlib/common/l_memory.c†L1-L120】
+- Weight consumers (goal selection, weapon evaluation) expect both configuration handles and indexed lookup tables. Maintaining parity with Quake III’s public API—`ReadWeightConfig`, `FreeWeightConfig`, `FuzzyWeight`, and later `BotAllocWeightConfig` wrappers—will allow the pending goal/weapon modules to compile against the interim stubs until the full HLIL translation is complete.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_weight.h†L47-L93】【F:src/botlib/ai/weight/bot_weight.c†L1-L8】
