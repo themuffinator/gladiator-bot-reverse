@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../common/l_libvar.h"
+#include "../common/l_log.h"
+
 /**
  * Internal bookkeeping for the subsystem lifecycle so shutdown can unwind the
  * setup sequence accurately. Each subsystem will gain real implementations as
@@ -33,45 +36,31 @@ static void Botlib_ResetLibraryVariables(void)
 
 static bool Botlib_ReadIntLibVar(const char *name, int *dest)
 {
-    if (g_import_table == NULL || g_import_table->BotLibVarGet == NULL) {
+    if (dest == NULL) {
         return false;
     }
 
-    char buffer[64];
-    memset(buffer, 0, sizeof(buffer));
-    if (g_import_table->BotLibVarGet(name, buffer, sizeof(buffer)) != 0) {
+    libvar_t *var = LibVarGet(name);
+    if (var == NULL) {
         return false;
     }
 
-    char *end = NULL;
-    long value = strtol(buffer, &end, 10);
-    if (end == buffer) {
-        return false;
-    }
-
-    *dest = (int)value;
+    *dest = (int)var->value;
     return true;
 }
 
 static bool Botlib_ReadFloatLibVar(const char *name, float *dest)
 {
-    if (g_import_table == NULL || g_import_table->BotLibVarGet == NULL) {
+    if (dest == NULL) {
         return false;
     }
 
-    char buffer[64];
-    memset(buffer, 0, sizeof(buffer));
-    if (g_import_table->BotLibVarGet(name, buffer, sizeof(buffer)) != 0) {
+    libvar_t *var = LibVarGet(name);
+    if (var == NULL) {
         return false;
     }
 
-    char *end = NULL;
-    double value = strtod(buffer, &end);
-    if (end == buffer) {
-        return false;
-    }
-
-    *dest = (float)value;
+    *dest = var->value;
     return true;
 }
 
@@ -199,6 +188,11 @@ int BotSetupLibrary(void)
 
     Botlib_ResetSubsystemState();
     Botlib_ResetLibraryVariables();
+    LibVar_ResetCache();
+    BotLib_LogShutdown();
+
+    BotLib_Print(PRT_MESSAGE, "------- BotLib Initialization -------\n");
+
     Botlib_CacheLibraryVariables();
 
     Botlib_SetupAASSubsystem();
@@ -223,6 +217,10 @@ int BotShutdownLibrary(void)
 
     Botlib_ResetLibraryVariables();
     Botlib_ResetSubsystemState();
+    LibVar_Shutdown();
+    BotLib_LogShutdown();
+
+    BotLib_Print(PRT_MESSAGE, "------- BotLib Shutdown -------\n");
 
     g_library_initialised = false;
     return BLERR_NOERROR;
