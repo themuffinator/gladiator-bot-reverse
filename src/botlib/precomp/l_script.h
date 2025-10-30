@@ -42,6 +42,16 @@
 // callers can surface accurate line/column numbers in error messages.
 // -----------------------------------------------------------------------------
 
+typedef enum pc_script_flags_e {
+    SCFL_NOERRORS = 0x0001,
+    SCFL_NOWARNINGS = 0x0002,
+    SCFL_NOSTRINGWHITESPACES = 0x0004,
+    SCFL_NOSTRINGESCAPECHARS = 0x0008,
+    SCFL_PRIMITIVE = 0x0010,
+    SCFL_NOBINARYNUMBERS = 0x0020,
+    SCFL_NONUMBERVALUES = 0x0040,
+} pc_script_flags_t;
+
 typedef enum pc_token_type_e {
     TT_STRING = 1,
     TT_LITERAL = 2,
@@ -61,12 +71,75 @@ typedef enum pc_number_subtype_e {
     TT_UNSIGNED = 0x4000,
 } pc_number_subtype_t;
 
+typedef enum pc_punctuation_id_e {
+    P_RSHIFT_ASSIGN = 1,
+    P_LSHIFT_ASSIGN = 2,
+    P_PARMS = 3,
+    P_PRECOMPMERGE = 4,
+    P_LOGIC_AND = 5,
+    P_LOGIC_OR = 6,
+    P_LOGIC_GEQ = 7,
+    P_LOGIC_LEQ = 8,
+    P_LOGIC_EQ = 9,
+    P_LOGIC_UNEQ = 10,
+    P_MUL_ASSIGN = 11,
+    P_DIV_ASSIGN = 12,
+    P_MOD_ASSIGN = 13,
+    P_ADD_ASSIGN = 14,
+    P_SUB_ASSIGN = 15,
+    P_INC = 16,
+    P_DEC = 17,
+    P_BIN_AND_ASSIGN = 18,
+    P_BIN_OR_ASSIGN = 19,
+    P_BIN_XOR_ASSIGN = 20,
+    P_RSHIFT = 21,
+    P_LSHIFT = 22,
+    P_POINTERREF = 23,
+    P_CPP1 = 24,
+    P_CPP2 = 25,
+    P_MUL = 26,
+    P_DIV = 27,
+    P_MOD = 28,
+    P_ADD = 29,
+    P_SUB = 30,
+    P_ASSIGN = 31,
+    P_BIN_AND = 32,
+    P_BIN_OR = 33,
+    P_BIN_XOR = 34,
+    P_BIN_NOT = 35,
+    P_LOGIC_NOT = 36,
+    P_LOGIC_GREATER = 37,
+    P_LOGIC_LESS = 38,
+    P_REF = 39,
+    P_COMMA = 40,
+    P_SEMICOLON = 41,
+    P_COLON = 42,
+    P_QUESTIONMARK = 43,
+    P_PARENTHESESOPEN = 44,
+    P_PARENTHESESCLOSE = 45,
+    P_BRACEOPEN = 46,
+    P_BRACECLOSE = 47,
+    P_SQBRACKETOPEN = 48,
+    P_SQBRACKETCLOSE = 49,
+    P_BACKSLASH = 50,
+    P_PRECOMP = 51,
+    P_DOLLAR = 52,
+} pc_punctuation_id_t;
+
+typedef struct pc_punctuation_s {
+    const char *p;
+    int n;
+    const struct pc_punctuation_s *next;
+} pc_punctuation_t;
+
 typedef struct pc_token_s {
     char string[1024];
     pc_token_type_t type;
     int subtype;
     unsigned long int intvalue;
     long double floatvalue;
+    const char *whitespace_p;
+    const char *endwhitespace_p;
     int line;
     int linescrossed;
     struct pc_token_s *next;
@@ -78,13 +151,19 @@ typedef struct pc_script_s {
     char *script_p;
     char *end_p;
     char *lastscript_p;
+    char *whitespace_p;
+    char *endwhitespace_p;
     int length;
     int line;
     int lastline;
     int tokenavailable;
     int flags;
+    const pc_punctuation_t *punctuations;
+    const pc_punctuation_t **punctuationtable;
     pc_diagnostic_t *diagnostics;
+    pc_diagnostic_t *diagnostics_tail;
     pc_token_t token;
+    struct pc_script_s *next;
 } pc_script_t;
 
 // Creates a new script wrapper around an already preprocessed source.  The
