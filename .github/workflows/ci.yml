@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: Build and run parity tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y ninja-build
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_TESTING=ON \
+            -DBOTLIB_PARITY_ENABLE_SOURCES=ON
+
+      - name: Build project
+        run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Run parity test suite
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Show CTest log on failure
+        if: failure()
+        run: |
+          if [ -f build/Testing/Temporary/LastTest.log ]; then
+            echo "::group::CTest LastTest.log"
+            cat build/Testing/Temporary/LastTest.log
+            echo "::endgroup::"
+          else
+            echo "CTest log not found"
+          fi
+
+      - name: Upload CTest artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-test-artifacts
+          path: |
+            build/Testing
+            build/**/*.log
+          if-no-files-found: ignore
