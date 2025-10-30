@@ -3,6 +3,7 @@
 
 #include "../../q2bridge/botlib.h"
 #include "../../q2bridge/bridge.h"
+#include "../../q2bridge/update_translator.h"
 #include "../aas/aas_map.h"
 #include "../ai/chat/ai_chat.h"
 #include "bot_interface.h"
@@ -158,10 +159,14 @@ static int BotStartFrameStub(float time)
 
 static int BotUpdateClientStub(int client, bot_updateclient_t *buc)
 {
-    (void)client;
-    (void)buc;
-
     assert(g_botImport != NULL);
+
+    int status = Bridge_UpdateClient(client, buc);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
     BotInterface_Log(PRT_WARNING, __func__);
     return BLERR_NOERROR;
 }
@@ -169,6 +174,13 @@ static int BotUpdateClientStub(int client, bot_updateclient_t *buc)
 static int BotUpdateEntityStub(int ent, bot_updateentity_t *bue)
 {
     assert(g_botImport != NULL);
+
+    int status = Bridge_UpdateEntity(ent, bue);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
     BotInterface_Log(PRT_WARNING, __func__);
     return AAS_UpdateEntity(ent, bue);
 }

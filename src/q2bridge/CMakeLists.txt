@@ -1,6 +1,7 @@
 add_library(q2bridge STATIC
     bridge.c
     bridge_config.c
+    update_translator.c
 )
 
 target_include_directories(q2bridge
