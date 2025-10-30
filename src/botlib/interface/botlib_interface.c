@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../common/l_memory.h"
+
 /**
  * Internal bookkeeping for the subsystem lifecycle so shutdown can unwind the
  * setup sequence accurately. Each subsystem will gain real implementations as
@@ -197,6 +199,10 @@ int BotSetupLibrary(void)
         return BLERR_INVALIDIMPORT;
     }
 
+    if (!BotMemory_Init(BOT_MEMORY_DEFAULT_HEAP_SIZE)) {
+        return BLERR_INVALIDIMPORT;
+    }
+
     Botlib_ResetSubsystemState();
     Botlib_ResetLibraryVariables();
     Botlib_CacheLibraryVariables();
@@ -225,6 +231,8 @@ int BotShutdownLibrary(void)
     Botlib_ResetSubsystemState();
 
     g_library_initialised = false;
+
+    BotMemory_Shutdown();
     return BLERR_NOERROR;
 }
 
