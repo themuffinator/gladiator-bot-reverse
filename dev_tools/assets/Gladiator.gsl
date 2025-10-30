@@ -1,0 +1,290 @@
+"Vers", "2.0"
+"Game", "Quake 2"
+"Mod", "Gladiator"
+
+// GibStats client Log support file for Gladiator by fragitz.
+// To analyse Gladiator client logs place this file into the GibStats directory
+// and choose Quake2/ Client Log/ Gladiator after chosing the log to add.
+// GibStats is a client log analysing and stats tool and can be found at
+// http://www.planetquake.com/gibstats.
+
+
+// Format of the follwoing data to analyse client logs
+// [Message1][Message2][TypeofScore][OrderofAttackerAndTarget][WeaponName][Score]
+// Do not use commas in the comments
+
+
+[ParserMessages]
+// ***Gladiator*** suicides
+" commits suicide","","Suicide",2,"",-1
+" takes the easy way out","","Suicide",2,"",-1
+" has fragged himself","","Suicide",2,"",-1
+" has fragged herself","","Suicide",2,"",-1
+" has fragged itself","","Suicide",2,"",-1
+
+" took his own life","","Suicide",2,"",-1
+" took her own life","","Suicide",2,"",-1
+" took it's own life","","Suicide",2,"",-1
+
+" can be scraped off the pavement","","Suicide",2,"",-1
+" cratered","","Suicide",2,"Fall",-1
+" discovers the effects of gravity","Fall","Suicide",2,"",-1
+" was squished","","Suicide",2,"Squished",-1
+" was squeezed like a ripe grape","Squished","Suicide",2,"",-1
+" turned to juice","","Suicide",2,"",-1
+" sank like a rock","","Suicide",2,"Drowned",-1
+" tried unsuccesfully to breathe water","Drowned","Suicide",2,"",-1
+" tried to immitate a fish","","Suicide",2,"Drowned",-1
+" must learn when to breathe","","Suicide",2,"Drowned",-1
+" needs to learn how to swim","","Suicide",2,"Drowned",-1
+" took a long walk of a short pier","","Suicide",2,"Drowned",-1
+" might want to use a rebreather next time","","Suicide",2,"Drowned",-1
+
+" thought he didn't need a rebreather","","Suicide",2,"Drowned",-1
+" thought she didn't need a rebreather","","Suicide",2,"Drowned",-1
+" thought it didn't need a rebreather","","Suicide",2,"Drowned",-1
+
+" was dissolved","","Suicide",2,"Slime",-1
+" sucked slime","","Suicide",2,"Slime",-1
+" found an alternative way to die","","Suicide",2,"Slime",-1
+" needs more slime-resistance","","Suicide",2,"Slime",-1
+" might try on an environmental suit next time","","Suicide",2,"Slime",-1
+" does a back flip into the lava","","Suicide",2,"Lava",-1
+" was fried to a crisp","","Suicide",2,"Lava",-1
+" thought that lava was water","","Suicide",2,"Lava",-1
+" turned into a real hothead","","Suicide",2,"Lava",-1
+" thought lava was 'funny water'","","Suicide",2,"Lava",-1
+" tried to hide in the lava","","Suicide",2,"Lava",-1
+
+" thought he was fire resistant","","Suicide",2,"",-1
+" thought she was fire resistant","","Suicide",2,"",-1
+" thought it was fire resistant","","Suicide",2,"",-1
+
+" tried to emulate the god of hell-fire","","Suicide",2,"Lava",-1
+" tried to emulate the goddess Pele","","Suicide",2,"Lava",-1
+" tried to emulate the demigod","","Suicide",2,"Lava",-1
+
+" needs to rebind his 'strafe' keys","","Suicide",2,"Lava",-1
+" needs to rebind her 'strafe' keys","","Suicide",2,"Lava",-1
+" needs to rebind it's 'strafe' keys","","Suicide",2,"Lava",-1
+
+" blew up","","Suicide",2,"Bomb",-1
+" found a way out","","Suicide",2,"",-1
+" had enough for today","","Suicide",2,"",-1
+" exit, stage left","","Suicide",2,"",-1
+" has returned to real life(tm)","","Suicide",2,"",-1
+" saw the light","","Suicide",2,"",-1
+" got blasted","","Suicide",2,"",-1
+" was in the wrong place","","Suicide",2,"",-1
+" shouldn't play with equipment","","Suicide",2,"",-1
+" can't move around moving objects","","Suicide",2,"",-1
+
+// XATRIX
+" that's gotta hurt","","Suicide",2,"",-1
+// XATRIX
+
+" tried to put the pin back in","","Suicide",2,"Hand Grenade",-1
+" got the red and blue wires mixed up","","Suicide",2,"Hand Grenade",-1
+
+" held his grenade too long","","Suicide",2,"Hand Grenade",-1
+" held her grenade too long","","Suicide",2,"Hand Grenade",-1
+" held it's grenade too long","","Suicide",2,"Hand Grenade",-1
+
+" tried to disassemble his own grenade","","Suicide",2,"Hand Grenade",-1
+" tried to disassemble her own grenade","","Suicide",2,"Hand Grenade",-1
+" tried to disassemble it's own grenade","","Suicide",2,"Hand Grenade",-1
+
+" tried to grenade-jump unsuccessfully","","Suicide",2,"Grenade Launcher",-1
+" tried to play football with a grenade","","Suicide",2,"Grenade Launcher",-1
+" shouldn't mess around with explosives","","Suicide",2,"Grenade Launcher",-1
+" tripped on his own grenade","","Suicide",2,"Grenade Launcher",-1
+" tripped on her own grenade","","Suicide",2,"Grenade Launcher",-1
+" tripped on it's own grenade","","Suicide",2,"Grenade Launcher",-1
+
+" stepped on his own pineapple","","Suicide",2,"Grenade Launcher",-1
+" stepped on her own pineapple","","Suicide",2,"Grenade Launcher",-1
+" stepped on it's own pineapple","","Suicide",2,"Grenade Launcher",-1
+
+
+" knows didley squatt about rocket launchers","","Suicide",2,"Rocket Launcher",-1
+" thought up a novel new way to fly","","Suicide",2,"Rocket Launcher",-1
+
+" blew himself up","","Suicide",2,"Rocket Launcher",-1
+" blew herself up","","Suicide",2,"Rocket Launcher",-1
+" blew itself up","","Suicide",2,"Rocket Launcher",-1
+
+" thought he was Werner von Braun","","Suicide",2,"Rocket Launcher",-1
+" thought she was Werner von Braun","","Suicide",2,"Rocket Launcher",-1
+" thought it was Werner von Braun","","Suicide",2,"Rocket Launcher",-1
+
+" thought he had more health","","Suicide",2,"Rocket Launcher",-1
+" thought she had more health","","Suicide",2,"Rocket Launcher",-1
+" thought it had more health","","Suicide",2,"Rocket Launcher",-1
+
+" found his own rocketlauncher's trigger","","Suicide",2,"Rocket Launcher",-1
+" found her own rocketlauncher's trigger","","Suicide",2,"Rocket Launcher",-1
+" found it's own rocketlauncher's trigger","","Suicide",2,"Rocket Launcher",-1
+
+" thought he had more armor on","","Suicide",2,"Rocket Launcher",-1
+" thought she had more armor on","","Suicide",2,"Rocket Launcher",-1
+" thought it had more armor on","","Suicide",2,"Rocket Launcher",-1
+
+" blew himself to kingdom come","","Suicide",2,"Rocket Launcher",-1
+" blew herself to kingdom come","","Suicide",2,"Rocket Launcher",-1
+" blew itself to kingdom come","","Suicide",2,"Rocket Launcher",-1
+
+" should have used a smaller gun","","Suicide",2,"BFG10K",-1
+" shouldn't play with big guns","","Suicide",2,"BFG10K",-1
+" doesn't know how to work the BFG","","Suicide",2,"BFG10K",-1
+" has trouble using big guns","","Suicide",2,"BFG10K",-1
+" can't distinguish which end is which with the BFG","","Suicide",2,"BFG10K",-1
+" should try to avoid using the BFG near obstacles","","Suicide",2,"BFG10K",-1
+" tried to BFG-jump unsuccesfully","","Suicide",2,"BFG10K",-1
+
+// XATRIX
+" sucked into his own trap","","Suicide",2,"",-1
+" sucked into her own trap","","Suicide",2,"",-1
+" sucked into it's own trap","","Suicide",2,"",-1
+//XATRIX
+
+// ROGUE
+" got caught in his own trap","","Suicide",2,"",-1
+" got caught in her own trap","","Suicide",2,"",-1
+" got caught in it's own trap","","Suicide",2,"",-1
+//ROGUE
+
+" commited suicide","","Suicide",2,"",-1
+" went the way of the dodo","","Suicide",2,"",-1
+" thought 'kill' was a funny console command","","Suicide",2,"",-1
+" wanted one frag less","","Suicide",2,"",-1
+
+" killed herself","","Suicide",2,"",-1
+" killed himself","","Suicide",2,"",-1
+" killed itself","","Suicide",2,"",-1
+
+" thought he had one many frags","","Suicide",2,"",-1
+" thought she had one many frags","","Suicide",2,"",-1
+" thought it had one many frags","","Suicide",2,"",-1
+
+//Gladiator kills
+
+//MOD_BLASTER:
+" (quakeweenie) was massacred by ", " (quakegod)!!!",1,"Kill",1,"Blaster",1
+" was killed with the wimpy blaster by ","","Kill",1,"Blaster",1
+" died a wimp's death by ","","Kill",1,"Blaster",1
+" can't even avoid a blaster from ","","Kill",1,"Blaster",1
+" was blasted by ","","Kill",1,"Blaster",1
+
+//MOD_SHOTGUN:
+" was gunned down by ","","Kill",1,"Shotgun",1
+" found himself on the wrong end of  ","'s gun", "Kill",1,"Shotgun",1
+" found herself on the wrong end of  ","'s gun", "Kill",1,"Shotgun",1
+" found itself on the wrong end of  ","'s gun", "Kill",1,"Shotgun",1
+
+//MOD_SSHOTGUN:
+" was blown away by ","'s super shotgun","Kill",1,"Super Shotgun",1
+" had his ears cleaned out by ","'s super shotgun","Kill",1,"Super Shotgun",1
+" had her ears cleaned out by ","'s super shotgun","Kill",1,"Super Shotgun",1
+" had it ears cleaned out by ","'s super shotgun","Kill",1,"Super Shotgun",1
+" was put full of buckshot by ","","Kill",1,"Super Shotgun",1
+
+//MOD_MACHINEGUN:
+" was machinegunned by ","","Kill",1,"Machinegun",1
+" was filled with lead by ","","Kill",1,"Machinegun",1
+" was put full of lead by ","","Kill",1,"Machinegun",1
+" was pumped full of lead by ","","Kill",1,"Machinegun",1
+" ate lead dished out by ","","Kill",1,"Machinegun",1
+" eats lead from ","","Kill",1,"Machinegun",1
+" bites the bullet from ","","Kill",1,"Machinegun",1
+
+//MOD_CHAINGUN:
+" was cut in half by ","'s chaingun","Kill",1,"Chaingun",1
+" was turned into a strainer by ","","Kill",1,"Chaingun",1
+" was put full of holes by ","","Kill",1,"Chaingun",1
+" couldn't avoid death by painless from ","","Kill",1,"Chaingun",1
+" was put so full of lead by "," you can call him a pencil","Kill",1,"Chaingun",1
+" was put so full of lead by "," you can call her a pencil","Kill",1,"Chaingun",1
+" was put so full of lead by "," you can call it a pencil","Kill",1,"Chaingun",1
+
+//MOD_GRENADE:
+" was popped by ","'s grenade","Kill",1,"Grenade Launcher",1
+" caught ","'s handgrenade in the head","Kill",1,"Grenade Launcher",1
+" caught ","'s grenade in the head","Kill",1,"Grenade Launcher",1
+" tried to headbutt the grenade of ","","Kill",1,"Grenade Launcher",1
+" was shredded by ","'s shrapnel","Kill",1,"Grenade Launcher",1
+
+//MOD_ROCKET:
+" ate ","'s rocket","Kill",1,"Rocket Launcher",1
+" sucked on ","'s boomstick","Kill",1,"Rocket Launcher",1
+" tried to play 'dodge the missile' with ","","Kill",1,"Rocket Launcher",1
+" tried the 'patriot move' on the rocket from ","","Kill",1,"Rocket Launcher",1
+" had a rocket stuffed down the throat by ","","Kill",1,"Rocket Launcher",1
+" got a rocket up the tailpipe by ","", "Kill",1,"Rocket Launcher",1
+" tried to headbutt ","'s rocket","Kill",1,"Rocket Launcher",1
+" almost dodged ","'s rocket","Kill",1,"Rocket Launcher",1
+" was spread around the place by ","","Kill",1,"Rocket Launcher",1
+" was gibbed by ","","Kill",1,"Rocket Launcher",1
+" has been blown to smithereens by ","","Kill",1,"Rocket Launcher",1
+" was blown to itsie bitsie tiny pieces by ","","Kill",1,"Rocket Launcher",1
+
+//MOD_HYPERBLASTER:
+" was melted by ","'s hyperblaster", "Kill",1,"Hyperblaster",1
+" was used by "," for target practice","Kill",1,"Hyperblaster",1
+" was hyperblasted by ","","Kill",1,"Hyperblaster",1
+" was pumped full of cells by ","","Kill",1,"Hyperblaster",1
+" couldn't outrun the hyperblaster from ","","Kill",1,"Hyperblaster",1
+
+//MOD_RAILGUN:
+" was railed by ","","Kill",1,"Railgun",1
+" played 'catch the slug' with ","","Kill",1,"Railgun",1
+" bites the slug from ","","Kill",1,"Railgun",1
+" caught the slug from ","","Kill",1,"Railgun",1
+" got a slug put through him by ","","Kill",1,"Railgun",1
+" got a slug put through her by ","","Kill",1,"Railgun",1
+" got a slug put through it by ","","Kill",1,"Railgun",1
+" was corkscrewed through his head by ","","Kill",1,"Railgun",1
+" was corkscrewed through her head by ","","Kill",1,"Railgun",1
+" was corkscrewed through it's head by ","","Kill",1,"Railgun",1
+" had his body pierced with a slug from ","","Kill",1,"Railgun",1
+" had her body pierced with a slug from ","","Kill",1,"Railgun",1
+" had it's body pierced with a slug from ","","Kill",1,"Railgun",1
+" had his brains blown out by ","","Kill",1,"Railgun",1
+" had her brains blown out by ","","Kill",1,"Railgun",1
+" had it's brains blown out by ","","Kill",1,"Railgun",1
+
+//MOD_BFG:
+" saw the pretty lights from ","'s BFG","Kill",1,"BFG10K",1
+" was diced by the BFG from ","","Kill",1,"BFG10K",1
+" was disintegrated by ","'s BFG blast","Kill",1,"BFG10K",1
+" was flatched with the green light by ","","Kill",1,"BFG10K",1
+" couldn't hide from ","'s BFG","Kill",1,"BFG10K",1
+" tried to soak up green energy from ", "'s BFG","Kill",1,"BFG10K",1
+" was energized with 50 cells by ","","Kill",1,"BFG10K",1
+" doesn't know when to run from ","","Kill",1,"BFG10K",1
+" 'saw the light' from ","","Kill",1,"BFG10K",1
+
+//MOD_HANDGRENADE:
+" caught ","'s handgrenade","Kill",1,"Hand Grenade",1
+" should watch more carefully for handgrenades from ","","Kill",1,"Hand Grenade",1
+" didn't see ","'s handgrenade","Kill",1,"Hand Grenade",1
+" feels ","'s pain","Kill",1,"Hand Grenade",1
+
+//MOD_TELEFRAG:
+" tried to invade ", "'s personal space","Kill",1,"Telefrag",1
+" is less telefrag aware than ","", "Kill",1,"Telefrag",1
+" should appreciate scotty more like ","","Kill",1,"Telefrag",1
+
+//MOD_GRAPPLE:
+" was caught by ", "'s grapple", "Kill",1,"Grappling Hook",1
+//unknown death
+" died.","","Suicide",2,"",-1
+
+// Disconnected
+" disconnected","","PlayerLeft",2,"",0
+
+// Connect
+" entered the game","","PlayerConnect",2,"",0
+" connected","","PlayerConnect",2,"",0
+
+//Suicide
+" melted","","Suicide",2,"Lava",-1

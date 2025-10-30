@@ -1,0 +1,29 @@
+
+If you want to report a bug or problem please fill in
+the form below and e-mail it to MrElusive@botepidemic.com
+
+
+Date:
+Name:
+Computer type:
+Processor type:
+Processor speed:
+Video card brand and model:
+Quake2 version (3.14, 3.20 etc):
+Gladiator bot version (0.8, 0.9 etc):
+map + position (if a custom map, where can it be found and what is it's zip name):
+number of bots:
+no of human players:
+duration of the game (approximately):
+describe the state of the game at the time the problem occured:
+console variables,
+deathmatch (0/1):
+rogue (0/1):
+xatrix (0/1):
+ctf (0/1):
+rocketarena (0/1):
+nochat (0/1):
+dmflags:
+if there were any error messages report them here EXACTLY as they appeared:
+describe the problem you encountered:
+if possible state how to reproduce the problem:
