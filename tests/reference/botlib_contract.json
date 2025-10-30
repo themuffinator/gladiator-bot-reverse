@@ -1,0 +1,611 @@
+{
+  "exports": [
+    {
+      "address": "0x10038380",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibAI",
+      "return_codes": [
+        {
+          "address": "0x10038398",
+          "source": "10038398      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x100383b5",
+          "source": "100383b5  return 3",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "address": "0x10037dd0",
+      "category": "export",
+      "messages": [
+        {
+          "address": "0x10037dea",
+          "severity": 3,
+          "source": "10037dea      data_10063fe8(3, \"couldn't add define %s\\n\", arg1)",
+          "text": "couldn't add define %s\n"
+        }
+      ],
+      "name": "BotLibAddGlobalDefine",
+      "return_codes": [
+        {
+          "address": "0x10037df6",
+          "source": "10037df6  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x100382f0",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibAddPointLight",
+      "return_codes": [
+        {
+          "address": "0x10038308",
+          "source": "10038308      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10038325",
+          "source": "10038325      return 4",
+          "value": 4
+        },
+        {
+          "address": "0x10038353",
+          "source": "10038353  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x10038070",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibClientSettings",
+      "return_codes": [
+        {
+          "address": "0x10038088",
+          "source": "10038088      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x100380a5",
+          "source": "100380a5      return 3",
+          "value": 3
+        },
+        {
+          "address": "0x100380b5",
+          "source": "100380b5  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x100383f0",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibConsoleMessage",
+      "return_codes": [
+        {
+          "address": "0x10038408",
+          "source": "10038408      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10038425",
+          "source": "10038425  return 3",
+          "value": 3
+        },
+        {
+          "address": "0x10038462",
+          "source": "10038462  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x10037e10",
+      "category": "export",
+      "messages": [
+        {
+          "address": "0x10037e61",
+          "severity": 1,
+          "source": "10037e61  data_10063fe8(1, \"------------ Map Loading -------\u2026\")",
+          "text": "------------ Map Loading ------------\n"
+        },
+        {
+          "address": "0x10037eb6",
+          "severity": 1,
+          "source": "10037eb6  data_10063fe8(1, \"--------------------------------\u2026\")",
+          "text": "-------------------------------------\n"
+        }
+      ],
+      "name": "BotLibLoadMap",
+      "return_codes": [
+        {
+          "address": "0x10037e28",
+          "source": "10037e28      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10037ec2",
+          "source": "10037ec2  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x10037fe0",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibMoveClient",
+      "return_codes": [
+        {
+          "address": "0x10037ffa",
+          "source": "10037ffa      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10038018",
+          "source": "10038018      return 3",
+          "value": 3
+        },
+        {
+          "address": "0x10038036",
+          "source": "10038036  return 3",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "address": "0x100380e0",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibSettings",
+      "return_codes": [
+        {
+          "address": "0x100380f8",
+          "source": "100380f8      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10038115",
+          "source": "10038115  return 3",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "address": "0x10037bb0",
+      "category": "export",
+      "messages": [
+        {
+          "address": "0x10037bc1",
+          "severity": 3,
+          "source": "10037bc1      data_10063fe8(3, \"bot library already setup\\n\")",
+          "text": "bot library already setup\n"
+        },
+        {
+          "address": "0x10037be2",
+          "severity": 1,
+          "source": "10037be2  data_10063fe8(1, \"------- BotLib Initialization --\u2026\")",
+          "text": "------- BotLib Initialization -------\n"
+        },
+        {
+          "address": "0x10037bef",
+          "severity": 1,
+          "source": "10037bef  data_10063fe8(1, \"BotLib v0.96\\n\")",
+          "text": "BotLib v0.96\n"
+        },
+        {
+          "address": "0x10037c99",
+          "severity": 1,
+          "source": "10037c99  data_10063fe8(1, \"--------------------------------\u2026\")",
+          "text": "-------------------------------------\n"
+        }
+      ],
+      "name": "BotLibSetup",
+      "return_codes": [
+        {
+          "address": "0x10037bd0",
+          "source": "10037bd0      return 2",
+          "value": 2
+        },
+        {
+          "address": "0x10037ca5",
+          "source": "10037ca5  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x10037f00",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibSetupClient",
+      "return_codes": []
+    },
+    {
+      "address": "0x10037cf0",
+      "category": "export",
+      "messages": [
+        {
+          "address": "0x10037d00",
+          "severity": 3,
+          "source": "10037d00      data_10063fe8(3, \"bot library already shutdown\\n\")",
+          "text": "bot library already shutdown\n"
+        }
+      ],
+      "name": "BotLibShutdown",
+      "return_codes": [
+        {
+          "address": "0x10037d0e",
+          "source": "10037d0e      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10037d55",
+          "source": "10037d55  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x10037f70",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibShutdownClient",
+      "return_codes": [
+        {
+          "address": "0x10037f88",
+          "source": "10037f88      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10037fa5",
+          "source": "10037fa5  return 3",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "address": "0x10038150",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibStartFrame",
+      "return_codes": [
+        {
+          "address": "0x10038166",
+          "source": "10038166      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x1003817b",
+          "source": "1003817b  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x10038460",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibTestHook",
+      "return_codes": []
+    },
+    {
+      "address": "0x10038190",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibUpdateClient",
+      "return_codes": [
+        {
+          "address": "0x100381a8",
+          "source": "100381a8      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x100381c5",
+          "source": "100381c5  return 3",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "address": "0x10038200",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibUpdateEntity",
+      "return_codes": [
+        {
+          "address": "0x10038218",
+          "source": "10038218      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10038235",
+          "source": "10038235  return 4",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "address": "0x10038270",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibUpdateSound",
+      "return_codes": [
+        {
+          "address": "0x10038288",
+          "source": "10038288      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x100382a5",
+          "source": "100382a5  return 4",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "address": "0x10037da0",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibVarSet",
+      "return_codes": [
+        {
+          "address": "0x10037db4",
+          "source": "10037db4  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x1000dee0",
+      "category": "export",
+      "messages": [],
+      "name": "BotLibraryInitialized",
+      "return_codes": []
+    },
+    {
+      "address": "0x100379e0",
+      "category": "export",
+      "messages": [],
+      "name": "BotVersion",
+      "return_codes": []
+    }
+  ],
+  "helpers": [
+    {
+      "address": "0x1000df00",
+      "category": "helper",
+      "messages": [
+        {
+          "address": "0x1000df1a",
+          "severity": 1,
+          "source": "1000df1a  return data_10063fe8(1, \"AAS initialized.\\n\")",
+          "text": "AAS initialized.\n"
+        }
+      ],
+      "name": "AASInitialisedLog",
+      "return_codes": []
+    },
+    {
+      "address": "0x1000df30",
+      "category": "helper",
+      "messages": [
+        {
+          "address": "0x1000dfc0",
+          "severity": 3,
+          "source": "1000dfc0                  data_10063fe8(var_c_1, var_8_1, &data_100667f0)",
+          "text": "couldn't write %s\n"
+        },
+        {
+          "address": "0x1000dfc0",
+          "severity": 1,
+          "source": "1000dfc0                  data_10063fe8(var_c_1, var_8_1, &data_100667f0)",
+          "text": "%s written succesfully\n"
+        }
+      ],
+      "name": "AASWriteWorldLog",
+      "return_codes": []
+    },
+    {
+      "address": "0x10037900",
+      "category": "helper",
+      "messages": [
+        {
+          "address": "0x10037926",
+          "severity": 3,
+          "source": "10037926  data_10063fe8(3, \"%s: invalid client number %d, [0\u2026\", arg2, arg1, ecx)",
+          "text": "%s: invalid client number %d, [0, %d]\n"
+        }
+      ],
+      "name": "GuardClientNumber",
+      "return_codes": [
+        {
+          "address": "0x10037917",
+          "source": "10037917      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10037931",
+          "source": "10037931  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x10037950",
+      "category": "helper",
+      "messages": [
+        {
+          "address": "0x10037976",
+          "severity": 3,
+          "source": "10037976  data_10063fe8(3, \"%s: invalid entity number %d, [0\u2026\", arg2, arg1, ecx)",
+          "text": "%s: invalid entity number %d, [0, %d]\n"
+        }
+      ],
+      "name": "GuardEntityNumber",
+      "return_codes": [
+        {
+          "address": "0x10037967",
+          "source": "10037967      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x10037981",
+          "source": "10037981  return 0",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "address": "0x100379a0",
+      "category": "helper",
+      "messages": [
+        {
+          "address": "0x100379b5",
+          "severity": 3,
+          "source": "100379b5  data_10063fe8(3, \"%s: bot library used before bein\u2026\", arg1)",
+          "text": "%s: bot library used before being setup\n"
+        }
+      ],
+      "name": "GuardLibrarySetup",
+      "return_codes": [
+        {
+          "address": "0x100379c6",
+          "source": "100379c6      return 1",
+          "value": 1
+        },
+        {
+          "address": "0x100379c0",
+          "source": "100379c0  return 0",
+          "value": 0
+        }
+      ]
+    }
+  ],
+  "libvar_defaults": [
+    {
+      "address": "0x10037a19",
+      "fallback": "6",
+      "fallback_source": "&data_1005ec0c",
+      "name": "sv_friction",
+      "source": "10037a19  data_10064030 = j_sub_100389c0(\"sv_friction\", &data_1005ec0c)"
+    },
+    {
+      "address": "0x10037a2d",
+      "fallback": "100",
+      "fallback_source": "&data_1005bddc",
+      "name": "sv_stopspeed",
+      "source": "10037a2d  data_10064034 = j_sub_100389c0(\"sv_stopspeed\", &data_1005bddc)"
+    },
+    {
+      "address": "0x10037a41",
+      "fallback": "800",
+      "fallback_source": "&data_1005ebe8",
+      "name": "sv_gravity",
+      "source": "10037a41  data_10064038 = j_sub_100389c0(\"sv_gravity\", &data_1005ebe8)"
+    },
+    {
+      "address": "0x10037a55",
+      "fallback": "1",
+      "fallback_source": "&data_1005cce4",
+      "name": "sv_waterfriction",
+      "source": "10037a55  data_1006403c = j_sub_100389c0(\"sv_waterfriction\", &data_1005cce4)"
+    },
+    {
+      "address": "0x10037a69",
+      "fallback": "400",
+      "fallback_source": "&data_1005ebc0",
+      "name": "sv_watergravity",
+      "source": "10037a69  data_10064040 = j_sub_100389c0(\"sv_watergravity\", &data_1005ebc0)"
+    },
+    {
+      "address": "0x10037a7d",
+      "fallback": "300",
+      "fallback_source": "&data_1005eba8",
+      "name": "sv_maxvelocity",
+      "source": "10037a7d  data_10064044 = j_sub_100389c0(\"sv_maxvelocity\", &data_1005eba8)"
+    },
+    {
+      "address": "0x10037a91",
+      "fallback": "300",
+      "fallback_source": "&data_1005eba8",
+      "name": "sv_maxwalkvelocity",
+      "source": "10037a91  data_10064048 = j_sub_100389c0(\"sv_maxwalkvelocity\", &data_1005eba8)"
+    },
+    {
+      "address": "0x10037a9e",
+      "fallback": "100",
+      "fallback_source": "&data_1005bddc",
+      "name": "sv_maxcrouchvelocity",
+      "source": "10037a9e  data_1006404c = j_sub_100389c0(\"sv_maxcrouchvelocity\", &data_1005bddc)"
+    },
+    {
+      "address": "0x10037abc",
+      "fallback": "150",
+      "fallback_source": "&data_1005eb5c",
+      "name": "sv_maxswimvelocity",
+      "source": "10037abc  data_10064050 = j_sub_100389c0(\"sv_maxswimvelocity\", &data_1005eb5c)"
+    },
+    {
+      "address": "0x10037ad0",
+      "fallback": "2200",
+      "fallback_source": "\"2200\"",
+      "name": "sv_maxacceleration",
+      "source": "10037ad0  data_10064054 = j_sub_100389c0(\"sv_maxacceleration\", \"2200\")"
+    },
+    {
+      "address": "0x10037ae4",
+      "fallback": "0",
+      "fallback_source": "&data_1005b570",
+      "name": "sv_airaccelerate",
+      "source": "10037ae4  data_10064058 = j_sub_100389c0(\"sv_airaccelerate\", &data_1005b570)"
+    },
+    {
+      "address": "0x10037af8",
+      "fallback": "18",
+      "fallback_source": "&data_1005eb0c",
+      "name": "sv_step",
+      "source": "10037af8  data_1006405c = j_sub_100389c0(\"sv_step\", &data_1005eb0c)"
+    },
+    {
+      "address": "0x10037b0c",
+      "fallback": "50",
+      "fallback_source": "&data_1005eafc",
+      "name": "sv_maxbarrier",
+      "source": "10037b0c  data_10064060 = j_sub_100389c0(\"sv_maxbarrier\", &data_1005eafc)"
+    },
+    {
+      "address": "0x10037b20",
+      "fallback": "0.7",
+      "fallback_source": "&data_1005eae8",
+      "name": "sv_maxsteepness",
+      "source": "10037b20  data_10064064 = j_sub_100389c0(\"sv_maxsteepness\", &data_1005eae8)"
+    },
+    {
+      "address": "0x10037b34",
+      "fallback": "224",
+      "fallback_source": "&data_1005ead0",
+      "name": "sv_jumpvel",
+      "source": "10037b34  data_10064068 = j_sub_100389c0(\"sv_jumpvel\", &data_1005ead0)"
+    },
+    {
+      "address": "0x10037b39",
+      "fallback": "21",
+      "fallback_source": "&data_1005eabc",
+      "name": "sv_maxwaterjump",
+      "source": "10037b39  int32_t* result = j_sub_100389c0(\"sv_maxwaterjump\", &data_1005eabc)"
+    }
+  ],
+  "metadata": {
+    "description": "Botlib diagnostic contract extracted from the Gladiator DLL",
+    "hlil_source": "dev_tools/gladiator.dll.bndb_hlil.txt"
+  }
+}
