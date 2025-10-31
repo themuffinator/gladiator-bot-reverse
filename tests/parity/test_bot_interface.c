@@ -90,6 +90,48 @@ static void test_get_library_variables_tracks_cached_values(void **state)
     cmocka_skip();
 }
 
+static void test_setup_client_guard_paths(void **state)
+{
+    (void)state;
+    // Outline: invalid client numbers, NULL settings, and duplicate setup attempts.
+    cmocka_skip();
+}
+
+static void test_setup_client_asset_failures(void **state)
+{
+    (void)state;
+    // Outline: character, weight, and chat loader failures unwind allocations and report BLERR codes.
+    cmocka_skip();
+}
+
+static void test_shutdown_client_sequence(void **state)
+{
+    (void)state;
+    // Outline: inactive guard, teardown ordering, and bridge cache purge.
+    cmocka_skip();
+}
+
+static void test_move_client_bridge_interaction(void **state)
+{
+    (void)state;
+    // Outline: inactive/occupied guards, bridge snapshot migration, and import validation.
+    cmocka_skip();
+}
+
+static void test_client_settings_roundtrip(void **state)
+{
+    (void)state;
+    // Outline: inactive guard clears buffers; active clients return stored netname/skin.
+    cmocka_skip();
+}
+
+static void test_bot_settings_roundtrip(void **state)
+{
+    (void)state;
+    // Outline: inactive guard mirrors HLIL error path; active clients echo original bot settings.
+    cmocka_skip();
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -101,6 +143,12 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_shutdown_library_reports_duplicate_invocation_guard, setup_botlib, teardown_botlib),
         cmocka_unit_test_setup_teardown(test_library_initialised_reports_state_transitions, setup_botlib, teardown_botlib),
         cmocka_unit_test_setup_teardown(test_get_library_variables_tracks_cached_values, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_setup_client_guard_paths, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_setup_client_asset_failures, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_shutdown_client_sequence, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_move_client_bridge_interaction, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_client_settings_roundtrip, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_bot_settings_roundtrip, setup_botlib, teardown_botlib),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

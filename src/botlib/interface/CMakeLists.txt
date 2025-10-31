@@ -1,5 +1,6 @@
 add_library(botlib_interface STATIC
     bot_interface.c
+    bot_state.c
 )
 
 target_include_directories(botlib_interface

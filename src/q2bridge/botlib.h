@@ -82,6 +82,7 @@ extern "C" {
 #define BLERR_CANNOTLOADITEMCONFIG       29
 #define BLERR_CANNOTLOADWEAPONWEIGHTS    30
 #define BLERR_CANNOTLOADWEAPONCONFIG     31
+#define BLERR_INVALIDIMPORT              100
 #define BLERR_INVALIDSOUNDINDEX          32
 
 // BSP surface description returned by traces

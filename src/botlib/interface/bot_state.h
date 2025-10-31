@@ -1,0 +1,52 @@
+#pragma once
+
+#include <stdbool.h>
+
+#include "q2bridge/botlib.h"
+#include "../ai/character/bot_character.h"
+#include "../ai/chat/ai_chat.h"
+#include "../ai/weight/bot_weight.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct bot_client_state_s bot_client_state_t;
+
+/**
+ * Characteristic indices required during client setup. These values mirror the
+ * macros defined in the Gladiator assets (chars.h) and describe where the
+ * character, chat, and weight filenames are stored within the parsed profile.
+ */
+enum bot_characteristic_index_e {
+    BOT_CHARACTERISTIC_NAME = 0,
+    BOT_CHARACTERISTIC_ALT_NAME = 1,
+    BOT_CHARACTERISTIC_WEAPONWEIGHTS = 5,
+    BOT_CHARACTERISTIC_CHAT_FILE = 12,
+    BOT_CHARACTERISTIC_CHAT_NAME = 13,
+    BOT_CHARACTERISTIC_ITEMWEIGHTS = 28,
+};
+
+struct bot_client_state_s {
+    int client_number;
+    bool active;
+    bot_settings_t settings;
+    bot_clientsettings_t client_settings;
+    ai_character_profile_t *character;
+    bot_weight_config_t *item_weights;
+    bot_weight_config_t *weapon_weights;
+    bot_chatstate_t *chat_state;
+    void *goal_state;
+    void *move_state;
+};
+
+bot_client_state_t *BotState_Get(int client);
+bot_client_state_t *BotState_Create(int client);
+void BotState_Destroy(int client);
+void BotState_Move(int old_client, int new_client);
+void BotState_ShutdownAll(void);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
