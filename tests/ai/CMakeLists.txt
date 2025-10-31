@@ -5,6 +5,7 @@ endif()
 set(AI_TEST_SOURCES
     test_ai_character.c
     test_ai_weight.c
+    test_ai_weapon.c
 )
 
 add_executable(ai_character_tests ${AI_TEST_SOURCES})
