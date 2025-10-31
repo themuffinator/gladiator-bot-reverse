@@ -19,6 +19,13 @@ module.
 Each exported entry point in `src/botlib/interface/botlib_interface.c` receives a dedicated test fixture.  The placeholders below outline
 how the cmocka-based harness will interrogate the implementation once the helper shims and mocks are committed.
 
+### `GetBotAPI`
+* **Handshake wiring** &mdash; Expect the loader to translate the raw `bot_import_t` into a `botlib_import_table_t`, seeding wrappers for
+  `Print`, `DPrint`, `BotLibVarGet`, and `BotLibVarSet`. The handshake then calls `BotInterface_SetImportTable`, `Q2Bridge_SetImportTable`,
+  and `Bridge_ResetCachedUpdates` so subsystems exercising memory, libvars, or cached entity state observe the freshly populated pointers.
+  Future fixtures should verify this ordering and capture the shimmed callbacks so downstream assertions can intercept log output and
+  libvar probes deterministically.
+
 ### `BotInterface_SetImportTable`
 * **Initialization guard** &mdash; Seed the interface with a valid `bot_import_t` table, then call the setter again with `NULL` and confirm
   that the previously stored pointer remains intact.
