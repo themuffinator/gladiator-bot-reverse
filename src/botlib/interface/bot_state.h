@@ -49,6 +49,7 @@ bot_client_state_t *BotState_Create(int client);
 void BotState_Destroy(int client);
 void BotState_Move(int old_client, int new_client);
 void BotState_ShutdownAll(void);
+void BotState_AttachCharacter(bot_client_state_t *state, ai_character_profile_t *profile);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -941,84 +941,8 @@ static int BotSetupClient(int client, bot_settings_t *settings)
         BotState_Destroy(client);
         return BLERR_INVALIDIMPORT;
     }
-    state->character = profile;
 
-    const char *display_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_NAME);
-    if (display_name == NULL || *display_name == '\0')
-    {
-        display_name = settings->charactername;
-    }
-    if (display_name != NULL)
-    {
-        strncpy(state->client_settings.netname, display_name, sizeof(state->client_settings.netname) - 1);
-        state->client_settings.netname[sizeof(state->client_settings.netname) - 1] = '\0';
-    }
-
-    state->client_settings.skin[0] = '\0';
-
-    const char *item_weight_file = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_ITEMWEIGHTS);
-    if (item_weight_file != NULL && *item_weight_file != '\0')
-    {
-        bot_weight_config_t *item_weights = ReadWeightConfig(item_weight_file);
-        if (item_weights == NULL)
-        {
-            BotInterface_Printf(PRT_ERROR,
-                                "[bot_interface] BotSetupClient: failed to load item weights '%s' for client %d\n",
-                                item_weight_file,
-                                client);
-            BotState_Destroy(client);
-            return BLERR_CANNOTLOADITEMWEIGHTS;
-        }
-        state->item_weights = item_weights;
-        profile->item_weights = item_weights;
-    }
-
-    const char *weapon_weight_file = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_WEAPONWEIGHTS);
-    if (weapon_weight_file != NULL && *weapon_weight_file != '\0')
-    {
-        ai_weapon_weights_t *weapon_weights = AI_LoadWeaponWeights(weapon_weight_file);
-        if (weapon_weights == NULL)
-        {
-            BotInterface_Printf(PRT_ERROR,
-                                "[bot_interface] BotSetupClient: failed to load weapon weights '%s' for client %d\n",
-                                weapon_weight_file,
-                                client);
-            BotState_Destroy(client);
-            return BLERR_CANNOTLOADWEAPONWEIGHTS;
-        }
-        state->weapon_weights = weapon_weights;
-        profile->weapon_weights = weapon_weights;
-    }
-
-    bot_chatstate_t *chat_state = BotAllocChatState();
-    if (chat_state == NULL)
-    {
-        BotInterface_Printf(PRT_ERROR,
-                            "[bot_interface] BotSetupClient: failed to allocate chat state for client %d\n",
-                            client);
-        BotState_Destroy(client);
-        return BLERR_CANNOTLOADICHAT;
-    }
-
-    state->chat_state = chat_state;
-    profile->chat_state = chat_state;
-
-    const char *chat_file = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_CHAT_FILE);
-    const char *chat_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_CHAT_NAME);
-    if (chat_file != NULL && *chat_file != '\0')
-    {
-        const char *resolved_chat_name = (chat_name != NULL && *chat_name != '\0') ? chat_name : "default";
-        if (!BotLoadChatFile(chat_state, chat_file, resolved_chat_name))
-        {
-            BotInterface_Printf(PRT_ERROR,
-                                "[bot_interface] BotSetupClient: failed to load chat '%s' (%s) for client %d\n",
-                                chat_file,
-                                resolved_chat_name,
-                                client);
-            BotState_Destroy(client);
-            return BLERR_CANNOTLOADICHAT;
-        }
-    }
+    BotState_AttachCharacter(state, profile);
 
     Bridge_ClearClientSlot(client);
     state->active = true;
