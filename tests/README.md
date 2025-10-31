@@ -26,6 +26,23 @@ broader **AI module orchestration** so that integration tests can cover
 cross-module behaviors (navigation planning, decision loops, and command
 issuance) from the outset.
 
+## AI weapon regression tests
+
+The AI weapon suite under `tests/ai/` loads the Gladiator weapon definitions
+and weight scripts directly from the repository. When running the tests outside
+of CTest, make sure the following libvars are seeded before calling into the
+botlib so that asset discovery mirrors the in-game configuration:
+
+- `weaponconfig` &mdash; absolute path to `dev_tools/assets/weapons.c`.
+- `max_weaponinfo` &mdash; increased to at least `64` to cover the full Quake II
+  arsenal captured in the regression data.
+- `max_projectileinfo` &mdash; likewise bumped to `64` so projectile definitions
+  are not clipped during parsing.
+
+The regression harness sets these values explicitly and skips the assertions if
+the assets are unavailable (for example, when the repository is cloned without
+`dev_tools/`).
+
 To streamline build-system integration, we anticipate driving these tests via
 `CTest` invoking a lightweight **GoogleTest** harness.  The harness will provide
 fixtures for seeding the mocked `bot_import_t` table, helpers for table diffing,
