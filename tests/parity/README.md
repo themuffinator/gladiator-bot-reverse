@@ -69,6 +69,7 @@ how the cmocka-based harness will interrogate the implementation once the helper
   codes and diagnostics logged through the mocked import table.
 * **Asset failure unwinding** &mdash; Stub `AI_LoadCharacter`, weight loaders, and chat helpers to fail sequentially, confirming that each path frees
   previously allocated state in reverse order and reports the appropriate `BLERR_CANNOTLOAD*` code.
+* **Missing weapon weights** &mdash; Ensure weight tables that omit a weapon definition emit `item info %d "%s" has no fuzzy weight` and the loader rejects the configuration before setup continues.
 * **Bridge reset** &mdash; Seed `Bridge_UpdateClient` with a fake snapshot, run setup, and verify that the bridge slot is cleared before the next
   frame lands.
 

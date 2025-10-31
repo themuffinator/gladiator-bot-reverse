@@ -5,6 +5,7 @@
 #include "q2bridge/botlib.h"
 #include "../ai/character/bot_character.h"
 #include "../ai/chat/ai_chat.h"
+#include "../ai/weapon/bot_weapon.h"
 #include "../ai/weight/bot_weight.h"
 
 #ifdef __cplusplus
@@ -34,7 +35,7 @@ struct bot_client_state_s {
     bot_clientsettings_t client_settings;
     ai_character_profile_t *character;
     bot_weight_config_t *item_weights;
-    bot_weight_config_t *weapon_weights;
+    ai_weapon_weights_t *weapon_weights;
     bot_chatstate_t *chat_state;
     void *goal_state;
     void *move_state;

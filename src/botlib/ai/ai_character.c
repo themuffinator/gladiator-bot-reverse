@@ -19,9 +19,10 @@
  *     "%6d bytes character\n" before setup completes.
  *   - *(state + 0xbc0) / *(state + 0xbc4) : item weight config pointer and the
  *     accompanying index mapping, reported as "item weights" and
- *     "item index" bytes respectively.
- *   - *(state + 0x1050) / *(state + 0x1054) : weapon weight config pointer and
- *     index mapping, echoed as "weapon weights" and "weapon index".
+ *     "item index" bytes respectively (the reconstructed profile still tracks
+ *     only the configuration until the goal module wires in the compiled index).
+ *   - *(state + 0x1050) : weapon weight handle combining the configuration and
+ *     compiled index table, echoed as "weapon weights" and "weapon index".
  *   - *(state + 0x1044) : chat file workspace tracked by
  *     "%6d bytes chat file\n".
  * The setup routine (sub_10029480) constructs these slots by loading the
@@ -63,9 +64,7 @@ struct ai_character_profile_s {
     char character_filename[128];
     float requested_skill;
     bot_weight_config_t *item_weights;
-    void *item_weight_index;
-    bot_weight_config_t *weapon_weights;
-    void *weapon_weight_index;
+    ai_weapon_weights_t *weapon_weights;
     void *chat_state;
     ai_character_definition_t *definition_blob;
 };
@@ -582,6 +581,11 @@ void AI_FreeCharacter(ai_character_profile_t *profile)
         profile->definition_blob = NULL;
     }
 
+    if (profile->weapon_weights != NULL) {
+        AI_FreeWeaponWeights(profile->weapon_weights);
+        profile->weapon_weights = NULL;
+    }
+
     free(profile);
 }
 
@@ -594,7 +598,7 @@ bot_weight_config_t *AI_ItemWeightsForCharacter(const ai_character_profile_t *pr
     return profile->item_weights;
 }
 
-bot_weight_config_t *AI_WeaponWeightsForCharacter(const ai_character_profile_t *profile)
+ai_weapon_weights_t *AI_WeaponWeightsForCharacter(const ai_character_profile_t *profile)
 {
     if (!profile) {
         return NULL;

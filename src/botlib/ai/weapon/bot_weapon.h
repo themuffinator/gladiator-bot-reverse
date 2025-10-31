@@ -89,9 +89,15 @@ typedef struct ai_weapon_library_s {
     char source_path[AI_WEAPON_MAX_PATH];
 } ai_weapon_library_t;
 
+typedef struct ai_weapon_weights_s ai_weapon_weights_t;
+
 ai_weapon_library_t *AI_LoadWeaponLibrary(const char *filename);
 void AI_UnloadWeaponLibrary(ai_weapon_library_t *library);
 const bot_weapon_config_t *AI_GetWeaponConfig(const ai_weapon_library_t *library);
+
+ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename);
+void AI_FreeWeaponWeights(ai_weapon_weights_t *weights);
+float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_index);
 
 #ifdef __cplusplus
 } // extern "C"
