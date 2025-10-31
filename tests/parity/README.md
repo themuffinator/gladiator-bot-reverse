@@ -45,6 +45,8 @@ how the cmocka-based harness will interrogate the implementation once the helper
 * **Subsystem unwinding** &mdash; After a successful setup, confirm that utilities, AI, EA, and AAS shutdown mocks fire in the reverse order,
   matching HLIL traces.
 * **Idempotent shutdown** &mdash; Re-run shutdown and ensure it neither crashes nor double-frees allocator state.
+* **Duplicate shutdown guard** &mdash; Issue back-to-back shutdown calls without an intervening setup and expect `BLERR_LIBRARYNOTSETUP`
+  alongside the banner captured from the reference DLL.
 
 ### `BotLibraryInitialized`
 * **State transitions** &mdash; Assert that the helper reports `false` before setup, `true` after setup, and `false` following shutdown,

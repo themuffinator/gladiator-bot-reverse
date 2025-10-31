@@ -177,8 +177,6 @@ int BotSetupLibrary(void)
     LibVar_ResetCache();
     BotLib_LogShutdown();
 
-    BotLib_Print(PRT_MESSAGE, "------- BotLib Initialization -------\n");
-
     BridgeConfig_Init();
     Botlib_CacheLibraryVariables();
 
@@ -217,9 +215,6 @@ int BotShutdownLibrary(void)
     Botlib_ResetSubsystemState();
     BridgeConfig_Shutdown();
     LibVar_Shutdown();
-    BotLib_LogShutdown();
-
-    BotLib_Print(PRT_MESSAGE, "------- BotLib Shutdown -------\n");
 
     g_library_initialised = false;
 
