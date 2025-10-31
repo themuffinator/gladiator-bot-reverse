@@ -55,6 +55,7 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
 bot_weight_config_t *ReadWeightConfig(const char *filename);
 void FreeWeightConfig(bot_weight_config_t *config);
 float FuzzyWeight(const int *inventory, const bot_weight_config_t *config, int weight_index);
+int BotWeight_FindIndex(const bot_weight_config_t *config, const char *name);
 
 #ifdef __cplusplus
 } // extern "C"

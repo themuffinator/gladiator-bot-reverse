@@ -19,6 +19,7 @@
 #include "../aas/aas_local.h"
 #include "../ai/chat/ai_chat.h"
 #include "../ai/character/bot_character.h"
+#include "../ai/weapon/bot_weapon.h"
 #include "../ai/weight/bot_weight.h"
 #include "../precomp/l_precomp.h"
 #include "botlib_interface.h"
@@ -976,7 +977,7 @@ static int BotSetupClient(int client, bot_settings_t *settings)
     const char *weapon_weight_file = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_WEAPONWEIGHTS);
     if (weapon_weight_file != NULL && *weapon_weight_file != '\0')
     {
-        bot_weight_config_t *weapon_weights = ReadWeightConfig(weapon_weight_file);
+        ai_weapon_weights_t *weapon_weights = AI_LoadWeaponWeights(weapon_weight_file);
         if (weapon_weights == NULL)
         {
             BotInterface_Printf(PRT_ERROR,

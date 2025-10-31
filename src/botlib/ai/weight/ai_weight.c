@@ -599,3 +599,19 @@ float FuzzyWeight(const int *inventory, const bot_weight_config_t *config, int w
     return BotWeight_FuzzyWeightRecursive(inventory, fs);
 }
 
+int BotWeight_FindIndex(const bot_weight_config_t *config, const char *name)
+{
+    if (config == NULL || name == NULL || *name == '\0') {
+        return -1;
+    }
+
+    for (int i = 0; i < config->num_weights; ++i) {
+        const bot_weight_t *weight = &config->weights[i];
+        if (weight->name != NULL && strcmp(weight->name, name) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+

@@ -63,9 +63,7 @@ struct ai_character_profile_s {
     char character_filename[128];
     float requested_skill;
     bot_weight_config_t *item_weights;
-    void *item_weight_index;
-    bot_weight_config_t *weapon_weights;
-    void *weapon_weight_index;
+    ai_weapon_weights_t *weapon_weights;
     void *chat_state;
     ai_character_definition_t *definition_blob;
 };
@@ -569,6 +567,16 @@ void AI_FreeCharacter(ai_character_profile_t *profile)
         return;
     }
 
+    if (profile->weapon_weights != NULL) {
+        AI_FreeWeaponWeights(profile->weapon_weights);
+        profile->weapon_weights = NULL;
+    }
+
+    if (profile->item_weights != NULL) {
+        FreeWeightConfig(profile->item_weights);
+        profile->item_weights = NULL;
+    }
+
     if (profile->definition_blob) {
         for (size_t i = 0; i < AI_MAX_CHARACTERISTICS; ++i) {
             ai_characteristic_t *slot = &profile->definition_blob->characteristics[i];
@@ -594,7 +602,7 @@ bot_weight_config_t *AI_ItemWeightsForCharacter(const ai_character_profile_t *pr
     return profile->item_weights;
 }
 
-bot_weight_config_t *AI_WeaponWeightsForCharacter(const ai_character_profile_t *profile)
+ai_weapon_weights_t *AI_WeaponWeightsForCharacter(const ai_character_profile_t *profile)
 {
     if (!profile) {
         return NULL;
