@@ -11,31 +11,26 @@ static void BotState_FreeResources(bot_client_state_t *state)
         return;
     }
 
-    if (state->chat_state != NULL) {
-        BotFreeChatState(state->chat_state);
-        state->chat_state = NULL;
-    }
-
-    if (state->weapon_weights != NULL) {
-        AI_FreeWeaponWeights(state->weapon_weights);
-        state->weapon_weights = NULL;
-        if (state->character != NULL) {
-            state->character->weapon_weights = NULL;
-        }
-    }
-
-    if (state->item_weights != NULL) {
-        FreeWeightConfig(state->item_weights);
-        state->item_weights = NULL;
-        if (state->character != NULL) {
-            state->character->item_weights = NULL;
-        }
-    }
-
     if (state->character != NULL) {
         AI_FreeCharacter(state->character);
-        state->character = NULL;
+    } else {
+        if (state->chat_state != NULL) {
+            BotFreeChatState(state->chat_state);
+        }
+
+        if (state->weapon_weights != NULL) {
+            AI_FreeWeaponWeights(state->weapon_weights);
+        }
+
+        if (state->item_weights != NULL) {
+            FreeWeightConfig(state->item_weights);
+        }
     }
+
+    state->character = NULL;
+    state->chat_state = NULL;
+    state->weapon_weights = NULL;
+    state->item_weights = NULL;
 
     state->goal_state = NULL;
     state->move_state = NULL;
@@ -44,6 +39,49 @@ static void BotState_FreeResources(bot_client_state_t *state)
     state->last_update_time = 0.0f;
     state->active = false;
     memset(&state->client_settings, 0, sizeof(state->client_settings));
+}
+
+void BotState_AttachCharacter(bot_client_state_t *state, ai_character_profile_t *profile)
+{
+    if (state == NULL) {
+        return;
+    }
+
+    state->character = profile;
+    state->item_weights = NULL;
+    state->weapon_weights = NULL;
+    state->chat_state = NULL;
+
+    state->client_settings.netname[0] = '\0';
+    state->client_settings.skin[0] = '\0';
+
+    if (profile == NULL) {
+        return;
+    }
+
+    state->item_weights = profile->item_weights;
+    state->weapon_weights = profile->weapon_weights;
+    state->chat_state = profile->chat_state;
+
+    const char *display_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_NAME);
+    if (display_name == NULL || *display_name == '\0') {
+        display_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_ALT_NAME);
+    }
+
+    const char *fallback_name = NULL;
+    if (state->settings.charactername[0] != '\0') {
+        fallback_name = state->settings.charactername;
+    }
+
+    const char *netname = display_name;
+    if (netname == NULL || *netname == '\0') {
+        netname = fallback_name;
+    }
+
+    if (netname != NULL && *netname != '\0') {
+        strncpy(state->client_settings.netname, netname, sizeof(state->client_settings.netname) - 1);
+        state->client_settings.netname[sizeof(state->client_settings.netname) - 1] = '\0';
+    }
 }
 
 bot_client_state_t *BotState_Get(int client)
