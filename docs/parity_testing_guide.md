@@ -65,3 +65,7 @@ When HLIL review reveals new behaviour:
 - **CTest finds no tests** – Confirm that both `BUILD_TESTING=ON` and `BOTLIB_PARITY_ENABLE_SOURCES=ON` were set during configuration; otherwise the parity target remains a placeholder custom target and no executable is built. 【F:tests/parity/CMakeLists.txt†L1-L20】
 
 Keeping this workflow up to date ensures contributors can quickly validate reconstructed functionality against the original Gladiator botlib contract while iterating on new discoveries from the HLIL traces.
+
+## 5. Weapon configuration parity
+
+`BotSetupLibrary` now caches the `weaponconfig`, `max_weaponinfo`, and `max_projectileinfo` libvars before attempting to load the global weapon library. The cache is populated through the bridge helpers so tests can override the libvar values without rebuilding the AI loader, and a missing or malformed weapon configuration will cause setup to fail with `BLERR_CANNOTLOADWEAPONCONFIG`. Parity fixtures that stub `BotLibVarGet` should therefore provide consistent responses for these names when exercising the startup path.【F:src/botlib/interface/botlib_interface.c†L36-L124】【F:src/q2bridge/bridge_config.c†L1-L214】

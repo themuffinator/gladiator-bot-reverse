@@ -4,10 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../ai/weapon/bot_weapon.h"
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
 #include "q2bridge/bridge_config.h"
+
+#define BOTLIB_DEFAULT_WEAPONCONFIG "weapons.c"
 
 /**
  * Internal bookkeeping for the subsystem lifecycle so shutdown can unwind the
@@ -25,10 +28,17 @@ static const botlib_import_table_t *g_import_table = NULL;
 static bool g_library_initialised = false;
 static botlib_library_variables_t g_library_variables;
 static botlib_subsystem_state_t g_subsystem_state;
+static ai_weapon_library_t *g_weapon_library = NULL;
+
+static const char *Botlib_DefaultWeaponConfig(void)
+{
+    return BOTLIB_DEFAULT_WEAPONCONFIG;
+}
 
 static void Botlib_ResetSubsystemState(void)
 {
     memset(&g_subsystem_state, 0, sizeof(g_subsystem_state));
+    g_weapon_library = NULL;
 }
 
 static void Botlib_ResetLibraryVariables(void)
@@ -66,6 +76,17 @@ static void Botlib_CacheLibraryVariables(void)
     g_library_variables.sv_maxwaterjump = Botlib_ReadFloatLibVarCached(Bridge_MaxWaterJump(), 20.0f);
     g_library_variables.sv_watergravity = Botlib_ReadFloatLibVarCached(Bridge_WaterGravity(), 400.0f);
     g_library_variables.sv_waterfriction = Botlib_ReadFloatLibVarCached(Bridge_WaterFriction(), 1.0f);
+    g_library_variables.max_weaponinfo = Botlib_ReadIntLibVarCached(Bridge_MaxWeaponInfo(), 32);
+    g_library_variables.max_projectileinfo = Botlib_ReadIntLibVarCached(Bridge_MaxProjectileInfo(), 32);
+
+    const libvar_t *weaponconfig = Bridge_WeaponConfig();
+    const char *weaponconfig_string = (weaponconfig != NULL && weaponconfig->string != NULL && weaponconfig->string[0] != '\0')
+                                          ? weaponconfig->string
+                                          : Botlib_DefaultWeaponConfig();
+    strncpy(g_library_variables.weaponconfig,
+            weaponconfig_string,
+            sizeof(g_library_variables.weaponconfig) - 1);
+    g_library_variables.weaponconfig[sizeof(g_library_variables.weaponconfig) - 1] = '\0';
 }
 
 static void Botlib_SetupAASSubsystem(void)
@@ -88,14 +109,22 @@ static void Botlib_SetupEASubsystem(void)
     g_subsystem_state.ea_initialised = true;
 }
 
-static void Botlib_SetupAISubsystem(void)
+static bool Botlib_SetupAISubsystem(void)
 {
     if (g_subsystem_state.ai_initialised) {
-        return;
+        return true;
     }
 
-    // TODO: Implement actual AI subsystem initialisation.
+    const char *weapon_config_path =
+        (g_library_variables.weaponconfig[0] != '\0') ? g_library_variables.weaponconfig : NULL;
+
+    g_weapon_library = AI_LoadWeaponLibrary(weapon_config_path);
+    if (g_weapon_library == NULL) {
+        return false;
+    }
+
     g_subsystem_state.ai_initialised = true;
+    return true;
 }
 
 static void Botlib_SetupUtilities(void)
@@ -124,7 +153,11 @@ static void Botlib_ShutdownAISubsystem(void)
         return;
     }
 
-    // TODO: Implement actual AI subsystem shutdown.
+    if (g_weapon_library != NULL) {
+        AI_UnloadWeaponLibrary(g_weapon_library);
+        g_weapon_library = NULL;
+    }
+
     g_subsystem_state.ai_initialised = false;
 }
 
@@ -193,7 +226,16 @@ int BotSetupLibrary(void)
      * can acquire their dependencies deterministically.
      *【F:dev_tools/gladiator.dll.bndb_hlil.txt†L38344-L38405】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L41398-L41415】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32483-L32552】
      */
-    Botlib_SetupAISubsystem();
+    if (!Botlib_SetupAISubsystem()) {
+        Botlib_ShutdownEASubsystem();
+        Botlib_ShutdownAASSubsystem();
+        Botlib_ResetLibraryVariables();
+        Botlib_ResetSubsystemState();
+        BridgeConfig_Shutdown();
+        LibVar_Shutdown();
+        BotMemory_Shutdown();
+        return BLERR_CANNOTLOADWEAPONCONFIG;
+    }
     Botlib_SetupUtilities();
 
     g_library_initialised = true;
