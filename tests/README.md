@@ -43,6 +43,17 @@ The regression harness sets these values explicitly and skips the assertions if
 the assets are unavailable (for example, when the repository is cloned without
 `dev_tools/`).
 
+## AI character regression tests
+
+The AI character tests rely on the Gladiator assets mirroring their original
+Quake III directory layout. The harness automatically points
+`GLADIATOR_ASSET_DIR` at `${PROJECT_SOURCE_DIR}/dev_tools/assets`, copies
+`syn.c`, `match.c`, and `rchat.c` into `dev_tools/assets/bots/` for the duration
+of the run, and restores the tree afterwards. The integration exercise that
+drives `BotSetupClient` also overrides `weaponconfig`, `max_weaponinfo`, and
+`max_projectileinfo` through the exported `BotLibVarSet` hook so the weapon
+library and weight tables resolve to the repository assets.
+
 To streamline build-system integration, we anticipate driving these tests via
 `CTest` invoking a lightweight **GoogleTest** harness.  The harness will provide
 fixtures for seeding the mocked `bot_import_t` table, helpers for table diffing,
