@@ -1,18 +1,42 @@
 #include <assert.h>
 #include <stddef.h>
 
+#include <stdarg.h>
+#include <string.h>
+
 #include "../../q2bridge/botlib.h"
 #include "../../q2bridge/bridge.h"
 #include "../../q2bridge/update_translator.h"
 #include "../aas/aas_map.h"
 #include "../ai/chat/ai_chat.h"
+#include "../ai/character/bot_character.h"
+#include "../ai/weight/bot_weight.h"
 #include "bot_interface.h"
+#include "bot_state.h"
 
 
 static int g_bot_initialized = 0;
 
 static bot_import_t *g_botImport = NULL;
 static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;
+
+static void BotInterface_Printf(int priority, const char *fmt, ...)
+{
+    if (g_botImport == NULL || g_botImport->Print == NULL || fmt == NULL)
+    {
+        return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+    va_end(args);
+
+    g_botImport->Print(priority, "%s", buffer);
+}
 
 static bot_chatstate_t *BotInterface_EnsureConsoleChatState(void)
 {
@@ -56,6 +80,7 @@ static int BotShutdownLibraryStub(void)
 {
     assert(g_botImport != NULL);
     BotInterface_Log(PRT_WARNING, __func__);
+    BotState_ShutdownAll();
     if (g_botInterfaceConsoleChat != NULL)
     {
         BotFreeChatState(g_botInterfaceConsoleChat);
@@ -99,52 +124,258 @@ static int BotLoadMapStub(char *mapname, int modelindexes, char *modelindex[], i
     return AAS_LoadMap(mapname, modelindexes, modelindex, soundindexes, soundindex, imageindexes, imageindex);
 }
 
-static int BotSetupClientStub(int client, bot_settings_t *settings)
+static int BotSetupClient(int client, bot_settings_t *settings)
 {
-    (void)client;
-    (void)settings;
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
 
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
+    if (client < 0 || client >= MAX_CLIENTS)
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSetupClient: invalid client %d\n", client);
+        return BLERR_INVALIDCLIENTNUMBER;
+    }
+
+    if (settings == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSetupClient: NULL settings pointer for client %d\n", client);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    if (BotState_Get(client) != NULL)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotSetupClient: client %d already active\n", client);
+        return BLERR_AICLIENTALREADYSETUP;
+    }
+
+    bot_client_state_t *state = BotState_Create(client);
+    if (state == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSetupClient: failed to allocate state for client %d\n", client);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    memcpy(&state->settings, settings, sizeof(*settings));
+
+    ai_character_profile_t *profile = AI_LoadCharacter(settings->characterfile, 1.0f);
+    if (profile == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to load character '%s' for client %d\n",
+                            settings->characterfile,
+                            client);
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+    state->character = profile;
+
+    const char *display_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_NAME);
+    if (display_name == NULL || *display_name == '\0')
+    {
+        display_name = settings->charactername;
+    }
+    if (display_name != NULL)
+    {
+        strncpy(state->client_settings.netname, display_name, sizeof(state->client_settings.netname) - 1);
+        state->client_settings.netname[sizeof(state->client_settings.netname) - 1] = '\0';
+    }
+
+    state->client_settings.skin[0] = '\0';
+
+    const char *item_weight_file = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_ITEMWEIGHTS);
+    if (item_weight_file != NULL && *item_weight_file != '\0')
+    {
+        bot_weight_config_t *item_weights = ReadWeightConfig(item_weight_file);
+        if (item_weights == NULL)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                "[bot_interface] BotSetupClient: failed to load item weights '%s' for client %d\n",
+                                item_weight_file,
+                                client);
+            BotState_Destroy(client);
+            return BLERR_CANNOTLOADITEMWEIGHTS;
+        }
+        state->item_weights = item_weights;
+        profile->item_weights = item_weights;
+    }
+
+    const char *weapon_weight_file = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_WEAPONWEIGHTS);
+    if (weapon_weight_file != NULL && *weapon_weight_file != '\0')
+    {
+        bot_weight_config_t *weapon_weights = ReadWeightConfig(weapon_weight_file);
+        if (weapon_weights == NULL)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                "[bot_interface] BotSetupClient: failed to load weapon weights '%s' for client %d\n",
+                                weapon_weight_file,
+                                client);
+            BotState_Destroy(client);
+            return BLERR_CANNOTLOADWEAPONWEIGHTS;
+        }
+        state->weapon_weights = weapon_weights;
+        profile->weapon_weights = weapon_weights;
+    }
+
+    bot_chatstate_t *chat_state = BotAllocChatState();
+    if (chat_state == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate chat state for client %d\n",
+                            client);
+        BotState_Destroy(client);
+        return BLERR_CANNOTLOADICHAT;
+    }
+
+    state->chat_state = chat_state;
+    profile->chat_state = chat_state;
+
+    const char *chat_file = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_CHAT_FILE);
+    const char *chat_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_CHAT_NAME);
+    if (chat_file != NULL && *chat_file != '\0')
+    {
+        const char *resolved_chat_name = (chat_name != NULL && *chat_name != '\0') ? chat_name : "default";
+        if (!BotLoadChatFile(chat_state, chat_file, resolved_chat_name))
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                "[bot_interface] BotSetupClient: failed to load chat '%s' (%s) for client %d\n",
+                                chat_file,
+                                resolved_chat_name,
+                                client);
+            BotState_Destroy(client);
+            return BLERR_CANNOTLOADICHAT;
+        }
+    }
+
+    Bridge_ClearClientSlot(client);
+    state->active = true;
     return BLERR_NOERROR;
 }
 
-static int BotShutdownClientStub(int client)
+static int BotShutdownClient(int client)
 {
-    (void)client;
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
 
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
+    if (client < 0 || client >= MAX_CLIENTS)
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotShutdownClient: invalid client %d\n", client);
+        return BLERR_INVALIDCLIENTNUMBER;
+    }
+
+    bot_client_state_t *state = BotState_Get(client);
+    if (state == NULL || !state->active)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotShutdownClient: client %d not active\n", client);
+        return BLERR_AICLIENTALREADYSHUTDOWN;
+    }
+
+    BotState_Destroy(client);
+    Bridge_ClearClientSlot(client);
     return BLERR_NOERROR;
 }
 
-static int BotMoveClientStub(int oldclnum, int newclnum)
+static int BotMoveClient(int oldclnum, int newclnum)
 {
-    (void)oldclnum;
-    (void)newclnum;
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
 
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
+    if (oldclnum < 0 || oldclnum >= MAX_CLIENTS)
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: invalid source client %d\n", oldclnum);
+        return BLERR_INVALIDCLIENTNUMBER;
+    }
+
+    if (newclnum < 0 || newclnum >= MAX_CLIENTS)
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: invalid destination client %d\n", newclnum);
+        return BLERR_INVALIDCLIENTNUMBER;
+    }
+
+    if (oldclnum == newclnum)
+    {
+        return BLERR_NOERROR;
+    }
+
+    bot_client_state_t *state = BotState_Get(oldclnum);
+    if (state == NULL || !state->active)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotMoveClient: source client %d inactive\n", oldclnum);
+        return BLERR_AIMOVEINACTIVECLIENT;
+    }
+
+    if (BotState_Get(newclnum) != NULL)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotMoveClient: destination client %d already active\n", newclnum);
+        return BLERR_AIMOVETOACTIVECLIENT;
+    }
+
+    BotState_Move(oldclnum, newclnum);
+    int status = Bridge_MoveClientSlot(oldclnum, newclnum);
+    if (status != BLERR_NOERROR)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotMoveClient: bridge move failed for %d -> %d\n",
+                            oldclnum,
+                            newclnum);
+        BotState_Move(newclnum, oldclnum);
+        return status;
+    }
+
     return BLERR_NOERROR;
 }
 
-static int BotClientSettingsStub(int client, bot_clientsettings_t *settings)
+static int BotClientSettings(int client, bot_clientsettings_t *settings)
 {
-    (void)client;
-    (void)settings;
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
 
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
+    if (settings == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotClientSettings: NULL output buffer\n");
+        return BLERR_INVALIDIMPORT;
+    }
+
+    bot_client_state_t *state = BotState_Get(client);
+    if (state == NULL || !state->active)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotClientSettings: client %d inactive\n", client);
+        memset(settings, 0, sizeof(*settings));
+        return BLERR_SETTINGSINACTIVECLIENT;
+    }
+
+    memcpy(settings, &state->client_settings, sizeof(*settings));
     return BLERR_NOERROR;
 }
 
-static int BotSettingsStub(int client, bot_settings_t *settings)
+static int BotSettings(int client, bot_settings_t *settings)
 {
-    (void)client;
-    (void)settings;
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
 
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
+    if (settings == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSettings: NULL output buffer\n");
+        return BLERR_INVALIDIMPORT;
+    }
+
+    bot_client_state_t *state = BotState_Get(client);
+    if (state == NULL || !state->active)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotSettings: client %d inactive\n", client);
+        memset(settings, 0, sizeof(*settings));
+        return BLERR_AICLIENTNOTSETUP;
+    }
+
+    memcpy(settings, &state->settings, sizeof(*settings));
     return BLERR_NOERROR;
 }
 
@@ -288,11 +519,11 @@ bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotLibVarSet = BotLibVarSetStub;
     exportTable.BotDefine = BotDefineStub;
     exportTable.BotLoadMap = BotLoadMapStub;
-    exportTable.BotSetupClient = BotSetupClientStub;
-    exportTable.BotShutdownClient = BotShutdownClientStub;
-    exportTable.BotMoveClient = BotMoveClientStub;
-    exportTable.BotClientSettings = BotClientSettingsStub;
-    exportTable.BotSettings = BotSettingsStub;
+    exportTable.BotSetupClient = BotSetupClient;
+    exportTable.BotShutdownClient = BotShutdownClient;
+    exportTable.BotMoveClient = BotMoveClient;
+    exportTable.BotClientSettings = BotClientSettings;
+    exportTable.BotSettings = BotSettings;
     exportTable.BotStartFrame = BotStartFrameStub;
     exportTable.BotUpdateClient = BotUpdateClientStub;
     exportTable.BotUpdateEntity = BotUpdateEntityStub;

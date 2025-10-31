@@ -183,3 +183,41 @@ void Bridge_ResetCachedUpdates(void)
     memset(g_bridge_clients, 0, sizeof(g_bridge_clients));
     memset(g_bridge_entities, 0, sizeof(g_bridge_entities));
 }
+
+void Bridge_ClearClientSlot(int client)
+{
+    if (!Bridge_CheckClientNumber(client, "Bridge_ClearClientSlot"))
+    {
+        return;
+    }
+
+    memset(&g_bridge_clients[client], 0, sizeof(g_bridge_clients[client]));
+}
+
+int Bridge_MoveClientSlot(int old_client, int new_client)
+{
+    if (!Bridge_CheckLibraryReady("BotMoveClient"))
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!Bridge_CheckClientNumber(old_client, "BotMoveClient"))
+    {
+        return BLERR_INVALIDCLIENTNUMBER;
+    }
+
+    if (!Bridge_CheckClientNumber(new_client, "BotMoveClient"))
+    {
+        return BLERR_INVALIDCLIENTNUMBER;
+    }
+
+    if (old_client == new_client)
+    {
+        return BLERR_NOERROR;
+    }
+
+    g_bridge_clients[new_client] = g_bridge_clients[old_client];
+    memset(&g_bridge_clients[old_client], 0, sizeof(g_bridge_clients[old_client]));
+
+    return BLERR_NOERROR;
+}

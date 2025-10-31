@@ -39,6 +39,16 @@ int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update);
  */
 void Bridge_ResetCachedUpdates(void);
 
+/**
+ * @brief Clear any cached client update for the requested slot.
+ */
+void Bridge_ClearClientSlot(int client);
+
+/**
+ * @brief Reassign cached client state when a bot moves to a new slot.
+ */
+int Bridge_MoveClientSlot(int old_client, int new_client);
+
 #ifdef __cplusplus
 }
 #endif

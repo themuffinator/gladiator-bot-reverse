@@ -55,6 +55,33 @@ how the cmocka-based harness will interrogate the implementation once the helper
   struct mirrors the expected HLIL values.
 * **Reset on shutdown** &mdash; After teardown, validate that cached values revert to their defaults while leaving the pointer stable.
 
+### `BotSetupClient`
+* **Guard coverage** &mdash; Exercise invalid client numbers, `NULL` settings, and duplicate setup attempts, asserting the corresponding `BLERR_*`
+  codes and diagnostics logged through the mocked import table.
+* **Asset failure unwinding** &mdash; Stub `AI_LoadCharacter`, weight loaders, and chat helpers to fail sequentially, confirming that each path frees
+  previously allocated state in reverse order and reports the appropriate `BLERR_CANNOTLOAD*` code.
+* **Bridge reset** &mdash; Seed `Bridge_UpdateClient` with a fake snapshot, run setup, and verify that the bridge slot is cleared before the next
+  frame lands.
+
+### `BotShutdownClient`
+* **Inactive guard** &mdash; Invoke shutdown before setup and expect `BLERR_AICLIENTALREADYSHUTDOWN` alongside the HLIL diagnostic string.
+* **Teardown ordering** &mdash; After a successful setup, validate that chat, weapon weights, and item weights are released before the character
+  profile, matching the reverse-order free sequence.
+* **Bridge cache purge** &mdash; Push a synthetic update through `Bridge_UpdateClient`, shut the client down, and assert that the snapshot is cleared.
+
+### `BotMoveClient`
+* **Source and destination guards** &mdash; Reject moves from inactive slots (`BLERR_AIMOVEINACTIVECLIENT`) and to occupied slots (`BLERR_AIMOVETOACTIVECLIENT`).
+* **Snapshot migration** &mdash; Populate the bridge cache via `Bridge_UpdateClient`, move the client, and ensure the snapshot follows the new slot while the old slot resets.
+* **Import validation** &mdash; Confirm that attempting to move clients before the bridge import table is set returns `BLERR_LIBRARYNOTSETUP`.
+
+### `BotClientSettings`
+* **Inactive guard** &mdash; Request settings for an inactive client and expect `BLERR_SETTINGSINACTIVECLIENT` with zeroed output buffers.
+* **Round-trip copy** &mdash; After setup, confirm that the stored netname/skin strings propagate to the caller intact.
+
+### `BotSettings`
+* **Inactive guard** &mdash; Mirror the inactive guard behaviour detected in HLIL (`BLERR_AICLIENTNOTSETUP`) and confirm the output buffer is cleared.
+* **Round-trip copy** &mdash; Validate that the original `bot_settings_t` provided during setup is returned verbatim.
+
 The tests above will share a harness that wires recording doubles into the mocked `bot_import_t` table and exposes helper assertions for
 sequence ordering, argument capture, and log comparison.
 
