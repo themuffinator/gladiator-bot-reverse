@@ -52,6 +52,7 @@ typedef struct bot_weapon_projectile_s {
 } bot_weapon_projectile_t;
 
 typedef struct bot_weapon_info_s {
+    int valid;
     int number;
     char name[BOT_WEAPON_MAX_STRINGFIELD];
     char model[BOT_WEAPON_MAX_STRINGFIELD];
@@ -74,7 +75,7 @@ typedef struct bot_weapon_info_s {
     float reload;
     float spinup;
     float spindown;
-    bot_weapon_projectile_t *projectile_info;
+    bot_weapon_projectile_t projectileinfo;
 } bot_weapon_info_t;
 
 typedef struct bot_weapon_config_s {
