@@ -1,6 +1,9 @@
 #include "character/bot_character.h"
 
+#include "chat/ai_chat.h"
 #include "../common/l_log.h"
+#include "../common/l_memory.h"
+#include "weapon/bot_weapon.h"
 #include "weight/bot_weight.h"
 
 #include <ctype.h>
@@ -80,6 +83,31 @@ typedef struct macro_table_s {
     macro_entry_t entries[256];
     size_t count;
 } macro_table_t;
+
+enum {
+    AI_CHARACTER_INDEX_WEAPON_WEIGHTS = 5,
+    AI_CHARACTER_INDEX_CHAT_FILE = 12,
+    AI_CHARACTER_INDEX_CHAT_NAME = 13,
+    AI_CHARACTER_INDEX_ITEM_WEIGHTS = 28,
+};
+
+static void ai_free_definition(ai_character_definition_t *definition)
+{
+    if (!definition) {
+        return;
+    }
+
+    for (size_t i = 0; i < AI_MAX_CHARACTERISTICS; ++i) {
+        ai_characteristic_t *slot = &definition->characteristics[i];
+        if (slot->type == AI_CHARACTER_VALUE_STRING && slot->data.string_value) {
+            free(slot->data.string_value);
+            slot->data.string_value = NULL;
+        }
+        slot->type = AI_CHARACTER_VALUE_NONE;
+    }
+
+    FreeMemory(definition);
+}
 
 static char *ai_trim_whitespace(char *text)
 {
@@ -517,7 +545,7 @@ static ai_character_definition_t *ai_parse_definition(const char *filename)
         snprintf(full_path, sizeof(full_path), "%s/%s", base_dir, filename);
     }
 
-    ai_character_definition_t *definition = (ai_character_definition_t *)calloc(1, sizeof(*definition));
+    ai_character_definition_t *definition = (ai_character_definition_t *)GetClearedMemory(sizeof(*definition));
     if (!definition) {
         return NULL;
     }
@@ -527,11 +555,111 @@ static ai_character_definition_t *ai_parse_definition(const char *filename)
     ai_parse_include(base_dir, "game.h", &macros);
 
     if (!ai_parse_character_file(full_path, base_dir, &macros, definition)) {
-        free(definition);
+        ai_free_definition(definition);
         return NULL;
     }
 
     return definition;
+}
+
+static const char *ai_profile_display_name(const ai_character_profile_t *profile,
+                                          const char *fallback)
+{
+    if (!profile) {
+        return fallback ? fallback : "<unknown>";
+    }
+
+    if (profile->character_filename[0] != '\0') {
+        return profile->character_filename;
+    }
+
+    if (profile->definition_blob && profile->definition_blob->identifier[0] != '\0') {
+        return profile->definition_blob->identifier;
+    }
+
+    return fallback ? fallback : "<unknown>";
+}
+
+static bool ai_profile_load_item_weights(ai_character_profile_t *profile,
+                                         const char *character_name)
+{
+    const char *item_weights_file = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_ITEM_WEIGHTS);
+    if (!item_weights_file || item_weights_file[0] == '\0') {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] %s is missing an item weight file.\n",
+                     character_name);
+        return false;
+    }
+
+    profile->item_weights = ReadWeightConfig(item_weights_file);
+    if (!profile->item_weights) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to load item weights %s for %s.\n",
+                     item_weights_file, character_name);
+        return false;
+    }
+
+    size_t bytes = MemoryByteSize(profile->item_weights);
+    BotLib_Print(PRT_DEVELOPER, "%6d bytes item weights\n", (int)bytes);
+    return true;
+}
+
+static bool ai_profile_load_weapon_weights(ai_character_profile_t *profile,
+                                           const char *character_name)
+{
+    const char *weapon_weights_file = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_WEAPON_WEIGHTS);
+    if (!weapon_weights_file || weapon_weights_file[0] == '\0') {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] %s is missing a weapon weight file.\n",
+                     character_name);
+        return false;
+    }
+
+    profile->weapon_weights = AI_LoadWeaponWeights(weapon_weights_file);
+    if (!profile->weapon_weights) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to load weapon weights %s for %s.\n",
+                     weapon_weights_file, character_name);
+        return false;
+    }
+
+    size_t bytes = MemoryByteSize(profile->weapon_weights);
+    BotLib_Print(PRT_DEVELOPER, "%6d bytes weapon weights\n", (int)bytes);
+    return true;
+}
+
+static bool ai_profile_load_chat(ai_character_profile_t *profile,
+                                 const char *character_name)
+{
+    const char *chat_file = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_CHAT_FILE);
+    const char *chat_name = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_CHAT_NAME);
+    if (!chat_file || chat_file[0] == '\0' || !chat_name || chat_name[0] == '\0') {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] %s is missing chat configuration.\n",
+                     character_name);
+        return false;
+    }
+
+    profile->chat_state = BotAllocChatState();
+    if (!profile->chat_state) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to allocate chat state for %s.\n",
+                     character_name);
+        return false;
+    }
+
+    if (!BotLoadChatFile(profile->chat_state, chat_file, chat_name)) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to load chat file %s (%s) for %s.\n",
+                     chat_file, chat_name, character_name);
+        BotFreeChatState(profile->chat_state);
+        profile->chat_state = NULL;
+        return false;
+    }
+
+    size_t bytes = MemoryByteSize(profile->chat_state);
+    BotLib_Print(PRT_DEVELOPER, "%6d bytes chat file\n", (int)bytes);
+    return true;
 }
 
 ai_character_profile_t *AI_LoadCharacter(const char *filename, float skill)
@@ -544,9 +672,9 @@ ai_character_profile_t *AI_LoadCharacter(const char *filename, float skill)
         return NULL;
     }
 
-    ai_character_profile_t *profile = (ai_character_profile_t *)calloc(1, sizeof(*profile));
+    ai_character_profile_t *profile = (ai_character_profile_t *)GetClearedMemory(sizeof(*profile));
     if (!profile) {
-        free(definition);
+        ai_free_definition(definition);
         return NULL;
     }
 
@@ -559,7 +687,43 @@ ai_character_profile_t *AI_LoadCharacter(const char *filename, float skill)
         profile->character_filename[sizeof(profile->character_filename) - 1] = '\0';
     }
 
+    size_t character_bytes = MemoryByteSize(profile->definition_blob);
+    BotLib_Print(PRT_DEVELOPER, "%6d bytes character\n", (int)character_bytes);
+
+    const char *character_name = ai_profile_display_name(profile, filename);
+
+    if (!ai_profile_load_item_weights(profile, character_name)) {
+        goto load_failure;
+    }
+
+    if (!ai_profile_load_weapon_weights(profile, character_name)) {
+        goto load_failure;
+    }
+
+    if (!ai_profile_load_chat(profile, character_name)) {
+        goto load_failure;
+    }
+
     return profile;
+
+load_failure:
+    if (profile->chat_state) {
+        BotFreeChatState(profile->chat_state);
+        profile->chat_state = NULL;
+    }
+    if (profile->weapon_weights) {
+        AI_FreeWeaponWeights(profile->weapon_weights);
+        profile->weapon_weights = NULL;
+    }
+    if (profile->item_weights) {
+        FreeWeightConfig(profile->item_weights);
+        profile->item_weights = NULL;
+    }
+
+    ai_free_definition(profile->definition_blob);
+    profile->definition_blob = NULL;
+    FreeMemory(profile);
+    return NULL;
 }
 
 void AI_FreeCharacter(ai_character_profile_t *profile)
@@ -568,17 +732,9 @@ void AI_FreeCharacter(ai_character_profile_t *profile)
         return;
     }
 
-    if (profile->definition_blob) {
-        for (size_t i = 0; i < AI_MAX_CHARACTERISTICS; ++i) {
-            ai_characteristic_t *slot = &profile->definition_blob->characteristics[i];
-            if (slot->type == AI_CHARACTER_VALUE_STRING && slot->data.string_value) {
-                free(slot->data.string_value);
-                slot->data.string_value = NULL;
-            }
-            slot->type = AI_CHARACTER_VALUE_NONE;
-        }
-        free(profile->definition_blob);
-        profile->definition_blob = NULL;
+    if (profile->chat_state != NULL) {
+        BotFreeChatState(profile->chat_state);
+        profile->chat_state = NULL;
     }
 
     if (profile->weapon_weights != NULL) {
@@ -586,7 +742,17 @@ void AI_FreeCharacter(ai_character_profile_t *profile)
         profile->weapon_weights = NULL;
     }
 
-    free(profile);
+    if (profile->item_weights != NULL) {
+        FreeWeightConfig(profile->item_weights);
+        profile->item_weights = NULL;
+    }
+
+    if (profile->definition_blob) {
+        ai_free_definition(profile->definition_blob);
+        profile->definition_blob = NULL;
+    }
+
+    FreeMemory(profile);
 }
 
 bot_weight_config_t *AI_ItemWeightsForCharacter(const ai_character_profile_t *profile)
