@@ -1,155 +1,357 @@
-// Placeholder cmocka suite sketching the HLIL parity expectations for botlib exported functions.
-//
-// Once BOTLIB_PARITY_ENABLE_SOURCES is toggled on, these tests will compile against cmocka and
-// exercise the botlib interface using a mocked bot_import_t table.  Each test listed below mirrors
-// the scenarios captured in tests/parity/README.md.
-
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include <cmocka.h>
 
-#include "botlib/interface/botlib_interface.h"
+#include "botlib/interface/bot_interface.h"
+#include "botlib/interface/bot_state.h"
+#include "botlib/ai/chat/ai_chat.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/aas/aas_local.h"
 
-// Test doubles for bot_import_t slots will land alongside the real harness.  For now the structures
-// below outline the fields required to capture invocations and plan canned responses.
-typedef struct mock_bot_import_s {
+#define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
+
+typedef struct captured_print_s
+{
+    int type;
+    char message[1024];
+} captured_print_t;
+
+typedef struct mock_bot_import_s
+{
     bot_import_t table;
-    // TODO: Record arguments pushed into BotInput, BotClientCommand, Print, Trace, etc.
+    captured_print_t prints[128];
+    size_t print_count;
+    bot_input_t inputs[64];
+    int input_clients[64];
+    size_t bot_input_count;
 } mock_bot_import_t;
 
-static int setup_botlib(void **state)
+typedef struct bot_interface_test_context_s
 {
-    (void)state;
-    // TODO: Seed recording doubles and dependency stubs before each test.
+    mock_bot_import_t mock;
+    bot_export_t *api;
+} bot_interface_test_context_t;
+
+static mock_bot_import_t *g_active_mock = NULL;
+
+static void Mock_Print(int type, char *fmt, ...)
+{
+    if (g_active_mock == NULL || fmt == NULL)
+    {
+        return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+    va_end(args);
+
+    if (g_active_mock->print_count < ARRAY_LEN(g_active_mock->prints))
+    {
+        captured_print_t *slot = &g_active_mock->prints[g_active_mock->print_count++];
+        slot->type = type;
+        strncpy(slot->message, buffer, sizeof(slot->message) - 1);
+        slot->message[sizeof(slot->message) - 1] = '\0';
+    }
+    else if (!g_active_mock->print_count)
+    {
+        return;
+    }
+    else
+    {
+        memmove(&g_active_mock->prints[0],
+                &g_active_mock->prints[1],
+                (ARRAY_LEN(g_active_mock->prints) - 1) * sizeof(g_active_mock->prints[0]));
+
+        captured_print_t *slot = &g_active_mock->prints[ARRAY_LEN(g_active_mock->prints) - 1];
+        slot->type = type;
+        strncpy(slot->message, buffer, sizeof(slot->message) - 1);
+        slot->message[sizeof(slot->message) - 1] = '\0';
+    }
+}
+
+static void Mock_BotInput(int client, bot_input_t *input)
+{
+    if (g_active_mock == NULL || input == NULL)
+    {
+        return;
+    }
+
+    size_t index = g_active_mock->bot_input_count;
+    if (index >= ARRAY_LEN(g_active_mock->inputs))
+    {
+        return;
+    }
+
+    g_active_mock->inputs[index] = *input;
+    g_active_mock->input_clients[index] = client;
+    g_active_mock->bot_input_count += 1U;
+}
+
+static void Mock_BotClientCommand(int client, char *fmt, ...)
+{
+    (void)client;
+    (void)fmt;
+}
+
+static bsp_trace_t Mock_Trace(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask)
+{
+    (void)start;
+    (void)mins;
+    (void)maxs;
+    (void)end;
+    (void)passent;
+    (void)contentmask;
+
+    bsp_trace_t trace;
+    memset(&trace, 0, sizeof(trace));
+    trace.fraction = 1.0f;
+    return trace;
+}
+
+static int Mock_PointContents(vec3_t point)
+{
+    (void)point;
     return 0;
 }
 
-static int teardown_botlib(void **state)
+static void *Mock_GetMemory(int size)
 {
-    (void)state;
-    // TODO: Reset the botlib interface and clear captured invocations.
+    return malloc((size_t)size);
+}
+
+static void Mock_FreeMemory(void *ptr)
+{
+    free(ptr);
+}
+
+static int Mock_DebugLineCreate(void)
+{
+    return 1;
+}
+
+static void Mock_DebugLineDelete(int line)
+{
+    (void)line;
+}
+
+static void Mock_DebugLineShow(int line, vec3_t start, vec3_t end, int color)
+{
+    (void)line;
+    (void)start;
+    (void)end;
+    (void)color;
+}
+
+static void Mock_Reset(mock_bot_import_t *mock)
+{
+    if (mock == NULL)
+    {
+        return;
+    }
+
+    mock->print_count = 0;
+    mock->bot_input_count = 0;
+}
+
+static const char *Mock_FindPrint(const mock_bot_import_t *mock, const char *needle)
+{
+    if (mock == NULL || needle == NULL)
+    {
+        return NULL;
+    }
+
+    for (size_t index = 0; index < mock->print_count; ++index)
+    {
+        if (strstr(mock->prints[index].message, needle) != NULL)
+        {
+            return mock->prints[index].message;
+        }
+    }
+
+    return NULL;
+}
+
+static int setup_bot_interface(void **state)
+{
+    bot_interface_test_context_t *context =
+        (bot_interface_test_context_t *)calloc(1, sizeof(*context));
+    assert_non_null(context);
+
+    context->mock.table.BotInput = Mock_BotInput;
+    context->mock.table.BotClientCommand = Mock_BotClientCommand;
+    context->mock.table.Print = Mock_Print;
+    context->mock.table.Trace = Mock_Trace;
+    context->mock.table.PointContents = Mock_PointContents;
+    context->mock.table.GetMemory = Mock_GetMemory;
+    context->mock.table.FreeMemory = Mock_FreeMemory;
+    context->mock.table.DebugLineCreate = Mock_DebugLineCreate;
+    context->mock.table.DebugLineDelete = Mock_DebugLineDelete;
+    context->mock.table.DebugLineShow = Mock_DebugLineShow;
+
+    g_active_mock = &context->mock;
+    context->api = GetBotAPI(&context->mock.table);
+    assert_non_null(context->api);
+
+    *state = context;
     return 0;
 }
 
-static void test_set_import_table_preserves_existing_pointer(void **state)
+static int teardown_bot_interface(void **state)
 {
-    (void)state;
-    // Outline: set a valid table, then set NULL and assert the stored pointer remains unchanged.
-    cmocka_skip();
+    bot_interface_test_context_t *context =
+        (bot_interface_test_context_t *)(state != NULL ? *state : NULL);
+
+    if (context != NULL && context->api != NULL)
+    {
+        context->api->BotShutdownLibrary();
+    }
+
+    BotState_ShutdownAll();
+    g_active_mock = NULL;
+    free(context);
+    return 0;
 }
 
-static void test_get_import_table_default_and_roundtrip(void **state)
+static void test_bot_load_map_requires_library(void **state)
 {
-    (void)state;
-    // Outline: assert default NULL, then stash a table and verify retrieval.
-    cmocka_skip();
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotLoadMap("maps/test.bsp", 0, NULL, 0, NULL, 0, NULL);
+    assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
 }
 
-static void test_setup_library_validates_imports_and_initialises_subsystems(void **state)
+static void test_bot_load_map_and_sensory_queues(void **state)
 {
-    (void)state;
-    // Outline: cover missing BotLibVarGet, allocator failure, duplicate setup, and happy path logging.
-    cmocka_skip();
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    char *sounds[] = {"world/ambient.wav", "weapons/impact.wav"};
+    status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 2, sounds, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    vec3_t origin = {0.0f, 32.0f, 16.0f};
+    status = context->api->BotAddSound(origin, 3, 1, 1, 0.5f, 0.7f, 0.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAddSound(origin, 4, 2, 5, 0.3f, 1.0f, 0.1f);
+    assert_int_equal(status, BLERR_INVALIDSOUNDINDEX);
+
+    status = context->api->BotAddPointLight(origin, 5, 128.0f, 1.0f, 0.3f, 0.2f, 0.0f, 0.25f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    context->api->Test(0, "sounds", origin, origin);
+    assert_non_null(Mock_FindPrint(&context->mock, "sound[0]"));
+
+    context->api->Test(0, "pointlights", origin, origin);
+    assert_non_null(Mock_FindPrint(&context->mock, "pointlights"));
+
+    context->api->BotShutdownLibrary();
 }
 
-static void test_setup_library_rejects_duplicate_invocation(void **state)
+static void test_bot_console_message_and_ai_pipeline(void **state)
 {
-    (void)state;
-    // Outline: call setup twice and assert BLERR_LIBRARYALREADYSETUP plus banner parity on the second invocation.
-    cmocka_skip();
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_client_state_t *client_state = BotState_Create(1);
+    assert_non_null(client_state);
+    client_state->active = true;
+    client_state->chat_state = BotAllocChatState();
+    assert_non_null(client_state->chat_state);
+
+    status = context->api->BotConsoleMessage(1, CMS_CHAT, "hello gladiator");
+    assert_int_equal(status, BLERR_NOERROR);
+
+    context->api->Test(1, "dump_chat", NULL, NULL);
+    assert_non_null(Mock_FindPrint(&context->mock, "hello gladiator"));
+
+    context->api->BotStartFrame(0.1f);
+
+    bot_updateclient_t update;
+    memset(&update, 0, sizeof(update));
+    update.viewangles[1] = 45.0f;
+
+    status = context->api->BotUpdateClient(1, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(context->mock.bot_input_count, 1);
+    assert_int_equal(context->mock.input_clients[0], 1);
+    assert_float_equal(context->mock.inputs[0].thinktime, 0.05f, 0.0001f);
+    assert_float_equal(context->mock.inputs[0].viewangles[1], 45.0f, 0.0001f);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_AIUPDATEINACTIVECLIENT);
+
+    context->api->BotShutdownLibrary();
 }
 
-static void test_shutdown_library_honours_guards_and_teardown_sequence(void **state)
+static void test_bot_update_entity_populates_aas(void **state)
 {
-    (void)state;
-    // Outline: guard when uninitialised, ensure reverse-order teardown, and idempotent shutdown.
-    cmocka_skip();
-}
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 
-static void test_shutdown_library_reports_duplicate_invocation_guard(void **state)
-{
-    (void)state;
-    // Outline: shutdown twice without setup and expect BLERR_LIBRARYNOTSETUP and banner logging parity.
-    cmocka_skip();
-}
+    Mock_Reset(&context->mock);
 
-static void test_library_initialised_reports_state_transitions(void **state)
-{
-    (void)state;
-    // Outline: exercise false -> true -> false transitions across setup/shutdown.
-    cmocka_skip();
-}
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
 
-static void test_get_library_variables_tracks_cached_values(void **state)
-{
-    (void)state;
-    // Outline: inject bridge libvars, confirm cached struct, and verify reset after shutdown.
-    cmocka_skip();
-}
+    status = context->api->BotLoadMap("maps/test2.bsp", 0, NULL, 0, NULL, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
 
-static void test_setup_client_guard_paths(void **state)
-{
-    (void)state;
-    // Outline: invalid client numbers, NULL settings, and duplicate setup attempts.
-    cmocka_skip();
-}
+    bot_updateentity_t entity;
+    memset(&entity, 0, sizeof(entity));
+    entity.origin[0] = 16.0f;
+    entity.origin[1] = 24.0f;
+    entity.origin[2] = 48.0f;
+    entity.solid = 31;
+    entity.modelindex = 2;
 
-static void test_setup_client_asset_failures(void **state)
-{
-    (void)state;
-    // Outline: character, weight, and chat loader failures unwind allocations and report BLERR codes.
-    cmocka_skip();
-}
+    status = context->api->BotUpdateEntity(5, &entity);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(aasworld.entitiesValid);
+    assert_non_null(aasworld.entities);
+    assert_int_equal(aasworld.entities[5].number, 5);
 
-static void test_shutdown_client_sequence(void **state)
-{
-    (void)state;
-    // Outline: inactive guard, teardown ordering, and bridge cache purge.
-    cmocka_skip();
-}
-
-static void test_move_client_bridge_interaction(void **state)
-{
-    (void)state;
-    // Outline: inactive/occupied guards, bridge snapshot migration, and import validation.
-    cmocka_skip();
-}
-
-static void test_client_settings_roundtrip(void **state)
-{
-    (void)state;
-    // Outline: inactive guard clears buffers; active clients return stored netname/skin.
-    cmocka_skip();
-}
-
-static void test_bot_settings_roundtrip(void **state)
-{
-    (void)state;
-    // Outline: inactive guard mirrors HLIL error path; active clients echo original bot settings.
-    cmocka_skip();
+    context->api->BotShutdownLibrary();
 }
 
 int main(void)
 {
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test_setup_teardown(test_set_import_table_preserves_existing_pointer, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_get_import_table_default_and_roundtrip, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_setup_library_validates_imports_and_initialises_subsystems, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_setup_library_rejects_duplicate_invocation, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_shutdown_library_honours_guards_and_teardown_sequence, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_shutdown_library_reports_duplicate_invocation_guard, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_library_initialised_reports_state_transitions, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_get_library_variables_tracks_cached_values, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_setup_client_guard_paths, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_setup_client_asset_failures, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_shutdown_client_sequence, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_move_client_bridge_interaction, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_client_settings_roundtrip, setup_botlib, teardown_botlib),
-        cmocka_unit_test_setup_teardown(test_bot_settings_roundtrip, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_bot_load_map_requires_library,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_console_message_and_ai_pipeline,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
+
