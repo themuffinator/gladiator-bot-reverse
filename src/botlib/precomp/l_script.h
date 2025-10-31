@@ -162,7 +162,9 @@ typedef struct pc_script_s {
     const pc_punctuation_t **punctuationtable;
     pc_diagnostic_t *diagnostics;
     pc_diagnostic_t *diagnostics_tail;
+    const pc_diagnostic_t *last_source_diagnostic;
     pc_token_t token;
+    pc_source_t *source;
     struct pc_script_s *next;
 } pc_script_t;
 

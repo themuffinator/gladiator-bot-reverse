@@ -61,6 +61,10 @@ typedef enum { qfalse = 0, qtrue = 1 } qboolean;
 #define Q_stricmp strcasecmp
 #define Log_Write BotLib_LogWrite
 
+extern int PC_ExpectTokenString(pc_source_t *source, char *string);
+extern int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token);
+extern int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token);
+
 static void PS_AppendDiagnostic(pc_script_t *script,
                                 pc_error_level_t level,
                                 const char *message)
@@ -131,6 +135,81 @@ static void PS_ReportDiagnostic(pc_script_t *script,
 
         BotLib_Print(priority, "file %s, line %d: %s\n", script->filename, script->line, text);
         PS_AppendDiagnostic(script, level, text);
+}
+
+static void PS_SyncDiagnosticsFromSource(pc_script_t *script)
+{
+        if (script == NULL || script->source == NULL)
+        {
+                return;
+        }
+
+        const pc_diagnostic_t *head = PC_GetDiagnostics(script->source);
+        const pc_diagnostic_t *cursor = head;
+        if (script->last_source_diagnostic != NULL)
+        {
+                cursor = script->last_source_diagnostic->next;
+        }
+
+        int saved_line = script->line;
+        while (cursor != NULL)
+        {
+                script->line = cursor->line;
+                PS_AppendDiagnostic(script, cursor->level, cursor->message);
+                script->last_source_diagnostic = cursor;
+                cursor = cursor->next;
+        }
+        script->line = saved_line;
+}
+
+pc_script_t *PS_CreateScriptFromSource(pc_source_t *source)
+{
+        if (source == NULL)
+        {
+                return NULL;
+        }
+
+        pc_script_t *script = (pc_script_t *)calloc(1, sizeof(pc_script_t));
+        if (script == NULL)
+        {
+                BotLib_Print(PRT_FATAL, "PS_CreateScriptFromSource: out of memory\n");
+                return NULL;
+        }
+
+        script->source = source;
+        script->line = 1;
+        script->lastline = 1;
+        script->tokenavailable = 0;
+        script->diagnostics = NULL;
+        script->diagnostics_tail = NULL;
+        script->last_source_diagnostic = NULL;
+        script->punctuations = default_punctuations;
+
+        PS_SyncDiagnosticsFromSource(script);
+
+        return script;
+}
+
+void PS_FreeScript(pc_script_t *script)
+{
+        if (script == NULL)
+        {
+                return;
+        }
+
+        pc_diagnostic_t *diag = script->diagnostics;
+        while (diag != NULL)
+        {
+                pc_diagnostic_t *next = diag->next;
+                if (diag->message != NULL)
+                {
+                        free((void *)diag->message);
+                }
+                free(diag);
+                diag = next;
+        }
+
+        free(script);
 }
 
 static int COM_Compress(char *data_p)
@@ -985,11 +1064,45 @@ int PS_ReadPrimitive(pc_script_t *script, pc_token_t *token)
 //============================================================================
 int PS_ReadToken(pc_script_t *script, pc_token_t *token)
 {
-	//if there is a token available (from UnreadToken)
-	if (script->tokenavailable)
-	{
-		script->tokenavailable = 0;
-		memcpy(token, &script->token, sizeof(pc_token_t));
+        if (script == NULL || token == NULL)
+        {
+                return 0;
+        }
+
+        if (script->source != NULL)
+        {
+                if (script->tokenavailable)
+                {
+                        script->tokenavailable = 0;
+                        memcpy(token, &script->token, sizeof(pc_token_t));
+                        return 1;
+                }
+
+                script->lastline = script->line;
+                int result = PC_ReadToken(script->source, token);
+                PS_SyncDiagnosticsFromSource(script);
+                if (!result)
+                {
+                        return 0;
+                }
+
+                if (token->linescrossed > 0)
+                {
+                        script->lastline = token->line - token->linescrossed;
+                }
+                script->line = token->line;
+                memcpy(&script->token, token, sizeof(pc_token_t));
+                script->tokenavailable = 0;
+                script->whitespace_p = NULL;
+                script->endwhitespace_p = NULL;
+                return 1;
+        }
+
+        //if there is a token available (from UnreadToken)
+        if (script->tokenavailable)
+        {
+                script->tokenavailable = 0;
+                memcpy(token, &script->token, sizeof(pc_token_t));
 		return 1;
 	} //end if
 	//save script pointer
@@ -1057,22 +1170,47 @@ int PS_ReadToken(pc_script_t *script, pc_token_t *token)
 // Returns:					-
 // Changes Globals:		-
 //============================================================================
-int PS_ExpectTokenString(pc_script_t *script, char *string)
+int PS_ExpectTokenString(pc_script_t *script, const char *string)
 {
-	pc_token_t token;
+        if (script == NULL || string == NULL)
+        {
+                return 0;
+        }
 
-	if (!PS_ReadToken(script, &token))
-	{
-		ScriptError(script, "couldn't find expected %s", string);
-		return 0;
-	} //end if
+        if (script->source != NULL)
+        {
+                pc_token_t peek;
+                int has_peek = PC_PeekToken(script->source, &peek);
+                int result = PC_ExpectTokenString(script->source, (char *)string);
+                PS_SyncDiagnosticsFromSource(script);
+                if (has_peek)
+                {
+                        script->lastline = script->line;
+                        if (peek.linescrossed > 0)
+                        {
+                                script->lastline = peek.line - peek.linescrossed;
+                        }
+                        script->line = peek.line;
+                        memcpy(&script->token, &peek, sizeof(pc_token_t));
+                        script->tokenavailable = 0;
+                }
+                return result != 0;
+        }
 
-	if (strcmp(token.string, string))
-	{
-		ScriptError(script, "expected %s, found %s", string, token.string);
-		return 0;
-	} //end if
-	return 1;
+        pc_token_t token;
+
+        if (!PS_ReadToken(script, &token))
+        {
+                ScriptError(script, "couldn't find expected %s", string);
+                return 0;
+        } //end if
+
+        if (strcmp(token.string, string))
+        {
+                ScriptError(script, "expected %s, found %s", string, token.string);
+                return 0;
+        } //end if
+        return 1;
 } //end of the function PS_ExpectToken
 //============================================================================
 //
@@ -1082,55 +1220,81 @@ int PS_ExpectTokenString(pc_script_t *script, char *string)
 //============================================================================
 int PS_ExpectTokenType(pc_script_t *script, int type, int subtype, pc_token_t *token)
 {
-	char str[MAX_TOKEN];
+        if (script == NULL)
+        {
+                return 0;
+        }
 
-	if (!PS_ReadToken(script, token))
-	{
-		ScriptError(script, "couldn't read expected token");
-		return 0;
-	} //end if
+        if (script->source != NULL)
+        {
+                pc_token_t local;
+                if (token == NULL)
+                {
+                        memset(&local, 0, sizeof(local));
+                        token = &local;
+                }
+                int result = PC_ExpectTokenType(script->source, type, subtype, token);
+                PS_SyncDiagnosticsFromSource(script);
+                script->lastline = script->line;
+                if (token->linescrossed > 0)
+                {
+                        script->lastline = token->line - token->linescrossed;
+                }
+                script->line = token->line;
+                memcpy(&script->token, token, sizeof(pc_token_t));
+                script->tokenavailable = 0;
+                return result != 0;
+        }
 
-	if (token->type != type)
-	{
-		if (type == TT_STRING) strcpy(str, "string");
-		if (type == TT_LITERAL) strcpy(str, "literal");
-		if (type == TT_NUMBER) strcpy(str, "number");
-		if (type == TT_NAME) strcpy(str, "name");
-		if (type == TT_PUNCTUATION) strcpy(str, "punctuation");
-		ScriptError(script, "expected a %s, found %s", str, token->string);
-		return 0;
-	} //end if
-	if (token->type == TT_NUMBER)
-	{
-		if ((token->subtype & subtype) != subtype)
-		{
-			if (subtype & TT_DECIMAL) strcpy(str, "decimal");
-			if (subtype & TT_HEX) strcpy(str, "hex");
-			if (subtype & TT_OCTAL) strcpy(str, "octal");
-			if (subtype & TT_BINARY) strcpy(str, "binary");
-			if (subtype & TT_LONG) strcat(str, " long");
-			if (subtype & TT_UNSIGNED) strcat(str, " unsigned");
-			if (subtype & TT_FLOAT) strcat(str, " float");
-			if (subtype & TT_INTEGER) strcat(str, " integer");
-			ScriptError(script, "expected %s, found %s", str, token->string);
-			return 0;
-		} //end if
-	} //end if
-	else if (token->type == TT_PUNCTUATION)
-	{
-		if (subtype < 0)
-		{
-			ScriptError(script, "BUG: wrong punctuation subtype");
-			return 0;
-		} //end if
-		if (token->subtype != subtype)
-		{
-			ScriptError(script, "expected %s, found %s",
-							script->punctuations[subtype], token->string);
-			return 0;
-		} //end if
-	} //end else if
-	return 1;
+        char str[MAX_TOKEN];
+
+        if (!PS_ReadToken(script, token))
+        {
+                ScriptError(script, "couldn't read expected token");
+                return 0;
+        } //end if
+
+        if (token->type != type)
+        {
+                if (type == TT_STRING) strcpy(str, "string");
+                if (type == TT_LITERAL) strcpy(str, "literal");
+                if (type == TT_NUMBER) strcpy(str, "number");
+                if (type == TT_NAME) strcpy(str, "name");
+                if (type == TT_PUNCTUATION) strcpy(str, "punctuation");
+                ScriptError(script, "expected a %s, found %s", str, token->string);
+                return 0;
+        } //end if
+        if (token->type == TT_NUMBER)
+        {
+                if ((token->subtype & subtype) != subtype)
+                {
+                        if (subtype & TT_DECIMAL) strcpy(str, "decimal");
+                        if (subtype & TT_HEX) strcpy(str, "hex");
+                        if (subtype & TT_OCTAL) strcpy(str, "octal");
+                        if (subtype & TT_BINARY) strcpy(str, "binary");
+                        if (subtype & TT_LONG) strcat(str, " long");
+                        if (subtype & TT_UNSIGNED) strcat(str, " unsigned");
+                        if (subtype & TT_FLOAT) strcat(str, " float");
+                        if (subtype & TT_INTEGER) strcat(str, " integer");
+                        ScriptError(script, "expected %s, found %s", str, token->string);
+                        return 0;
+                } //end if
+        } //end if
+        else if (token->type == TT_PUNCTUATION)
+        {
+                if (subtype < 0)
+                {
+                        ScriptError(script, "BUG: wrong punctuation subtype");
+                        return 0;
+                } //end if
+                if (token->subtype != subtype)
+                {
+                        ScriptError(script, "expected %s, found %s",
+                                                        script->punctuations[subtype], token->string);
+                        return 0;
+                } //end if
+        } //end else if
+        return 1;
 } //end of the function PS_ExpectTokenType
 //============================================================================
 //
@@ -1195,8 +1359,53 @@ int PS_CheckTokenType(pc_script_t *script, int type, int subtype, pc_token_t *to
 // Returns:					-
 // Changes Globals:		-
 //============================================================================
-int PS_SkipUntilString(pc_script_t *script, char *string)
+int PS_SkipUntilString(pc_script_t *script, const char *string)
 {
+	if (script == NULL || string == NULL)
+	{
+		return 0;
+	}
+
+	if (script->source != NULL)
+	{
+		pc_token_t token;
+		while (PC_PeekToken(script->source, &token))
+		{
+			if (!strcmp(token.string, string))
+			{
+				int result = PC_ExpectTokenString(script->source, (char *)string);
+				PS_SyncDiagnosticsFromSource(script);
+				script->lastline = script->line;
+				if (token.linescrossed > 0)
+				{
+					script->lastline = token.line - token.linescrossed;
+				}
+				script->line = token.line;
+				memcpy(&script->token, &token, sizeof(pc_token_t));
+				script->tokenavailable = 0;
+				return result != 0;
+			}
+
+			if (!PC_ExpectAnyToken(script->source, &token))
+			{
+				PS_SyncDiagnosticsFromSource(script);
+				return 0;
+			}
+
+			PS_SyncDiagnosticsFromSource(script);
+			script->lastline = script->line;
+			if (token.linescrossed > 0)
+			{
+				script->lastline = token.line - token.linescrossed;
+			}
+			script->line = token.line;
+			memcpy(&script->token, &token, sizeof(pc_token_t));
+			script->tokenavailable = 0;
+		}
+		PS_SyncDiagnosticsFromSource(script);
+		return 0;
+	}
+
 	pc_token_t token;
 
 	while(PS_ReadToken(script, &token))
