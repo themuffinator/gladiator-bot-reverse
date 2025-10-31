@@ -57,6 +57,18 @@ void FreeWeightConfig(bot_weight_config_t *config);
 float FuzzyWeight(const int *inventory, const bot_weight_config_t *config, int weight_index);
 int BotWeight_FindIndex(const bot_weight_config_t *config, const char *name);
 
+int BotAllocWeightConfig(void);
+void BotFreeWeightConfig(int handle);
+void BotFreeWeightConfig2(bot_weight_config_t *config);
+int BotLoadWeights(int handle, const char *filename);
+int BotWriteWeights(int handle, const char *filename);
+int BotSetWeight(int handle, const char *name, float value);
+int BotFindFuzzyWeight(int handle, const char *name);
+float BotFuzzyWeightHandle(int handle, const int *inventory, int weight_index);
+const bot_weight_config_t *BotGetWeightConfig(int handle);
+
+bot_weight_config_t *BotReadWeightsFile(const char *filename);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
