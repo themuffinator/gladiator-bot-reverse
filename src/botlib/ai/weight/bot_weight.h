@@ -49,6 +49,9 @@ typedef struct bot_weight_config_s {
     char source_file[260];
 } bot_weight_config_t;
 
+bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
+                                                 const char *const *global_defines,
+                                                 size_t global_define_count);
 bot_weight_config_t *ReadWeightConfig(const char *filename);
 void FreeWeightConfig(bot_weight_config_t *config);
 float FuzzyWeight(const int *inventory, const bot_weight_config_t *config, int weight_index);
