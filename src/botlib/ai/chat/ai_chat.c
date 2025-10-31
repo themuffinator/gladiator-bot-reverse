@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../../common/l_log.h"
+#include "../../common/l_memory.h"
 
 #define BOT_CHAT_MAX_CONSOLE_MESSAGES 16
 #define BOT_CHAT_MAX_MESSAGE_CHARS 256
@@ -1180,7 +1181,7 @@ static int BotChat_LoadReplyChat(bot_chatstate_t *state, const char *path)
 
 bot_chatstate_t *BotAllocChatState(void)
 {
-    bot_chatstate_t *state = calloc(1, sizeof(*state));
+    bot_chatstate_t *state = GetClearedMemory(sizeof(*state));
     if (state == NULL) {
         BotLib_Print(PRT_FATAL, "BotAllocChatState: allocation failed\n");
         return NULL;
@@ -1201,7 +1202,7 @@ void BotFreeChatState(bot_chatstate_t *state)
     BotChat_FreeSynonymContexts(state);
     BotChat_FreeMatchContexts(state);
     BotChat_FreeReplies(state);
-    free(state);
+    FreeMemory(state);
 }
 
 int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *chatname)
