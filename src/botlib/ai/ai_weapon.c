@@ -645,6 +645,7 @@ ai_weapon_library_t *AI_LoadWeaponLibrary(const char *filename)
             }
 
             weapon->number = (int)config->num_weapons;
+            weapon->valid = 1;
             config->num_weapons += 1;
         }
         else if (strcmp(token.string, "projectileinfo") == 0)
@@ -709,7 +710,7 @@ ai_weapon_library_t *AI_LoadWeaponLibrary(const char *filename)
             bot_weapon_projectile_t *projectile = &config->projectiles[j];
             if (strcmp(projectile->name, weapon->projectile) == 0)
             {
-                weapon->projectile_info = projectile;
+                memcpy(&weapon->projectileinfo, projectile, sizeof(*projectile));
                 found_projectile = true;
                 break;
             }
