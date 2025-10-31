@@ -30,6 +30,9 @@ libvar_t *Bridge_MaxSteepness(void);
 libvar_t *Bridge_MaxWaterJump(void);
 libvar_t *Bridge_WaterGravity(void);
 libvar_t *Bridge_WaterFriction(void);
+libvar_t *Bridge_WeaponConfig(void);
+libvar_t *Bridge_MaxWeaponInfo(void);
+libvar_t *Bridge_MaxProjectileInfo(void);
 
 #ifdef __cplusplus
 }

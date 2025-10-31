@@ -25,10 +25,15 @@ typedef struct bridge_config_cache_s {
     libvar_t *sv_maxwaterjump;
     libvar_t *sv_watergravity;
     libvar_t *sv_waterfriction;
+    libvar_t *weaponconfig;
+    libvar_t *max_weaponinfo;
+    libvar_t *max_projectileinfo;
 } bridge_config_cache_t;
 
 static bridge_config_cache_t g_bridge_config_cache;
 static bool g_bridge_config_initialised = false;
+
+#define BRIDGE_DEFAULT_WEAPONCONFIG "weapons.c"
 
 static libvar_t *BridgeConfig_CacheLibVar(libvar_t **slot, const char *name, const char *default_value)
 {
@@ -93,6 +98,9 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxwaterjump, "sv_maxwaterjump", "20");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_watergravity, "sv_watergravity", "400");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_waterfriction, "sv_waterfriction", "1");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.weaponconfig, "weaponconfig", BRIDGE_DEFAULT_WEAPONCONFIG);
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_weaponinfo, "max_weaponinfo", "32");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_projectileinfo, "max_projectileinfo", "32");
 
     g_bridge_config_initialised = true;
     return true;
@@ -192,4 +200,19 @@ libvar_t *Bridge_WaterGravity(void)
 libvar_t *Bridge_WaterFriction(void)
 {
     return g_bridge_config_cache.sv_waterfriction;
+}
+
+libvar_t *Bridge_WeaponConfig(void)
+{
+    return g_bridge_config_cache.weaponconfig;
+}
+
+libvar_t *Bridge_MaxWeaponInfo(void)
+{
+    return g_bridge_config_cache.max_weaponinfo;
+}
+
+libvar_t *Bridge_MaxProjectileInfo(void)
+{
+    return g_bridge_config_cache.max_projectileinfo;
 }

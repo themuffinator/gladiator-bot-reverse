@@ -15,7 +15,10 @@ extern "C" {
 #define BLERR_NOERROR 0
 #define BLERR_LIBRARYNOTSETUP 1
 #define BLERR_LIBRARYALREADYSETUP 2
+#define BLERR_CANNOTLOADWEAPONCONFIG 31
 #define BLERR_INVALIDIMPORT 100
+
+#define BOTLIB_MAX_WEAPONCONFIG_PATH 260
 
 /**
  * Import table shared by the Quake II game and the Gladiator bot library.
@@ -53,6 +56,9 @@ typedef struct botlib_library_variables_s {
     float sv_maxwaterjump;
     float sv_watergravity;
     float sv_waterfriction;
+    int max_weaponinfo;
+    int max_projectileinfo;
+    char weaponconfig[BOTLIB_MAX_WEAPONCONFIG_PATH];
 } botlib_library_variables_t;
 
 /**
