@@ -183,3 +183,104 @@ void Bridge_ResetCachedUpdates(void)
     memset(g_bridge_clients, 0, sizeof(g_bridge_clients));
     memset(g_bridge_entities, 0, sizeof(g_bridge_entities));
 }
+
+void Bridge_SetEntityLimits(int max_clients, int max_entities)
+{
+    if (max_clients > 0 && max_clients <= MAX_CLIENTS)
+    {
+        g_bridge_max_client_index = max_clients - 1;
+    }
+    else
+    {
+        g_bridge_max_client_index = MAX_CLIENTS - 1;
+    }
+
+    if (max_entities > 0 && max_entities <= BRIDGE_MAX_ENTITIES)
+    {
+        g_bridge_max_entity_index = max_entities - 1;
+    }
+    else
+    {
+        g_bridge_max_entity_index = BRIDGE_MAX_ENTITIES - 1;
+    }
+}
+
+const bot_updateclient_t *Bridge_GetClientUpdate(int client, qboolean *seen)
+{
+    if (!Bridge_CheckClientNumber(client, "Bridge_GetClientUpdate"))
+    {
+        if (seen != NULL)
+        {
+            *seen = qfalse;
+        }
+        return NULL;
+    }
+
+    bridge_client_slot_t *slot = &g_bridge_clients[client];
+    if (seen != NULL)
+    {
+        *seen = slot->seen;
+    }
+
+    if (!slot->seen)
+    {
+        return NULL;
+    }
+
+    return &slot->snapshot;
+}
+
+const bot_updateentity_t *Bridge_GetEntityUpdate(int ent, qboolean *seen)
+{
+    if (!Bridge_CheckEntityNumber(ent, "Bridge_GetEntityUpdate"))
+    {
+        if (seen != NULL)
+        {
+            *seen = qfalse;
+        }
+        return NULL;
+    }
+
+    bridge_entity_slot_t *slot = &g_bridge_entities[ent];
+    if (seen != NULL)
+    {
+        *seen = slot->seen;
+    }
+
+    if (!slot->seen)
+    {
+        return NULL;
+    }
+
+    return &slot->snapshot;
+}
+
+int Bridge_ValidateClientNumber(int client, const char *caller)
+{
+    if (!Bridge_CheckLibraryReady(caller))
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!Bridge_CheckClientNumber(client, caller))
+    {
+        return BLERR_INVALIDCLIENTNUMBER;
+    }
+
+    return BLERR_NOERROR;
+}
+
+int Bridge_ValidateEntityNumber(int ent, const char *caller)
+{
+    if (!Bridge_CheckLibraryReady(caller))
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!Bridge_CheckEntityNumber(ent, caller))
+    {
+        return BLERR_INVALIDENTITYNUMBER;
+    }
+
+    return BLERR_NOERROR;
+}

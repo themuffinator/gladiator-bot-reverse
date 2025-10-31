@@ -1,4 +1,5 @@
 set(BOTLIB_AI_SOURCES
+    bot_ai.c
     ai_character.c
     ai_weapon.c
     goal/bot_goal.c
