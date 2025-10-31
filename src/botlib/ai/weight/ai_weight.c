@@ -2,494 +2,182 @@
 
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
+#include "../precomp/l_precomp.h"
+#include "../precomp/l_script.h"
 
 #include <ctype.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// -----------------------------------------------------------------------------
-//  Lexer helpers
-// -----------------------------------------------------------------------------
-
-typedef enum weight_token_type_e {
-    WEIGHT_TOKEN_EOF,
-    WEIGHT_TOKEN_IDENTIFIER,
-    WEIGHT_TOKEN_STRING,
-    WEIGHT_TOKEN_NUMBER,
-    WEIGHT_TOKEN_PUNCTUATION,
-    WEIGHT_TOKEN_ERROR,
-} weight_token_type_t;
-
-typedef struct weight_token_s {
-    weight_token_type_t type;
-    char string[256];
-    double number;
-    char punctuation;
-} weight_token_t;
-
-typedef struct weight_lexer_s {
-    const char *cursor;
-    const char *end;
-    int line;
-    int column;
-} weight_lexer_t;
-
-typedef struct weight_parser_s {
-    weight_lexer_t lexer;
-    weight_token_t lookahead;
-    bool has_lookahead;
-    bool had_error;
-} weight_parser_t;
 
 #define WEIGHT_MAX_VALUE 999999
 #define WEIGHT_TYPE_BALANCE 1
 
-static void WeightLexer_Init(weight_lexer_t *lexer, const char *buffer, size_t length)
-{
-    lexer->cursor = buffer;
-    lexer->end = buffer + length;
-    lexer->line = 1;
-    lexer->column = 1;
-}
+// -----------------------------------------------------------------------------
+//  Forward declarations for precompiler helpers that have not been surfaced
+//  through public headers yet.
+// -----------------------------------------------------------------------------
+int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token);
+int PC_ExpectTokenString(pc_source_t *source, char *string);
+int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token);
+int PC_CheckTokenString(pc_source_t *source, char *string);
+int PC_AddGlobalDefine(char *string);
+int PC_RemoveGlobalDefine(char *name);
+void StripDoubleQuotes(char *string);
 
-static void WeightLexer_Advance(weight_lexer_t *lexer)
+// -----------------------------------------------------------------------------
+//  Helper structures
+// -----------------------------------------------------------------------------
+
+typedef struct bot_weight_define_scope_s {
+    char **names;
+    size_t count;
+} bot_weight_define_scope_t;
+
+// -----------------------------------------------------------------------------
+//  Internal helpers
+// -----------------------------------------------------------------------------
+
+static bool BotWeight_ParseDefineName(const char *define, char *out_name, size_t out_size);
+static bool BotWeight_PushGlobalDefines(const char *const *defines,
+                                        size_t count,
+                                        bot_weight_define_scope_t *scope);
+static void BotWeight_PopGlobalDefines(bot_weight_define_scope_t *scope);
+static void BotWeight_FreeFuzzySeperators(bot_fuzzy_seperator_t *fs);
+static void BotWeight_FreeConfig(bot_weight_config_t *config);
+static bool BotWeight_ReadValue(pc_source_t *source, float *value);
+static bool BotWeight_ReadFuzzyWeight(pc_source_t *source, bot_fuzzy_seperator_t *fs);
+static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source);
+static bool BotWeight_ParseWeights(pc_source_t *source, bot_weight_config_t *config);
+
+static bool BotWeight_ParseDefineName(const char *define, char *out_name, size_t out_size)
 {
-    if (lexer->cursor >= lexer->end) {
-        return;
+    if (define == NULL || out_name == NULL || out_size == 0) {
+        return false;
     }
 
-    if (*lexer->cursor == '\n') {
-        lexer->line += 1;
-        lexer->column = 1;
-    } else {
-        lexer->column += 1;
+    const char *cursor = define;
+    while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
     }
 
-    lexer->cursor += 1;
-}
+    if (*cursor != '#') {
+        return false;
+    }
+    cursor++;
 
-static void WeightLexer_SkipWhitespace(weight_lexer_t *lexer)
-{
-    while (lexer->cursor < lexer->end) {
-        char ch = *lexer->cursor;
-        if (isspace((unsigned char)ch)) {
-            WeightLexer_Advance(lexer);
-            continue;
+    while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    const char keyword[] = "define";
+    size_t keyword_length = sizeof(keyword) - 1;
+    if (strncmp(cursor, keyword, keyword_length) != 0) {
+        return false;
+    }
+    cursor += keyword_length;
+
+    if (*cursor != '\0' && !isspace((unsigned char)*cursor)) {
+        return false;
+    }
+    while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    size_t length = 0;
+    while (*cursor != '\0' && !isspace((unsigned char)*cursor) && *cursor != '(') {
+        if (length + 1 >= out_size) {
+            return false;
         }
-
-        if (ch == '/' && (lexer->cursor + 1) < lexer->end) {
-            char next = *(lexer->cursor + 1);
-            if (next == '/') {
-                // Skip to the end of the line.
-                lexer->cursor += 2;
-                lexer->column += 2;
-                while (lexer->cursor < lexer->end && *lexer->cursor != '\n') {
-                    WeightLexer_Advance(lexer);
-                }
-                continue;
-            }
-            if (next == '*') {
-                // Skip block comment.
-                lexer->cursor += 2;
-                lexer->column += 2;
-                while (lexer->cursor < lexer->end) {
-                    if (*lexer->cursor == '*' && (lexer->cursor + 1) < lexer->end && *(lexer->cursor + 1) == '/') {
-                        lexer->cursor += 2;
-                        lexer->column += 2;
-                        break;
-                    }
-                    WeightLexer_Advance(lexer);
-                }
-                continue;
-            }
-        }
-
-        break;
+        out_name[length++] = *cursor++;
     }
+
+    if (length == 0) {
+        return false;
+    }
+
+    out_name[length] = '\0';
+    return true;
 }
 
-static weight_token_t WeightLexer_ParseString(weight_lexer_t *lexer)
+static bool BotWeight_PushGlobalDefines(const char *const *defines,
+                                        size_t count,
+                                        bot_weight_define_scope_t *scope)
 {
-    weight_token_t token = {
-        .type = WEIGHT_TOKEN_ERROR,
-        .string = "",
-        .number = 0.0,
-        .punctuation = '\0',
-    };
-
-    WeightLexer_Advance(lexer); // Skip opening quote.
-    size_t out_index = 0;
-    while (lexer->cursor < lexer->end) {
-        char ch = *lexer->cursor;
-        if (ch == '"') {
-            WeightLexer_Advance(lexer);
-            token.type = WEIGHT_TOKEN_STRING;
-            token.string[out_index] = '\0';
-            return token;
-        }
-        if (ch == '\\' && (lexer->cursor + 1) < lexer->end) {
-            char escaped = *(lexer->cursor + 1);
-            if (escaped == '"' || escaped == '\\') {
-                ch = escaped;
-                lexer->cursor += 2;
-                lexer->column += 2;
-            } else if (escaped == 'n') {
-                ch = '\n';
-                lexer->cursor += 2;
-                lexer->column += 2;
-            } else if (escaped == 't') {
-                ch = '\t';
-                lexer->cursor += 2;
-                lexer->column += 2;
-            } else {
-                lexer->cursor += 2;
-                lexer->column += 2;
-            }
-        } else {
-            WeightLexer_Advance(lexer);
-        }
-
-        if (out_index + 1 < sizeof(token.string)) {
-            token.string[out_index++] = ch;
-        }
+    if (scope == NULL) {
+        return false;
     }
 
-    token.type = WEIGHT_TOKEN_ERROR;
-    return token;
-}
+    scope->names = NULL;
+    scope->count = count;
 
-static weight_token_t WeightLexer_ParseIdentifier(weight_lexer_t *lexer)
-{
-    weight_token_t token = {
-        .type = WEIGHT_TOKEN_IDENTIFIER,
-        .string = "",
-        .number = 0.0,
-        .punctuation = '\0',
-    };
-
-    size_t out_index = 0;
-    while (lexer->cursor < lexer->end) {
-        char ch = *lexer->cursor;
-        if (!isalnum((unsigned char)ch) && ch != '_' && ch != '-') {
-            break;
-        }
-        if (out_index + 1 < sizeof(token.string)) {
-            token.string[out_index++] = ch;
-        }
-        WeightLexer_Advance(lexer);
-    }
-    token.string[out_index] = '\0';
-    return token;
-}
-
-static weight_token_t WeightLexer_ParseNumber(weight_lexer_t *lexer)
-{
-    weight_token_t token = {
-        .type = WEIGHT_TOKEN_NUMBER,
-        .string = "",
-        .number = 0.0,
-        .punctuation = '\0',
-    };
-
-    const char *start = lexer->cursor;
-    while (lexer->cursor < lexer->end) {
-        char ch = *lexer->cursor;
-        if (!isdigit((unsigned char)ch) && ch != '.' && ch != 'e' && ch != 'E' && ch != '+' && ch != '-') {
-            break;
-        }
-        WeightLexer_Advance(lexer);
-    }
-    size_t length = (size_t)(lexer->cursor - start);
-    if (length >= sizeof(token.string)) {
-        length = sizeof(token.string) - 1;
-    }
-    memcpy(token.string, start, length);
-    token.string[length] = '\0';
-    token.number = strtod(token.string, NULL);
-    return token;
-}
-
-static weight_token_t WeightLexer_Next(weight_lexer_t *lexer)
-{
-    WeightLexer_SkipWhitespace(lexer);
-
-    weight_token_t token = {
-        .type = WEIGHT_TOKEN_EOF,
-        .string = "",
-        .number = 0.0,
-        .punctuation = '\0',
-    };
-
-    if (lexer->cursor >= lexer->end) {
-        return token;
-    }
-
-    char ch = *lexer->cursor;
-    if (ch == '"') {
-        return WeightLexer_ParseString(lexer);
-    }
-
-    if (isalpha((unsigned char)ch) || ch == '_') {
-        return WeightLexer_ParseIdentifier(lexer);
-    }
-
-    if (isdigit((unsigned char)ch) || ((ch == '+' || ch == '-') && (lexer->cursor + 1) < lexer->end && isdigit((unsigned char)*(lexer->cursor + 1)))) {
-        return WeightLexer_ParseNumber(lexer);
-    }
-
-    WeightLexer_Advance(lexer);
-    token.type = WEIGHT_TOKEN_PUNCTUATION;
-    token.punctuation = ch;
-    token.string[0] = ch;
-    token.string[1] = '\0';
-    return token;
-}
-
-static weight_token_t WeightParser_Next(weight_parser_t *parser)
-{
-    if (parser->has_lookahead) {
-        parser->has_lookahead = false;
-        return parser->lookahead;
-    }
-    return WeightLexer_Next(&parser->lexer);
-}
-
-static weight_token_t WeightParser_Peek(weight_parser_t *parser)
-{
-    if (!parser->has_lookahead) {
-        parser->lookahead = WeightLexer_Next(&parser->lexer);
-        parser->has_lookahead = true;
-    }
-    return parser->lookahead;
-}
-
-static bool WeightParser_ExpectPunctuation(weight_parser_t *parser, char ch)
-{
-    weight_token_t token = WeightParser_Next(parser);
-    if (token.type == WEIGHT_TOKEN_PUNCTUATION && token.punctuation == ch) {
+    if (defines == NULL || count == 0) {
         return true;
     }
 
-    BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
-    parser->had_error = true;
-    return false;
-}
-
-static bool WeightParser_ReadValue(weight_parser_t *parser, float *out_value)
-{
-    weight_token_t token = WeightParser_Next(parser);
-    if (token.type == WEIGHT_TOKEN_PUNCTUATION && token.punctuation == '-') {
-        BotLib_Print(PRT_WARNING, "negative value set to zero\n");
-        token = WeightParser_Next(parser);
-    }
-
-    if (token.type != WEIGHT_TOKEN_NUMBER) {
-        BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
-        parser->had_error = true;
+    scope->names = GetClearedMemory(count * sizeof(char *));
+    if (scope->names == NULL) {
         return false;
     }
 
-    *out_value = (float)token.number;
+    for (size_t i = 0; i < count; ++i) {
+        const char *define = defines[i];
+        if (define == NULL) {
+            continue;
+        }
+
+        char name_buffer[256];
+        if (!BotWeight_ParseDefineName(define, name_buffer, sizeof(name_buffer))) {
+            BotLib_Print(PRT_ERROR, "invalid global define %s\n", define);
+            BotWeight_PopGlobalDefines(scope);
+            return false;
+        }
+
+        if (!PC_AddGlobalDefine((char *)define)) {
+            BotLib_Print(PRT_ERROR, "failed to register global define %s\n", define);
+            BotWeight_PopGlobalDefines(scope);
+            return false;
+        }
+
+        char *name_copy = GetClearedMemory(strlen(name_buffer) + 1);
+        if (name_copy == NULL) {
+            BotWeight_PopGlobalDefines(scope);
+            return false;
+        }
+        strcpy(name_copy, name_buffer);
+        scope->names[i] = name_copy;
+    }
+
     return true;
 }
 
-static bool WeightParser_ReadFuzzyWeight(weight_parser_t *parser, bot_fuzzy_seperator_t *fs)
+static void BotWeight_PopGlobalDefines(bot_weight_define_scope_t *scope)
 {
-    weight_token_t token = WeightParser_Peek(parser);
-    if (token.type == WEIGHT_TOKEN_IDENTIFIER && strcmp(token.string, "balance") == 0) {
-        (void)WeightParser_Next(parser);
-        fs->type = WEIGHT_TYPE_BALANCE;
-        if (!WeightParser_ExpectPunctuation(parser, '(')) {
-            return false;
-        }
-        if (!WeightParser_ReadValue(parser, &fs->weight)) {
-            return false;
-        }
-        if (!WeightParser_ExpectPunctuation(parser, ',')) {
-            return false;
-        }
-        if (!WeightParser_ReadValue(parser, &fs->min_weight)) {
-            return false;
-        }
-        if (!WeightParser_ExpectPunctuation(parser, ',')) {
-            return false;
-        }
-        if (!WeightParser_ReadValue(parser, &fs->max_weight)) {
-            return false;
-        }
-        if (!WeightParser_ExpectPunctuation(parser, ')')) {
-            return false;
-        }
-    } else {
-        fs->type = 0;
-        if (!WeightParser_ReadValue(parser, &fs->weight)) {
-            return false;
-        }
-        fs->min_weight = fs->weight;
-        fs->max_weight = fs->weight;
+    if (scope == NULL || scope->count == 0 || scope->names == NULL) {
+        return;
     }
 
-    if (!WeightParser_ExpectPunctuation(parser, ';')) {
-        return false;
+    for (size_t i = 0; i < scope->count; ++i) {
+        if (scope->names[i] != NULL) {
+            PC_RemoveGlobalDefine(scope->names[i]);
+            FreeMemory(scope->names[i]);
+        }
     }
 
-    return true;
+    FreeMemory(scope->names);
+    scope->names = NULL;
+    scope->count = 0;
 }
 
 static void BotWeight_FreeFuzzySeperators(bot_fuzzy_seperator_t *fs)
 {
-    while (fs != NULL) {
-        bot_fuzzy_seperator_t *next = fs->next;
-        if (fs->child != NULL) {
-            BotWeight_FreeFuzzySeperators(fs->child);
-        }
-        FreeMemory(fs);
-        fs = next;
-    }
-}
-
-static bot_fuzzy_seperator_t *WeightParser_ReadFuzzySeperators(weight_parser_t *parser)
-{
-    if (!WeightParser_ExpectPunctuation(parser, '(')) {
-        return NULL;
+    if (fs == NULL) {
+        return;
     }
 
-    weight_token_t token = WeightParser_Next(parser);
-    if (token.type != WEIGHT_TOKEN_NUMBER) {
-        BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
-        parser->had_error = true;
-        return NULL;
-    }
-    int index = (int)token.number;
-
-    if (!WeightParser_ExpectPunctuation(parser, ')')) {
-        return NULL;
-    }
-    if (!WeightParser_ExpectPunctuation(parser, '{')) {
-        return NULL;
-    }
-
-    bot_fuzzy_seperator_t *first = NULL;
-    bot_fuzzy_seperator_t *last = NULL;
-    bool found_default = false;
-
-    token = WeightParser_Next(parser);
-    while (token.type != WEIGHT_TOKEN_EOF) {
-        bool is_default = false;
-        if (token.type == WEIGHT_TOKEN_IDENTIFIER) {
-            if (strcmp(token.string, "default") == 0) {
-                is_default = true;
-            } else if (strcmp(token.string, "case") != 0) {
-                BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
-                parser->had_error = true;
-                BotWeight_FreeFuzzySeperators(first);
-                return NULL;
-            }
-        } else {
-            BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
-            parser->had_error = true;
-            BotWeight_FreeFuzzySeperators(first);
-            return NULL;
-        }
-
-        bot_fuzzy_seperator_t *fs = GetClearedMemory(sizeof(bot_fuzzy_seperator_t));
-        if (fs == NULL) {
-            parser->had_error = true;
-            BotWeight_FreeFuzzySeperators(first);
-            return NULL;
-        }
-        fs->index = index;
-
-        if (last != NULL) {
-            last->next = fs;
-        } else {
-            first = fs;
-        }
-        last = fs;
-
-        if (is_default) {
-            if (found_default) {
-                BotLib_Print(PRT_ERROR, "switch already has a default\n");
-                parser->had_error = true;
-                BotWeight_FreeFuzzySeperators(first);
-                return NULL;
-            }
-            fs->value = WEIGHT_MAX_VALUE;
-            found_default = true;
-        } else {
-            weight_token_t value_token = WeightParser_Next(parser);
-            if (value_token.type != WEIGHT_TOKEN_NUMBER) {
-                BotLib_Print(PRT_ERROR, "invalid name %s\n", value_token.string);
-                parser->had_error = true;
-                BotWeight_FreeFuzzySeperators(first);
-                return NULL;
-            }
-            fs->value = (int)value_token.number;
-        }
-
-        if (!WeightParser_ExpectPunctuation(parser, ':')) {
-            BotWeight_FreeFuzzySeperators(first);
-            return NULL;
-        }
-
-        weight_token_t next_token = WeightParser_Next(parser);
-        bool needs_closing_brace = false;
-        if (next_token.type == WEIGHT_TOKEN_PUNCTUATION && next_token.punctuation == '{') {
-            needs_closing_brace = true;
-            next_token = WeightParser_Next(parser);
-        }
-
-        if (next_token.type == WEIGHT_TOKEN_IDENTIFIER && strcmp(next_token.string, "return") == 0) {
-            if (!WeightParser_ReadFuzzyWeight(parser, fs)) {
-                BotWeight_FreeFuzzySeperators(first);
-                return NULL;
-            }
-        } else if (next_token.type == WEIGHT_TOKEN_IDENTIFIER && strcmp(next_token.string, "switch") == 0) {
-            fs->child = WeightParser_ReadFuzzySeperators(parser);
-            if (fs->child == NULL) {
-                BotWeight_FreeFuzzySeperators(first);
-                return NULL;
-            }
-        } else {
-            BotLib_Print(PRT_ERROR, "invalid name %s\n", next_token.string);
-            parser->had_error = true;
-            BotWeight_FreeFuzzySeperators(first);
-            return NULL;
-        }
-
-        if (needs_closing_brace) {
-            if (!WeightParser_ExpectPunctuation(parser, '}')) {
-                BotWeight_FreeFuzzySeperators(first);
-                return NULL;
-            }
-        }
-
-        token = WeightParser_Next(parser);
-        if (token.type == WEIGHT_TOKEN_PUNCTUATION && token.punctuation == '}') {
-            break;
-        }
-    }
-
-    if (!found_default) {
-        BotLib_Print(PRT_WARNING, "switch without default\n");
-        bot_fuzzy_seperator_t *fs = GetClearedMemory(sizeof(bot_fuzzy_seperator_t));
-        if (fs == NULL) {
-            parser->had_error = true;
-            BotWeight_FreeFuzzySeperators(first);
-            return NULL;
-        }
-        fs->index = index;
-        fs->value = WEIGHT_MAX_VALUE;
-        if (last != NULL) {
-            last->next = fs;
-        } else {
-            first = fs;
-        }
-    }
-
-    return first;
+    BotWeight_FreeFuzzySeperators(fs->child);
+    BotWeight_FreeFuzzySeperators(fs->next);
+    FreeMemory(fs);
 }
 
 static void BotWeight_FreeConfig(bot_weight_config_t *config)
@@ -512,180 +200,344 @@ static void BotWeight_FreeConfig(bot_weight_config_t *config)
     FreeMemory(config);
 }
 
-static char *BotWeight_LoadFile(const char *filename, size_t *out_size)
+static bool BotWeight_ReadValue(pc_source_t *source, float *value)
 {
-    FILE *fp = fopen(filename, "rb");
-    if (fp == NULL) {
-        return NULL;
+    pc_token_t token;
+    if (!PC_ExpectAnyToken(source, &token)) {
+        return false;
     }
 
-    if (fseek(fp, 0, SEEK_END) != 0) {
-        fclose(fp);
-        return NULL;
+    if (strcmp(token.string, "-") == 0) {
+        BotLib_Print(PRT_WARNING, "negative value set to zero\n");
+        if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &token)) {
+            return false;
+        }
     }
 
-    long size = ftell(fp);
-    if (size < 0) {
-        fclose(fp);
-        return NULL;
+    if (token.type != TT_NUMBER) {
+        BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
+        return false;
     }
 
-    if (fseek(fp, 0, SEEK_SET) != 0) {
-        fclose(fp);
-        return NULL;
+    if (value != NULL) {
+        *value = (float)token.floatvalue;
     }
-
-    char *buffer = (char *)malloc((size_t)size + 1);
-    if (buffer == NULL) {
-        fclose(fp);
-        return NULL;
-    }
-
-    size_t read_size = fread(buffer, 1, (size_t)size, fp);
-    fclose(fp);
-    if (read_size != (size_t)size) {
-        free(buffer);
-        return NULL;
-    }
-
-    buffer[size] = '\0';
-    if (out_size != NULL) {
-        *out_size = (size_t)size;
-    }
-
-    return buffer;
+    return true;
 }
 
-bot_weight_config_t *ReadWeightConfig(const char *filename)
+static bool BotWeight_ReadFuzzyWeight(pc_source_t *source, bot_fuzzy_seperator_t *fs)
 {
-    if (filename == NULL) {
-        BotLib_Print(PRT_ERROR, "couldn't load weights\n");
+    if (PC_CheckTokenString(source, "balance")) {
+        fs->type = WEIGHT_TYPE_BALANCE;
+        if (!PC_ExpectTokenString(source, "(")) {
+            return false;
+        }
+        if (!BotWeight_ReadValue(source, &fs->weight)) {
+            return false;
+        }
+        if (!PC_ExpectTokenString(source, ",")) {
+            return false;
+        }
+        if (!BotWeight_ReadValue(source, &fs->min_weight)) {
+            return false;
+        }
+        if (!PC_ExpectTokenString(source, ",")) {
+            return false;
+        }
+        if (!BotWeight_ReadValue(source, &fs->max_weight)) {
+            return false;
+        }
+        if (!PC_ExpectTokenString(source, ")")) {
+            return false;
+        }
+    } else {
+        fs->type = 0;
+        if (!BotWeight_ReadValue(source, &fs->weight)) {
+            return false;
+        }
+        fs->min_weight = fs->weight;
+        fs->max_weight = fs->weight;
+    }
+
+    if (!PC_ExpectTokenString(source, ";")) {
+        return false;
+    }
+
+    return true;
+}
+
+static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
+{
+    if (!PC_ExpectTokenString(source, "(")) {
         return NULL;
     }
 
-    size_t file_size = 0;
-    char *file_buffer = BotWeight_LoadFile(filename, &file_size);
-    if (file_buffer == NULL) {
-        BotLib_Print(PRT_ERROR, "couldn't load weights\n");
+    pc_token_t token;
+    if (!PC_ExpectTokenType(source, TT_NUMBER, TT_INTEGER, &token)) {
+        return NULL;
+    }
+    int index = (int)token.intvalue;
+
+    if (!PC_ExpectTokenString(source, ")")) {
+        return NULL;
+    }
+    if (!PC_ExpectTokenString(source, "{")) {
+        return NULL;
+    }
+    if (!PC_ExpectAnyToken(source, &token)) {
+        return NULL;
+    }
+
+    bool found_default = false;
+    bot_fuzzy_seperator_t *first = NULL;
+    bot_fuzzy_seperator_t *last = NULL;
+
+    do {
+        bool is_default = strcmp(token.string, "default") == 0;
+        if (!is_default && strcmp(token.string, "case") != 0) {
+            BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
+            BotWeight_FreeFuzzySeperators(first);
+            return NULL;
+        }
+
+        bot_fuzzy_seperator_t *fs = GetClearedMemory(sizeof(bot_fuzzy_seperator_t));
+        if (fs == NULL) {
+            BotWeight_FreeFuzzySeperators(first);
+            return NULL;
+        }
+        fs->index = index;
+
+        if (last != NULL) {
+            last->next = fs;
+        } else {
+            first = fs;
+        }
+        last = fs;
+
+        if (is_default) {
+            if (found_default) {
+                BotLib_Print(PRT_ERROR, "switch already has a default\n");
+                BotWeight_FreeFuzzySeperators(first);
+                return NULL;
+            }
+            fs->value = WEIGHT_MAX_VALUE;
+            found_default = true;
+        } else {
+            if (!PC_ExpectTokenType(source, TT_NUMBER, TT_INTEGER, &token)) {
+                BotWeight_FreeFuzzySeperators(first);
+                return NULL;
+            }
+            fs->value = (int)token.intvalue;
+        }
+
+        if (!PC_ExpectTokenString(source, ":")) {
+            BotWeight_FreeFuzzySeperators(first);
+            return NULL;
+        }
+        if (!PC_ExpectAnyToken(source, &token)) {
+            BotWeight_FreeFuzzySeperators(first);
+            return NULL;
+        }
+
+        bool needs_closing_brace = false;
+        if (strcmp(token.string, "{") == 0) {
+            needs_closing_brace = true;
+            if (!PC_ExpectAnyToken(source, &token)) {
+                BotWeight_FreeFuzzySeperators(first);
+                return NULL;
+            }
+        }
+
+        if (strcmp(token.string, "return") == 0) {
+            if (!BotWeight_ReadFuzzyWeight(source, fs)) {
+                BotWeight_FreeFuzzySeperators(first);
+                return NULL;
+            }
+        } else if (strcmp(token.string, "switch") == 0) {
+            fs->child = BotWeight_ReadFuzzySeperators(source);
+            if (fs->child == NULL) {
+                BotWeight_FreeFuzzySeperators(first);
+                return NULL;
+            }
+        } else {
+            BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
+            BotWeight_FreeFuzzySeperators(first);
+            return NULL;
+        }
+
+        if (needs_closing_brace) {
+            if (!PC_ExpectTokenString(source, "}")) {
+                BotWeight_FreeFuzzySeperators(first);
+                return NULL;
+            }
+        }
+
+        if (!PC_ExpectAnyToken(source, &token)) {
+            BotWeight_FreeFuzzySeperators(first);
+            return NULL;
+        }
+    } while (strcmp(token.string, "}") != 0);
+
+    if (!found_default) {
+        BotLib_Print(PRT_WARNING, "switch without default\n");
+        bot_fuzzy_seperator_t *fs = GetClearedMemory(sizeof(bot_fuzzy_seperator_t));
+        if (fs == NULL) {
+            BotWeight_FreeFuzzySeperators(first);
+            return NULL;
+        }
+        fs->index = index;
+        fs->value = WEIGHT_MAX_VALUE;
+        if (last != NULL) {
+            last->next = fs;
+        } else {
+            first = fs;
+        }
+    }
+
+    return first;
+}
+
+static bool BotWeight_ParseWeights(pc_source_t *source, bot_weight_config_t *config)
+{
+    if (source == NULL || config == NULL) {
+        return false;
+    }
+
+    pc_token_t token;
+    while (PC_ReadToken(source, &token)) {
+        if (strcmp(token.string, "weight") != 0) {
+            BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
+            return false;
+        }
+
+        if (config->num_weights >= BOTLIB_MAX_WEIGHTS) {
+            BotLib_Print(PRT_WARNING, "too many fuzzy weights\n");
+            return true;
+        }
+
+        if (!PC_ExpectTokenType(source, TT_STRING, 0, &token)) {
+            return false;
+        }
+        StripDoubleQuotes(token.string);
+
+        bot_weight_t *weight = &config->weights[config->num_weights];
+        bot_fuzzy_seperator_t *root = NULL;
+        weight->name = NULL;
+        weight->first_seperator = NULL;
+
+        weight->name = GetClearedMemory(strlen(token.string) + 1);
+        if (weight->name == NULL) {
+            goto parse_failure;
+        }
+        strcpy(weight->name, token.string);
+
+        if (!PC_ExpectAnyToken(source, &token)) {
+            goto parse_failure;
+        }
+
+        bool requires_closing_brace = false;
+        if (strcmp(token.string, "{") == 0) {
+            requires_closing_brace = true;
+            if (!PC_ExpectAnyToken(source, &token)) {
+                goto parse_failure;
+            }
+        }
+
+        if (strcmp(token.string, "switch") == 0) {
+            root = BotWeight_ReadFuzzySeperators(source);
+            if (root == NULL) {
+                goto parse_failure;
+            }
+        } else if (strcmp(token.string, "return") == 0) {
+            root = GetClearedMemory(sizeof(bot_fuzzy_seperator_t));
+            if (root == NULL) {
+                goto parse_failure;
+            }
+            root->index = 0;
+            root->value = WEIGHT_MAX_VALUE;
+            if (!BotWeight_ReadFuzzyWeight(source, root)) {
+                goto parse_failure;
+            }
+        } else {
+            BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
+            goto parse_failure;
+        }
+
+        if (requires_closing_brace) {
+            if (!PC_ExpectTokenString(source, "}")) {
+                goto parse_failure;
+            }
+        }
+
+        weight->first_seperator = root;
+        config->num_weights += 1;
+        continue;
+
+    parse_failure:
+        BotWeight_FreeFuzzySeperators(root);
+        if (weight->name != NULL) {
+            FreeMemory(weight->name);
+            weight->name = NULL;
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
+                                                 const char *const *global_defines,
+                                                 size_t global_define_count)
+{
+    if (filename == NULL) {
+        return NULL;
+    }
+
+    bot_weight_define_scope_t define_scope;
+    if (!BotWeight_PushGlobalDefines(global_defines, global_define_count, &define_scope)) {
+        return NULL;
+    }
+
+    pc_source_t *source = PC_LoadSourceFile(filename);
+    BotWeight_PopGlobalDefines(&define_scope);
+    if (source == NULL) {
+        BotLib_Print(PRT_ERROR, "couldn't load %s\n", filename);
+        return NULL;
+    }
+
+    pc_script_t *script = PS_CreateScriptFromSource(source);
+    if (script == NULL) {
+        BotLib_Print(PRT_ERROR, "script wrapper failed for %s\n", filename);
+        PC_FreeSource(source);
         return NULL;
     }
 
     bot_weight_config_t *config = GetClearedMemory(sizeof(bot_weight_config_t));
     if (config == NULL) {
-        free(file_buffer);
+        PS_FreeScript(script);
+        PC_FreeSource(source);
         return NULL;
     }
-    config->num_weights = 0;
-    if (filename != NULL) {
-        strncpy(config->source_file, filename, sizeof(config->source_file) - 1);
-        config->source_file[sizeof(config->source_file) - 1] = '\0';
-    }
 
-    weight_parser_t parser;
-    WeightLexer_Init(&parser.lexer, file_buffer, file_size);
-    parser.has_lookahead = false;
-    parser.had_error = false;
+    strncpy(config->source_file, filename, sizeof(config->source_file) - 1);
+    config->source_file[sizeof(config->source_file) - 1] = '\0';
 
-    while (true) {
-        weight_token_t token = WeightParser_Next(&parser);
-        if (token.type == WEIGHT_TOKEN_EOF) {
-            break;
-        }
+    bool parsed = BotWeight_ParseWeights(source, config);
 
-        if (token.type != WEIGHT_TOKEN_IDENTIFIER || strcmp(token.string, "weight") != 0) {
-            BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
-            parser.had_error = true;
-            BotWeight_FreeConfig(config);
-            free(file_buffer);
-            return NULL;
-        }
+    PS_FreeScript(script);
+    PC_FreeSource(source);
 
-        if (config->num_weights >= BOTLIB_MAX_WEIGHTS) {
-            BotLib_Print(PRT_WARNING, "too many fuzzy weights\n");
-            break;
-        }
-
-        weight_token_t name_token = WeightParser_Next(&parser);
-        if (name_token.type != WEIGHT_TOKEN_STRING) {
-            BotLib_Print(PRT_ERROR, "invalid name %s\n", name_token.string);
-            parser.had_error = true;
-            BotWeight_FreeConfig(config);
-            free(file_buffer);
-            return NULL;
-        }
-
-        size_t name_length = strlen(name_token.string);
-        config->weights[config->num_weights].name = GetClearedMemory(name_length + 1);
-        if (config->weights[config->num_weights].name == NULL) {
-            parser.had_error = true;
-            BotWeight_FreeConfig(config);
-            free(file_buffer);
-            return NULL;
-        }
-        memcpy(config->weights[config->num_weights].name, name_token.string, name_length);
-
-        bool needs_closing_brace = false;
-        weight_token_t next = WeightParser_Next(&parser);
-        if (next.type == WEIGHT_TOKEN_PUNCTUATION && next.punctuation == '{') {
-            needs_closing_brace = true;
-            next = WeightParser_Next(&parser);
-        }
-
-        bot_fuzzy_seperator_t *root = NULL;
-        if (next.type == WEIGHT_TOKEN_IDENTIFIER && strcmp(next.string, "switch") == 0) {
-            root = WeightParser_ReadFuzzySeperators(&parser);
-            if (root == NULL) {
-                BotWeight_FreeConfig(config);
-                free(file_buffer);
-                return NULL;
-            }
-        } else if (next.type == WEIGHT_TOKEN_IDENTIFIER && strcmp(next.string, "return") == 0) {
-            bot_fuzzy_seperator_t *fs = GetClearedMemory(sizeof(bot_fuzzy_seperator_t));
-            if (fs == NULL) {
-                parser.had_error = true;
-                BotWeight_FreeConfig(config);
-                free(file_buffer);
-                return NULL;
-            }
-            fs->index = 0;
-            fs->value = WEIGHT_MAX_VALUE;
-            fs->next = NULL;
-            fs->child = NULL;
-            if (!WeightParser_ReadFuzzyWeight(&parser, fs)) {
-                FreeMemory(fs);
-                BotWeight_FreeConfig(config);
-                free(file_buffer);
-                return NULL;
-            }
-            root = fs;
-        } else {
-            BotLib_Print(PRT_ERROR, "invalid name %s\n", next.string);
-            parser.had_error = true;
-            BotWeight_FreeConfig(config);
-            free(file_buffer);
-            return NULL;
-        }
-
-        if (needs_closing_brace) {
-            if (!WeightParser_ExpectPunctuation(&parser, '}')) {
-                BotWeight_FreeFuzzySeperators(root);
-                BotWeight_FreeConfig(config);
-                free(file_buffer);
-                return NULL;
-            }
-        }
-
-        config->weights[config->num_weights].first_seperator = root;
-        config->num_weights += 1;
-    }
-
-    free(file_buffer);
-    if (parser.had_error) {
+    if (!parsed) {
         BotWeight_FreeConfig(config);
         return NULL;
     }
 
     return config;
+}
+
+bot_weight_config_t *ReadWeightConfig(const char *filename)
+{
+    return ReadWeightConfigWithDefines(filename, NULL, 0);
 }
 
 void FreeWeightConfig(bot_weight_config_t *config)
