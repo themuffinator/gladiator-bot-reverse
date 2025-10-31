@@ -1,11 +1,16 @@
 #include <assert.h>
+#include <stdarg.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "../../q2bridge/botlib.h"
 #include "../../q2bridge/bridge.h"
 #include "../../q2bridge/update_translator.h"
 #include "../aas/aas_map.h"
 #include "../ai/chat/ai_chat.h"
+#include "botlib_interface.h"
 #include "bot_interface.h"
 
 
@@ -13,6 +18,210 @@ static int g_bot_initialized = 0;
 
 static bot_import_t *g_botImport = NULL;
 static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;
+static botlib_import_table_t g_botInterfaceImportTable;
+
+typedef struct botinterface_import_libvar_s {
+    char *name;
+    char *value;
+    struct botinterface_import_libvar_s *next;
+} botinterface_import_libvar_t;
+
+static botinterface_import_libvar_t *g_botInterfaceLibVars = NULL;
+
+static void BotInterface_FreeImportLibVar(botinterface_import_libvar_t *entry)
+{
+    if (entry == NULL)
+    {
+        return;
+    }
+
+    free(entry->name);
+    free(entry->value);
+    free(entry);
+}
+
+static void BotInterface_ResetImportLibVars(void)
+{
+    botinterface_import_libvar_t *entry = g_botInterfaceLibVars;
+    while (entry != NULL)
+    {
+        botinterface_import_libvar_t *next = entry->next;
+        BotInterface_FreeImportLibVar(entry);
+        entry = next;
+    }
+
+    g_botInterfaceLibVars = NULL;
+}
+
+static botinterface_import_libvar_t *BotInterface_FindImportLibVar(const char *name)
+{
+    botinterface_import_libvar_t *entry = g_botInterfaceLibVars;
+    while (entry != NULL)
+    {
+        if (entry->name != NULL && name != NULL && strcmp(entry->name, name) == 0)
+        {
+            return entry;
+        }
+
+        entry = entry->next;
+    }
+
+    return NULL;
+}
+
+static botinterface_import_libvar_t *BotInterface_EnsureImportLibVar(const char *name)
+{
+    if (name == NULL)
+    {
+        return NULL;
+    }
+
+    botinterface_import_libvar_t *entry = BotInterface_FindImportLibVar(name);
+    if (entry != NULL)
+    {
+        return entry;
+    }
+
+    entry = calloc(1, sizeof(*entry));
+    if (entry == NULL)
+    {
+        return NULL;
+    }
+
+    entry->name = strdup(name);
+    if (entry->name == NULL)
+    {
+        free(entry);
+        return NULL;
+    }
+
+    entry->value = strdup("");
+    if (entry->value == NULL)
+    {
+        free(entry->name);
+        free(entry);
+        return NULL;
+    }
+
+    entry->next = g_botInterfaceLibVars;
+    g_botInterfaceLibVars = entry;
+    return entry;
+}
+
+static void BotInterface_PrintWrapper(int type, const char *fmt, ...)
+{
+    if (fmt == NULL)
+    {
+        return;
+    }
+
+    if (g_botImport == NULL || g_botImport->Print == NULL)
+    {
+        return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+    va_end(args);
+
+    buffer[sizeof(buffer) - 1] = '\0';
+    g_botImport->Print(type, "%s", buffer);
+}
+
+static void BotInterface_DPrintWrapper(const char *fmt, ...)
+{
+    if (fmt == NULL)
+    {
+        return;
+    }
+
+    if (g_botImport == NULL || g_botImport->Print == NULL)
+    {
+        return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+    va_end(args);
+
+    buffer[sizeof(buffer) - 1] = '\0';
+    g_botImport->Print(PRT_MESSAGE, "%s", buffer);
+}
+
+static int BotInterface_BotLibVarGetWrapper(const char *var_name, char *value, size_t size)
+{
+    if (value == NULL || size == 0)
+    {
+        return -1;
+    }
+
+    value[0] = '\0';
+
+    if (var_name == NULL)
+    {
+        return -1;
+    }
+
+    botinterface_import_libvar_t *entry = BotInterface_FindImportLibVar(var_name);
+    if (entry == NULL || entry->value == NULL)
+    {
+        return -1;
+    }
+
+    size_t length = strlen(entry->value);
+    if (length >= size)
+    {
+        length = size - 1;
+    }
+
+    memcpy(value, entry->value, length);
+    value[length] = '\0';
+    return 0;
+}
+
+static int BotInterface_BotLibVarSetWrapper(const char *var_name, const char *value)
+{
+    if (var_name == NULL || value == NULL)
+    {
+        return -1;
+    }
+
+    botinterface_import_libvar_t *entry = BotInterface_EnsureImportLibVar(var_name);
+    if (entry == NULL)
+    {
+        return -1;
+    }
+
+    char *copy = strdup(value);
+    if (copy == NULL)
+    {
+        return -1;
+    }
+
+    free(entry->value);
+    entry->value = copy;
+    return 0;
+}
+
+static void BotInterface_BuildImportTable(bot_import_t *import_table)
+{
+    (void)import_table;
+
+    BotInterface_ResetImportLibVars();
+
+    g_botInterfaceImportTable.Print = BotInterface_PrintWrapper;
+    g_botInterfaceImportTable.DPrint = BotInterface_DPrintWrapper;
+    g_botInterfaceImportTable.BotLibVarGet = BotInterface_BotLibVarGetWrapper;
+    g_botInterfaceImportTable.BotLibVarSet = BotInterface_BotLibVarSetWrapper;
+}
 
 static bot_chatstate_t *BotInterface_EnsureConsoleChatState(void)
 {
@@ -45,40 +254,42 @@ static char *BotVersionStub(void)
     return version;
 }
 
-static int BotSetupLibraryStub(void)
+static int BotInterface_BotSetupLibrary(void)
 {
     assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
-    return BLERR_NOERROR;
+    return BotSetupLibrary();
 }
 
-static int BotShutdownLibraryStub(void)
+static int BotInterface_BotShutdownLibrary(void)
 {
     assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
-    if (g_botInterfaceConsoleChat != NULL)
+
+    int status = BotShutdownLibrary();
+    if (status == BLERR_NOERROR)
     {
-        BotFreeChatState(g_botInterfaceConsoleChat);
-        g_botInterfaceConsoleChat = NULL;
+        if (g_botInterfaceConsoleChat != NULL)
+        {
+            BotFreeChatState(g_botInterfaceConsoleChat);
+            g_botInterfaceConsoleChat = NULL;
+        }
+        AAS_Shutdown();
     }
-    AAS_Shutdown();
-    return BLERR_NOERROR;
+
+    return status;
 }
 
-static int BotLibraryInitializedStub(void)
+static int BotInterface_BotLibraryInitialized(void)
+{
+    assert(g_botImport != NULL);
+    return BotLibraryInitialized() ? 1 : 0;
+}
+
+static int BotInterface_BotLibVarSet(char *var_name, char *value)
 {
     assert(g_botImport != NULL);
     BotInterface_Log(PRT_WARNING, __func__);
-    return 0;
-}
-
-static int BotLibVarSetStub(char *var_name, char *value)
-{
     (void)var_name;
     (void)value;
-
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
     return BLERR_NOERROR;
 }
 
@@ -278,14 +489,17 @@ bot_export_t *GetBotAPI(bot_import_t *import)
     static bot_export_t exportTable;
 
     g_botImport = import;
+    BotInterface_BuildImportTable(import);
+    BotInterface_SetImportTable(&g_botInterfaceImportTable);
     Q2Bridge_SetImportTable(import);
+    Bridge_ResetCachedUpdates();
     assert(g_botImport != NULL);
 
     exportTable.BotVersion = BotVersionStub;
-    exportTable.BotSetupLibrary = BotSetupLibraryStub;
-    exportTable.BotShutdownLibrary = BotShutdownLibraryStub;
-    exportTable.BotLibraryInitialized = BotLibraryInitializedStub;
-    exportTable.BotLibVarSet = BotLibVarSetStub;
+    exportTable.BotSetupLibrary = BotInterface_BotSetupLibrary;
+    exportTable.BotShutdownLibrary = BotInterface_BotShutdownLibrary;
+    exportTable.BotLibraryInitialized = BotInterface_BotLibraryInitialized;
+    exportTable.BotLibVarSet = BotInterface_BotLibVarSet;
     exportTable.BotDefine = BotDefineStub;
     exportTable.BotLoadMap = BotLoadMapStub;
     exportTable.BotSetupClient = BotSetupClientStub;
