@@ -976,7 +976,7 @@ static int BotSetupClient(int client, bot_settings_t *settings)
     const char *weapon_weight_file = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_WEAPONWEIGHTS);
     if (weapon_weight_file != NULL && *weapon_weight_file != '\0')
     {
-        bot_weight_config_t *weapon_weights = ReadWeightConfig(weapon_weight_file);
+        ai_weapon_weights_t *weapon_weights = AI_LoadWeaponWeights(weapon_weight_file);
         if (weapon_weights == NULL)
         {
             BotInterface_Printf(PRT_ERROR,

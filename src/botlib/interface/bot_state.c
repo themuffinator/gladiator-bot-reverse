@@ -17,13 +17,19 @@ static void BotState_FreeResources(bot_client_state_t *state)
     }
 
     if (state->weapon_weights != NULL) {
-        FreeWeightConfig(state->weapon_weights);
+        AI_FreeWeaponWeights(state->weapon_weights);
         state->weapon_weights = NULL;
+        if (state->character != NULL) {
+            state->character->weapon_weights = NULL;
+        }
     }
 
     if (state->item_weights != NULL) {
         FreeWeightConfig(state->item_weights);
         state->item_weights = NULL;
+        if (state->character != NULL) {
+            state->character->item_weights = NULL;
+        }
     }
 
     if (state->character != NULL) {
