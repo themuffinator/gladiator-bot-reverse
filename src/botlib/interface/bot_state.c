@@ -33,6 +33,9 @@ static void BotState_FreeResources(bot_client_state_t *state)
 
     state->goal_state = NULL;
     state->move_state = NULL;
+    memset(&state->last_client_update, 0, sizeof(state->last_client_update));
+    state->client_update_valid = false;
+    state->last_update_time = 0.0f;
     state->active = false;
     memset(&state->client_settings, 0, sizeof(state->client_settings));
 }

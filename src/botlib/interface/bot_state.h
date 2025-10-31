@@ -38,6 +38,9 @@ struct bot_client_state_s {
     bot_chatstate_t *chat_state;
     void *goal_state;
     void *move_state;
+    bot_updateclient_t last_client_update;
+    bool client_update_valid;
+    float last_update_time;
 };
 
 bot_client_state_t *BotState_Get(int client);

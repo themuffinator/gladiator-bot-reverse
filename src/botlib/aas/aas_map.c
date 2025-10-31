@@ -162,5 +162,6 @@ int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
      * results through AAS link management once entity areas are implemented.
      */
 
+    aasworld.entitiesValid = qtrue;
     return BLERR_NOERROR;
 }

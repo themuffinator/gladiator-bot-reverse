@@ -8,6 +8,7 @@
 
 #include <stdarg.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "../../q2bridge/botlib.h"
 #include "../../q2bridge/bridge.h"
@@ -15,6 +16,7 @@
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
 #include "../aas/aas_map.h"
+#include "../aas/aas_local.h"
 #include "../ai/chat/ai_chat.h"
 #include "../ai/character/bot_character.h"
 #include "../ai/weight/bot_weight.h"
@@ -27,6 +29,293 @@
 static bot_import_t *g_botImport = NULL;
 static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;
 static botlib_import_table_t g_botInterfaceImportTable;
+
+typedef struct botinterface_asset_list_s
+{
+    char **entries;
+    size_t count;
+} botinterface_asset_list_t;
+
+typedef struct botinterface_map_cache_s
+{
+    char map_name[MAX_FILEPATH];
+    botinterface_asset_list_t models;
+    botinterface_asset_list_t sounds;
+    botinterface_asset_list_t images;
+} botinterface_map_cache_t;
+
+typedef struct botinterface_entity_snapshot_s
+{
+    qboolean valid;
+    bot_updateentity_t state;
+} botinterface_entity_snapshot_t;
+
+typedef struct botinterface_sound_event_s
+{
+    vec3_t origin;
+    int ent;
+    int channel;
+    int soundindex;
+    float volume;
+    float attenuation;
+    float timeofs;
+} botinterface_sound_event_t;
+
+typedef struct botinterface_pointlight_event_s
+{
+    vec3_t origin;
+    int ent;
+    float radius;
+    float color[3];
+    float time;
+    float decay;
+} botinterface_pointlight_event_t;
+
+#define BOT_INTERFACE_MAX_SOUND_EVENTS 64
+#define BOT_INTERFACE_MAX_POINTLIGHT_EVENTS 32
+#define BOT_INTERFACE_MAX_ENTITIES 1024
+
+static botinterface_map_cache_t g_botInterfaceMapCache;
+static botinterface_entity_snapshot_t g_botInterfaceEntityCache[BOT_INTERFACE_MAX_ENTITIES];
+static botinterface_sound_event_t g_botInterfaceSoundQueue[BOT_INTERFACE_MAX_SOUND_EVENTS];
+static size_t g_botInterfaceSoundCount = 0;
+static botinterface_pointlight_event_t g_botInterfacePointLightQueue[BOT_INTERFACE_MAX_POINTLIGHT_EVENTS];
+static size_t g_botInterfacePointLightCount = 0;
+static float g_botInterfaceFrameTime = 0.0f;
+static unsigned int g_botInterfaceFrameNumber = 0;
+static bool g_botInterfaceDebugDrawEnabled = false;
+
+static int BotInterface_StringCompareIgnoreCase(const char *lhs, const char *rhs)
+{
+    if (lhs == NULL || rhs == NULL)
+    {
+        return (lhs == rhs) ? 0 : (lhs != NULL ? 1 : -1);
+    }
+
+    while (*lhs != '\0' && *rhs != '\0')
+    {
+        int diff = tolower((unsigned char)*lhs) - tolower((unsigned char)*rhs);
+        if (diff != 0)
+        {
+            return diff;
+        }
+
+        ++lhs;
+        ++rhs;
+    }
+
+    return tolower((unsigned char)*lhs) - tolower((unsigned char)*rhs);
+}
+
+static void BotInterface_FreeAssetList(botinterface_asset_list_t *list)
+{
+    if (list == NULL)
+    {
+        return;
+    }
+
+    if (list->entries != NULL)
+    {
+        for (size_t index = 0; index < list->count; ++index)
+        {
+            free(list->entries[index]);
+        }
+
+        free(list->entries);
+    }
+
+    list->entries = NULL;
+    list->count = 0;
+}
+
+static bool BotInterface_CopyAssetList(botinterface_asset_list_t *target,
+                                       int count,
+                                       char *source[])
+{
+    if (target == NULL)
+    {
+        return false;
+    }
+
+    BotInterface_FreeAssetList(target);
+
+    if (count <= 0 || source == NULL)
+    {
+        target->entries = NULL;
+        target->count = 0;
+        return true;
+    }
+
+    size_t allocation = (size_t)count;
+    char **table = (char **)calloc(allocation, sizeof(char *));
+    if (table == NULL)
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < allocation; ++index)
+    {
+        if (source[index] == NULL)
+        {
+            continue;
+        }
+
+        table[index] = strdup(source[index]);
+        if (table[index] == NULL)
+        {
+            for (size_t rollback = 0; rollback < index; ++rollback)
+            {
+                free(table[rollback]);
+            }
+
+            free(table);
+            return false;
+        }
+    }
+
+    target->entries = table;
+    target->count = allocation;
+    return true;
+}
+
+static void BotInterface_ResetEntityCache(void)
+{
+    for (size_t index = 0; index < BOT_INTERFACE_MAX_ENTITIES; ++index)
+    {
+        g_botInterfaceEntityCache[index].valid = qfalse;
+    }
+}
+
+static void BotInterface_ResetMapCache(void)
+{
+    BotInterface_FreeAssetList(&g_botInterfaceMapCache.models);
+    BotInterface_FreeAssetList(&g_botInterfaceMapCache.sounds);
+    BotInterface_FreeAssetList(&g_botInterfaceMapCache.images);
+    g_botInterfaceMapCache.map_name[0] = '\0';
+}
+
+static bool BotInterface_RecordMapAssets(const char *mapname,
+                                         int modelindexes,
+                                         char *modelindex[],
+                                         int soundindexes,
+                                         char *soundindex[],
+                                         int imageindexes,
+                                         char *imageindex[])
+{
+    if (mapname != NULL)
+    {
+        strncpy(g_botInterfaceMapCache.map_name,
+                mapname,
+                sizeof(g_botInterfaceMapCache.map_name) - 1);
+        g_botInterfaceMapCache.map_name[sizeof(g_botInterfaceMapCache.map_name) - 1] = '\0';
+    }
+    else
+    {
+        g_botInterfaceMapCache.map_name[0] = '\0';
+    }
+
+    if (!BotInterface_CopyAssetList(&g_botInterfaceMapCache.models, modelindexes, modelindex))
+    {
+        return false;
+    }
+
+    if (!BotInterface_CopyAssetList(&g_botInterfaceMapCache.sounds, soundindexes, soundindex))
+    {
+        return false;
+    }
+
+    if (!BotInterface_CopyAssetList(&g_botInterfaceMapCache.images, imageindexes, imageindex))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static void BotInterface_ResetFrameQueues(void)
+{
+    g_botInterfaceSoundCount = 0;
+    g_botInterfacePointLightCount = 0;
+}
+
+static void BotInterface_BeginFrame(float time)
+{
+    g_botInterfaceFrameTime = time;
+    g_botInterfaceFrameNumber += 1U;
+    BotInterface_ResetFrameQueues();
+}
+
+static void BotInterface_EnqueueSound(const vec3_t origin,
+                                      int ent,
+                                      int channel,
+                                      int soundindex,
+                                      float volume,
+                                      float attenuation,
+                                      float timeofs)
+{
+    if (g_botInterfaceSoundCount == BOT_INTERFACE_MAX_SOUND_EVENTS)
+    {
+        memmove(&g_botInterfaceSoundQueue[0],
+                &g_botInterfaceSoundQueue[1],
+                (BOT_INTERFACE_MAX_SOUND_EVENTS - 1) * sizeof(g_botInterfaceSoundQueue[0]));
+        g_botInterfaceSoundCount -= 1U;
+    }
+
+    botinterface_sound_event_t *slot = &g_botInterfaceSoundQueue[g_botInterfaceSoundCount++];
+    if (origin != NULL)
+    {
+        VectorCopy(origin, slot->origin);
+    }
+    else
+    {
+        VectorClear(slot->origin);
+    }
+
+    slot->ent = ent;
+    slot->channel = channel;
+    slot->soundindex = soundindex;
+    slot->volume = volume;
+    slot->attenuation = attenuation;
+    slot->timeofs = timeofs;
+}
+
+static void BotInterface_EnqueuePointLight(const vec3_t origin,
+                                           int ent,
+                                           float radius,
+                                           float r,
+                                           float g,
+                                           float b,
+                                           float time,
+                                           float decay)
+{
+    if (g_botInterfacePointLightCount == BOT_INTERFACE_MAX_POINTLIGHT_EVENTS)
+    {
+        memmove(&g_botInterfacePointLightQueue[0],
+                &g_botInterfacePointLightQueue[1],
+                (BOT_INTERFACE_MAX_POINTLIGHT_EVENTS - 1) * sizeof(g_botInterfacePointLightQueue[0]));
+        g_botInterfacePointLightCount -= 1U;
+    }
+
+    botinterface_pointlight_event_t *slot =
+        &g_botInterfacePointLightQueue[g_botInterfacePointLightCount++];
+
+    if (origin != NULL)
+    {
+        VectorCopy(origin, slot->origin);
+    }
+    else
+    {
+        VectorClear(slot->origin);
+    }
+
+    slot->ent = ent;
+    slot->radius = radius;
+    slot->color[0] = r;
+    slot->color[1] = g;
+    slot->color[2] = b;
+    slot->time = time;
+    slot->decay = decay;
+}
 
 typedef struct botinterface_import_libvar_s {
     char *name;
@@ -454,6 +743,19 @@ static int BotShutdownLibraryWrapper(void)
     BotInterface_PrintBanner(PRT_MESSAGE, "------- BotLib Shutdown -------\n");
 
     if (g_botInterfaceConsoleChat != NULL)
+    {
+        BotFreeChatState(g_botInterfaceConsoleChat);
+        g_botInterfaceConsoleChat = NULL;
+    }
+
+    BotInterface_ResetMapCache();
+    BotInterface_ResetEntityCache();
+    BotInterface_ResetFrameQueues();
+    g_botInterfaceDebugDrawEnabled = false;
+
+    return result;
+}
+
 static int BotInterface_BotSetupLibrary(void)
 {
     assert(g_botImport != NULL);
@@ -465,15 +767,16 @@ static int BotInterface_BotShutdownLibrary(void)
     assert(g_botImport != NULL);
 
     int status = BotShutdownLibrary();
-    if (status == BLERR_NOERROR)
+    if (g_botInterfaceConsoleChat != NULL)
     {
-        if (g_botInterfaceConsoleChat != NULL)
-        {
-            BotFreeChatState(g_botInterfaceConsoleChat);
-            g_botInterfaceConsoleChat = NULL;
-        }
-        AAS_Shutdown();
+        BotFreeChatState(g_botInterfaceConsoleChat);
+        g_botInterfaceConsoleChat = NULL;
     }
+
+    BotInterface_ResetMapCache();
+    BotInterface_ResetEntityCache();
+    BotInterface_ResetFrameQueues();
+    g_botInterfaceDebugDrawEnabled = false;
 
     AAS_Shutdown();
     BotInterface_FreeImportCache();
@@ -481,7 +784,7 @@ static int BotInterface_BotShutdownLibrary(void)
     Q2Bridge_ClearImportTable();
     BotLib_LogShutdown();
 
-    return result;
+    return status;
 }
 
 static int BotLibraryInitializedWrapper(void)
@@ -535,12 +838,63 @@ static int BotDefineWrapper(char *string)
     return BLERR_NOERROR;
 }
 
-static int BotLoadMapStub(char *mapname, int modelindexes, char *modelindex[], int soundindexes,
-                          char *soundindex[], int imageindexes, char *imageindex[])
+static int BotLoadMap(char *mapname,
+                      int modelindexes,
+                      char *modelindex[],
+                      int soundindexes,
+                      char *soundindex[],
+                      int imageindexes,
+                      char *imageindex[])
 {
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
-    return AAS_LoadMap(mapname, modelindexes, modelindex, soundindexes, soundindex, imageindexes, imageindex);
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotLoadMap: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (mapname == NULL || *mapname == '\0')
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotLoadMap: no map specified\n");
+        return BLERR_NOAASFILE;
+    }
+
+    Bridge_ResetCachedUpdates();
+    BotInterface_ResetFrameQueues();
+    BotInterface_ResetEntityCache();
+    BotInterface_ResetMapCache();
+
+    int status = AAS_LoadMap(mapname,
+                             modelindexes,
+                             modelindex,
+                             soundindexes,
+                             soundindex,
+                             imageindexes,
+                             imageindex);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
+    if (!BotInterface_RecordMapAssets(mapname,
+                                      modelindexes,
+                                      modelindex,
+                                      soundindexes,
+                                      soundindex,
+                                      imageindexes,
+                                      imageindex))
+    {
+        BotInterface_Printf(PRT_WARNING,
+                             "[bot_interface] BotLoadMap: failed to record asset lists for %s\n",
+                             mapname);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    return BLERR_NOERROR;
 }
 
 static int BotSetupClient(int client, bot_settings_t *settings)
@@ -798,18 +1152,45 @@ static int BotSettings(int client, bot_settings_t *settings)
     return BLERR_NOERROR;
 }
 
-static int BotStartFrameStub(float time)
+static int BotStartFrame(float time)
 {
-    (void)time;
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
 
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotStartFrame: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    BotInterface_BeginFrame(time);
+    aasworld.time = time;
+    aasworld.numFrames += 1;
+
     return BLERR_NOERROR;
 }
 
-static int BotUpdateClientStub(int client, bot_updateclient_t *buc)
+static int BotUpdateClient(int client, bot_updateclient_t *buc)
 {
-    assert(g_botImport != NULL);
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotUpdateClient: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    bot_client_state_t *state = BotState_Get(client);
+    if (state == NULL || !state->active)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotUpdateClient: client %d inactive\n", client);
+        return BLERR_AIUPDATEINACTIVECLIENT;
+    }
 
     int status = Bridge_UpdateClient(client, buc);
     if (status != BLERR_NOERROR)
@@ -817,13 +1198,28 @@ static int BotUpdateClientStub(int client, bot_updateclient_t *buc)
         return status;
     }
 
-    BotInterface_Log(PRT_WARNING, __func__);
+    if (buc != NULL)
+    {
+        memcpy(&state->last_client_update, buc, sizeof(*buc));
+        state->client_update_valid = true;
+        state->last_update_time = g_botInterfaceFrameTime;
+    }
+
     return BLERR_NOERROR;
 }
 
-static int BotUpdateEntityStub(int ent, bot_updateentity_t *bue)
+static int BotUpdateEntity(int ent, bot_updateentity_t *bue)
 {
-    assert(g_botImport != NULL);
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotUpdateEntity: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
 
     int status = Bridge_UpdateEntity(ent, bue);
     if (status != BLERR_NOERROR)
@@ -831,96 +1227,374 @@ static int BotUpdateEntityStub(int ent, bot_updateentity_t *bue)
         return status;
     }
 
-    BotInterface_Log(PRT_WARNING, __func__);
-    return AAS_UpdateEntity(ent, bue);
-}
-
-static int BotAddSoundStub(vec3_t origin, int ent, int channel, int soundindex, float volume, float attenuation,
-                           float timeofs)
-{
-    (void)origin;
-    (void)ent;
-    (void)channel;
-    (void)soundindex;
-    (void)volume;
-    (void)attenuation;
-    (void)timeofs;
-
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
-    return BLERR_NOERROR;
-}
-
-static int BotAddPointLightStub(vec3_t origin, int ent, float radius, float r, float g, float b, float time,
-                                float decay)
-{
-    (void)origin;
-    (void)ent;
-    (void)radius;
-    (void)r;
-    (void)g;
-    (void)b;
-    (void)time;
-    (void)decay;
-
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
-    return BLERR_NOERROR;
-}
-
-static int BotAIStub(int client, float thinktime)
-{
-    (void)client;
-    (void)thinktime;
-
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
-    return BLERR_NOERROR;
-}
-
-static int BotConsoleMessageStub(int client, int type, char *message)
-{
-    (void)client;
-
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
-    bot_chatstate_t *chat_state = BotInterface_EnsureConsoleChatState();
-    if (chat_state != NULL && message != NULL)
+    status = AAS_UpdateEntity(ent, bue);
+    if (status != BLERR_NOERROR)
     {
-        BotQueueConsoleMessage(chat_state, type, message);
+        return status;
     }
+
+    if (bue != NULL && ent >= 0 && ent < BOT_INTERFACE_MAX_ENTITIES)
+    {
+        g_botInterfaceEntityCache[ent].state = *bue;
+        g_botInterfaceEntityCache[ent].valid = qtrue;
+    }
+
+    aasworld.entitiesValid = qtrue;
     return BLERR_NOERROR;
 }
 
-static int TestStub(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
+static int BotAddSound(vec3_t origin,
+                       int ent,
+                       int channel,
+                       int soundindex,
+                       float volume,
+                       float attenuation,
+                       float timeofs)
 {
-    (void)parm0;
-    (void)parm1;
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotAddSound: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (soundindex < 0 || (size_t)soundindex >= g_botInterfaceMapCache.sounds.count)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                             "[bot_interface] BotAddSound: invalid sound index %d (count %zu)\n",
+                             soundindex,
+                             g_botInterfaceMapCache.sounds.count);
+        return BLERR_INVALIDSOUNDINDEX;
+    }
+
+    BotInterface_EnqueueSound(origin, ent, channel, soundindex, volume, attenuation, timeofs);
+    return BLERR_NOERROR;
+}
+
+static int BotAddPointLight(vec3_t origin,
+                            int ent,
+                            float radius,
+                            float r,
+                            float g,
+                            float b,
+                            float time,
+                            float decay)
+{
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotAddPointLight: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    BotInterface_EnqueuePointLight(origin, ent, radius, r, g, b, time, decay);
+    return BLERR_NOERROR;
+}
+
+static int BotAI_Think(bot_client_state_t *state, float thinktime)
+{
+    if (state == NULL)
+    {
+        return BLERR_AIUPDATEINACTIVECLIENT;
+    }
+
+    if (!state->client_update_valid)
+    {
+        BotInterface_Printf(PRT_WARNING,
+                             "[bot_interface] BotAI: no snapshot for client %d\n",
+                             state->client_number);
+        return BLERR_AIUPDATEINACTIVECLIENT;
+    }
+
+    bot_input_t input = {0};
+    input.thinktime = thinktime;
+    VectorCopy(state->last_client_update.viewangles, input.viewangles);
+
+    Q2_BotInput(state->client_number, &input);
+    state->client_update_valid = false;
+    return BLERR_NOERROR;
+}
+
+static int BotAI(int client, float thinktime)
+{
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotAI: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    bot_client_state_t *state = BotState_Get(client);
+    if (state == NULL || !state->active)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotAI: client %d inactive\n", client);
+        return BLERR_AICLIENTNOTSETUP;
+    }
+
+    return BotAI_Think(state, thinktime);
+}
+
+static int BotConsoleMessage(int client, int type, char *message)
+{
+    if (g_botImport == NULL)
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotConsoleMessage: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    bot_client_state_t *state = BotState_Get(client);
+    if (state == NULL || !state->active)
+    {
+        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotConsoleMessage: client %d inactive\n", client);
+        return BLERR_AICLIENTNOTSETUP;
+    }
+
+    if (state->chat_state == NULL)
+    {
+        BotInterface_Printf(PRT_WARNING,
+                             "[bot_interface] BotConsoleMessage: client %d missing chat state\n",
+                             client);
+        return BLERR_CANNOTLOADICHAT;
+    }
+
+    if (message != NULL)
+    {
+        BotQueueConsoleMessage(state->chat_state, type, message);
+    }
+
+    return BLERR_NOERROR;
+}
+
+static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
+{
     (void)parm2;
     (void)parm3;
 
-    assert(g_botImport != NULL);
-    BotInterface_Log(PRT_WARNING, __func__);
-    bot_chatstate_t *chat_state = BotInterface_EnsureConsoleChatState();
-    if (chat_state != NULL && g_botImport->Print != NULL)
+    if (g_botImport == NULL)
     {
-        int message_type = 0;
-        char buffer[256];
-        if (BotNextConsoleMessage(chat_state, &message_type, buffer, sizeof(buffer)))
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] Test: library not initialised\n");
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (parm1 == NULL || *parm1 == '\0')
+    {
+        BotInterface_Printf(PRT_MESSAGE,
+                             "[bot_interface] Test commands: dump_chat, sounds, pointlights, debug_draw\n");
+        return BLERR_INVALIDIMPORT;
+    }
+
+    char command_buffer[256];
+    strncpy(command_buffer, parm1, sizeof(command_buffer) - 1);
+    command_buffer[sizeof(command_buffer) - 1] = '\0';
+
+    char *arguments = command_buffer;
+    while (*arguments != '\0' && !isspace((unsigned char)*arguments))
+    {
+        ++arguments;
+    }
+
+    if (*arguments != '\0')
+    {
+        *arguments++ = '\0';
+        while (isspace((unsigned char)*arguments))
         {
-            g_botImport->Print(PRT_MESSAGE,
-                               "[bot_interface] console chat (%d): %s\n",
-                               message_type,
-                               buffer);
+            ++arguments;
+        }
+    }
+    else
+    {
+        arguments = NULL;
+    }
+
+    char *command = command_buffer;
+
+    if (BotInterface_StringCompareIgnoreCase(command, "dump_chat") == 0)
+    {
+        int client = parm0;
+        if (arguments != NULL && *arguments != '\0')
+        {
+            client = (int)strtol(arguments, NULL, 10);
+        }
+
+        if (client < 0 || client >= MAX_CLIENTS)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] Test dump_chat: client %d out of range\n",
+                                 client);
+            return BLERR_INVALIDCLIENTNUMBER;
+        }
+
+        bot_client_state_t *state = BotState_Get(client);
+        if (state == NULL || state->chat_state == NULL)
+        {
+            BotInterface_Printf(PRT_WARNING,
+                                 "[bot_interface] Test dump_chat: client %d has no chat state\n",
+                                 client);
+            return BLERR_AICLIENTNOTSETUP;
+        }
+
+        size_t pending = BotNumConsoleMessages(state->chat_state);
+        BotInterface_Printf(PRT_MESSAGE,
+                             "[bot_interface] Test dump_chat: %zu pending messages for client %d\n",
+                             pending,
+                             client);
+
+        if (pending == 0)
+        {
+            return BLERR_NOERROR;
+        }
+
+        typedef struct botinterface_test_message_s
+        {
+            int type;
+            char text[256];
+        } botinterface_test_message_t;
+
+        botinterface_test_message_t *messages =
+            (botinterface_test_message_t *)calloc(pending, sizeof(botinterface_test_message_t));
+        if (messages == NULL)
+        {
+            BotInterface_Printf(PRT_ERROR, "[bot_interface] Test dump_chat: allocation failed\n");
+            return BLERR_INVALIDIMPORT;
+        }
+
+        size_t captured = 0;
+        for (size_t index = 0; index < pending; ++index)
+        {
+            int type = 0;
+            char text[256];
+            if (BotNextConsoleMessage(state->chat_state, &type, text, sizeof(text)))
+            {
+                BotInterface_Printf(PRT_MESSAGE,
+                                     "[bot_interface] chat[%d]: (%d) %s\n",
+                                     client,
+                                     type,
+                                     text);
+                messages[captured].type = type;
+                strncpy(messages[captured].text, text, sizeof(messages[captured].text) - 1);
+                messages[captured].text[sizeof(messages[captured].text) - 1] = '\0';
+                captured += 1U;
+            }
+        }
+
+        for (size_t index = 0; index < captured; ++index)
+        {
+            BotQueueConsoleMessage(state->chat_state,
+                                   messages[index].type,
+                                   messages[index].text);
+        }
+
+        free(messages);
+        return BLERR_NOERROR;
+    }
+
+    if (BotInterface_StringCompareIgnoreCase(command, "sounds") == 0)
+    {
+        BotInterface_Printf(PRT_MESSAGE,
+                             "[bot_interface] Test sounds: %zu queued (%zu assets)\n",
+                             g_botInterfaceSoundCount,
+                             g_botInterfaceMapCache.sounds.count);
+
+        for (size_t index = 0; index < g_botInterfaceSoundCount; ++index)
+        {
+            const botinterface_sound_event_t *event = &g_botInterfaceSoundQueue[index];
+            const char *asset = (event->soundindex >= 0 &&
+                                 (size_t)event->soundindex < g_botInterfaceMapCache.sounds.count &&
+                                 g_botInterfaceMapCache.sounds.entries != NULL)
+                                    ? g_botInterfaceMapCache.sounds.entries[event->soundindex]
+                                    : "<unknown>";
+
+            BotInterface_Printf(PRT_MESSAGE,
+                                 "[bot_interface] sound[%zu]: ent=%d channel=%d index=%d asset=%s\n",
+                                 index,
+                                 event->ent,
+                                 event->channel,
+                                 event->soundindex,
+                                 asset);
+        }
+
+        return BLERR_NOERROR;
+    }
+
+    if (BotInterface_StringCompareIgnoreCase(command, "pointlights") == 0)
+    {
+        BotInterface_Printf(PRT_MESSAGE,
+                             "[bot_interface] Test pointlights: %zu queued\n",
+                             g_botInterfacePointLightCount);
+
+        for (size_t index = 0; index < g_botInterfacePointLightCount; ++index)
+        {
+            const botinterface_pointlight_event_t *event = &g_botInterfacePointLightQueue[index];
+            BotInterface_Printf(PRT_MESSAGE,
+                                 "[bot_interface] light[%zu]: ent=%d origin=(%.1f %.1f %.1f) radius=%.1f color=(%.2f %.2f %.2f)\n",
+                                 index,
+                                 event->ent,
+                                 event->origin[0],
+                                 event->origin[1],
+                                 event->origin[2],
+                                 event->radius,
+                                 event->color[0],
+                                 event->color[1],
+                                 event->color[2]);
+        }
+
+        return BLERR_NOERROR;
+    }
+
+    if (BotInterface_StringCompareIgnoreCase(command, "debug_draw") == 0)
+    {
+        if (arguments != NULL && *arguments != '\0')
+        {
+            if (BotInterface_StringCompareIgnoreCase(arguments, "on") == 0)
+            {
+                g_botInterfaceDebugDrawEnabled = true;
+            }
+            else if (BotInterface_StringCompareIgnoreCase(arguments, "off") == 0)
+            {
+                g_botInterfaceDebugDrawEnabled = false;
+            }
+            else
+            {
+                g_botInterfaceDebugDrawEnabled = (strtol(arguments, NULL, 10) != 0);
+            }
         }
         else
         {
-            g_botImport->Print(PRT_MESSAGE,
-                               "[bot_interface] console chat queue empty (%zu pending)\n",
-                               BotNumConsoleMessages(chat_state));
+            g_botInterfaceDebugDrawEnabled = !g_botInterfaceDebugDrawEnabled;
         }
+
+        BotInterface_Printf(PRT_MESSAGE,
+                             "[bot_interface] Test debug_draw: %s\n",
+                             g_botInterfaceDebugDrawEnabled ? "enabled" : "disabled");
+        return BLERR_NOERROR;
     }
-    return 0;
+
+    BotInterface_Printf(PRT_WARNING,
+                         "[bot_interface] Test: unknown command '%s'\n",
+                         command);
+    return BLERR_INVALIDIMPORT;
 }
 
 bot_export_t *GetBotAPI(bot_import_t *import)
@@ -942,20 +1616,20 @@ bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotLibraryInitialized = BotLibraryInitializedWrapper;
     exportTable.BotLibVarSet = BotLibVarSetWrapper;
     exportTable.BotDefine = BotDefineWrapper;
-    exportTable.BotLoadMap = BotLoadMapStub;
+    exportTable.BotLoadMap = BotLoadMap;
     exportTable.BotSetupClient = BotSetupClient;
     exportTable.BotShutdownClient = BotShutdownClient;
     exportTable.BotMoveClient = BotMoveClient;
     exportTable.BotClientSettings = BotClientSettings;
     exportTable.BotSettings = BotSettings;
-    exportTable.BotStartFrame = BotStartFrameStub;
-    exportTable.BotUpdateClient = BotUpdateClientStub;
-    exportTable.BotUpdateEntity = BotUpdateEntityStub;
-    exportTable.BotAddSound = BotAddSoundStub;
-    exportTable.BotAddPointLight = BotAddPointLightStub;
-    exportTable.BotAI = BotAIStub;
-    exportTable.BotConsoleMessage = BotConsoleMessageStub;
-    exportTable.Test = TestStub;
+    exportTable.BotStartFrame = BotStartFrame;
+    exportTable.BotUpdateClient = BotUpdateClient;
+    exportTable.BotUpdateEntity = BotUpdateEntity;
+    exportTable.BotAddSound = BotAddSound;
+    exportTable.BotAddPointLight = BotAddPointLight;
+    exportTable.BotAI = BotAI;
+    exportTable.BotConsoleMessage = BotConsoleMessage;
+    exportTable.Test = BotInterface_Test;
 
     return &exportTable;
 }
