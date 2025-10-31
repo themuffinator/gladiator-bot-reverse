@@ -55,10 +55,24 @@ static void test_setup_library_validates_imports_and_initialises_subsystems(void
     cmocka_skip();
 }
 
+static void test_setup_library_rejects_duplicate_invocation(void **state)
+{
+    (void)state;
+    // Outline: call setup twice and assert BLERR_LIBRARYALREADYSETUP plus banner parity on the second invocation.
+    cmocka_skip();
+}
+
 static void test_shutdown_library_honours_guards_and_teardown_sequence(void **state)
 {
     (void)state;
     // Outline: guard when uninitialised, ensure reverse-order teardown, and idempotent shutdown.
+    cmocka_skip();
+}
+
+static void test_shutdown_library_reports_duplicate_invocation_guard(void **state)
+{
+    (void)state;
+    // Outline: shutdown twice without setup and expect BLERR_LIBRARYNOTSETUP and banner logging parity.
     cmocka_skip();
 }
 
@@ -82,7 +96,9 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_set_import_table_preserves_existing_pointer, setup_botlib, teardown_botlib),
         cmocka_unit_test_setup_teardown(test_get_import_table_default_and_roundtrip, setup_botlib, teardown_botlib),
         cmocka_unit_test_setup_teardown(test_setup_library_validates_imports_and_initialises_subsystems, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_setup_library_rejects_duplicate_invocation, setup_botlib, teardown_botlib),
         cmocka_unit_test_setup_teardown(test_shutdown_library_honours_guards_and_teardown_sequence, setup_botlib, teardown_botlib),
+        cmocka_unit_test_setup_teardown(test_shutdown_library_reports_duplicate_invocation_guard, setup_botlib, teardown_botlib),
         cmocka_unit_test_setup_teardown(test_library_initialised_reports_state_transitions, setup_botlib, teardown_botlib),
         cmocka_unit_test_setup_teardown(test_get_library_variables_tracks_cached_values, setup_botlib, teardown_botlib),
     };
