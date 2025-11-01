@@ -23,6 +23,7 @@
 #include "../ai/weight/bot_weight.h"
 #include "../ai/goal/ai_goal.h"
 #include "../ai/goal_move_orchestrator.h"
+#include "../ea/ea_local.h"
 #include "../precomp/l_precomp.h"
 #include "botlib_interface.h"
 #include "bot_interface.h"
@@ -1351,6 +1352,16 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
     {
         return status;
     }
+
+    bot_input_t final_input = {0};
+    status = EA_GetInput(state->client_number, thinktime, &final_input);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
+    Q2_BotInput(state->client_number, &final_input);
+
     state->client_update_valid = false;
     return BLERR_NOERROR;
 }

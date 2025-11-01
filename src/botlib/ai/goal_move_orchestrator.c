@@ -7,8 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "botlib/ea/ea_local.h"
 #include "botlib/interface/botlib_interface.h"
-#include "q2bridge/bridge.h"
 
 struct ai_goal_state_s {
     ai_goal_services_t services;
@@ -78,7 +78,8 @@ static void ai_move_default_submit(void *ctx, int client, const bot_input_t *inp
     if (input == NULL) {
         return;
     }
-    Q2_BotInput(client, (bot_input_t *)input);
+
+    EA_SubmitInput(client, input);
 }
 
 ai_goal_state_t *AI_GoalState_Create(void)
@@ -475,10 +476,10 @@ int AI_MoveOrchestrator_Submit(ai_move_state_t *state, int client, const bot_inp
 
     if (state->services.submit_fn != NULL) {
         state->services.submit_fn(state->services.userdata, client, command);
-    } else {
-        ai_move_default_submit(state->services.userdata, client, command);
+        return BLERR_NOERROR;
     }
 
-    return BLERR_NOERROR;
+    int status = EA_SubmitInput(client, command);
+    return status;
 }
 

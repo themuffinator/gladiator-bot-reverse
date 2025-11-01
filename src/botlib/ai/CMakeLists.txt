@@ -10,7 +10,6 @@ set(BOTLIB_AI_SOURCES
     weapon/bot_weapon.c
     character/bot_character.c
     chat/ai_chat.c
-    ea/ea_main.c
 )
 
 add_library(botlib_ai OBJECT ${BOTLIB_AI_SOURCES})
@@ -18,4 +17,5 @@ add_library(botlib_ai OBJECT ${BOTLIB_AI_SOURCES})
 target_include_directories(botlib_ai
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${PROJECT_SOURCE_DIR}/src
 )

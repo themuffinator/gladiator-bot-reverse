@@ -11,7 +11,7 @@
 #include "botlib/interface/bot_interface.h"
 #include "botlib/interface/bot_state.h"
 #include "botlib/ai/chat/ai_chat.h"
-#include "botlib/ai/ea/ea_main.h"
+#include "botlib/ea/ea_local.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_libvar.h"
