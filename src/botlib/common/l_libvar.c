@@ -257,24 +257,36 @@ float LibVarValue(const char *var_name, const char *value)
     return (var != NULL) ? var->value : 0.0f;
 }
 
-void LibVarSet(const char *var_name, const char *value)
+int LibVarSetStatus(const char *var_name, const char *value)
 {
     if (var_name == NULL || value == NULL) {
-        return;
+        return BLERR_INVALIDIMPORT;
     }
 
     const botlib_import_table_t *imports = BotInterface_GetImportTable();
     if (imports != NULL && imports->BotLibVarSet != NULL) {
-        imports->BotLibVarSet(var_name, value);
+        int status = imports->BotLibVarSet(var_name, value);
+        if (status != BLERR_NOERROR) {
+            return status;
+        }
     }
 
     libvar_t *var = LibVar_Find(var_name);
     if (var == NULL) {
         var = LibVar_Create(var_name, value, true);
-        return;
+        if (var == NULL) {
+            return BLERR_INVALIDIMPORT;
+        }
+        return BLERR_NOERROR;
     }
 
     LibVar_UpdateCachedString(var, value);
+    return BLERR_NOERROR;
+}
+
+void LibVarSet(const char *var_name, const char *value)
+{
+    (void)LibVarSetStatus(var_name, value);
 }
 
 bool LibVarChanged(const char *var_name)

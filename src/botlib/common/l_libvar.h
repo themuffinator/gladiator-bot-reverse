@@ -28,6 +28,7 @@ const char *LibVarString(const char *var_name, const char *value);
 float LibVarValue(const char *var_name, const char *value);
 
 void LibVarSet(const char *var_name, const char *value);
+int LibVarSetStatus(const char *var_name, const char *value);
 bool LibVarChanged(const char *var_name);
 void LibVarSetNotModified(const char *var_name);
 
