@@ -1,12 +1,13 @@
 #ifndef Q2BRIDGE_AAS_TRANSLATION_H
 #define Q2BRIDGE_AAS_TRANSLATION_H
 
+#include <stdbool.h>
+
 #include "botlib.h"
 
 #ifdef __cplusplus
-#include <array>
-
-namespace q2bridge {
+extern "C" {
+#endif
 
 /**
  * \brief Runtime mirror of the Gladiator botlib per-client state.
@@ -14,7 +15,8 @@ namespace q2bridge {
  * The legacy DLL stores each client in a 0x11d0-byte record that begins with
  * an "active" flag and the owning slot index. Immediately after those words it
  * memcpy's the full bot_updateclient_t payload and then normalises the angle
- * fields before AI runs for the frame.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32615-L32623】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32598-L32613】
+ * fields before AI runs for the frame.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32615-L32623】【F:dev_tools/gladiator.dll.bndb
+_hlil.txt†L32598-L32613】
  *
  * The helper functions declared in this header provide a typed representation
  * for the reconstructed data and describe the conversions that must take place
@@ -26,11 +28,11 @@ namespace q2bridge {
  * fields inside BotLib_BotUpdateClient, which is the upstream of the data we
  * receive here.【F:dev_tools/game_source/bl_main.c†L482-L541】
  */
-struct AASClientFrame {
+typedef struct AASClientFrame_s {
     pmtype_t pm_type;
     vec3_t origin;
     vec3_t velocity;
-    std::array<float, 3> delta_angles; ///< Normalised via QuantizeEulerDegrees.
+    vec3_t delta_angles; ///< Normalised via QuantizeEulerDegrees.
     byte pm_flags;
     byte pm_time;
     float gravity;
@@ -41,14 +43,14 @@ struct AASClientFrame {
     vec3_t gunoffset;
     int gunindex;
     int gunframe;
-    std::array<float, 4> blend;
+    float blend[4];
     float fov;
     int rdflags;
-    std::array<short, MAX_STATS> stats;
-    std::array<int, MAX_ITEMS> inventory;
+    short stats[MAX_STATS];
+    int inventory[MAX_ITEMS];
     float last_update_time; ///< Absolute timestamp pulled from the botlib heap.
     float frame_delta;      ///< Computed as now - last_update_time.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32603-L32611】
-};
+} AASClientFrame;
 
 /**
  * \brief Snapshot of an entity as expected by the botlib navigation layer.
@@ -64,7 +66,8 @@ struct AASClientFrame {
  *  - Tracks solid type and model indexes, and mirrors mins/maxs or angle data
  *    only when they change by using a vector equality guard. This behaviour is
  *    implemented by a helper that compares the three components before copying
- *    (j_sub_10043240).【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10428】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L52700-L52720】
+ *    (j_sub_10043240).【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10428】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L52700
+-L52720】
  *  - When bounds move, calls into the spatial update routine responsible for
  *    relinking the entity in the AAS world (j_sub_10005e60 / j_sub_1001c620).
  *
@@ -72,7 +75,7 @@ struct AASClientFrame {
  * incoming values originate from BotLib_BotUpdateEntity inside the game DLL,
  * which forwards the edict_t presentation state to the bot library.【F:dev_tools/game_source/bl_main.c†L570-L620】
  */
-struct AASEntityFrame {
+typedef struct AASEntityFrame_s {
     int number;      ///< Entity slot written to the 0x84-byte table.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10358-L10390】
     int solid;       ///< bot_updateentity_t::solid.
     vec3_t origin;   ///< Current origin.
@@ -96,7 +99,7 @@ struct AASEntityFrame {
     bool angles_dirty;      ///< true when angles changed this frame.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10409】
     bool bounds_dirty;      ///< true when mins/maxs changed (solid == 2 branch).【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10390-L10421】
     bool origin_dirty;      ///< true when origin changed.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10421-L10433】
-};
+} AASEntityFrame;
 
 /**
  * \brief Converts Quake II short-based Euler angles into the quantised float
@@ -131,8 +134,9 @@ bool CopyIfChanged(const vec3_t src, vec3_t dst_out);
  *    the DLL implementation.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32603-L32611】
  */
 bot_status_t TranslateClientUpdate(int client_num,
-                                   const bot_updateclient_t &src,
-                                   AASClientFrame &dst);
+                                   const bot_updateclient_t *src,
+                                   float current_time,
+                                   AASClientFrame *dst);
 
 /**
  * \brief Translate BotUpdateEntity payload into the local AASEntityFrame.
@@ -149,8 +153,8 @@ bot_status_t TranslateClientUpdate(int client_num,
  *    mins/maxs differ, matching the DLL's arg1 flag semantics.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10409】
  */
 bot_status_t TranslateEntityUpdate(int ent_num,
-                                   const bot_updateentity_t &src,
-                                   AASEntityFrame &dst);
+                                   const bot_updateentity_t *src,
+                                   AASEntityFrame *dst);
 
 /**
  * \brief Emit botlib-style diagnostics.
@@ -161,8 +165,8 @@ bot_status_t TranslateEntityUpdate(int ent_num,
  */
 void BotlibLog(int level, const char *fmt, ...);
 
-} // namespace q2bridge
-
-#endif // __cplusplus
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif // Q2BRIDGE_AAS_TRANSLATION_H

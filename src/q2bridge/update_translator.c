@@ -4,15 +4,19 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "q2bridge/aas_translation.h"
 #include "q2bridge/bridge.h"
 
 #define BRIDGE_MAX_ENTITIES 1024
 
 typedef struct bridge_client_slot_s
 {
+    qboolean active;
     qboolean seen;
     qboolean logged;
     bot_updateclient_t snapshot;
+    qboolean frame_valid;
+    AASClientFrame frame;
 } bridge_client_slot_t;
 
 typedef struct bridge_entity_slot_s
@@ -26,6 +30,7 @@ static bridge_client_slot_t g_bridge_clients[MAX_CLIENTS];
 static bridge_entity_slot_t g_bridge_entities[BRIDGE_MAX_ENTITIES];
 static int g_bridge_max_client_index = MAX_CLIENTS - 1;
 static int g_bridge_max_entity_index = BRIDGE_MAX_ENTITIES - 1;
+static float g_bridge_frame_time = 0.0f;
 
 static void Bridge_LogMessage(int priority, const char *fmt, ...)
 {
@@ -139,7 +144,21 @@ int Bridge_UpdateClient(int client, const bot_updateclient_t *update)
     }
 
     bridge_client_slot_t *slot = &g_bridge_clients[client];
+    if (!slot->active)
+    {
+        BotlibLog(PRT_WARNING, "tried to updated inactive bot client\n");
+        return BLERR_AIUPDATEINACTIVECLIENT;
+    }
+
     memcpy(&slot->snapshot, update, sizeof(*update));
+
+    bot_status_t status = TranslateClientUpdate(client, update, g_bridge_frame_time, &slot->frame);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
+    slot->frame_valid = qtrue;
     slot->seen = qtrue;
 
     Bridge_LogFirstCapture(&slot->logged,
@@ -182,6 +201,7 @@ void Bridge_ResetCachedUpdates(void)
 {
     memset(g_bridge_clients, 0, sizeof(g_bridge_clients));
     memset(g_bridge_entities, 0, sizeof(g_bridge_entities));
+    g_bridge_frame_time = 0.0f;
 }
 
 void Bridge_ClearClientSlot(int client)
@@ -220,4 +240,41 @@ int Bridge_MoveClientSlot(int old_client, int new_client)
     memset(&g_bridge_clients[old_client], 0, sizeof(g_bridge_clients[old_client]));
 
     return BLERR_NOERROR;
+}
+
+void Bridge_SetFrameTime(float time)
+{
+    g_bridge_frame_time = time;
+}
+
+void Bridge_SetClientActive(int client, qboolean active)
+{
+    if (!Bridge_CheckClientNumber(client, "Bridge_SetClientActive"))
+    {
+        return;
+    }
+
+    g_bridge_clients[client].active = active;
+    if (!active)
+    {
+        g_bridge_clients[client].frame_valid = qfalse;
+        memset(&g_bridge_clients[client].frame, 0, sizeof(g_bridge_clients[client].frame));
+    }
+}
+
+qboolean Bridge_ReadClientFrame(int client, AASClientFrame *frame_out)
+{
+    if (!Bridge_CheckClientNumber(client, "Bridge_ReadClientFrame"))
+    {
+        return qfalse;
+    }
+
+    bridge_client_slot_t *slot = &g_bridge_clients[client];
+    if (!slot->frame_valid || frame_out == NULL)
+    {
+        return qfalse;
+    }
+
+    *frame_out = slot->frame;
+    return qtrue;
 }

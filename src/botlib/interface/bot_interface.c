@@ -13,6 +13,7 @@
 #include <math.h>
 #include <ctype.h>
 
+#include "../../q2bridge/aas_translation.h"
 #include "../../q2bridge/botlib.h"
 #include "../../q2bridge/bridge.h"
 #include "../../q2bridge/bridge_config.h"
@@ -1099,6 +1100,7 @@ static void BotInterface_BeginFrame(float time)
 {
     g_botInterfaceFrameTime = time;
     g_botInterfaceFrameNumber += 1U;
+    Bridge_SetFrameTime(time);
     AAS_SoundSubsystem_SetFrameTime(time);
     BotInterface_ResetFrameQueues();
 
@@ -1871,6 +1873,7 @@ static int BotSetupClient(int client, bot_settings_t *settings)
     }
 
     Bridge_ClearClientSlot(client);
+    Bridge_SetClientActive(client, qtrue);
     state->active = true;
     return BLERR_NOERROR;
 }
@@ -1896,6 +1899,7 @@ static int BotShutdownClient(int client)
     }
 
     BotState_Destroy(client);
+    Bridge_SetClientActive(client, qfalse);
     Bridge_ClearClientSlot(client);
     return BLERR_NOERROR;
 }
@@ -1948,6 +1952,8 @@ static int BotMoveClient(int oldclnum, int newclnum)
         BotState_Move(newclnum, oldclnum);
         return status;
     }
+    Bridge_SetClientActive(oldclnum, qfalse);
+    Bridge_SetClientActive(newclnum, qtrue);
 
     return BLERR_NOERROR;
 }
@@ -2048,19 +2054,48 @@ static int BotUpdateClient(int client, bot_updateclient_t *buc)
         return status;
     }
 
+    AASClientFrame translated;
+    if (!Bridge_ReadClientFrame(client, &translated))
+    {
+        return BLERR_AIUPDATEINACTIVECLIENT;
+    }
+
+    bot_updateclient_t quantised = {0};
+    quantised.pm_type = translated.pm_type;
+    VectorCopy(translated.origin, quantised.origin);
+    VectorCopy(translated.velocity, quantised.velocity);
+    VectorCopy(translated.delta_angles, quantised.delta_angles);
+    quantised.pm_flags = translated.pm_flags;
+    quantised.pm_time = translated.pm_time;
+    quantised.gravity = translated.gravity;
+    VectorCopy(translated.viewangles, quantised.viewangles);
+    VectorCopy(translated.viewoffset, quantised.viewoffset);
+    VectorCopy(translated.kick_angles, quantised.kick_angles);
+    VectorCopy(translated.gunangles, quantised.gunangles);
+    VectorCopy(translated.gunoffset, quantised.gunoffset);
+    quantised.gunindex = translated.gunindex;
+    quantised.gunframe = translated.gunframe;
+    memcpy(quantised.blend, translated.blend, sizeof(quantised.blend));
+    quantised.fov = translated.fov;
+    quantised.rdflags = translated.rdflags;
+    memcpy(quantised.stats, translated.stats, sizeof(quantised.stats));
+    memcpy(quantised.inventory, translated.inventory, sizeof(quantised.inventory));
+
     if (buc != NULL)
     {
-        memcpy(&state->last_client_update, buc, sizeof(*buc));
-        state->client_update_valid = true;
-        state->last_update_time = g_botInterfaceFrameTime;
+        *buc = quantised;
+    }
 
-        if (state->goal_state != NULL)
+    state->last_client_update = quantised;
+    state->client_update_valid = true;
+    state->last_update_time = translated.last_update_time;
+
+    if (state->goal_state != NULL)
+    {
+        status = AI_GoalState_RecordClientUpdate(state->goal_state, &quantised);
+        if (status != BLERR_NOERROR)
         {
-            status = AI_GoalState_RecordClientUpdate(state->goal_state, buc);
-            if (status != BLERR_NOERROR)
-            {
-                return status;
-            }
+            return status;
         }
     }
 

@@ -1,4 +1,5 @@
 add_library(q2bridge STATIC
+    aas_translation.c
     bridge.c
     bridge_config.c
     update_translator.c
