@@ -320,8 +320,14 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 
     Mock_Reset(&context->mock);
 
+    assert_string_equal(context->api->BotVersion(), "BotLib v0.96");
+
     int status = context->api->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
+
+    assert_non_null(Mock_FindPrint(&context->mock, "------- BotLib Initialization -------"));
+    assert_non_null(Mock_FindPrint(&context->mock, "BotLib v0.96"));
+    assert_null(Mock_FindPrint(&context->mock, "stub invoked"));
 
     assert_non_null(Mock_FindPrint(&context->mock, "AAS initialized."));
     assert_true(aasworld.initialized);
@@ -351,6 +357,9 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     assert_non_null(Mock_FindPrint(&context->mock, "pointlights"));
 
     context->api->BotShutdownLibrary();
+
+    assert_non_null(Mock_FindPrint(&context->mock, "------- BotLib Shutdown -------"));
+    assert_null(Mock_FindPrint(&context->mock, "stub invoked"));
 
     assert_false(aasworld.initialized);
     assert_false(EA_IsInitialised());

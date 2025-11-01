@@ -722,15 +722,17 @@ static bot_chatstate_t *BotInterface_EnsureConsoleChatState(void)
 
 static void BotInterface_Log(int priority, const char *functionName)
 {
-    if (g_botImport != NULL && g_botImport->Print != NULL)
+    if (functionName == NULL)
     {
-        g_botImport->Print(priority, "[bot_interface] %s stub invoked\n", functionName);
+        return;
     }
+
+    BotLib_Print(priority, "[bot_interface] %s\n", functionName);
 }
 
 static char *BotVersion(void)
 {
-    static char version[] = "gladiator-bot-interface-stub";
+    static char version[] = "BotLib v0.96";
 
     return version;
 }
@@ -738,6 +740,7 @@ static char *BotVersion(void)
 static int BotSetupLibraryWrapper(void)
 {
     BotInterface_PrintBanner(PRT_MESSAGE, "------- BotLib Initialization -------\n");
+    BotInterface_PrintBanner(PRT_MESSAGE, "BotLib v0.96\n");
     BotInterface_SetImportTable(&g_botlibImportTable);
 
     int result = BotSetupLibrary();
