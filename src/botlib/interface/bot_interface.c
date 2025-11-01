@@ -2448,7 +2448,8 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 
     if (BotInterface_StringCompareIgnoreCase(command, "sounds") == 0)
     {
-        size_t sound_count = AAS_SoundSubsystem_SoundEventCount();
+        const aas_sound_event_summary_t *summaries = NULL;
+        size_t sound_count = AAS_SoundSubsystem_SoundSummaries(&summaries);
         BotInterface_Printf(PRT_MESSAGE,
                              "[bot_interface] Test sounds: %zu queued (%zu assets)\n",
                              sound_count,
@@ -2456,12 +2457,13 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 
         for (size_t index = 0; index < sound_count; ++index)
         {
-            const aas_sound_event_t *event = AAS_SoundSubsystem_SoundEvent(index);
-            if (event == NULL)
+            const aas_sound_event_summary_t *summary = &summaries[index];
+            if (summary == NULL || summary->event == NULL)
             {
                 continue;
             }
 
+            const aas_sound_event_t *event = summary->event;
             const char *asset = AAS_SoundSubsystem_AssetName(event->soundindex);
             if (asset == NULL && event->soundindex >= 0
                 && (size_t)event->soundindex < g_botInterfaceMapCache.sounds.count
@@ -2470,18 +2472,39 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
                 asset = g_botInterfaceMapCache.sounds.entries[event->soundindex];
             }
 
-            const aas_soundinfo_t *info = AAS_SoundSubsystem_InfoForSoundIndex(event->soundindex);
-            const char *info_name = (info != NULL && info->name[0] != '\0') ? info->name : "<unknown>";
+            const aas_soundinfo_t *info = summary->info;
+            const char *info_name =
+                (info != NULL && info->name[0] != '\0') ? info->name : "<unknown>";
+
+            const char *expired = summary->expired ? "true" : "false";
+            const char *expired_frame = summary->expired_this_frame ? "true" : "false";
+            char expiry_buffer[64];
+            if (summary->has_expiry)
+            {
+                snprintf(expiry_buffer,
+                         sizeof(expiry_buffer),
+                         "%.3f",
+                         summary->expiry_time);
+            }
+            else
+            {
+                strncpy(expiry_buffer, "n/a", sizeof(expiry_buffer) - 1U);
+                expiry_buffer[sizeof(expiry_buffer) - 1U] = '\0';
+            }
 
             BotInterface_Printf(PRT_MESSAGE,
-                                 "[bot_interface] sound[%zu]: ent=%d channel=%d index=%d asset=%s info=%s type=%d\n",
+                                 "[bot_interface] sound[%zu]: ent=%d channel=%d index=%d asset=%s info=%s type=%d timestamp=%.3f expiry=%s expired=%s expired_this_frame=%s\n",
                                  index,
                                  event->ent,
                                  event->channel,
                                  event->soundindex,
                                  (asset != NULL) ? asset : "<unknown>",
                                  info_name,
-                                 (info != NULL) ? info->type : 0);
+                                 summary->sound_type,
+                                 summary->timestamp,
+                                 expiry_buffer,
+                                 expired,
+                                 expired_frame);
         }
 
         return BLERR_NOERROR;
@@ -2489,21 +2512,39 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 
     if (BotInterface_StringCompareIgnoreCase(command, "pointlights") == 0)
     {
-        size_t light_count = AAS_SoundSubsystem_PointLightCount();
+        const aas_pointlight_event_summary_t *summaries = NULL;
+        size_t light_count = AAS_SoundSubsystem_PointLightSummaries(&summaries);
         BotInterface_Printf(PRT_MESSAGE,
                              "[bot_interface] Test pointlights: %zu queued\n",
                              light_count);
 
         for (size_t index = 0; index < light_count; ++index)
         {
-            const aas_pointlight_event_t *event = AAS_SoundSubsystem_PointLight(index);
-            if (event == NULL)
+            const aas_pointlight_event_summary_t *summary = &summaries[index];
+            if (summary == NULL || summary->event == NULL)
             {
                 continue;
             }
 
+            const aas_pointlight_event_t *event = summary->event;
+            const char *expired = summary->expired ? "true" : "false";
+            const char *expired_frame = summary->expired_this_frame ? "true" : "false";
+            char expiry_buffer[64];
+            if (summary->has_expiry)
+            {
+                snprintf(expiry_buffer,
+                         sizeof(expiry_buffer),
+                         "%.3f",
+                         summary->expiry_time);
+            }
+            else
+            {
+                strncpy(expiry_buffer, "n/a", sizeof(expiry_buffer) - 1U);
+                expiry_buffer[sizeof(expiry_buffer) - 1U] = '\0';
+            }
+
             BotInterface_Printf(PRT_MESSAGE,
-                                 "[bot_interface] light[%zu]: ent=%d origin=(%.1f %.1f %.1f) radius=%.1f color=(%.2f %.2f %.2f)\n",
+                                 "[bot_interface] light[%zu]: ent=%d origin=(%.1f %.1f %.1f) radius=%.1f color=(%.2f %.2f %.2f) timestamp=%.3f expiry=%s expired=%s expired_this_frame=%s\n",
                                  index,
                                  event->ent,
                                  event->origin[0],
@@ -2512,7 +2553,11 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
                                  event->radius,
                                  event->color[0],
                                  event->color[1],
-                                 event->color[2]);
+                                 event->color[2],
+                                 summary->timestamp,
+                                 expiry_buffer,
+                                 expired,
+                                 expired_frame);
         }
 
         return BLERR_NOERROR;
