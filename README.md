@@ -27,6 +27,32 @@ cmake --install build --prefix /path/to/gladiator/install
 The install step places the module and an export file under the configured
 prefix so downstream engines can link or load the library directly.
 
+## Asset packaging workflow
+
+The original Gladiator release shipped its data inside numbered `pak` archives.
+To reproduce that layout, this repository provides a `dist/` tree that mirrors
+the classic mod directory hierarchy (`bots/`, `maps/`, `sounds/`, etc.). Drop
+updated assets into the matching folders under `dist/gladiator/` before
+building an archive.
+
+Generate the distributable archives with the packaging helper:
+
+```bash
+python dev_tools/package_assets.py            # uses dist/pak_manifest.json
+```
+
+The default manifest creates a legacy-compatible `pak7.pak` next to the
+`dist/` tree. Additional packages can be declared in `dist/pak_manifest.json`
+if you need to split assets across multiple archives. Copy the generated
+`pak*.pak` files alongside the rebuilt `gladiator.dll` (or `gladiator.so`) when
+deploying the mod.
+
+During development you can continue to override packaged content by pointing
+the `GLADIATOR_ASSET_DIR` environment variable (or the `gladiator_asset_dir`
+libvar) at a directory containing loose files. The runtime automatically
+extracts bundled assets into a local `.pak_cache/` directory when the archives
+are used, while still preferring any explicit override paths.
+
 ### Exported symbols
 
 Projects that embed or extend the reconstructed botlib should include
