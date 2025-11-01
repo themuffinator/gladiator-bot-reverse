@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "q2bridge/bridge.h"
+#include "botlib/aas/aas_map.h"
 
 static float QuantizeComponent(float angle)
 {
@@ -118,6 +119,78 @@ bot_status_t TranslateClientUpdate(int client_num,
             dst->frame_delta = 0.0f;
         }
     }
+
+    return BLERR_NOERROR;
+}
+
+bot_status_t TranslateEntityUpdate(int ent_num,
+                                   const bot_updateentity_t *src,
+                                   float current_time,
+                                   AASEntityFrame *dst)
+{
+    if (dst == NULL || src == NULL)
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    if (!AAS_WorldLoaded())
+    {
+        BotlibLog(PRT_MESSAGE, "AAS_UpdateEntity: not loaded\n");
+        return BLERR_NOAASFILE;
+    }
+
+    float previous_time = dst->last_update_time;
+
+    vec3_t prior_origin = {0.0f, 0.0f, 0.0f};
+    CopyVec3(dst->origin, prior_origin);
+    CopyVec3(prior_origin, dst->previous_origin);
+
+    dst->number = ent_num;
+    dst->solid = src->solid;
+
+    bool origin_dirty = CopyIfChanged(src->origin, dst->origin);
+
+    CopyVec3(src->old_origin, dst->old_origin);
+
+    bool mins_dirty = CopyIfChanged(src->mins, dst->mins);
+    bool maxs_dirty = CopyIfChanged(src->maxs, dst->maxs);
+    bool bounds_dirty = mins_dirty || maxs_dirty;
+
+    bool angles_dirty = CopyIfChanged(src->angles, dst->angles);
+    if (src->solid == SOLID_BSP && bounds_dirty)
+    {
+        CopyVec3(src->angles, dst->angles);
+        angles_dirty = true;
+    }
+
+    dst->modelindex = src->modelindex;
+    dst->modelindex2 = src->modelindex2;
+    dst->modelindex3 = src->modelindex3;
+    dst->modelindex4 = src->modelindex4;
+    dst->frame = src->frame;
+    dst->skinnum = src->skinnum;
+    dst->effects = src->effects;
+    dst->renderfx = src->renderfx;
+    dst->sound = src->sound;
+    dst->event_id = src->event;
+
+    dst->last_update_time = current_time;
+    if (previous_time <= 0.0f)
+    {
+        dst->frame_delta = 0.0f;
+    }
+    else
+    {
+        dst->frame_delta = current_time - previous_time;
+        if (dst->frame_delta < 0.0f)
+        {
+            dst->frame_delta = 0.0f;
+        }
+    }
+
+    dst->angles_dirty = angles_dirty;
+    dst->bounds_dirty = bounds_dirty;
+    dst->origin_dirty = origin_dirty;
 
     return BLERR_NOERROR;
 }

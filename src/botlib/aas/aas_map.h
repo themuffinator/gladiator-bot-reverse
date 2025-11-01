@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "../../q2bridge/botlib.h"
+#include "../../q2bridge/aas_translation.h"
 
 /*
  * Quake II BSP file layout -------------------------------------------------
@@ -95,7 +95,9 @@ int AAS_LoadMap(const char *mapname,
 int AAS_Init(void);
 void AAS_Shutdown(void);
 
-int AAS_UpdateEntity(int ent, bot_updateentity_t *state);
+int AAS_UpdateEntity(int ent, const AASEntityFrame *state);
+
+qboolean AAS_WorldLoaded(void);
 
 #ifdef __cplusplus
 } /* extern "C" */
