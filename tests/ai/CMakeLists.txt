@@ -37,3 +37,23 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(ai_dm_tests PRIVATE m)
 endif()
 add_test(NAME ai_dm COMMAND ai_dm_tests)
+
+add_executable(ai_move_tests
+    test_bot_move.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai/move/bot_move.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/ea/ea_main.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_libvar.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_memory.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_log.c
+    ${PROJECT_SOURCE_DIR}/src/q2bridge/bridge.c
+    ${PROJECT_SOURCE_DIR}/src/q2bridge/bridge_config.c
+)
+target_link_libraries(ai_move_tests PRIVATE ${BOTLIB_PARITY_TEST_LIBRARIES})
+target_include_directories(ai_move_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai
+)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(ai_move_tests PRIVATE m)
+endif()
+add_test(NAME ai_move COMMAND ai_move_tests)

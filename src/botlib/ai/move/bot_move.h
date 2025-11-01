@@ -9,6 +9,8 @@
 extern "C" {
 #endif
 
+struct aas_reachability_s;
+
 /* movement command bitmasks */
 #define MOVE_WALK        1
 #define MOVE_CROUCH      2
@@ -160,6 +162,8 @@ void AI_MoveFrame(bot_moveresult_t *result,
                   int movestate,
                   const bot_goal_t *goal,
                   int travelflags);
+
+bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const struct aas_reachability_s *reach);
 
 #ifdef __cplusplus
 } /* extern "C" */
