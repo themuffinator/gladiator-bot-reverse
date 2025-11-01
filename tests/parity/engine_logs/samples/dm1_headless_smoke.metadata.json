@@ -1,0 +1,25 @@
+{
+  "map": "q2dm1",
+  "demo": "dm1_headless_smoke.dm2",
+  "duration": 75.25,
+  "build": {
+    "engine": "quake2-headless",
+    "botlib": "rebuild-local"
+  },
+  "score_ticks": [
+    {
+      "time": 45.0,
+      "player": "Syn",
+      "score": 1,
+      "weapon": "BFG"
+    }
+  ],
+  "events": [
+    {
+      "time": 30.0,
+      "type": "powerup",
+      "player": "Syn",
+      "powerup": "quad damage"
+    }
+  ]
+}

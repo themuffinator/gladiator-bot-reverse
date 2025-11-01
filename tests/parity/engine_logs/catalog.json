@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "scenarios": {
+    "dm1_headless_smoke": {
+      "map": "q2dm1",
+      "description": "Headless harness smoke test seeded with the HLIL-derived BotLib startup banner and representative chat/diagnostic lines.",
+      "hlil_references": [
+        "BotLibSetup banner at 0x10037be2",
+        "Console diagnostics captured at 0x10029986 and bridge::aas_not_loaded",
+        "Chat marker extracted from \"%s at %2.1f entered %s: %s\\n\""
+      ],
+      "events": [
+        {
+          "type": "banner",
+          "match": {
+            "exact": "------- BotLib Initialization -------"
+          },
+          "severity": "info",
+          "timestamp_hint": 0.0,
+          "source": "HLIL BotLibSetup banner"
+        },
+        {
+          "type": "banner",
+          "match": {
+            "exact": "BotLib v0.96"
+          },
+          "severity": "info",
+          "timestamp_hint": 0.1,
+          "source": "HLIL BotLibSetup version string"
+        },
+        {
+          "type": "map-load",
+          "match": {
+            "regex": "(?i)map:\\s*q2dm1\\b"
+          },
+          "severity": "info",
+          "timestamp_hint": 1.25,
+          "source": "Console confirmation that the demo map finished precaching"
+        },
+        {
+          "type": "bot-join",
+          "match": {
+            "regex": "(?i)bot\\s+\\w+\\s+(connected|entered the game|joined)"
+          },
+          "severity": "info",
+          "timestamp_hint": 2.0,
+          "source": "Bot connection handshake traced through HLIL BotLibClientSetup"
+        },
+        {
+          "type": "chat",
+          "match": {
+            "regex": "^[A-Za-z0-9_]+ at \\d+(?:\\.\\d+)? entered .+: .+$"
+          },
+          "severity": "info",
+          "timestamp_hint": 30.0,
+          "source": "HLIL console print template `%s at %2.1f entered %s: %s\\n`"
+        },
+        {
+          "type": "score",
+          "match": {
+            "regex": "(?i)^score[:\\s]+"
+          },
+          "severity": "info",
+          "timestamp_hint": 45.0,
+          "source": "Scoreboard tick recorded in demo metadata"
+        },
+        {
+          "type": "score-tick",
+          "match": {
+            "regex": "(?i)^score[:\\s]+"
+          },
+          "severity": "info",
+          "timestamp_hint": 45.0,
+          "source": "Demo metadata score tick"
+        },
+        {
+          "type": "diagnostic",
+          "match": {
+            "exact": "recieved console message for inactive bot client"
+          },
+          "severity": "warning",
+          "timestamp_hint": 50.0,
+          "source": "HLIL guard 0x10029986 when console messages target inactive clients"
+        },
+        {
+          "type": "diagnostic",
+          "match": {
+            "exact": "AAS_UpdateEntity: not loaded"
+          },
+          "severity": "warning",
+          "timestamp_hint": 55.0,
+          "source": "Bridge diagnostics when navigation data is absent"
+        },
+        {
+          "type": "banner",
+          "match": {
+            "exact": "-------------------------------------"
+          },
+          "severity": "info",
+          "timestamp_hint": 60.0,
+          "source": "Trailing BotLibSetup divider captured from HLIL"
+        }
+      ]
+    }
+  }
+}
