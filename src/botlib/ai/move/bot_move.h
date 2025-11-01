@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "../../shared/q_shared.h"
+#include "mover_catalogue.h"
 
 #ifdef __cplusplus
 extern "C" {
