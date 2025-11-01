@@ -243,11 +243,30 @@ static void test_ea_view_helpers_override_input(void **state)
     assert_float_equal(generated.viewangles[ROLL], expected_angles[ROLL], 0.0001f);
 }
 
+static void test_ea_select_weapon_sets_pending(void **state)
+{
+    (void)state;
+
+    bot_input_t base = {0};
+    base.speed = 100.0f;
+
+    capture_reset();
+    assert_int_equal(EA_ResetClient(4), BLERR_NOERROR);
+    assert_int_equal(EA_SubmitInput(4, &base), BLERR_NOERROR);
+
+    EA_SelectWeapon(4, 7);
+
+    bot_input_t generated = {0};
+    assert_int_equal(EA_GetInput(4, 0.05f, &generated), BLERR_NOERROR);
+    assert_int_equal(generated.weapon, 7);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_ea_matches_legacy_input, setup_ea, teardown_ea),
         cmocka_unit_test_setup_teardown(test_ea_view_helpers_override_input, setup_ea, teardown_ea),
+        cmocka_unit_test_setup_teardown(test_ea_select_weapon_sets_pending, setup_ea, teardown_ea),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

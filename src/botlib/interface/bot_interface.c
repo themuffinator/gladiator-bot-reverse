@@ -9,18 +9,23 @@
 
 #include <stdarg.h>
 #include <string.h>
+#include <float.h>
+#include <math.h>
 #include <ctype.h>
 
 #include "../../q2bridge/botlib.h"
 #include "../../q2bridge/bridge.h"
+#include "../../q2bridge/bridge_config.h"
 #include "../../q2bridge/update_translator.h"
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
 #include "../aas/aas_map.h"
 #include "../aas/aas_local.h"
+#include "../aas/aas_sound.h"
 #include "../aas/aas_debug.h"
 #include "../ai/chat/ai_chat.h"
 #include "../ai/character/bot_character.h"
+#include "../ai/ai_dm.h"
 #include "../ai/weight/bot_weight.h"
 #include "../ai/goal/ai_goal.h"
 #include "../ai/goal_move_orchestrator.h"
@@ -55,40 +60,107 @@ typedef struct botinterface_entity_snapshot_s
     bot_updateentity_t state;
 } botinterface_entity_snapshot_t;
 
-typedef struct botinterface_sound_event_s
-{
-    vec3_t origin;
-    int ent;
-    int channel;
-    int soundindex;
-    float volume;
-    float attenuation;
-    float timeofs;
-} botinterface_sound_event_t;
-
-typedef struct botinterface_pointlight_event_s
-{
-    vec3_t origin;
-    int ent;
-    float radius;
-    float color[3];
-    float time;
-    float decay;
-} botinterface_pointlight_event_t;
-
-#define BOT_INTERFACE_MAX_SOUND_EVENTS 64
-#define BOT_INTERFACE_MAX_POINTLIGHT_EVENTS 32
 #define BOT_INTERFACE_MAX_ENTITIES 1024
 
 static botinterface_map_cache_t g_botInterfaceMapCache;
 static botinterface_entity_snapshot_t g_botInterfaceEntityCache[BOT_INTERFACE_MAX_ENTITIES];
-static botinterface_sound_event_t g_botInterfaceSoundQueue[BOT_INTERFACE_MAX_SOUND_EVENTS];
-static size_t g_botInterfaceSoundCount = 0;
-static botinterface_pointlight_event_t g_botInterfacePointLightQueue[BOT_INTERFACE_MAX_POINTLIGHT_EVENTS];
-static size_t g_botInterfacePointLightCount = 0;
 static float g_botInterfaceFrameTime = 0.0f;
 static unsigned int g_botInterfaceFrameNumber = 0;
 static bool g_botInterfaceDebugDrawEnabled = false;
+
+static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
+{
+    if (info == NULL)
+    {
+        return;
+    }
+
+    info->valid = false;
+    info->entity = -1;
+    VectorClear(info->origin);
+    info->distance = 0.0f;
+}
+
+static int BotAI_MaxTrackedClients(void)
+{
+    libvar_t *maxclients = Bridge_MaxClients();
+    if (maxclients == NULL)
+    {
+        return MAX_CLIENTS;
+    }
+
+    int value = (int)maxclients->value;
+    if (value < 0)
+    {
+        value = 0;
+    }
+    if (value > BOT_INTERFACE_MAX_ENTITIES)
+    {
+        value = BOT_INTERFACE_MAX_ENTITIES;
+    }
+    return value;
+}
+
+static void BotAI_FindEnemy(const bot_client_state_t *state, ai_dm_enemy_info_t *enemy)
+{
+    if (enemy == NULL)
+    {
+        return;
+    }
+
+    BotAI_InitEnemyInfo(enemy);
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    vec3_t self_origin = {0.0f, 0.0f, 0.0f};
+    VectorCopy(state->last_client_update.origin, self_origin);
+
+    float best_distance_sq = FLT_MAX;
+    int best_entity = -1;
+    vec3_t best_origin = {0.0f, 0.0f, 0.0f};
+
+    int max_clients = BotAI_MaxTrackedClients();
+    for (int ent = 0; ent < max_clients; ++ent)
+    {
+        if (ent == state->client_number)
+        {
+            continue;
+        }
+
+        if (ent < 0 || ent >= BOT_INTERFACE_MAX_ENTITIES)
+        {
+            continue;
+        }
+
+        if (!g_botInterfaceEntityCache[ent].valid)
+        {
+            continue;
+        }
+
+        const bot_updateentity_t *snapshot = &g_botInterfaceEntityCache[ent].state;
+        vec3_t delta;
+        VectorSubtract(snapshot->origin, self_origin, delta);
+        float distance_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+
+        if (distance_sq < best_distance_sq)
+        {
+            best_distance_sq = distance_sq;
+            best_entity = ent;
+            VectorCopy(snapshot->origin, best_origin);
+        }
+    }
+
+    if (best_entity >= 0 && best_distance_sq < FLT_MAX)
+    {
+        enemy->valid = true;
+        enemy->entity = best_entity;
+        VectorCopy(best_origin, enemy->origin);
+        enemy->distance = sqrtf(best_distance_sq);
+    }
+}
 
 static char *BotInterface_CopyString(const char *text);
 
@@ -241,8 +313,7 @@ static bool BotInterface_RecordMapAssets(const char *mapname,
 
 static void BotInterface_ResetFrameQueues(void)
 {
-    g_botInterfaceSoundCount = 0;
-    g_botInterfacePointLightCount = 0;
+    AAS_SoundSubsystem_ResetFrameEvents();
 }
 
 static void BotInterface_ResetGoalSnapshot(bot_client_state_t *state)
@@ -643,6 +714,7 @@ static void BotInterface_BeginFrame(float time)
 {
     g_botInterfaceFrameTime = time;
     g_botInterfaceFrameNumber += 1U;
+    AAS_SoundSubsystem_SetFrameTime(time);
     BotInterface_ResetFrameQueues();
 
     for (int client = 0; client < MAX_CLIENTS; ++client)
@@ -663,30 +735,17 @@ static void BotInterface_EnqueueSound(const vec3_t origin,
                                       float attenuation,
                                       float timeofs)
 {
-    if (g_botInterfaceSoundCount == BOT_INTERFACE_MAX_SOUND_EVENTS)
+    if (!AAS_SoundSubsystem_RecordSound(origin,
+                                        ent,
+                                        channel,
+                                        soundindex,
+                                        volume,
+                                        attenuation,
+                                        timeofs))
     {
-        memmove(&g_botInterfaceSoundQueue[0],
-                &g_botInterfaceSoundQueue[1],
-                (BOT_INTERFACE_MAX_SOUND_EVENTS - 1) * sizeof(g_botInterfaceSoundQueue[0]));
-        g_botInterfaceSoundCount -= 1U;
+        BotInterface_Printf(PRT_WARNING,
+                             "[bot_interface] BotAddSound: sound queue capacity exceeded\n");
     }
-
-    botinterface_sound_event_t *slot = &g_botInterfaceSoundQueue[g_botInterfaceSoundCount++];
-    if (origin != NULL)
-    {
-        VectorCopy(origin, slot->origin);
-    }
-    else
-    {
-        VectorClear(slot->origin);
-    }
-
-    slot->ent = ent;
-    slot->channel = channel;
-    slot->soundindex = soundindex;
-    slot->volume = volume;
-    slot->attenuation = attenuation;
-    slot->timeofs = timeofs;
 }
 
 static void BotInterface_EnqueuePointLight(const vec3_t origin,
@@ -698,33 +757,11 @@ static void BotInterface_EnqueuePointLight(const vec3_t origin,
                                            float time,
                                            float decay)
 {
-    if (g_botInterfacePointLightCount == BOT_INTERFACE_MAX_POINTLIGHT_EVENTS)
+    if (!AAS_SoundSubsystem_RecordPointLight(origin, ent, radius, r, g, b, time, decay))
     {
-        memmove(&g_botInterfacePointLightQueue[0],
-                &g_botInterfacePointLightQueue[1],
-                (BOT_INTERFACE_MAX_POINTLIGHT_EVENTS - 1) * sizeof(g_botInterfacePointLightQueue[0]));
-        g_botInterfacePointLightCount -= 1U;
+        BotInterface_Printf(PRT_WARNING,
+                             "[bot_interface] BotAddPointLight: point light queue capacity exceeded\n");
     }
-
-    botinterface_pointlight_event_t *slot =
-        &g_botInterfacePointLightQueue[g_botInterfacePointLightCount++];
-
-    if (origin != NULL)
-    {
-        VectorCopy(origin, slot->origin);
-    }
-    else
-    {
-        VectorClear(slot->origin);
-    }
-
-    slot->ent = ent;
-    slot->radius = radius;
-    slot->color[0] = r;
-    slot->color[1] = g;
-    slot->color[2] = b;
-    slot->time = time;
-    slot->decay = decay;
 }
 
 typedef struct botinterface_import_libvar_s {
@@ -1438,6 +1475,16 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 
     AI_MoveState_LinkAvoidList(state->move_state, AI_GoalState_GetAvoidList(state->goal_state));
 
+    state->dm_state = AI_DMState_Create(client);
+    if (state->dm_state == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate DM state for client %d\n",
+                            client);
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+
     Bridge_ClearClientSlot(client);
     state->active = true;
     return BLERR_NOERROR;
@@ -1790,6 +1837,13 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
         return status;
     }
 
+    ai_dm_enemy_info_t enemy_info;
+    BotAI_InitEnemyInfo(&enemy_info);
+    if (state->dm_state != NULL)
+    {
+        BotAI_FindEnemy(state, &enemy_info);
+    }
+
     input.thinktime = thinktime;
     VectorCopy(state->last_client_update.viewangles, input.viewangles);
 
@@ -1797,6 +1851,16 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
     if (status != BLERR_NOERROR)
     {
         return status;
+    }
+
+    if (state->dm_state != NULL)
+    {
+        AI_DMState_Update(state->dm_state,
+                          state,
+                          &selection,
+                          &enemy_info,
+                          &input,
+                          g_botInterfaceFrameTime);
     }
 
     bot_input_t final_input = {0};
@@ -1998,27 +2062,40 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 
     if (BotInterface_StringCompareIgnoreCase(command, "sounds") == 0)
     {
+        size_t sound_count = AAS_SoundSubsystem_SoundEventCount();
         BotInterface_Printf(PRT_MESSAGE,
                              "[bot_interface] Test sounds: %zu queued (%zu assets)\n",
-                             g_botInterfaceSoundCount,
+                             sound_count,
                              g_botInterfaceMapCache.sounds.count);
 
-        for (size_t index = 0; index < g_botInterfaceSoundCount; ++index)
+        for (size_t index = 0; index < sound_count; ++index)
         {
-            const botinterface_sound_event_t *event = &g_botInterfaceSoundQueue[index];
-            const char *asset = (event->soundindex >= 0 &&
-                                 (size_t)event->soundindex < g_botInterfaceMapCache.sounds.count &&
-                                 g_botInterfaceMapCache.sounds.entries != NULL)
-                                    ? g_botInterfaceMapCache.sounds.entries[event->soundindex]
-                                    : "<unknown>";
+            const aas_sound_event_t *event = AAS_SoundSubsystem_SoundEvent(index);
+            if (event == NULL)
+            {
+                continue;
+            }
+
+            const char *asset = AAS_SoundSubsystem_AssetName(event->soundindex);
+            if (asset == NULL && event->soundindex >= 0
+                && (size_t)event->soundindex < g_botInterfaceMapCache.sounds.count
+                && g_botInterfaceMapCache.sounds.entries != NULL)
+            {
+                asset = g_botInterfaceMapCache.sounds.entries[event->soundindex];
+            }
+
+            const aas_soundinfo_t *info = AAS_SoundSubsystem_InfoForSoundIndex(event->soundindex);
+            const char *info_name = (info != NULL && info->name[0] != '\0') ? info->name : "<unknown>";
 
             BotInterface_Printf(PRT_MESSAGE,
-                                 "[bot_interface] sound[%zu]: ent=%d channel=%d index=%d asset=%s\n",
+                                 "[bot_interface] sound[%zu]: ent=%d channel=%d index=%d asset=%s info=%s type=%d\n",
                                  index,
                                  event->ent,
                                  event->channel,
                                  event->soundindex,
-                                 asset);
+                                 (asset != NULL) ? asset : "<unknown>",
+                                 info_name,
+                                 (info != NULL) ? info->type : 0);
         }
 
         return BLERR_NOERROR;
@@ -2026,13 +2103,19 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 
     if (BotInterface_StringCompareIgnoreCase(command, "pointlights") == 0)
     {
+        size_t light_count = AAS_SoundSubsystem_PointLightCount();
         BotInterface_Printf(PRT_MESSAGE,
                              "[bot_interface] Test pointlights: %zu queued\n",
-                             g_botInterfacePointLightCount);
+                             light_count);
 
-        for (size_t index = 0; index < g_botInterfacePointLightCount; ++index)
+        for (size_t index = 0; index < light_count; ++index)
         {
-            const botinterface_pointlight_event_t *event = &g_botInterfacePointLightQueue[index];
+            const aas_pointlight_event_t *event = AAS_SoundSubsystem_PointLight(index);
+            if (event == NULL)
+            {
+                continue;
+            }
+
             BotInterface_Printf(PRT_MESSAGE,
                                  "[bot_interface] light[%zu]: ent=%d origin=(%.1f %.1f %.1f) radius=%.1f color=(%.2f %.2f %.2f)\n",
                                  index,

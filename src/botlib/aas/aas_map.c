@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "aas_local.h"
+#include "aas_sound.h"
 #include "../common/l_log.h"
 #include "interface/botlib_interface.h"
 
@@ -508,6 +509,7 @@ static void AAS_ClearWorld(void)
         aasworld.nodes = NULL;
     }
 
+    AAS_SoundSubsystem_ClearMapAssets();
     memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -518,8 +520,6 @@ int AAS_LoadMap(const char *mapname,
 {
     (void)modelindexes;
     (void)modelindex;
-    (void)soundindexes;
-    (void)soundindex;
     (void)imageindexes;
     (void)imageindex;
 
@@ -755,6 +755,16 @@ int AAS_LoadMap(const char *mapname,
     aasworld.initialized = qtrue;
     aasworld.entitiesValid = qfalse;
     aasworld.maxEntities = 0;
+
+    if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
+    {
+        BotLib_Print(PRT_ERROR,
+                     "AAS_LoadMap: failed to register sound assets for %s\n",
+                     mapname);
+        AAS_ClearWorld();
+        return BLERR_INVALIDIMPORT;
+    }
+
     AAS_InitTravelFlagFromType();
     int reachStatus = AAS_PrepareReachability();
     if (reachStatus != BLERR_NOERROR)

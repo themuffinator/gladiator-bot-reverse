@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "../aas/aas_map.h"
+#include "../aas/aas_sound.h"
 #include "../ea/ea_local.h"
 #include "../ai/weapon/bot_weapon.h"
 #include "../common/l_struct.h"
@@ -25,6 +26,7 @@ typedef struct botlib_subsystem_state_s {
     bool aas_initialised;
     bool ea_initialised;
     bool ai_initialised;
+    bool sound_initialised;
     bool utilities_initialised;
 } botlib_subsystem_state_t;
 
@@ -82,6 +84,8 @@ static void Botlib_CacheLibraryVariables(void)
     g_library_variables.sv_waterfriction = Botlib_ReadFloatLibVarCached(Bridge_WaterFriction(), 1.0f);
     g_library_variables.max_weaponinfo = Botlib_ReadIntLibVarCached(Bridge_MaxWeaponInfo(), 32);
     g_library_variables.max_projectileinfo = Botlib_ReadIntLibVarCached(Bridge_MaxProjectileInfo(), 32);
+    g_library_variables.max_soundinfo = Botlib_ReadIntLibVarCached(Bridge_MaxSoundInfo(), 256);
+    g_library_variables.max_aassounds = Botlib_ReadIntLibVarCached(Bridge_MaxAASSounds(), 256);
 
     const libvar_t *weaponconfig = Bridge_WeaponConfig();
     const char *weaponconfig_string = (weaponconfig != NULL && weaponconfig->string != NULL && weaponconfig->string[0] != '\0')
@@ -91,6 +95,16 @@ static void Botlib_CacheLibraryVariables(void)
             weaponconfig_string,
             sizeof(g_library_variables.weaponconfig) - 1);
     g_library_variables.weaponconfig[sizeof(g_library_variables.weaponconfig) - 1] = '\0';
+
+    const libvar_t *soundconfig = Bridge_SoundConfig();
+    const char *soundconfig_string = (soundconfig != NULL && soundconfig->string != NULL
+                                      && soundconfig->string[0] != '\0')
+                                         ? soundconfig->string
+                                         : "sounds.c";
+    strncpy(g_library_variables.soundconfig,
+            soundconfig_string,
+            sizeof(g_library_variables.soundconfig) - 1);
+    g_library_variables.soundconfig[sizeof(g_library_variables.soundconfig) - 1] = '\0';
 }
 
 static int Botlib_SetupAASSubsystem(void)
@@ -140,6 +154,21 @@ static bool Botlib_SetupAISubsystem(void)
 
     g_subsystem_state.ai_initialised = true;
     return true;
+}
+
+static int Botlib_SetupSoundSubsystem(void)
+{
+    if (g_subsystem_state.sound_initialised) {
+        return BLERR_NOERROR;
+    }
+
+    int status = AAS_SoundSubsystem_Init(&g_library_variables);
+    if (status != BLERR_NOERROR) {
+        return status;
+    }
+
+    g_subsystem_state.sound_initialised = true;
+    return BLERR_NOERROR;
 }
 
 static int Botlib_SetupUtilities(void)
@@ -194,6 +223,16 @@ static void Botlib_ShutdownAISubsystem(void)
     }
 
     g_subsystem_state.ai_initialised = false;
+}
+
+static void Botlib_ShutdownSoundSubsystem(void)
+{
+    if (!g_subsystem_state.sound_initialised) {
+        return;
+    }
+
+    AAS_SoundSubsystem_Shutdown();
+    g_subsystem_state.sound_initialised = false;
 }
 
 static void Botlib_ShutdownEASubsystem(void)
@@ -298,6 +337,19 @@ int BotSetupLibrary(void)
         return BLERR_CANNOTLOADWEAPONCONFIG;
     }
 
+    status = Botlib_SetupSoundSubsystem();
+    if (status != BLERR_NOERROR) {
+        Botlib_ShutdownAISubsystem();
+        Botlib_ShutdownEASubsystem();
+        Botlib_ShutdownAASSubsystem();
+        Botlib_ShutdownUtilities();
+        Botlib_ResetLibraryVariables();
+        Botlib_ResetSubsystemState();
+        LibVar_Shutdown();
+        BotMemory_Shutdown();
+        return status;
+    }
+
     g_library_initialised = true;
     return BLERR_NOERROR;
 }
@@ -308,6 +360,7 @@ int BotShutdownLibrary(void)
         return BLERR_LIBRARYNOTSETUP;
     }
 
+    Botlib_ShutdownSoundSubsystem();
     Botlib_ShutdownAISubsystem();
     Botlib_ShutdownEASubsystem();
     Botlib_ShutdownAASSubsystem();
