@@ -1,0 +1,16 @@
+{
+  "base_dir": ".",
+  "packages": [
+    {
+      "name": "pak7.pak",
+      "source": "gladiator",
+      "include": [
+        "**/*"
+      ],
+      "exclude": [
+        "**/.gitkeep",
+        ".pak_cache/**"
+      ]
+    }
+  ]
+}

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include "botlib/common/l_assets.h"
 #include "botlib/common/l_crc.h"
@@ -270,6 +271,77 @@ static void test_cleanup_asset_files(const char *root, const char *extra_file)
     }
 }
 
+static bool test_write_pak(const char *pak_path, const char *entry_name, const char *contents)
+{
+    if (pak_path == NULL || entry_name == NULL || contents == NULL) {
+        return false;
+    }
+
+    size_t name_length = strlen(entry_name);
+    if (name_length == 0 || name_length >= 56) {
+        return false;
+    }
+
+    size_t content_length = strlen(contents);
+    if (content_length > (size_t)INT32_MAX) {
+        return false;
+    }
+
+    FILE *stream = fopen(pak_path, "wb");
+    if (stream == NULL) {
+        return false;
+    }
+
+    bool success = false;
+    const char magic[] = {'P', 'A', 'C', 'K'};
+    int32_t zero = 0;
+
+    if (fwrite(magic, 1, sizeof(magic), stream) != sizeof(magic)) {
+        goto cleanup;
+    }
+    if (fwrite(&zero, sizeof(zero), 1, stream) != 1 || fwrite(&zero, sizeof(zero), 1, stream) != 1) {
+        goto cleanup;
+    }
+
+    if (fwrite(contents, 1, content_length, stream) != content_length) {
+        goto cleanup;
+    }
+
+    int32_t directory_offset = (int32_t)ftell(stream);
+    int32_t directory_length = 64;
+    int32_t entry_offset = 12;
+    int32_t entry_length = (int32_t)content_length;
+
+    unsigned char name_field[56] = {0};
+    memcpy(name_field, entry_name, name_length);
+
+    if (fwrite(name_field, 1, sizeof(name_field), stream) != sizeof(name_field)) {
+        goto cleanup;
+    }
+
+    if (fwrite(&entry_offset, sizeof(entry_offset), 1, stream) != 1
+        || fwrite(&entry_length, sizeof(entry_length), 1, stream) != 1) {
+        goto cleanup;
+    }
+
+    if (fseek(stream, 4, SEEK_SET) != 0) {
+        goto cleanup;
+    }
+    if (fwrite(&directory_offset, sizeof(directory_offset), 1, stream) != 1
+        || fwrite(&directory_length, sizeof(directory_length), 1, stream) != 1) {
+        goto cleanup;
+    }
+
+    success = true;
+
+cleanup:
+    fclose(stream);
+    if (!success) {
+        test_unlink(pak_path);
+    }
+    return success;
+}
+
 static void test_locate_asset_root_prefers_basedir(void)
 {
     char legacy_root[PATH_MAX];
@@ -347,6 +419,202 @@ static void test_resolve_asset_path_prefers_cddir_over_new_knob(void)
     test_rmdir(alternate_root);
 }
 
+static void test_resolve_asset_path_reads_from_pak_when_available(void)
+{
+    char basedir[PATH_MAX];
+    char game_root[PATH_MAX];
+    char pak_path[PATH_MAX];
+    char cache_file[PATH_MAX];
+    char cache_bots[PATH_MAX];
+    char cache_pak[PATH_MAX];
+    char cache_root[PATH_MAX];
+
+    if (!test_create_temp_directory(basedir, sizeof(basedir), "gla")) {
+        fprintf(stderr, "failed to create base directory\n");
+        exit(EXIT_FAILURE);
+    }
+
+    int written = snprintf(game_root, sizeof(game_root), "%s/gladiator", basedir);
+    if (written < 0 || (size_t)written >= sizeof(game_root)) {
+        fprintf(stderr, "failed to compose game root path\n");
+        exit(EXIT_FAILURE);
+    }
+    if (test_mkdir(game_root) != 0) {
+        fprintf(stderr, "failed to create %s\n", game_root);
+        exit(EXIT_FAILURE);
+    }
+    if (!test_create_asset_files(game_root, NULL)) {
+        fprintf(stderr, "failed to create seed assets\n");
+        exit(EXIT_FAILURE);
+    }
+
+    written = snprintf(pak_path, sizeof(pak_path), "%s/pak7.pak", game_root);
+    if (written < 0 || (size_t)written >= sizeof(pak_path)) {
+        fprintf(stderr, "failed to compose pak path\n");
+        exit(EXIT_FAILURE);
+    }
+    if (!test_write_pak(pak_path, "bots/test.asset", "pak contents")) {
+        fprintf(stderr, "failed to write pak %s\n", pak_path);
+        exit(EXIT_FAILURE);
+    }
+
+    LibVar_Init();
+    LibVarSet("basedir", basedir);
+    LibVarSet("gamedir", "gladiator");
+    LibVarSet("cddir", "");
+    LibVarSet("gladiator_asset_dir", "");
+    test_unsetenv("GLADIATOR_ASSET_DIR");
+
+    char resolved[BOTLIB_ASSET_MAX_PATH];
+    bool ok = BotLib_ResolveAssetPath("test.asset", "bots", resolved, sizeof(resolved));
+    if (!ok) {
+        fprintf(stderr, "expected packaged asset to resolve\n");
+        LibVar_Shutdown();
+        exit(EXIT_FAILURE);
+    }
+
+    FILE *reader = fopen(resolved, "rb");
+    if (reader == NULL) {
+        fprintf(stderr, "unable to open packaged asset %s\n", resolved);
+        LibVar_Shutdown();
+        exit(EXIT_FAILURE);
+    }
+    char buffer[32];
+    size_t read = fread(buffer, 1, sizeof(buffer) - 1, reader);
+    fclose(reader);
+    buffer[read] = '\0';
+    assert(strstr(buffer, "pak contents") != NULL);
+
+    LibVar_Shutdown();
+
+    written = snprintf(cache_file, sizeof(cache_file), "%s/.pak_cache/pak7/bots/test.asset", game_root);
+    assert(written >= 0 && (size_t)written < sizeof(cache_file));
+    test_unlink(cache_file);
+
+    written = snprintf(cache_bots, sizeof(cache_bots), "%s/.pak_cache/pak7/bots", game_root);
+    assert(written >= 0 && (size_t)written < sizeof(cache_bots));
+    test_rmdir(cache_bots);
+
+    written = snprintf(cache_pak, sizeof(cache_pak), "%s/.pak_cache/pak7", game_root);
+    assert(written >= 0 && (size_t)written < sizeof(cache_pak));
+    test_rmdir(cache_pak);
+
+    written = snprintf(cache_root, sizeof(cache_root), "%s/.pak_cache", game_root);
+    assert(written >= 0 && (size_t)written < sizeof(cache_root));
+    test_rmdir(cache_root);
+
+    test_cleanup_asset_files(game_root, NULL);
+    test_unlink(pak_path);
+    test_rmdir(game_root);
+    test_rmdir(basedir);
+}
+
+static void test_resolve_asset_path_prefers_override_to_pak(void)
+{
+    char basedir[PATH_MAX];
+    char game_root[PATH_MAX];
+    char pak_path[PATH_MAX];
+    char override_root[PATH_MAX];
+    char override_bots[PATH_MAX];
+    char override_file[PATH_MAX];
+
+    if (!test_create_temp_directory(basedir, sizeof(basedir), "gla")) {
+        fprintf(stderr, "failed to create base directory\n");
+        exit(EXIT_FAILURE);
+    }
+    if (!test_create_temp_directory(override_root, sizeof(override_root), "gla")) {
+        fprintf(stderr, "failed to create override directory\n");
+        exit(EXIT_FAILURE);
+    }
+
+    int written = snprintf(game_root, sizeof(game_root), "%s/gladiator", basedir);
+    if (written < 0 || (size_t)written >= sizeof(game_root)) {
+        fprintf(stderr, "failed to compose game root path\n");
+        exit(EXIT_FAILURE);
+    }
+    if (test_mkdir(game_root) != 0) {
+        fprintf(stderr, "failed to create %s\n", game_root);
+        exit(EXIT_FAILURE);
+    }
+    if (!test_create_asset_files(game_root, NULL)) {
+        fprintf(stderr, "failed to create seed assets\n");
+        exit(EXIT_FAILURE);
+    }
+
+    written = snprintf(pak_path, sizeof(pak_path), "%s/pak7.pak", game_root);
+    if (written < 0 || (size_t)written >= sizeof(pak_path)) {
+        fprintf(stderr, "failed to compose pak path\n");
+        exit(EXIT_FAILURE);
+    }
+    if (!test_write_pak(pak_path, "bots/test.asset", "pak contents")) {
+        fprintf(stderr, "failed to write pak %s\n", pak_path);
+        exit(EXIT_FAILURE);
+    }
+
+    if (!test_create_asset_files(override_root, NULL)) {
+        fprintf(stderr, "failed to seed override assets\n");
+        exit(EXIT_FAILURE);
+    }
+    written = snprintf(override_bots, sizeof(override_bots), "%s/bots", override_root);
+    if (written < 0 || (size_t)written >= sizeof(override_bots)) {
+        fprintf(stderr, "failed to compose override bots path\n");
+        exit(EXIT_FAILURE);
+    }
+    if (test_mkdir(override_bots) != 0) {
+        fprintf(stderr, "failed to create override bots directory\n");
+        exit(EXIT_FAILURE);
+    }
+
+    written = snprintf(override_file, sizeof(override_file), "%s/test.asset", override_bots);
+    if (written < 0 || (size_t)written >= sizeof(override_file)) {
+        fprintf(stderr, "failed to compose override asset path\n");
+        exit(EXIT_FAILURE);
+    }
+    FILE *override_stream = fopen(override_file, "wb");
+    assert(override_stream != NULL);
+    fputs("override data", override_stream);
+    fclose(override_stream);
+
+    LibVar_Init();
+    LibVarSet("basedir", basedir);
+    LibVarSet("gamedir", "gladiator");
+    LibVarSet("cddir", "");
+    LibVarSet("gladiator_asset_dir", override_root);
+    test_unsetenv("GLADIATOR_ASSET_DIR");
+
+    char resolved[BOTLIB_ASSET_MAX_PATH];
+    bool ok = BotLib_ResolveAssetPath("test.asset", "bots", resolved, sizeof(resolved));
+    if (!ok) {
+        fprintf(stderr, "expected override asset to resolve\n");
+        LibVar_Shutdown();
+        exit(EXIT_FAILURE);
+    }
+    assert(strcmp(resolved, override_file) == 0);
+
+    FILE *reader = fopen(resolved, "rb");
+    if (reader == NULL) {
+        fprintf(stderr, "unable to open override asset %s\n", resolved);
+        LibVar_Shutdown();
+        exit(EXIT_FAILURE);
+    }
+    char buffer[32];
+    size_t read = fread(buffer, 1, sizeof(buffer) - 1, reader);
+    fclose(reader);
+    buffer[read] = '\0';
+    assert(strstr(buffer, "override data") != NULL);
+
+    LibVar_Shutdown();
+
+    test_cleanup_asset_files(game_root, NULL);
+    test_cleanup_asset_files(override_root, NULL);
+    test_unlink(override_file);
+    test_rmdir(override_bots);
+    test_unlink(pak_path);
+    test_rmdir(game_root);
+    test_rmdir(override_root);
+    test_rmdir(basedir);
+}
+
 int main(void) {
     test_utils_initialisation_flags();
     test_struct_initialisation_flags();
@@ -357,6 +625,8 @@ int main(void) {
     test_path_helpers();
     test_locate_asset_root_prefers_basedir();
     test_resolve_asset_path_prefers_cddir_over_new_knob();
+    test_resolve_asset_path_reads_from_pak_when_available();
+    test_resolve_asset_path_prefers_override_to_pak();
 
     printf("bot_common_tests: all checks passed\n");
     return 0;

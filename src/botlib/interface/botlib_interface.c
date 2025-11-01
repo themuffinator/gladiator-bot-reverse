@@ -8,6 +8,7 @@
 #include "../aas/aas_sound.h"
 #include "../ea/ea_local.h"
 #include "../ai/weapon/bot_weapon.h"
+#include "../common/l_assets.h"
 #include "../common/l_struct.h"
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
@@ -197,6 +198,13 @@ static int Botlib_SetupUtilities(void)
         BridgeConfig_Shutdown();
         BotLib_Print(PRT_ERROR, "Botlib_SetupUtilities: l_struct bootstrap failed\n");
         return BLERR_INVALIDIMPORT;
+    }
+
+    char asset_root[BOTLIB_ASSET_MAX_PATH];
+    if (BotLib_LocateAssetRoot(asset_root, sizeof(asset_root))) {
+        BotLib_Print(PRT_MESSAGE, "[botlib_interface] assets root resolved to %s\n", asset_root);
+    } else {
+        BotLib_Print(PRT_WARNING, "[botlib_interface] unable to resolve Gladiator asset root\n");
     }
 
     g_subsystem_state.utilities_initialised = true;
