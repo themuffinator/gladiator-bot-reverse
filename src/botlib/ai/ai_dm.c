@@ -381,7 +381,7 @@ void AI_DMState_Update(ai_dm_state_t *state,
         bool enemy_was_visible = state->enemy_visible;
 
         state->enemy_entity = enemy->entity;
-        state->enemy_visible = true;
+        state->enemy_visible = enemy->visible;
         state->enemyvisible_time = (enemy->last_seen_time > -FLT_MAX * 0.5f) ? enemy->last_seen_time : now;
         state->chase_time = now + state->chase_duration;
 
@@ -400,6 +400,15 @@ void AI_DMState_Update(ai_dm_state_t *state,
         else if (state->enemysight_time <= -FLT_MAX * 0.5f)
         {
             state->enemysight_time = now;
+        }
+
+        if (enemy->triggered_by_damage || enemy->is_shooting)
+        {
+            float instant = now - state->reaction_delay;
+            if (state->enemysight_time > instant)
+            {
+                state->enemysight_time = instant;
+            }
         }
 
         if (state->enemyposition_time > -FLT_MAX * 0.5f)

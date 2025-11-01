@@ -68,6 +68,9 @@ static float g_botInterfaceFrameTime = 0.0f;
 static unsigned int g_botInterfaceFrameNumber = 0;
 static bool g_botInterfaceDebugDrawEnabled = false;
 
+#define CHARACTERISTIC_EASY_FRAGGER 42
+#define CHARACTERISTIC_ALERTNESS 43
+
 static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
 {
     if (info == NULL)
@@ -82,6 +85,13 @@ static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
     VectorClear(info->velocity);
     info->distance = 0.0f;
     info->last_seen_time = -FLT_MAX;
+    info->field_of_view = 0.0f;
+    info->is_invisible = false;
+    info->is_chatting = false;
+    info->is_shooting = false;
+    info->triggered_by_damage = false;
+    info->in_field_of_view = false;
+    info->has_line_of_sight = false;
 }
 
 static int BotAI_MaxTrackedClients(void)
@@ -104,7 +114,161 @@ static int BotAI_MaxTrackedClients(void)
     return value;
 }
 
-static void BotAI_FindEnemy(const bot_client_state_t *state, ai_dm_enemy_info_t *enemy)
+static float BotInterface_NormaliseAngle180(float angle)
+{
+    while (angle > 180.0f)
+    {
+        angle -= 360.0f;
+    }
+    while (angle < -180.0f)
+    {
+        angle += 360.0f;
+    }
+    return angle;
+}
+
+static void BotInterface_VectorToAngles(const vec3_t vector, vec3_t angles)
+{
+    if (angles == NULL || vector == NULL)
+    {
+        return;
+    }
+
+    float yaw;
+    float pitch;
+
+    if (vector[0] == 0.0f && vector[1] == 0.0f)
+    {
+        yaw = 0.0f;
+        pitch = (vector[2] > 0.0f) ? 90.0f : 270.0f;
+    }
+    else
+    {
+        yaw = atan2f(vector[1], vector[0]) * (180.0f / (float)M_PI);
+        if (yaw < 0.0f)
+        {
+            yaw += 360.0f;
+        }
+
+        float forward = sqrtf(vector[0] * vector[0] + vector[1] * vector[1]);
+        pitch = atan2f(vector[2], forward) * (180.0f / (float)M_PI);
+    }
+
+    angles[PITCH] = pitch;
+    angles[YAW] = yaw;
+    angles[ROLL] = 0.0f;
+}
+
+static bool BotInterface_InFieldOfVision(const vec3_t viewangles, float fov, const vec3_t target_angles)
+{
+    if (viewangles == NULL || target_angles == NULL)
+    {
+        return false;
+    }
+
+    if (fov >= 360.0f)
+    {
+        return true;
+    }
+
+    float yaw_delta = BotInterface_NormaliseAngle180(viewangles[YAW] - target_angles[YAW]);
+    float pitch_delta = BotInterface_NormaliseAngle180(viewangles[PITCH] - target_angles[PITCH]);
+    float half_fov = fov * 0.5f;
+    return fabsf(yaw_delta) <= half_fov && fabsf(pitch_delta) <= half_fov;
+}
+
+static void BotInterface_ClientEyePosition(const bot_client_state_t *state, vec3_t out)
+{
+    if (state == NULL || out == NULL)
+    {
+        return;
+    }
+
+    VectorCopy(state->last_client_update.origin, out);
+    out[0] += state->last_client_update.viewoffset[0];
+    out[1] += state->last_client_update.viewoffset[1];
+    out[2] += state->last_client_update.viewoffset[2];
+}
+
+static bool BotInterface_HasLineOfSight(const vec3_t from,
+                                        const vec3_t to,
+                                        int viewer,
+                                        int target)
+{
+    if (from == NULL || to == NULL)
+    {
+        return false;
+    }
+
+    vec3_t start;
+    vec3_t end;
+    VectorCopy(from, start);
+    VectorCopy(to, end);
+
+    vec3_t mins = {0.0f, 0.0f, 0.0f};
+    vec3_t maxs = {0.0f, 0.0f, 0.0f};
+    bsp_trace_t trace = Q2_Trace(start, mins, maxs, end, viewer, MASK_SHOT);
+    return trace.fraction >= 1.0f || trace.ent == target;
+}
+
+static bool BotInterface_SameTeam(const bot_client_state_t *lhs, const bot_client_state_t *rhs)
+{
+    if (lhs == NULL || rhs == NULL)
+    {
+        return false;
+    }
+
+    if (lhs->team < 0 || rhs->team < 0)
+    {
+        return false;
+    }
+
+    return lhs->team == rhs->team;
+}
+
+static bool BotInterface_IsChatting(const bot_client_state_t *state)
+{
+    if (state == NULL)
+    {
+        return false;
+    }
+
+    return (state->last_client_update.stats[STAT_LAYOUTS] & 1) != 0;
+}
+
+static bool BotInterface_IsInvisible(const bot_updateentity_t *snapshot)
+{
+    if (snapshot == NULL)
+    {
+        return false;
+    }
+
+    return (snapshot->renderfx & RF_TRANSLUCENT) != 0;
+}
+
+static bool BotInterface_IsShooting(const bot_updateentity_t *snapshot)
+{
+    if (snapshot == NULL)
+    {
+        return false;
+    }
+
+    const int weapon_fx = EF_BLASTER | EF_ROCKET | EF_GRENADE | EF_HYPERBLASTER | EF_BFG | EF_IONRIPPER |
+                          EF_BLUEHYPERBLASTER | EF_TRACKER | EF_PLASMA;
+    return (snapshot->effects & weapon_fx) != 0;
+}
+
+static float BotInterface_VectorLengthSquared(const vec3_t v)
+{
+    if (v == NULL)
+    {
+        return 0.0f;
+    }
+
+    return v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+}
+
+static void BotAI_FindEnemy(bot_client_state_t *state, ai_dm_enemy_info_t *enemy)
 {
     if (enemy == NULL)
     {
@@ -118,17 +282,125 @@ static void BotAI_FindEnemy(const bot_client_state_t *state, ai_dm_enemy_info_t 
         return;
     }
 
-    vec3_t self_origin = {0.0f, 0.0f, 0.0f};
-    VectorCopy(state->last_client_update.origin, self_origin);
+    if (!state->client_update_valid)
+    {
+        return;
+    }
 
-    float best_distance_sq = FLT_MAX;
-    int best_entity = -1;
-    vec3_t best_origin = {0.0f, 0.0f, 0.0f};
+    bot_combat_state_t *combat = &state->combat;
+
+    int current_health = state->last_client_update.stats[STAT_HEALTH];
+    bool health_drop = false;
+    if (combat->last_health_valid && current_health < combat->last_known_health)
+    {
+        combat->took_damage = true;
+        combat->last_damage_amount = combat->last_known_health - current_health;
+        combat->last_damage_time = g_botInterfaceFrameTime;
+        health_drop = true;
+    }
+    else
+    {
+        combat->took_damage = false;
+    }
+    combat->last_known_health = current_health;
+    combat->last_health_valid = true;
+
+    float alertness = 0.5f;
+    float easyfragger = 1.0f;
+    if (state->character_handle > 0)
+    {
+        alertness = Characteristic_BFloat(state->character_handle, CHARACTERISTIC_ALERTNESS, 0.0f, 1.0f);
+        easyfragger = Characteristic_BFloat(state->character_handle, CHARACTERISTIC_EASY_FRAGGER, 0.0f, 1.0f);
+    }
+
+    vec3_t self_origin;
+    VectorCopy(state->last_client_update.origin, self_origin);
+    vec3_t eye_position;
+    BotInterface_ClientEyePosition(state, eye_position);
+
+    int curenemy = combat->current_enemy;
+    const bot_updateentity_t *current_snapshot = NULL;
+    float current_enemy_dist_sq = FLT_MAX;
+    if (curenemy >= 0 && curenemy < BOT_INTERFACE_MAX_ENTITIES &&
+        g_botInterfaceEntityCache[curenemy].valid)
+    {
+        current_snapshot = &g_botInterfaceEntityCache[curenemy].state;
+        vec3_t delta;
+        VectorSubtract(current_snapshot->origin, self_origin, delta);
+        current_enemy_dist_sq = BotInterface_VectorLengthSquared(delta);
+    }
+    else
+    {
+        curenemy = -1;
+        combat->current_enemy = -1;
+    }
+
+    if (curenemy >= 0 && current_snapshot != NULL)
+    {
+        bool invisible = BotInterface_IsInvisible(current_snapshot);
+        bool shooting = BotInterface_IsShooting(current_snapshot);
+        bot_client_state_t *current_state = BotState_Get(curenemy);
+        bool chatting = BotInterface_IsChatting(current_state);
+
+        if (!(invisible && !shooting))
+        {
+            vec3_t to_enemy;
+            VectorSubtract(current_snapshot->origin, eye_position, to_enemy);
+            vec3_t target_angles;
+            BotInterface_VectorToAngles(to_enemy, target_angles);
+
+            float limited = (current_enemy_dist_sq > 810.0f * 810.0f)
+                                ? 810.0f * 810.0f
+                                : current_enemy_dist_sq;
+            float fov = 90.0f + (limited / (810.0f * 9.0f));
+            bool in_fov = BotInterface_InFieldOfVision(state->last_client_update.viewangles, fov, target_angles);
+            bool has_los = BotInterface_HasLineOfSight(eye_position, current_snapshot->origin, state->client_number, curenemy);
+
+            if (in_fov && has_los)
+            {
+                enemy->valid = true;
+                enemy->visible = true;
+                enemy->entity = curenemy;
+                VectorCopy(current_snapshot->origin, enemy->origin);
+                vec3_t displacement;
+                VectorSubtract(current_snapshot->origin, current_snapshot->old_origin, displacement);
+                VectorCopy(displacement, enemy->velocity);
+                enemy->distance = sqrtf(current_enemy_dist_sq);
+                enemy->last_seen_time = g_botInterfaceFrameTime;
+                enemy->field_of_view = fov;
+                enemy->is_invisible = invisible;
+                enemy->is_chatting = chatting;
+                enemy->is_shooting = shooting;
+                enemy->triggered_by_damage = health_drop;
+                enemy->in_field_of_view = in_fov;
+                enemy->has_line_of_sight = has_los;
+
+                combat->current_enemy = curenemy;
+                combat->enemy_visible = true;
+                combat->enemy_visible_time = g_botInterfaceFrameTime;
+                combat->enemy_last_seen_time = g_botInterfaceFrameTime;
+                VectorCopy(current_snapshot->origin, combat->last_enemy_origin);
+                VectorCopy(displacement, combat->last_enemy_velocity);
+                combat->enemy_death_time = -FLT_MAX;
+                return;
+            }
+        }
+    }
+
+    bool had_visible_enemy = combat->enemy_visible;
+    combat->enemy_visible = false;
+    if (had_visible_enemy)
+    {
+        combat->enemy_death_time = g_botInterfaceFrameTime;
+    }
 
     int max_clients = BotAI_MaxTrackedClients();
+    float max_range = 900.0f + alertness * 4000.0f;
+    float max_range_sq = max_range * max_range;
+
     for (int ent = 0; ent < max_clients; ++ent)
     {
-        if (ent == state->client_number)
+        if (ent == state->client_number || ent == curenemy)
         {
             continue;
         }
@@ -146,29 +418,133 @@ static void BotAI_FindEnemy(const bot_client_state_t *state, ai_dm_enemy_info_t 
         const bot_updateentity_t *snapshot = &g_botInterfaceEntityCache[ent].state;
         vec3_t delta;
         VectorSubtract(snapshot->origin, self_origin, delta);
-        float distance_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-
-        if (distance_sq < best_distance_sq)
+        float distance_sq = BotInterface_VectorLengthSquared(delta);
+        if (distance_sq > max_range_sq)
         {
-            best_distance_sq = distance_sq;
-            best_entity = ent;
-            VectorCopy(snapshot->origin, best_origin);
+            continue;
         }
-    }
 
-    if (best_entity >= 0 && best_distance_sq < FLT_MAX)
-    {
+        if (curenemy >= 0 && distance_sq > current_enemy_dist_sq)
+        {
+            continue;
+        }
+
+        bot_client_state_t *other = BotState_Get(ent);
+        if (BotInterface_SameTeam(state, other))
+        {
+            continue;
+        }
+
+        bool invisible = BotInterface_IsInvisible(snapshot);
+        bool shooting = BotInterface_IsShooting(snapshot);
+
+        if (invisible && !shooting)
+        {
+            continue;
+        }
+
+        bool chatting = BotInterface_IsChatting(other);
+        if (easyfragger < 0.5f && chatting)
+        {
+            continue;
+        }
+
+        float limited = (distance_sq > 810.0f * 810.0f) ? 810.0f * 810.0f : distance_sq;
+        float fov = (curenemy < 0 && (health_drop || shooting)) ? 360.0f : 90.0f + (limited / (810.0f * 9.0f));
+
+        vec3_t to_enemy;
+        VectorSubtract(snapshot->origin, eye_position, to_enemy);
+        vec3_t target_angles;
+        BotInterface_VectorToAngles(to_enemy, target_angles);
+        bool in_fov = BotInterface_InFieldOfVision(state->last_client_update.viewangles, fov, target_angles);
+        if (!in_fov)
+        {
+            continue;
+        }
+
+        bool has_los = BotInterface_HasLineOfSight(eye_position, snapshot->origin, state->client_number, ent);
+        if (!has_los)
+        {
+            continue;
+        }
+
+        if (curenemy < 0 && distance_sq > (100.0f * 100.0f) && !health_drop && !shooting)
+        {
+            bool bot_in_enemy_fov = true;
+            if (other != NULL)
+            {
+                vec3_t to_bot;
+                VectorSubtract(self_origin, snapshot->origin, to_bot);
+                vec3_t enemy_angles;
+                BotInterface_VectorToAngles(to_bot, enemy_angles);
+                bot_in_enemy_fov = BotInterface_InFieldOfVision(other->last_client_update.viewangles, 90.0f, enemy_angles);
+            }
+
+            if (!bot_in_enemy_fov)
+            {
+                continue;
+            }
+        }
+
         enemy->valid = true;
         enemy->visible = true;
-        enemy->entity = best_entity;
-        VectorCopy(best_origin, enemy->origin);
-        const bot_updateentity_t *snapshot = &g_botInterfaceEntityCache[best_entity].state;
+        enemy->entity = ent;
+        VectorCopy(snapshot->origin, enemy->origin);
         vec3_t displacement;
         VectorSubtract(snapshot->origin, snapshot->old_origin, displacement);
         VectorCopy(displacement, enemy->velocity);
-        enemy->distance = sqrtf(best_distance_sq);
+        enemy->distance = sqrtf(distance_sq);
         enemy->last_seen_time = g_botInterfaceFrameTime;
+        enemy->field_of_view = fov;
+        enemy->is_invisible = invisible;
+        enemy->is_chatting = chatting;
+        enemy->is_shooting = shooting;
+        enemy->triggered_by_damage = health_drop;
+        enemy->in_field_of_view = in_fov;
+        enemy->has_line_of_sight = has_los;
+
+        bool enemy_changed = (combat->current_enemy != ent);
+        combat->current_enemy = ent;
+        combat->enemy_visible = true;
+        combat->enemy_visible_time = g_botInterfaceFrameTime;
+        combat->enemy_last_seen_time = g_botInterfaceFrameTime;
+        combat->enemy_death_time = -FLT_MAX;
+        VectorCopy(snapshot->origin, combat->last_enemy_origin);
+        VectorCopy(displacement, combat->last_enemy_velocity);
+        if (enemy_changed && curenemy >= 0)
+        {
+            combat->enemy_sight_time = g_botInterfaceFrameTime - 2.0f;
+        }
+        else
+        {
+            combat->enemy_sight_time = g_botInterfaceFrameTime;
+        }
+
+        return;
     }
+}
+
+static void BotInterface_SynchroniseCombatState(bot_client_state_t *state)
+{
+    if (state == NULL || state->dm_state == NULL)
+    {
+        return;
+    }
+
+    ai_dm_metrics_t metrics = {0};
+    AI_DMState_GetMetrics(state->dm_state, &metrics);
+
+    bot_combat_state_t *combat = &state->combat;
+    combat->current_enemy = metrics.enemy_entity;
+    combat->revenge_enemy = metrics.revenge_enemy;
+    combat->revenge_kills = metrics.revenge_kills;
+    combat->enemy_visible = metrics.enemy_visible;
+    combat->enemy_visible_time = metrics.enemyvisible_time;
+    combat->enemy_sight_time = metrics.enemysight_time;
+    combat->enemy_death_time = metrics.enemydeath_time;
+    combat->enemy_last_seen_time = metrics.enemyposition_time;
+    VectorCopy(metrics.last_enemy_origin, combat->last_enemy_origin);
+    VectorCopy(metrics.last_enemy_velocity, combat->last_enemy_velocity);
 }
 
 static char *BotInterface_CopyString(const char *text);
@@ -1870,6 +2246,7 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
                           &enemy_info,
                           &input,
                           g_botInterfaceFrameTime);
+        BotInterface_SynchroniseCombatState(state);
     }
 
     bot_input_t final_input = {0};

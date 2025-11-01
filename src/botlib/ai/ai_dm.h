@@ -18,6 +18,13 @@ typedef struct ai_dm_enemy_info_s {
     vec3_t velocity;
     float distance;
     float last_seen_time;
+    float field_of_view;
+    bool is_invisible;
+    bool is_chatting;
+    bool is_shooting;
+    bool triggered_by_damage;
+    bool in_field_of_view;
+    bool has_line_of_sight;
 } ai_dm_enemy_info_t;
 
 struct bot_client_state_s;
