@@ -13,13 +13,6 @@
 #define AI_WEAPON_DEFAULT_CONFIG "weapons.c"
 #define AI_WEAPON_ASSET_PREFIX "dev_tools/assets/"
 
-typedef struct ai_weapon_weights_s {
-    bot_weight_config_t *config;
-    int *index_by_weapon;
-    int index_count;
-    const bot_weapon_config_t *definitions;
-} ai_weapon_weights_t;
-
 static const bot_weapon_config_t *g_active_weapon_config = NULL;
 
 static const char *AI_Weapon_LogPath(const char *path)

@@ -1,9 +1,12 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "../../shared/q_shared.h"
+
+#include "../weight/bot_weight.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -90,7 +93,22 @@ typedef struct ai_weapon_library_s {
     char source_path[AI_WEAPON_MAX_PATH];
 } ai_weapon_library_t;
 
-typedef struct ai_weapon_weights_s ai_weapon_weights_t;
+typedef struct ai_weapon_weights_s {
+    bot_weight_config_t *config;
+    int *index_by_weapon;
+    int index_count;
+    const bot_weapon_config_t *definitions;
+} ai_weapon_weights_t;
+
+typedef struct bot_weaponstate_s {
+    ai_weapon_weights_t *weights;
+    const bot_weapon_config_t *config;
+    const bot_weight_config_t *weight_config;
+    bool owns_weights;
+    int last_best_weapon;
+    float last_best_weight;
+    bool has_last_rank;
+} bot_weaponstate_t;
 
 ai_weapon_library_t *AI_LoadWeaponLibrary(const char *filename);
 void AI_UnloadWeaponLibrary(ai_weapon_library_t *library);
@@ -99,6 +117,18 @@ const bot_weapon_config_t *AI_GetWeaponConfig(const ai_weapon_library_t *library
 ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename);
 void AI_FreeWeaponWeights(ai_weapon_weights_t *weights);
 float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_index);
+
+int BotAllocWeaponState(void);
+void BotFreeWeaponState(int handle);
+void BotResetWeaponState(int handle);
+
+int BotLoadWeaponWeights(int weaponstate, const char *filename);
+void BotFreeWeaponWeights(int weaponstate);
+int BotWeaponStateAttachWeights(int weaponstate, ai_weapon_weights_t *weights);
+
+int BotChooseBestFightWeapon(int weaponstate, const int *inventory);
+int BotGetTopRankedWeapon(int weaponstate);
+void BotGetWeaponInfo(int weaponstate, int weapon, bot_weapon_info_t *weaponinfo);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../../q2bridge/botlib.h"
 #include "../ai/goal/ai_goal.h"
 
 static bot_client_state_t *g_bot_state_table[MAX_CLIENTS];
@@ -11,6 +12,11 @@ static void BotState_FreeResources(bot_client_state_t *state)
 {
     if (state == NULL) {
         return;
+    }
+
+    if (state->weapon_state > 0) {
+        BotFreeWeaponState(state->weapon_state);
+        state->weapon_state = 0;
     }
 
     if (state->move_state != NULL) {
@@ -44,6 +50,8 @@ static void BotState_FreeResources(bot_client_state_t *state)
     state->chat_state = NULL;
     state->weapon_weights = NULL;
     state->item_weights = NULL;
+    state->weapon_state = 0;
+    state->current_weapon = 0;
 
     state->goal_state = NULL;
     state->move_state = NULL;
@@ -76,6 +84,7 @@ void BotState_AttachCharacter(bot_client_state_t *state, ai_character_profile_t 
     state->item_weights = profile->item_weights;
     state->weapon_weights = profile->weapon_weights;
     state->chat_state = profile->chat_state;
+    state->current_weapon = 0;
 
     const char *display_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_NAME);
     if (display_name == NULL || *display_name == '\0') {
@@ -95,6 +104,16 @@ void BotState_AttachCharacter(bot_client_state_t *state, ai_character_profile_t 
     if (netname != NULL && *netname != '\0') {
         strncpy(state->client_settings.netname, netname, sizeof(state->client_settings.netname) - 1);
         state->client_settings.netname[sizeof(state->client_settings.netname) - 1] = '\0';
+    }
+
+    if (state->weapon_state > 0) {
+        if (state->weapon_weights != NULL) {
+            if (BotWeaponStateAttachWeights(state->weapon_state, state->weapon_weights) != BLERR_NOERROR) {
+                BotResetWeaponState(state->weapon_state);
+            }
+        } else {
+            BotFreeWeaponWeights(state->weapon_state);
+        }
     }
 }
 

@@ -246,6 +246,15 @@ static void BotInterface_BeginFrame(float time)
     g_botInterfaceFrameTime = time;
     g_botInterfaceFrameNumber += 1U;
     BotInterface_ResetFrameQueues();
+
+    for (int client = 0; client < MAX_CLIENTS; ++client)
+    {
+        bot_client_state_t *state = BotState_Get(client);
+        if (state != NULL && state->active && state->weapon_state > 0)
+        {
+            BotResetWeaponState(state->weapon_state);
+        }
+    }
 }
 
 static void BotInterface_EnqueueSound(const vec3_t origin,
@@ -932,6 +941,16 @@ static int BotSetupClient(int client, bot_settings_t *settings)
         return BLERR_INVALIDIMPORT;
     }
 
+    state->weapon_state = BotAllocWeaponState();
+    if (state->weapon_state <= 0)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate weapon state for client %d\n",
+                            client);
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+
     memcpy(&state->settings, settings, sizeof(*settings));
 
     ai_character_profile_t *profile = AI_LoadCharacter(settings->characterfile, 1.0f);
@@ -1291,6 +1310,12 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
     if (state->goal_state == NULL || state->move_state == NULL)
     {
         return BLERR_INVALIDIMPORT;
+    }
+
+    if (state->weapon_state > 0)
+    {
+        state->current_weapon = BotChooseBestFightWeapon(state->weapon_state,
+                                                         state->last_client_update.inventory);
     }
 
     if (state->goal_handle > 0)

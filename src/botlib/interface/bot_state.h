@@ -40,6 +40,8 @@ struct bot_client_state_s {
     bot_chatstate_t *chat_state;
     ai_goal_state_t *goal_state;
     ai_move_state_t *move_state;
+    int weapon_state;
+    int current_weapon;
     int goal_handle;
     bot_updateclient_t last_client_update;
     bool client_update_valid;
