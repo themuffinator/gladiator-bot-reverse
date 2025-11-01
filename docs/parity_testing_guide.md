@@ -7,6 +7,10 @@ This guide outlines how to configure a development environment for the botlib pa
 1. **Install required toolchain**
    - CMake 3.16 or newer and a C11/C++17-compatible compiler (the top-level build requires both languages). 【F:CMakeLists.txt†L1-L15】
    - Internet access for the first configuration so CMake's `FetchContent` block can clone the cmocka test dependency when the parity suite is enabled. 【F:tests/CMakeLists.txt†L1-L23】
+   - Platform-specific prerequisites that mirror CI:
+     - **Linux** – Install `ninja-build`, a GCC or Clang toolchain, and development headers for pthreads/zlib through your distribution packages (e.g., `sudo apt-get install build-essential ninja-build`). The parity workflow runs against `ubuntu-latest` with these packages available.
+     - **Windows** – Install Visual Studio 2022 Build Tools (C++ workload) and Ninja. Launch the "x64 Native Tools Command Prompt" before configuring so MSVC is on `PATH`, or use `vcvarsall.bat`/`ilammy/msvc-dev-cmd` as in CI. CMake will use MSVC with the Ninja generator once this environment is active.
+   - The cmocka harness is fetched automatically into `build/_deps/` on the first configure; delete the folder to force a refresh if the checkout becomes corrupted. 【F:tests/CMakeLists.txt†L10-L23】
 
 2. **Configure the build tree**
    ```bash
