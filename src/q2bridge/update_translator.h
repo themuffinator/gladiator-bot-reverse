@@ -1,6 +1,7 @@
 #ifndef Q2BRIDGE_UPDATE_TRANSLATOR_H
 #define Q2BRIDGE_UPDATE_TRANSLATOR_H
 
+#include "q2bridge/aas_translation.h"
 #include "q2bridge/botlib.h"
 
 #ifdef __cplusplus
@@ -48,6 +49,21 @@ void Bridge_ClearClientSlot(int client);
  * @brief Reassign cached client state when a bot moves to a new slot.
  */
 int Bridge_MoveClientSlot(int old_client, int new_client);
+
+/**
+ * @brief Mirror the game time provided during BotStartFrame.
+ */
+void Bridge_SetFrameTime(float time);
+
+/**
+ * @brief Toggle the active flag for a client slot.
+ */
+void Bridge_SetClientActive(int client, qboolean active);
+
+/**
+ * @brief Fetch the translated client frame stored by Bridge_UpdateClient.
+ */
+qboolean Bridge_ReadClientFrame(int client, AASClientFrame *frame_out);
 
 #ifdef __cplusplus
 }
