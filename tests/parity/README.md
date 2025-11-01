@@ -119,3 +119,9 @@ returns reported by the reimplementation match the reference error codes. The
 libvar default block in the same JSON document also seeds expectations for the
 cached configuration values exercised by `BotSetupLibrary` tests.
 
+When adding new guard coverage or adjusting diagnostics, update
+`tests/reference/botlib_contract.json` via
+`dev_tools/extract_botlib_contract.py`. The parity fixtures now fail if the
+captured `Print` payloads or return codes diverge from the catalogue, so keeping
+the reference data in sync prevents unrelated regressions.
+
