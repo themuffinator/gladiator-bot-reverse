@@ -391,6 +391,29 @@ static void test_translate_entity_aas_not_loaded_logs(void **state)
     assert_non_null(code);
 }
 
+static void test_bot_update_entity_logging_stops_after_map_load(void **state)
+{
+    translator_test_context_t *context = (translator_test_context_t *)(*state);
+    context->print_count = 0U;
+
+    TranslateEntity_SetWorldLoaded(qfalse);
+
+    bot_updateentity_t update;
+    memset(&update, 0, sizeof(update));
+
+    int status = Bridge_UpdateEntity(3, &update);
+    assert_int_equal(status, BLERR_NOAASFILE);
+    assert_true(context->print_count > 0U);
+
+    TranslateEntity_SetCurrentTime(0.0f);
+    TranslateEntity_SetWorldLoaded(qtrue);
+    context->print_count = 0U;
+
+    status = Bridge_UpdateEntity(3, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(context->print_count, 0U);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -404,6 +427,9 @@ int main(void)
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_translate_entity_aas_not_loaded_logs,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bot_update_entity_logging_stops_after_map_load,
                                         translator_setup,
                                         translator_teardown),
     };

@@ -518,6 +518,9 @@ static void AAS_ClearWorld(void)
 
     AAS_SoundSubsystem_ClearMapAssets();
     memset(&aasworld, 0, sizeof(aasworld));
+
+    TranslateEntity_SetCurrentTime(0.0f);
+    TranslateEntity_SetWorldLoaded(qfalse);
 }
 
 int AAS_LoadMap(const char *mapname,
@@ -525,6 +528,8 @@ int AAS_LoadMap(const char *mapname,
                 int soundindexes, char *soundindex[],
                 int imageindexes, char *imageindex[])
 {
+    TranslateEntity_SetWorldLoaded(qfalse);
+
     (void)modelindexes;
     (void)modelindex;
     (void)imageindexes;
@@ -788,6 +793,9 @@ int AAS_LoadMap(const char *mapname,
     }
 
     AAS_InvalidateRouteCache();
+
+    TranslateEntity_SetCurrentTime(0.0f);
+    TranslateEntity_SetWorldLoaded(qtrue);
     return BLERR_NOERROR;
 }
 
@@ -798,6 +806,8 @@ void AAS_Shutdown(void)
         BotLib_Print(PRT_MESSAGE, "AAS shutdown.\n");
     }
 
+    TranslateEntity_SetCurrentTime(0.0f);
+    TranslateEntity_SetWorldLoaded(qfalse);
     AAS_ClearWorld();
 }
 

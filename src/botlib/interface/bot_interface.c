@@ -1592,6 +1592,8 @@ static int BotShutdownLibraryWrapper(void)
     BotInterface_ResetFrameQueues();
     g_botInterfaceDebugDrawEnabled = false;
 
+    AAS_Shutdown();
+
     return result;
 }
 
