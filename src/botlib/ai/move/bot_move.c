@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../../aas/aas_local.h"
+#include "../../common/l_libvar.h"
 #include "../../common/l_log.h"
 #include "../../common/l_memory.h"
 #include "../../ea/ea_local.h"
@@ -201,6 +202,289 @@ bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const aas_reachability_t
 
     ms->reachability_time = aasworld.time + BotMove_TravelTimeout(TRAVEL_GRAPPLEHOOK);
     return result;
+}
+
+typedef struct bot_move_mover_support_s
+{
+    const aas_entity_t *entity;
+    int entnum;
+    int modelnum;
+    const bot_mover_catalogue_entry_t *catalogue;
+} bot_move_mover_support_t;
+
+static bool BotMove_DeveloperWarningsEnabled(void)
+{
+    if (LibVarValue("bot_developer", "0") != 0.0f)
+    {
+        return true;
+    }
+
+    return LibVarValue("developer", "0") != 0.0f;
+}
+
+static const char *BotMove_MoverKindName(bot_mover_kind_t kind)
+{
+    switch (kind)
+    {
+        case BOT_MOVER_KIND_FUNC_PLAT:
+            return "func_plat";
+        case BOT_MOVER_KIND_FUNC_BOB:
+            return "func_bobbing";
+        default:
+            return NULL;
+    }
+}
+
+static int BotMove_DetermineTravelTypeForMover(const bot_mover_catalogue_entry_t *entry)
+{
+    if (entry == NULL)
+    {
+        return TRAVEL_INVALID;
+    }
+
+    switch (entry->kind)
+    {
+        case BOT_MOVER_KIND_FUNC_PLAT:
+            return TRAVEL_ELEVATOR;
+        case BOT_MOVER_KIND_FUNC_BOB:
+            return TRAVEL_FUNCBOB;
+        default:
+            return TRAVEL_INVALID;
+    }
+}
+
+static unsigned int BotMove_DiagnosticForMover(bot_mover_kind_t kind, bool success)
+{
+    switch (kind)
+    {
+        case BOT_MOVER_KIND_FUNC_PLAT:
+            return success ? BOT_MOVE_DIAG_FUNCPLAT_RELINKED : BOT_MOVE_DIAG_FUNCPLAT_FAILED;
+        case BOT_MOVER_KIND_FUNC_BOB:
+            return success ? BOT_MOVE_DIAG_FUNCBOB_RELINKED : BOT_MOVE_DIAG_FUNCBOB_FAILED;
+        default:
+            return BOT_MOVE_DIAG_NONE;
+    }
+}
+
+static int BotMove_FindReachabilityForMover(int traveltype, int modelnum)
+{
+    if (aasworld.reachability == NULL || aasworld.numReachability <= 0)
+    {
+        return -1;
+    }
+
+    for (int index = 0; index < aasworld.numReachability; ++index)
+    {
+        const aas_reachability_t *candidate = &aasworld.reachability[index];
+        if ((candidate->traveltype & TRAVELTYPE_MASK) != traveltype)
+        {
+            continue;
+        }
+
+        if ((candidate->facenum & 0x0000FFFF) != modelnum)
+        {
+            continue;
+        }
+
+        return index;
+    }
+
+    return -1;
+}
+
+static bool BotMove_IsUsingMoverReach(const bot_movestate_t *ms, int traveltype, int modelnum)
+{
+    if (ms == NULL || aasworld.reachability == NULL)
+    {
+        return false;
+    }
+
+    if (ms->lastreachnum < 0 || ms->lastreachnum >= aasworld.numReachability)
+    {
+        return false;
+    }
+
+    const aas_reachability_t *current = &aasworld.reachability[ms->lastreachnum];
+    if ((current->traveltype & TRAVELTYPE_MASK) != traveltype)
+    {
+        return false;
+    }
+
+    return (current->facenum & 0x0000FFFF) == modelnum;
+}
+
+static bool BotMove_FindSupportingMover(bot_movestate_t *ms, bot_move_mover_support_t *support)
+{
+    if (ms == NULL || support == NULL)
+    {
+        return false;
+    }
+
+    if (!aasworld.loaded || !aasworld.entitiesValid || aasworld.entities == NULL)
+    {
+        return false;
+    }
+
+    memset(support, 0, sizeof(*support));
+
+    int area = ms->areanum;
+    if (area <= 0)
+    {
+        area = BotMove_FindAreaForPoint(ms->origin);
+        if (area <= 0)
+        {
+            return false;
+        }
+        ms->areanum = area;
+    }
+
+    if (aasworld.areaEntityLists == NULL)
+    {
+        return false;
+    }
+
+    size_t listCount = aasworld.areaEntityListCount;
+    if (listCount == 0U || (size_t)area >= listCount)
+    {
+        return false;
+    }
+
+    const aas_link_t *link = aasworld.areaEntityLists[area];
+    const float lateralTolerance = 1.0f;
+    const float belowTolerance = 64.0f;
+    const float aboveTolerance = 32.0f;
+
+    for (; link != NULL; link = link->next_ent)
+    {
+        int entnum = link->entnum;
+        if (entnum < 0 || entnum >= aasworld.maxEntities)
+        {
+            continue;
+        }
+
+        const aas_entity_t *entity = &aasworld.entities[entnum];
+        if (!entity->inuse || entity->solid != SOLID_BSP || entity->modelindex <= 0)
+        {
+            continue;
+        }
+
+        int modelnum = entity->modelindex - 1;
+        if (modelnum < 0)
+        {
+            continue;
+        }
+
+        const bot_mover_catalogue_entry_t *catalogue = BotMove_MoverCatalogueFindByModel(modelnum);
+        if (catalogue == NULL)
+        {
+            continue;
+        }
+
+        vec3_t absmins;
+        vec3_t absmaxs;
+        VectorAdd(entity->origin, entity->mins, absmins);
+        VectorAdd(entity->origin, entity->maxs, absmaxs);
+
+        if (ms->origin[0] + lateralTolerance < absmins[0] ||
+            ms->origin[0] - lateralTolerance > absmaxs[0] ||
+            ms->origin[1] + lateralTolerance < absmins[1] ||
+            ms->origin[1] - lateralTolerance > absmaxs[1])
+        {
+            continue;
+        }
+
+        if (ms->origin[2] + belowTolerance < absmaxs[2])
+        {
+            continue;
+        }
+
+        if (ms->origin[2] > absmaxs[2] + aboveTolerance)
+        {
+            continue;
+        }
+
+        support->entity = entity;
+        support->entnum = entnum;
+        support->modelnum = modelnum;
+        support->catalogue = catalogue;
+        return true;
+    }
+
+    return false;
+}
+
+static bool BotMove_HandleGroundMover(bot_movestate_t *ms, bot_moveresult_t *result)
+{
+    if (ms == NULL || result == NULL)
+    {
+        return false;
+    }
+
+    bot_move_mover_support_t support;
+    if (!BotMove_FindSupportingMover(ms, &support))
+    {
+        return false;
+    }
+
+    const bot_mover_catalogue_entry_t *catalogue = support.catalogue;
+    if (catalogue == NULL)
+    {
+        return false;
+    }
+
+    int traveltype = BotMove_DetermineTravelTypeForMover(catalogue);
+    if (traveltype == TRAVEL_INVALID)
+    {
+        return false;
+    }
+
+    if (catalogue->kind == BOT_MOVER_KIND_FUNC_PLAT)
+    {
+        result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
+    }
+    else if (catalogue->kind == BOT_MOVER_KIND_FUNC_BOB)
+    {
+        result->flags |= MOVERESULT_ONTOPOF_FUNCBOB;
+    }
+
+    if (BotMove_IsUsingMoverReach(ms, traveltype, support.modelnum))
+    {
+        return false;
+    }
+
+    int reachnum = BotMove_FindReachabilityForMover(traveltype, support.modelnum);
+    if (reachnum >= 0)
+    {
+        const aas_reachability_t *reach = &aasworld.reachability[reachnum];
+        ms->lastreachnum = reachnum;
+        ms->reachability_time = aasworld.time + BotMove_TravelTimeout(traveltype);
+        ms->reachareanum = reach->areanum;
+        result->diagnostics |= BotMove_DiagnosticForMover(catalogue->kind, true);
+        BotLib_Print(PRT_MESSAGE,
+                     "client %d: relinking brush model ent %d\n",
+                     ms->client,
+                     support.entnum);
+        return false;
+    }
+
+    if (BotMove_DeveloperWarningsEnabled())
+    {
+        const char *mover_name = BotMove_MoverKindName(catalogue->kind);
+        if (mover_name != NULL)
+        {
+            BotLib_Print(PRT_MESSAGE,
+                         "client %d: on %s without reachability\n",
+                         ms->client,
+                         mover_name);
+        }
+    }
+
+    result->blocked = 1;
+    result->blockentity = support.entnum;
+    result->flags |= MOVERESULT_ONTOPOFOBSTACLE;
+    result->failure = 1;
+    result->diagnostics |= BotMove_DiagnosticForMover(catalogue->kind, false);
+    return true;
 }
 
 static float VectorLengthSquared(const vec3_t v)
@@ -979,6 +1263,14 @@ void BotMoveToGoal(bot_moveresult_t *result,
     BotMove_RefreshAvoidReach(ms);
 
     ms->moveflags &= ~(MFL_SWIMMING | MFL_AGAINSTLADDER);
+
+    if (BotMove_HandleGroundMover(ms, result))
+    {
+        ms->lastgoalareanum = goal->areanum;
+        ms->lastareanum = ms->areanum;
+        VectorCopy(ms->origin, ms->lastorigin);
+        return;
+    }
 
     if (ms->areanum == goal->areanum)
     {

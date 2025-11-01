@@ -318,7 +318,8 @@ static qboolean AAS_IsMoverClassname(const char *classname,
                                      float *defaultLip,
                                      float *defaultHeight,
                                      float *defaultSpeed,
-                                     int *doorType)
+                                     int *doorType,
+                                     bot_mover_kind_t *moverKind)
 {
     if (classname == NULL)
     {
@@ -343,6 +344,10 @@ static qboolean AAS_IsMoverClassname(const char *classname,
         {
             *doorType = AAS_MOVER_DOORTYPE_NONE;
         }
+        if (moverKind != NULL)
+        {
+            *moverKind = BOT_MOVER_KIND_FUNC_PLAT;
+        }
         return qtrue;
     }
 
@@ -363,6 +368,10 @@ static qboolean AAS_IsMoverClassname(const char *classname,
         if (doorType != NULL)
         {
             *doorType = AAS_MOVER_DOORTYPE_NONE;
+        }
+        if (moverKind != NULL)
+        {
+            *moverKind = BOT_MOVER_KIND_FUNC_BOB;
         }
         return qtrue;
     }
@@ -385,6 +394,10 @@ static qboolean AAS_IsMoverClassname(const char *classname,
         {
             *doorType = AAS_MOVER_DOORTYPE_STANDARD;
         }
+        if (moverKind != NULL)
+        {
+            *moverKind = BOT_MOVER_KIND_FUNC_DOOR;
+        }
         return qtrue;
     }
 
@@ -405,6 +418,10 @@ static qboolean AAS_IsMoverClassname(const char *classname,
         if (doorType != NULL)
         {
             *doorType = AAS_MOVER_DOORTYPE_ROTATING;
+        }
+        if (moverKind != NULL)
+        {
+            *moverKind = BOT_MOVER_KIND_FUNC_DOOR_ROTATING;
         }
         return qtrue;
     }
@@ -427,6 +444,10 @@ static qboolean AAS_IsMoverClassname(const char *classname,
         if (doorType != NULL)
         {
             *doorType = AAS_MOVER_DOORTYPE_SECRET;
+        }
+        if (moverKind != NULL)
+        {
+            *moverKind = BOT_MOVER_KIND_FUNC_DOOR_SECRET;
         }
         return qtrue;
     }
@@ -524,11 +545,13 @@ static void AAS_RegisterMoverEntity(const aas_parsed_entity_t *entity)
     float defaultHeight = 0.0f;
     float defaultSpeed = 0.0f;
     int doorType = AAS_MOVER_DOORTYPE_NONE;
+    bot_mover_kind_t moverKind = BOT_MOVER_KIND_UNKNOWN;
     if (!AAS_IsMoverClassname(entity->classname,
                               &defaultLip,
                               &defaultHeight,
                               &defaultSpeed,
-                              &doorType))
+                              &doorType,
+                              &moverKind))
     {
         return;
     }
@@ -572,6 +595,7 @@ static void AAS_RegisterMoverEntity(const aas_parsed_entity_t *entity)
         .speed = speed,
         .spawnflags = spawnflags,
         .doortype = doorType,
+        .kind = moverKind,
     };
 
     if (!BotMove_MoverCatalogueInsert(&entry))

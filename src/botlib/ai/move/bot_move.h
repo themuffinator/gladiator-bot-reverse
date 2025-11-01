@@ -43,6 +43,12 @@ struct aas_reachability_s;
 #define MOVERESULT_ONTOPOF_ELEVATOR 128
 #define MOVERESULT_BLOCKEDBYAVOIDSPOT 256
 
+#define BOT_MOVE_DIAG_NONE                0u
+#define BOT_MOVE_DIAG_FUNCPLAT_RELINKED   (1u << 0)
+#define BOT_MOVE_DIAG_FUNCPLAT_FAILED     (1u << 1)
+#define BOT_MOVE_DIAG_FUNCBOB_RELINKED    (1u << 2)
+#define BOT_MOVE_DIAG_FUNCBOB_FAILED      (1u << 3)
+
 #define MAX_AVOIDREACH  1
 #define MAX_AVOIDSPOTS  32
 
@@ -101,6 +107,7 @@ typedef struct bot_moveresult_s
     int weapon;
     vec3_t movedir;
     vec3_t ideal_viewangles;
+    unsigned int diagnostics;
 } bot_moveresult_t;
 
 typedef struct bot_avoidspot_s

@@ -6,6 +6,16 @@
 extern "C" {
 #endif
 
+typedef enum bot_mover_kind_e
+{
+    BOT_MOVER_KIND_UNKNOWN = 0,
+    BOT_MOVER_KIND_FUNC_PLAT,
+    BOT_MOVER_KIND_FUNC_BOB,
+    BOT_MOVER_KIND_FUNC_DOOR,
+    BOT_MOVER_KIND_FUNC_DOOR_ROTATING,
+    BOT_MOVER_KIND_FUNC_DOOR_SECRET,
+} bot_mover_kind_t;
+
 typedef struct bot_mover_catalogue_entry_s
 {
     int modelnum;
@@ -14,6 +24,7 @@ typedef struct bot_mover_catalogue_entry_s
     float speed;
     int spawnflags;
     int doortype;
+    bot_mover_kind_t kind;
 } bot_mover_catalogue_entry_t;
 
 void BotMove_MoverCatalogueInit(void);
