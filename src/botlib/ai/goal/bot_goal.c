@@ -941,6 +941,60 @@ int BotChooseNBGItem(int handle,
     return BotPushGoal(handle, &best_goal);
 }
 
+float BotGoal_EvaluateStackGoal(int handle,
+                                const bot_goal_t *goal,
+                                const vec3_t origin,
+                                int start_area,
+                                const int *inventory,
+                                int travelflags,
+                                int *travel_time)
+{
+    bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
+    if (gs == NULL || goal == NULL)
+    {
+        if (travel_time != NULL)
+        {
+            *travel_time = 0;
+        }
+        return -FLT_MAX;
+    }
+
+    const bot_levelitem_t *item = BotGoal_FindLevelItem(goal->number);
+    int start = start_area;
+    if (start <= 0)
+    {
+        start = BotGoal_PointAreaNum(origin);
+    }
+
+    int computed_travel = 0;
+    float score = -FLT_MAX;
+
+    if (item != NULL)
+    {
+        score = BotGoal_LevelItemScore(gs,
+                                       item,
+                                       origin,
+                                       start,
+                                       inventory,
+                                       travelflags,
+                                       &computed_travel);
+    }
+    else if (start > 0 && goal->areanum > 0)
+    {
+        vec3_t start_point;
+        VectorCopy(origin, start_point);
+        computed_travel = AAS_AreaTravelTimeToGoalArea(start, start_point, goal->areanum, travelflags);
+        score = (goal->number != 0) ? 1.0f : 0.0f;
+    }
+
+    if (travel_time != NULL)
+    {
+        *travel_time = computed_travel;
+    }
+
+    return score;
+}
+
 int BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal)
 {
     if (goal == NULL)

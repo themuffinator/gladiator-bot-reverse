@@ -23,6 +23,11 @@ static void BotState_FreeResources(bot_client_state_t *state)
         AI_MoveState_Destroy(state->move_state);
     }
 
+    if (state->move_handle > 0) {
+        BotFreeMoveState(state->move_handle);
+        state->move_handle = 0;
+    }
+
     if (state->goal_state != NULL) {
         AI_GoalState_Destroy(state->goal_state);
     }
@@ -60,6 +65,12 @@ static void BotState_FreeResources(bot_client_state_t *state)
     state->goal_state = NULL;
     state->move_state = NULL;
     state->goal_handle = 0;
+    state->goal_snapshot_count = 0;
+    memset(state->goal_snapshot, 0, sizeof(state->goal_snapshot));
+    memset(&state->last_move_result, 0, sizeof(state->last_move_result));
+    state->has_move_result = false;
+    state->goal_avoid_duration = 0.0f;
+    state->active_goal_number = 0;
     memset(&state->last_client_update, 0, sizeof(state->last_client_update));
     state->client_update_valid = false;
     state->last_update_time = 0.0f;

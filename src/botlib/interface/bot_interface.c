@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include <stdarg.h>
 #include <string.h>
@@ -242,6 +243,400 @@ static void BotInterface_ResetFrameQueues(void)
 {
     g_botInterfaceSoundCount = 0;
     g_botInterfacePointLightCount = 0;
+}
+
+static void BotInterface_ResetGoalSnapshot(bot_client_state_t *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    state->goal_snapshot_count = 0;
+    memset(state->goal_snapshot, 0, sizeof(state->goal_snapshot));
+}
+
+static void BotInterface_UpdateGoalSnapshot(bot_client_state_t *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    BotInterface_ResetGoalSnapshot(state);
+
+    if (state->goal_handle <= 0)
+    {
+        return;
+    }
+
+    bot_goal_t goal = {0};
+    if (AI_GoalBotlib_GetTopGoal(state->goal_handle, &goal))
+    {
+        state->goal_snapshot[state->goal_snapshot_count++] = goal;
+    }
+
+    if (state->goal_snapshot_count < (int)(sizeof(state->goal_snapshot) / sizeof(state->goal_snapshot[0])) &&
+        AI_GoalBotlib_GetSecondGoal(state->goal_handle, &goal))
+    {
+        if (state->goal_snapshot_count == 0 || state->goal_snapshot[0].number != goal.number)
+        {
+            state->goal_snapshot[state->goal_snapshot_count++] = goal;
+        }
+    }
+}
+
+static const bot_goal_t *BotInterface_FindSnapshotGoal(const bot_client_state_t *state, int number)
+{
+    if (state == NULL || state->goal_snapshot_count <= 0)
+    {
+        return NULL;
+    }
+
+    for (int i = 0; i < state->goal_snapshot_count; ++i)
+    {
+        if (state->goal_snapshot[i].number == number)
+        {
+            return &state->goal_snapshot[i];
+        }
+    }
+
+    return NULL;
+}
+
+static float BotInterface_NormaliseDirection(vec3_t out, const vec3_t in)
+{
+    if (out == NULL || in == NULL)
+    {
+        return 0.0f;
+    }
+
+    float length = sqrtf(in[0] * in[0] + in[1] * in[1] + in[2] * in[2]);
+    if (length <= 0.0001f)
+    {
+        VectorClear(out);
+        return 0.0f;
+    }
+
+    float inv = 1.0f / length;
+    out[0] = in[0] * inv;
+    out[1] = in[1] * inv;
+    out[2] = in[2] * inv;
+    return length;
+}
+
+static void BotInterface_BuildMoveCommand(bot_input_t *out_input,
+                                          const vec3_t from,
+                                          const vec3_t to)
+{
+    if (out_input == NULL || from == NULL || to == NULL)
+    {
+        return;
+    }
+
+    vec3_t delta;
+    VectorSubtract(to, from, delta);
+    float length = BotInterface_NormaliseDirection(out_input->dir, delta);
+    out_input->speed = length;
+    out_input->actionflags = 0;
+}
+
+static int BotInterface_RebuildGoalCandidates(bot_client_state_t *state)
+{
+    if (state == NULL || state->goal_state == NULL)
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    AI_GoalState_ClearCandidates(state->goal_state);
+
+    for (int index = 0; index < state->goal_snapshot_count; ++index)
+    {
+        const bot_goal_t *goal = &state->goal_snapshot[index];
+        ai_goal_candidate_t candidate = {0};
+        candidate.item_index = goal->number;
+        candidate.area = goal->areanum;
+        candidate.travel_flags = TFL_DEFAULT;
+        VectorCopy(goal->origin, candidate.origin);
+
+        int start_area = AI_GoalState_GetCurrentArea(state->goal_state);
+        int travel_time = 0;
+        float weight = BotGoal_EvaluateStackGoal(state->goal_handle,
+                                                 goal,
+                                                 state->last_client_update.origin,
+                                                 start_area,
+                                                 state->last_client_update.inventory,
+                                                 candidate.travel_flags,
+                                                 &travel_time);
+        if (weight <= -FLT_MAX)
+        {
+            continue;
+        }
+
+        candidate.base_weight = weight;
+        AI_GoalState_AddCandidate(state->goal_state, &candidate);
+    }
+
+    return BLERR_NOERROR;
+}
+
+static float BotInterface_GoalWeight(void *ctx, const ai_goal_candidate_t *candidate)
+{
+    bot_client_state_t *state = (bot_client_state_t *)ctx;
+    if (state == NULL || candidate == NULL)
+    {
+        return 0.0f;
+    }
+
+    const bot_goal_t *goal = BotInterface_FindSnapshotGoal(state, candidate->item_index);
+    if (goal == NULL)
+    {
+        return candidate->base_weight;
+    }
+
+    int start_area = AI_GoalState_GetCurrentArea(state->goal_state);
+    int travel_time = 0;
+    float weight = BotGoal_EvaluateStackGoal(state->goal_handle,
+                                             goal,
+                                             state->last_client_update.origin,
+                                             start_area,
+                                             state->last_client_update.inventory,
+                                             candidate->travel_flags,
+                                             &travel_time);
+    if (weight <= -FLT_MAX)
+    {
+        return candidate->base_weight;
+    }
+
+    return weight;
+}
+
+static float BotInterface_GoalTravelTime(void *ctx, int start_area, const ai_goal_candidate_t *candidate)
+{
+    bot_client_state_t *state = (bot_client_state_t *)ctx;
+    if (state == NULL || candidate == NULL)
+    {
+        return 0.0f;
+    }
+
+    const bot_goal_t *goal = BotInterface_FindSnapshotGoal(state, candidate->item_index);
+    if (goal == NULL)
+    {
+        return -1.0f;
+    }
+
+    if (start_area <= 0 || goal->areanum <= 0)
+    {
+        int travel_time = 0;
+        BotGoal_EvaluateStackGoal(state->goal_handle,
+                                  goal,
+                                  state->last_client_update.origin,
+                                  start_area,
+                                  state->last_client_update.inventory,
+                                  candidate->travel_flags,
+                                  &travel_time);
+        return (float)travel_time;
+    }
+
+    vec3_t origin;
+    VectorCopy(state->last_client_update.origin, origin);
+    int travel = AAS_AreaTravelTimeToGoalArea(start_area, origin, goal->areanum, candidate->travel_flags);
+    return (float)travel;
+}
+
+static void BotInterface_GoalNotify(void *ctx, const ai_goal_selection_t *selection)
+{
+    bot_client_state_t *state = (bot_client_state_t *)ctx;
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (selection == NULL || !selection->valid)
+    {
+        state->active_goal_number = 0;
+        return;
+    }
+
+    state->active_goal_number = selection->candidate.item_index;
+}
+
+static int BotInterface_PrepareMoveState(bot_client_state_t *state, float thinktime)
+{
+    if (state == NULL || state->move_handle <= 0)
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    bot_initmove_t init = {0};
+    VectorCopy(state->last_client_update.origin, init.origin);
+    VectorCopy(state->last_client_update.velocity, init.velocity);
+    VectorCopy(state->last_client_update.viewoffset, init.viewoffset);
+    init.entitynum = state->client_number;
+    init.client = state->client_number;
+    init.thinktime = thinktime;
+    init.presencetype = (state->last_client_update.pm_flags & PMF_DUCKED) ? PRESENCE_CROUCH : PRESENCE_NORMAL;
+
+    if (state->last_client_update.pm_flags & PMF_ON_GROUND)
+    {
+        init.or_moveflags |= MFL_ONGROUND;
+    }
+    if ((state->last_client_update.pm_flags & PMF_TIME_TELEPORT) && state->last_client_update.pm_time > 0)
+    {
+        init.or_moveflags |= MFL_TELEPORTED;
+    }
+    if ((state->last_client_update.pm_flags & PMF_TIME_WATERJUMP) && state->last_client_update.pm_time > 0)
+    {
+        init.or_moveflags |= MFL_WATERJUMP;
+    }
+
+    VectorCopy(state->last_client_update.viewangles, init.viewangles);
+
+    BotInitMoveState(state->move_handle, &init);
+
+    bot_movestate_t *ms = BotMoveStateFromHandle(state->move_handle);
+    if (ms != NULL && state->goal_state != NULL)
+    {
+        AI_GoalState_SetCurrentArea(state->goal_state, ms->areanum);
+    }
+
+    return BLERR_NOERROR;
+}
+
+static void BotInterface_ApplyMoveResult(bot_client_state_t *state,
+                                         const bot_moveresult_t *result,
+                                         bot_input_t *out_input)
+{
+    if (state == NULL || result == NULL || out_input == NULL)
+    {
+        return;
+    }
+
+    if (result->failure)
+    {
+        VectorClear(out_input->dir);
+        out_input->speed = 0.0f;
+    }
+    else
+    {
+        VectorCopy(result->movedir, out_input->dir);
+        out_input->speed = 400.0f;
+    }
+
+    out_input->actionflags = 0;
+    if (result->flags & MOVERESULT_MOVEMENTWEAPON)
+    {
+        out_input->actionflags |= ACTION_ATTACK;
+        state->current_weapon = result->weapon;
+    }
+
+    if (result->traveltype == TRAVEL_JUMP || result->traveltype == TRAVEL_ROCKETJUMP ||
+        result->traveltype == TRAVEL_BFGJUMP || result->traveltype == TRAVEL_WATERJUMP)
+    {
+        out_input->actionflags |= ACTION_JUMP;
+    }
+
+    if (result->traveltype == TRAVEL_CROUCH)
+    {
+        out_input->actionflags |= ACTION_CROUCH;
+    }
+
+    if (result->flags & MOVERESULT_WAITING)
+    {
+        out_input->speed = 0.0f;
+    }
+}
+
+static int BotInterface_MovePath(void *ctx,
+                                 const ai_goal_selection_t *goal,
+                                 ai_avoid_list_t *avoid,
+                                 bot_input_t *out_input)
+{
+    bot_client_state_t *state = (bot_client_state_t *)ctx;
+    if (state == NULL || out_input == NULL)
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    if (goal == NULL || !goal->valid)
+    {
+        VectorClear(out_input->dir);
+        out_input->speed = 0.0f;
+        out_input->actionflags = 0;
+        if (state->move_state != NULL)
+        {
+            state->move_state->has_last_result = false;
+        }
+        state->has_move_result = false;
+        return BLERR_NOERROR;
+    }
+
+    const bot_goal_t *target_goal = BotInterface_FindSnapshotGoal(state, goal->candidate.item_index);
+    if (target_goal == NULL)
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    bot_moveresult_t result;
+    BotClearMoveResult(&result);
+
+    bool attempted_move = false;
+    if (state->move_handle > 0 && target_goal->areanum > 0 && aasworld.loaded)
+    {
+        AI_MoveFrame(&result, state->move_handle, target_goal, goal->candidate.travel_flags);
+        attempted_move = true;
+    }
+
+    if (!attempted_move)
+    {
+        BotInterface_BuildMoveCommand(out_input,
+                                      state->last_client_update.origin,
+                                      target_goal->origin);
+        if (state->move_state != NULL)
+        {
+            state->move_state->has_last_result = false;
+        }
+        state->has_move_result = false;
+        return BLERR_NOERROR;
+    }
+
+    if (result.failure)
+    {
+        if (avoid != NULL && state->goal_avoid_duration > 0.0f)
+        {
+            AI_AvoidList_Add(avoid,
+                             goal->candidate.item_index,
+                             g_botInterfaceFrameTime + state->goal_avoid_duration);
+        }
+
+        BotInterface_BuildMoveCommand(out_input,
+                                      state->last_client_update.origin,
+                                      target_goal->origin);
+        if (state->move_state != NULL)
+        {
+            state->move_state->has_last_result = false;
+        }
+        state->has_move_result = false;
+        return BLERR_INVALIDIMPORT;
+    }
+
+    BotInterface_ApplyMoveResult(state, &result, out_input);
+
+    if (state->move_state != NULL)
+    {
+        state->move_state->last_result = result;
+        state->move_state->has_last_result = true;
+    }
+
+    state->last_move_result = result;
+    state->has_move_result = true;
+    return BLERR_NOERROR;
+}
+
+static void BotInterface_MoveSubmit(void *ctx, int client, const bot_input_t *input)
+{
+    (void)ctx;
+    EA_SubmitInput(client, input);
 }
 
 static void BotInterface_BeginFrame(float time)
@@ -1013,6 +1408,34 @@ static int BotSetupClient(int client, bot_settings_t *settings)
         return BLERR_INVALIDIMPORT;
     }
 
+    state->move_handle = BotAllocMoveState();
+    if (state->move_handle <= 0)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate move handle for client %d\n",
+                            client);
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    ai_goal_services_t goal_services = {
+        .weight_fn = BotInterface_GoalWeight,
+        .travel_time_fn = BotInterface_GoalTravelTime,
+        .notify_fn = BotInterface_GoalNotify,
+        .area_fn = NULL,
+        .userdata = state,
+        .avoid_duration = 5.0f,
+    };
+    AI_GoalState_SetServices(state->goal_state, &goal_services);
+    state->goal_avoid_duration = goal_services.avoid_duration;
+
+    ai_move_services_t move_services = {
+        .path_fn = BotInterface_MovePath,
+        .submit_fn = BotInterface_MoveSubmit,
+        .userdata = state,
+    };
+    AI_MoveState_SetServices(state->move_state, &move_services);
+
     AI_MoveState_LinkAvoidList(state->move_state, AI_GoalState_GetAvoidList(state->goal_state));
 
     Bridge_ClearClientSlot(client);
@@ -1329,6 +1752,12 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
                                                          state->last_client_update.inventory);
     }
 
+    int status = BotInterface_PrepareMoveState(state, thinktime);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
     if (state->goal_handle > 0)
     {
         AI_GoalBotlib_SynchroniseAvoid(state->goal_handle, state->goal_state, g_botInterfaceFrameTime);
@@ -1340,8 +1769,15 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
                              3.0f);
     }
 
+    BotInterface_UpdateGoalSnapshot(state);
+    status = BotInterface_RebuildGoalCandidates(state);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
     ai_goal_selection_t selection = {0};
-    int status = AI_GoalOrchestrator_Refresh(state->goal_state, g_botInterfaceFrameTime, &selection);
+    status = AI_GoalOrchestrator_Refresh(state->goal_state, g_botInterfaceFrameTime, &selection);
     if (status != BLERR_NOERROR)
     {
         return status;

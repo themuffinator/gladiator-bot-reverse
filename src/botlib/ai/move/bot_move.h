@@ -48,6 +48,11 @@ extern "C" {
 #define AVOID_ALWAYS    1
 #define AVOID_DONTBLOCK 2
 
+/* presence types */
+#define PRESENCE_NONE    1
+#define PRESENCE_NORMAL  2
+#define PRESENCE_CROUCH  4
+
 /* moveresult type indicators */
 #define RESULTTYPE_ELEVATORUP         1
 #define RESULTTYPE_WAITFORFUNCBOBBING 2
