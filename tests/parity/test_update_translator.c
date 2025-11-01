@@ -35,6 +35,142 @@ typedef struct translator_test_context_s
 
 static translator_test_context_t *g_active_context = NULL;
 
+#define TRANSLATOR_DEFAULT_MAX_CLIENTS 4
+#define TRANSLATOR_DEFAULT_MAX_ENTITIES 1024
+
+#if defined(__GNUC__)
+#define WEAK_SYMBOL __attribute__((weak))
+#else
+#define WEAK_SYMBOL
+#endif
+
+typedef struct translator_mock_limit_state_s
+{
+    bool initialised;
+    libvar_t maxclients;
+    char maxclients_name[32];
+    char maxclients_string[32];
+    libvar_t maxentities;
+    char maxentities_name[32];
+    char maxentities_string[32];
+} translator_mock_limit_state_t;
+
+static translator_mock_limit_state_t g_mock_limit_state;
+static int g_configured_max_clients = TRANSLATOR_DEFAULT_MAX_CLIENTS;
+static int g_configured_max_entities = TRANSLATOR_DEFAULT_MAX_ENTITIES;
+
+static void translator_write_mock_libvar(libvar_t *var, char *buffer, size_t buffer_size, int value)
+{
+    if (var == NULL || buffer == NULL || buffer_size == 0U)
+    {
+        return;
+    }
+
+    int written = snprintf(buffer, buffer_size, "%d", value);
+    if (written < 0)
+    {
+        buffer[0] = '\0';
+    }
+    buffer[buffer_size - 1U] = '\0';
+
+    var->string = buffer;
+    var->value = (float)value;
+    var->modified = false;
+    var->next = NULL;
+}
+
+static void translator_initialise_mock_limits(void)
+{
+    if (g_mock_limit_state.initialised)
+    {
+        return;
+    }
+
+    memset(&g_mock_limit_state, 0, sizeof(g_mock_limit_state));
+
+    strncpy(g_mock_limit_state.maxclients_name,
+            "maxclients",
+            sizeof(g_mock_limit_state.maxclients_name) - 1U);
+    g_mock_limit_state.maxclients_name[sizeof(g_mock_limit_state.maxclients_name) - 1U] = '\0';
+    g_mock_limit_state.maxclients.name = g_mock_limit_state.maxclients_name;
+    g_mock_limit_state.maxclients.string = g_mock_limit_state.maxclients_string;
+
+    strncpy(g_mock_limit_state.maxentities_name,
+            "maxentities",
+            sizeof(g_mock_limit_state.maxentities_name) - 1U);
+    g_mock_limit_state.maxentities_name[sizeof(g_mock_limit_state.maxentities_name) - 1U] = '\0';
+    g_mock_limit_state.maxentities.name = g_mock_limit_state.maxentities_name;
+    g_mock_limit_state.maxentities.string = g_mock_limit_state.maxentities_string;
+
+    translator_write_mock_libvar(&g_mock_limit_state.maxclients,
+                                 g_mock_limit_state.maxclients_string,
+                                 sizeof(g_mock_limit_state.maxclients_string),
+                                 g_configured_max_clients);
+    translator_write_mock_libvar(&g_mock_limit_state.maxentities,
+                                 g_mock_limit_state.maxentities_string,
+                                 sizeof(g_mock_limit_state.maxentities_string),
+                                 g_configured_max_entities);
+
+    g_mock_limit_state.initialised = true;
+}
+
+static void translator_update_mock_limit_values(int max_clients, int max_entities)
+{
+    if (max_clients < 1)
+    {
+        max_clients = 1;
+    }
+
+    if (max_entities < 1)
+    {
+        max_entities = 1;
+    }
+
+    g_configured_max_clients = max_clients;
+    g_configured_max_entities = max_entities;
+
+    translator_initialise_mock_limits();
+
+    translator_write_mock_libvar(&g_mock_limit_state.maxclients,
+                                 g_mock_limit_state.maxclients_string,
+                                 sizeof(g_mock_limit_state.maxclients_string),
+                                 g_configured_max_clients);
+    translator_write_mock_libvar(&g_mock_limit_state.maxentities,
+                                 g_mock_limit_state.maxentities_string,
+                                 sizeof(g_mock_limit_state.maxentities_string),
+                                 g_configured_max_entities);
+}
+
+static void translator_set_mock_max_limits(int max_clients, int max_entities)
+{
+    translator_update_mock_limit_values(max_clients, max_entities);
+    Bridge_ResetCachedUpdates();
+    TranslateEntity_SetWorldLoaded(qfalse);
+    TranslateEntity_SetCurrentTime(0.0f);
+}
+
+static void translator_set_mock_max_clients(int max_clients)
+{
+    translator_set_mock_max_limits(max_clients, g_configured_max_entities);
+}
+
+static void translator_set_mock_max_entities(int max_entities)
+{
+    translator_set_mock_max_limits(g_configured_max_clients, max_entities);
+}
+
+WEAK_SYMBOL libvar_t *Bridge_MaxClients(void)
+{
+    translator_initialise_mock_limits();
+    return &g_mock_limit_state.maxclients;
+}
+
+WEAK_SYMBOL libvar_t *Bridge_MaxEntities(void)
+{
+    translator_initialise_mock_limits();
+    return &g_mock_limit_state.maxentities;
+}
+
 static void Mock_Print(int type, char *fmt, ...)
 {
     if (g_active_context == NULL || fmt == NULL)
@@ -87,9 +223,7 @@ static int translator_setup(void **state)
     assert_int_equal(status, 0);
 
     Q2Bridge_SetImportTable(&context->imports);
-    Bridge_ResetCachedUpdates();
-    TranslateEntity_SetWorldLoaded(qfalse);
-    TranslateEntity_SetCurrentTime(0.0f);
+    translator_set_mock_max_limits(TRANSLATOR_DEFAULT_MAX_CLIENTS, TRANSLATOR_DEFAULT_MAX_ENTITIES);
 
     *state = context;
     return 0;
@@ -260,6 +394,196 @@ static void test_bridge_update_client_inactive_logs_contract_message(void **stat
 
     const botlib_contract_return_code_t *code = BotlibContract_FindReturnCode(scenario, BLERR_AIUPDATEINACTIVECLIENT);
     assert_non_null(code);
+}
+
+static void test_bridge_update_client_rejects_indices_beyond_mocked_limit(void **state)
+{
+    translator_test_context_t *context = (translator_test_context_t *)(*state);
+
+    translator_set_mock_max_clients(3);
+    context->print_count = 0U;
+
+    bot_updateclient_t update;
+    memset(&update, 0, sizeof(update));
+
+    int status = Bridge_UpdateClient(3, &update);
+    assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+    assert_true(context->print_count > 0U);
+
+    const botlib_contract_export_t *entry = BotlibContract_FindExport(&context->catalogue, "BridgeDiagnostics");
+    assert_non_null(entry);
+    const botlib_contract_scenario_t *scenario = BotlibContract_FindScenario(entry, "success");
+    assert_non_null(scenario);
+    const botlib_contract_message_t *expected =
+        BotlibContract_FindMessageContaining(scenario, "invalid client number");
+    assert_non_null(expected);
+
+    char formatted[128];
+    snprintf(formatted,
+             sizeof(formatted),
+             expected->text,
+             "BotUpdateClient",
+             3,
+             g_configured_max_clients - 1);
+    assert_string_equal(context->prints[0].message, formatted);
+    assert_int_equal(context->prints[0].severity, expected->severity);
+
+    const botlib_contract_return_code_t *code =
+        BotlibContract_FindReturnCode(scenario, BLERR_INVALIDCLIENTNUMBER);
+    assert_non_null(code);
+}
+
+static void test_bridge_update_entity_rejects_indices_beyond_mocked_limit(void **state)
+{
+    translator_test_context_t *context = (translator_test_context_t *)(*state);
+
+    translator_set_mock_max_entities(6);
+    context->print_count = 0U;
+
+    bot_updateentity_t update;
+    memset(&update, 0, sizeof(update));
+
+    int status = Bridge_UpdateEntity(6, &update);
+    assert_int_equal(status, BLERR_INVALIDENTITYNUMBER);
+    assert_true(context->print_count > 0U);
+
+    const botlib_contract_export_t *entry = BotlibContract_FindExport(&context->catalogue, "BridgeDiagnostics");
+    assert_non_null(entry);
+    const botlib_contract_scenario_t *scenario = BotlibContract_FindScenario(entry, "success");
+    assert_non_null(scenario);
+    const botlib_contract_message_t *expected =
+        BotlibContract_FindMessageContaining(scenario, "invalid entity number");
+    assert_non_null(expected);
+
+    char formatted[128];
+    snprintf(formatted,
+             sizeof(formatted),
+             expected->text,
+             "BotUpdateEntity",
+             6,
+             g_configured_max_entities - 1);
+    assert_string_equal(context->prints[0].message, formatted);
+    assert_int_equal(context->prints[0].severity, expected->severity);
+
+    const botlib_contract_return_code_t *code =
+        BotlibContract_FindReturnCode(scenario, BLERR_INVALIDENTITYNUMBER);
+    assert_non_null(code);
+}
+
+static void test_bridge_update_client_accepts_runtime_limit_increase(void **state)
+{
+    translator_test_context_t *context = (translator_test_context_t *)(*state);
+    translator_set_mock_max_clients(2);
+    context->print_count = 0U;
+
+    Bridge_SetClientActive(1, qtrue);
+    Bridge_SetFrameTime(0.5f);
+
+    bot_updateclient_t initial;
+    memset(&initial, 0, sizeof(initial));
+    initial.pm_type = 1;
+    initial.viewangles[0] = 45.0f;
+    initial.viewangles[1] = -30.0f;
+
+    int status = Bridge_UpdateClient(1, &initial);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    AASClientFrame frame;
+    memset(&frame, 0, sizeof(frame));
+    assert_true(Bridge_ReadClientFrame(1, &frame));
+    assert_int_equal(frame.pm_type, initial.pm_type);
+    assert_float_equal(frame.viewangles[0], quantize_component(initial.viewangles[0]), 0.0001f);
+    assert_float_equal(frame.viewangles[1], quantize_component(initial.viewangles[1]), 0.0001f);
+    assert_float_equal(frame.last_update_time, 0.5f, 0.0001f);
+
+    translator_set_mock_max_clients(4);
+    context->print_count = 0U;
+
+    Bridge_SetClientActive(1, qtrue);
+    Bridge_SetClientActive(2, qtrue);
+    Bridge_SetFrameTime(1.25f);
+
+    bot_updateclient_t expanded = initial;
+    expanded.pm_type = 3;
+    expanded.viewangles[0] = 15.0f;
+    expanded.viewangles[1] = 5.0f;
+
+    status = Bridge_UpdateClient(2, &expanded);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    memset(&frame, 0, sizeof(frame));
+    assert_true(Bridge_ReadClientFrame(2, &frame));
+    assert_int_equal(frame.pm_type, expanded.pm_type);
+    assert_float_equal(frame.viewangles[0], quantize_component(expanded.viewangles[0]), 0.0001f);
+    assert_float_equal(frame.viewangles[1], quantize_component(expanded.viewangles[1]), 0.0001f);
+    assert_float_equal(frame.last_update_time, 1.25f, 0.0001f);
+    assert_float_equal(frame.frame_delta, 0.0f, 0.0001f);
+}
+
+static void test_bridge_update_entity_accepts_runtime_limit_increase(void **state)
+{
+    translator_test_context_t *context = (translator_test_context_t *)(*state);
+
+    translator_set_mock_max_entities(4);
+    context->print_count = 0U;
+
+    TranslateEntity_SetWorldLoaded(qtrue);
+    Bridge_SetFrameTime(0.75f);
+
+    bot_updateentity_t initial;
+    memset(&initial, 0, sizeof(initial));
+    initial.origin[0] = 16.0f;
+    initial.origin[1] = -8.0f;
+    initial.origin[2] = 4.0f;
+    initial.mins[0] = -4.0f;
+    initial.mins[1] = -4.0f;
+    initial.mins[2] = -2.0f;
+    initial.maxs[0] = 4.0f;
+    initial.maxs[1] = 4.0f;
+    initial.maxs[2] = 2.0f;
+    initial.angles[0] = 10.0f;
+    initial.angles[1] = -20.0f;
+    initial.angles[2] = 5.0f;
+    initial.solid = 1;
+
+    int status = Bridge_UpdateEntity(3, &initial);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    AASEntityFrame entity_frame;
+    memset(&entity_frame, 0, sizeof(entity_frame));
+    assert_true(Bridge_ReadEntityFrame(3, &entity_frame));
+    assert_int_equal(entity_frame.number, 3);
+    assert_vec3_equal(entity_frame.origin, initial.origin, 0.0001f);
+    assert_float_equal(entity_frame.last_update_time, 0.75f, 0.0001f);
+
+    translator_set_mock_max_entities(8);
+    context->print_count = 0U;
+
+    TranslateEntity_SetWorldLoaded(qtrue);
+    Bridge_SetFrameTime(2.0f);
+
+    bot_updateentity_t expanded = initial;
+    expanded.origin[0] = 32.0f;
+    expanded.origin[1] = 12.0f;
+    expanded.origin[2] = 6.0f;
+    expanded.angles[0] = 45.0f;
+    expanded.angles[1] = 60.0f;
+    expanded.angles[2] = -15.0f;
+    expanded.solid = 2;
+
+    status = Bridge_UpdateEntity(7, &expanded);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    memset(&entity_frame, 0, sizeof(entity_frame));
+    assert_true(Bridge_ReadEntityFrame(7, &entity_frame));
+    assert_int_equal(entity_frame.number, 7);
+    assert_vec3_equal(entity_frame.origin, expanded.origin, 0.0001f);
+    assert_float_equal(entity_frame.angles[0], quantize_component(expanded.angles[0]), 0.0001f);
+    assert_float_equal(entity_frame.angles[1], quantize_component(expanded.angles[1]), 0.0001f);
+    assert_float_equal(entity_frame.angles[2], quantize_component(expanded.angles[2]), 0.0001f);
+    assert_int_equal(entity_frame.solid, expanded.solid);
+    assert_float_equal(entity_frame.last_update_time, 2.0f, 0.0001f);
+    assert_float_equal(entity_frame.frame_delta, 0.0f, 0.0001f);
 }
 
 static void test_translate_entity_dirty_flags_and_relink_logging(void **state)
@@ -485,6 +809,18 @@ int main(void)
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_update_client_inactive_logs_contract_message,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_update_client_rejects_indices_beyond_mocked_limit,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_update_entity_rejects_indices_beyond_mocked_limit,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_update_client_accepts_runtime_limit_increase,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_update_entity_accepts_runtime_limit_increase,
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_translate_entity_dirty_flags_and_relink_logging,
