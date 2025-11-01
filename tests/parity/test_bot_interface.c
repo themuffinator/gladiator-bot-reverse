@@ -449,6 +449,50 @@ static void test_bot_lib_var_set_propagates_import_status(void **state)
     BotInterface_SetImportTable(original_imports);
 }
 
+static void test_bot_lib_var_cache_tracks_updates(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    const botlib_import_table_t *imports = BotInterface_GetImportTable();
+    assert_non_null(imports);
+    assert_non_null(imports->BotLibVarGet);
+
+    char buffer[128];
+
+    memset(buffer, 0, sizeof(buffer));
+    status = imports->BotLibVarGet("cache_probe", buffer, sizeof(buffer));
+    assert_int_equal(status, BLERR_INVALIDIMPORT);
+
+    status = context->api->BotLibVarSet("cache_probe", "alpha");
+    assert_int_equal(status, BLERR_NOERROR);
+
+    memset(buffer, 0, sizeof(buffer));
+    status = imports->BotLibVarGet("cache_probe", buffer, sizeof(buffer));
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_string_equal(buffer, "alpha");
+
+    status = context->api->BotLibVarSet("cache_probe", "beta");
+    assert_int_equal(status, BLERR_NOERROR);
+
+    memset(buffer, 0, sizeof(buffer));
+    status = imports->BotLibVarGet("cache_probe", buffer, sizeof(buffer));
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_string_equal(buffer, "beta");
+
+    status = context->api->BotLibVarSet("cache_secondary", "gamma");
+    assert_int_equal(status, BLERR_NOERROR);
+
+    memset(buffer, 0, sizeof(buffer));
+    status = imports->BotLibVarGet("cache_secondary", buffer, sizeof(buffer));
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_string_equal(buffer, "gamma");
+}
+
 static void test_bot_update_entity_populates_aas(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
@@ -602,6 +646,9 @@ int main(void)
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_lib_var_set_propagates_import_status,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_lib_var_cache_tracks_updates,
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
