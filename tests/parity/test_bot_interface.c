@@ -251,11 +251,14 @@ static int setup_bot_interface(void **state)
         cmocka_skip();
     }
 
+    LibVarSet("basedir", context->assets.asset_root);
+    LibVarSet("gamedir", "");
+    LibVarSet("cddir", "");
+    LibVarSet("gladiator_asset_dir", "");
     LibVarSet("weaponconfig", "weapons.c");
     LibVarSet("max_weaponinfo", "64");
     LibVarSet("max_projectileinfo", "64");
     LibVarSet("itemconfig", "items.c");
-    LibVarSet("gladiator_asset_dir", context->assets.asset_root);
 
     g_active_mock = &context->mock;
     context->api = GetBotAPI(&context->mock.table);

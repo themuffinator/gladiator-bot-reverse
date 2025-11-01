@@ -238,7 +238,10 @@ static int goal_move_setup(void **state)
     LibVar_Init();
     env->libvar_initialised = true;
 
-    LibVarSet("gladiator_asset_dir", env->assets.asset_root);
+    LibVarSet("basedir", env->assets.asset_root);
+    LibVarSet("gamedir", "");
+    LibVarSet("cddir", "");
+    LibVarSet("gladiator_asset_dir", "");
     LibVarSet("weaponconfig", "weapons.c");
     LibVarSet("itemconfig", "items.c");
     LibVarSet("max_weaponinfo", "64");
@@ -253,7 +256,10 @@ static int goal_move_setup(void **state)
     env->exports = GetBotAPI(&g_test_bot_import);
     assert_non_null(env->exports);
 
-    env->exports->BotLibVarSet("gladiator_asset_dir", env->assets.asset_root);
+    env->exports->BotLibVarSet("basedir", env->assets.asset_root);
+    env->exports->BotLibVarSet("gamedir", "");
+    env->exports->BotLibVarSet("cddir", "");
+    env->exports->BotLibVarSet("gladiator_asset_dir", "");
     env->exports->BotLibVarSet("weaponconfig", "weapons.c");
     env->exports->BotLibVarSet("itemconfig", "items.c");
     env->exports->BotLibVarSet("max_weaponinfo", "64");

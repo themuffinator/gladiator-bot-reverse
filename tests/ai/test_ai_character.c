@@ -241,7 +241,10 @@ static int character_profile_setup(void **state)
     LibVar_Init();
     env->libvar_initialised = true;
 
-    LibVarSet("gladiator_asset_dir", env->assets.asset_root);
+    LibVarSet("basedir", env->assets.asset_root);
+    LibVarSet("gamedir", "");
+    LibVarSet("cddir", "");
+    LibVarSet("gladiator_asset_dir", "");
     LibVarSet("weaponconfig", "weapons.c");
     LibVarSet("itemconfig", "items.c");
     LibVarSet("max_weaponinfo", "64");
@@ -485,7 +488,10 @@ static void test_bot_setup_client_exposes_profile(void **state)
     char weapon_config_path[PATH_MAX];
     asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
 
-    env->exports->BotLibVarSet("gladiator_asset_dir", env->assets.asset_root);
+    env->exports->BotLibVarSet("basedir", env->assets.asset_root);
+    env->exports->BotLibVarSet("gamedir", "");
+    env->exports->BotLibVarSet("cddir", "");
+    env->exports->BotLibVarSet("gladiator_asset_dir", "");
     env->exports->BotLibVarSet("weaponconfig", "weapons.c");
     env->exports->BotLibVarSet("itemconfig", "items.c");
     env->exports->BotLibVarSet("max_weaponinfo", "64");
