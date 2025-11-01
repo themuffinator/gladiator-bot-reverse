@@ -119,6 +119,23 @@ returns reported by the reimplementation match the reference error codes. The
 libvar default block in the same JSON document also seeds expectations for the
 cached configuration values exercised by `BotSetupLibrary` tests.
 
+## Bridge configuration fixtures
+
+`tests/parity/test_update_translator.c` now exposes weak replacements for
+`Bridge_MaxClients` and `Bridge_MaxEntities` so the cmocka fixtures can steer the
+bridge's client and entity limits deterministically. The helper
+`translator_set_mock_max_limits` rewrites the backing `libvar_t` records,
+invokes `Bridge_ResetCachedUpdates`, and clears the AAS translation timestamps to
+mirror the reset behaviour observed during `GetBotAPI`. Companion helpers,
+`translator_set_mock_max_clients` and `translator_set_mock_max_entities`, adjust
+one dimension at a time while preserving the previously configured counterpart.
+
+When extending coverage, call one of these helpers before exercising the bridge
+guard so the cached limits reflect the desired `maxclients`/`maxentities`
+values. The fixtures expect the defaults (`maxclients="4"`,
+`maxentities="1024"`) to be restored at the start of each test, so subsequent
+cases inherit the canonical HLIL configuration.
+
 When adding new guard coverage or adjusting diagnostics, update
 `tests/reference/botlib_contract.json` via
 `dev_tools/extract_botlib_contract.py`. The parity fixtures now fail if the
