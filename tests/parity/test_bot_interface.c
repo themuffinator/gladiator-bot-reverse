@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,6 +13,7 @@
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/aas/aas_local.h"
+#include "botlib_contract_loader.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -35,6 +37,7 @@ typedef struct bot_interface_test_context_s
 {
     mock_bot_import_t mock;
     bot_export_t *api;
+    botlib_contract_catalogue_t catalogue;
 } bot_interface_test_context_t;
 
 static mock_bot_import_t *g_active_mock = NULL;
@@ -186,6 +189,14 @@ static int setup_bot_interface(void **state)
         (bot_interface_test_context_t *)calloc(1, sizeof(*context));
     assert_non_null(context);
 
+    char contract_path[1024];
+    snprintf(contract_path,
+             sizeof(contract_path),
+             "%s/tests/reference/botlib_contract.json",
+             PROJECT_SOURCE_DIR);
+    int load_status = BotlibContract_Load(contract_path, &context->catalogue);
+    assert_int_equal(load_status, 0);
+
     context->mock.table.BotInput = Mock_BotInput;
     context->mock.table.BotClientCommand = Mock_BotClientCommand;
     context->mock.table.Print = Mock_Print;
@@ -217,6 +228,10 @@ static int teardown_bot_interface(void **state)
 
     BotState_ShutdownAll();
     g_active_mock = NULL;
+    if (context != NULL)
+    {
+        BotlibContract_Free(&context->catalogue);
+    }
     free(context);
     return 0;
 }
@@ -228,7 +243,25 @@ static void test_bot_load_map_requires_library(void **state)
     Mock_Reset(&context->mock);
 
     int status = context->api->BotLoadMap("maps/test.bsp", 0, NULL, 0, NULL, 0, NULL);
-    assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+    assert_true(context->mock.print_count > 0);
+
+    const botlib_contract_export_t *guard =
+        BotlibContract_FindExport(&context->catalogue, "GuardLibrarySetup");
+    assert_non_null(guard);
+    const botlib_contract_scenario_t *failure = BotlibContract_FindScenario(guard, "failure");
+    assert_non_null(failure);
+    const botlib_contract_message_t *message =
+        BotlibContract_FindMessageWithSeverity(failure, context->mock.prints[0].type);
+    assert_non_null(message);
+
+    char expected_message[1024];
+    snprintf(expected_message, sizeof(expected_message), message->text, "BotLoadMap");
+    assert_string_equal(context->mock.prints[0].message, expected_message);
+
+    const botlib_contract_return_code_t *expected_status =
+        BotlibContract_FindReturnCode(failure, BLERR_LIBRARYNOTSETUP);
+    assert_non_null(expected_status);
+    assert_int_equal(status, expected_status->value);
 }
 
 static void test_bot_load_map_and_sensory_queues(void **state)
