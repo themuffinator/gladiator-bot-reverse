@@ -1,4647 +1,662 @@
-/*
-===========================================================================
-Copyright (C) 1999-2005 Id Software, Inc.
-
-This file is part of Quake III Arena source code.
-
-Quake III Arena source code is free software; you can redistribute it
-and/or modify it under the terms of the GNU General Public License as
-published by the Free Software Foundation; either version 2 of the License,
-or (at your option) any later version.
-
-Quake III Arena source code is distributed in the hope that it will be
-useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with Foobar; if not, write to the Free Software
-Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-===========================================================================
-*/
-//
-
-/*****************************************************************************
- * name:		l_precomp.c
- *
- * desc:		pre compiler
- *
- * $Archive: /MissionPack/code/botlib/l_precomp.c $
- *
- *****************************************************************************/
-
-//Notes:			fix: PC_StringizeTokens
-
-//#define DEBUG_EVAL
+#include "l_precomp.h"
 
 #include <ctype.h>
-#include <limits.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <time.h>
 
-#include "../common/l_assets.h"
 #include "../common/l_log.h"
-#include "../common/l_memory.h"
-#include "l_precomp.h"
 #include "l_script.h"
 
-#include <ctype.h>
-#include <errno.h>
-#include <math.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+#endif
 
-typedef struct token_array_s {
-    pc_token_t *data;
-    size_t count;
-    size_t capacity;
-} token_array_t;
-
-typedef struct string_buffer_s {
-    char *data;
-    size_t length;
-    size_t capacity;
-} string_buffer_t;
+#ifndef QDECL
+#define QDECL
+#endif
 
 struct pc_source_s {
-    char *preprocessed_buffer;
-    token_array_t tokens;
+    pc_token_t *tokens;
+    size_t count;
+    size_t capacity;
     size_t cursor;
-    pc_diagnostic_t *diagnostics;
+    pc_token_t last_token;
+    bool has_last_token;
+    pc_diagnostic_t *diagnostics_head;
+    pc_diagnostic_t *diagnostics_tail;
 };
 
-static void token_array_init(token_array_t *array)
+void QDECL SourceError(pc_source_t *source, char *str, ...);
+void QDECL SourceWarning(pc_source_t *source, char *str, ...);
+
+static void PC_ClearToken(pc_token_t *token)
 {
-    array->data = NULL;
-    array->count = 0;
-    array->capacity = 0;
+    if (token == NULL)
+    {
+        return;
+    }
+
+    memset(token, 0, sizeof(*token));
+    token->string[0] = '\0';
 }
 
-static void token_array_destroy(token_array_t *array)
+static bool PC_EnsureCapacity(pc_source_t *source, size_t additional)
 {
-    free(array->data);
-    array->data = NULL;
-    array->count = 0;
-    array->capacity = 0;
-}
-
-static bool token_array_reserve(token_array_t *array, size_t additional)
-{
-    if (!array) {
+    if (source == NULL)
+    {
         return false;
     }
 
-    if (array->count + additional <= array->capacity) {
+    if (source->count + additional <= source->capacity)
+    {
         return true;
     }
 
-    size_t new_capacity = array->capacity ? array->capacity : 64;
-    while (new_capacity < array->count + additional) {
+    size_t new_capacity = (source->capacity == 0) ? 64 : source->capacity;
+    while (new_capacity < source->count + additional)
+    {
         new_capacity *= 2;
     }
 
-    pc_token_t *new_data = (pc_token_t *)realloc(array->data, new_capacity * sizeof(pc_token_t));
-    if (!new_data) {
+    pc_token_t *tokens = (pc_token_t *)realloc(source->tokens, new_capacity * sizeof(pc_token_t));
+    if (tokens == NULL)
+    {
         return false;
     }
 
-    array->data = new_data;
-    array->capacity = new_capacity;
+    source->tokens = tokens;
+    source->capacity = new_capacity;
     return true;
 }
 
-static bool token_array_push(token_array_t *array, const pc_token_t *token)
+static void PC_PushToken(pc_source_t *source, const pc_token_t *token)
 {
-    if (!array || !token) {
-        return false;
-    }
-
-    if (!token_array_reserve(array, 1)) {
-        return false;
-    }
-
-    array->data[array->count++] = *token;
-    return true;
-}
-
-static void string_buffer_init(string_buffer_t *buffer)
-{
-    buffer->data = NULL;
-    buffer->length = 0;
-    buffer->capacity = 0;
-}
-
-static void string_buffer_destroy(string_buffer_t *buffer)
-{
-    free(buffer->data);
-    buffer->data = NULL;
-    buffer->length = 0;
-    buffer->capacity = 0;
-}
-
-static bool string_buffer_reserve(string_buffer_t *buffer, size_t additional)
-{
-    if (!buffer) {
-        return false;
-    }
-
-    if (buffer->length + additional <= buffer->capacity) {
-        return true;
-    }
-
-    size_t new_capacity = buffer->capacity ? buffer->capacity : 256;
-    while (new_capacity < buffer->length + additional) {
-        new_capacity *= 2;
-    }
-
-    char *new_data = (char *)realloc(buffer->data, new_capacity);
-    if (!new_data) {
-        return false;
-    }
-
-    buffer->data = new_data;
-    buffer->capacity = new_capacity;
-    return true;
-}
-
-static bool string_buffer_append(string_buffer_t *buffer, const char *text, size_t length)
-{
-    if (!buffer || (!text && length > 0)) {
-        return false;
-    }
-
-    if (!string_buffer_reserve(buffer, length)) {
-        return false;
-    }
-
-    if (text && length > 0) {
-        memcpy(buffer->data + buffer->length, text, length);
-    }
-    buffer->length += length;
-    return true;
-}
-
-static bool string_buffer_append_char(string_buffer_t *buffer, char ch)
-{
-    if (!buffer) {
-        return false;
-    }
-
-    if (!string_buffer_reserve(buffer, 1)) {
-        return false;
-    }
-
-    buffer->data[buffer->length++] = ch;
-    return true;
-}
-
-static void string_buffer_null_terminate(string_buffer_t *buffer)
-{
-    if (!buffer) {
+    if (source == NULL || token == NULL)
+    {
         return;
     }
 
-    if (!string_buffer_reserve(buffer, 1)) {
+    if (!PC_EnsureCapacity(source, 1))
+    {
         return;
     }
 
-    buffer->data[buffer->length] = '\0';
+    source->tokens[source->count++] = *token;
 }
 
-static bool append_quoted_argument(string_buffer_t *buffer, const char *text)
+static void PC_AddDiagnostic(pc_source_t *source, pc_error_level_t level, int line, int column, const char *message)
 {
-    if (!buffer || !text) {
-        return false;
-    }
-
-    if (!string_buffer_append_char(buffer, '\'')) {
-        return false;
-    }
-
-    for (const char *p = text; *p; ++p) {
-        if (*p == '\'') {
-            if (!string_buffer_append(buffer, "'\\''", 4)) {
-                return false;
-            }
-        } else {
-            if (!string_buffer_append_char(buffer, *p)) {
-                return false;
-            }
-        }
-    }
-
-    return string_buffer_append_char(buffer, '\'');
-}
-
-static bool directory_from_path(const char *path, char *buffer, size_t buffer_size)
-{
-    if (!path || !buffer || buffer_size == 0) {
-        return false;
-    }
-
-    const char *last_slash = strrchr(path, '/');
-#if defined(_WIN32) || defined(__CYGWIN__)
-    const char *last_backslash = strrchr(path, '\\');
-    if (!last_slash || (last_backslash && last_backslash > last_slash)) {
-        last_slash = last_backslash;
-    }
-#endif
-    if (!last_slash) {
-        if (buffer_size < 2) {
-            return false;
-        }
-        buffer[0] = '.';
-        buffer[1] = '\0';
-        return true;
-    }
-
-    size_t length = (size_t)(last_slash - path);
-    if (length >= buffer_size) {
-        length = buffer_size - 1;
-    }
-
-    memcpy(buffer, path, length);
-    buffer[length] = '\0';
-    return true;
-}
-
-static bool asset_root_from_path(const char *path, char *buffer, size_t buffer_size)
-{
-    if (buffer == NULL || buffer_size == 0) {
-        return false;
-    }
-
-    if (BotLib_LocateAssetRoot(buffer, buffer_size)) {
-        return true;
-    }
-
-    if (path == NULL) {
-        return false;
-    }
-
-    const char *needle = strstr(path, "dev_tools/");
-    if (!needle) {
-        needle = strstr(path, "dev-tools/");
-    }
-    if (!needle) {
-        return false;
-    }
-
-    const char *assets = strstr(needle, "assets");
-    if (!assets) {
-        return false;
-    }
-
-    const char *end = assets + strlen("assets");
-    size_t length = (size_t)(end - path);
-    if (length >= buffer_size) {
-        length = buffer_size - 1;
-    }
-
-    memcpy(buffer, path, length);
-    buffer[length] = '\0';
-    return true;
-}
-
-static bool run_cpp_on_file(const char *path, char **output)
-{
-    if (output) {
-        *output = NULL;
-    }
-
-    if (!path || !output) {
-        return false;
-    }
-
-    char include_dir[512];
-    directory_from_path(path, include_dir, sizeof(include_dir));
-
-    char asset_root[512];
-    bool have_asset_root = asset_root_from_path(path, asset_root, sizeof(asset_root));
-
-    string_buffer_t command;
-    string_buffer_init(&command);
-
-    bool ok = string_buffer_append(&command, "cpp -P -nostdinc -undef -DDMFLAGS=0 ", strlen("cpp -P -nostdinc -undef -DDMFLAGS=0 "));
-    if (ok) {
-        ok = string_buffer_append(&command, "-Dbalance(a,b,c)=balance(a,b,c) ", strlen("-Dbalance(a,b,c)=balance(a,b,c) "));
-    }
-
-    if (ok) {
-        ok = string_buffer_append(&command, "-I", 2);
-    }
-    if (ok) {
-        ok = append_quoted_argument(&command, include_dir);
-    }
-    if (ok) {
-        ok = string_buffer_append(&command, " ", 1);
-    }
-
-    if (ok && have_asset_root) {
-        ok = string_buffer_append(&command, "-I", 2);
-        if (ok) {
-            ok = append_quoted_argument(&command, asset_root);
-        }
-        if (ok) {
-            ok = string_buffer_append(&command, " ", 1);
-        }
-    }
-
-    if (ok) {
-        ok = append_quoted_argument(&command, path);
-    }
-
-    if (!ok) {
-        string_buffer_destroy(&command);
-        return false;
-    }
-
-    string_buffer_null_terminate(&command);
-
-    FILE *pipe = popen(command.data, "r");
-    string_buffer_destroy(&command);
-    if (!pipe) {
-        return false;
-    }
-
-    string_buffer_t result;
-    string_buffer_init(&result);
-
-    char buffer[4096];
-    size_t read_bytes = 0;
-    while ((read_bytes = fread(buffer, 1, sizeof(buffer), pipe)) > 0) {
-        if (!string_buffer_append(&result, buffer, read_bytes)) {
-            string_buffer_destroy(&result);
-            pclose(pipe);
-            return false;
-        }
-    }
-
-    pclose(pipe);
-    string_buffer_null_terminate(&result);
-
-    *output = result.data;
-    return true;
-}
-
-typedef struct eval_stream_s {
-    const char *text;
-    size_t length;
-    size_t position;
-} eval_stream_t;
-
-static void eval_stream_skip_whitespace(eval_stream_t *stream)
-{
-    if (!stream) {
+    if (source == NULL || message == NULL)
+    {
         return;
     }
 
-    while (stream->position < stream->length) {
-        char ch = stream->text[stream->position];
-        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
-            stream->position++;
-        } else {
-            break;
-        }
+    pc_diagnostic_t *node = (pc_diagnostic_t *)calloc(1, sizeof(*node));
+    if (node == NULL)
+    {
+        return;
     }
+
+    size_t length = strlen(message) + 1;
+    char *copy = (char *)malloc(length);
+    if (copy == NULL)
+    {
+        free(node);
+        return;
+    }
+    memcpy(copy, message, length);
+
+    node->level = level;
+    node->line = line;
+    node->column = column;
+    node->message = copy;
+    node->next = NULL;
+
+    if (source->diagnostics_tail != NULL)
+    {
+        source->diagnostics_tail->next = node;
+    }
+    else
+    {
+        source->diagnostics_head = node;
+    }
+    source->diagnostics_tail = node;
 }
 
-static bool eval_stream_match(eval_stream_t *stream, const char *token)
+static void PC_EmitPunctuation(pc_source_t *source, const char *lexeme, int line)
 {
-    if (!stream || !token) {
+    if (lexeme == NULL)
+    {
+        return;
+    }
+
+    pc_token_t token;
+    PC_ClearToken(&token);
+    strncpy(token.string, lexeme, sizeof(token.string) - 1);
+    token.type = TT_PUNCTUATION;
+    token.subtype = 0;
+    token.line = line;
+    PC_PushToken(source, &token);
+}
+
+static bool PC_ParseNumber(const char *lexeme, int line, pc_token_t *token)
+{
+    if (lexeme == NULL || token == NULL)
+    {
         return false;
     }
 
-    size_t len = strlen(token);
-    if (stream->position + len > stream->length) {
-        return false;
+    char *end = NULL;
+    long value = strtol(lexeme, &end, 0);
+    if (end != NULL && *end == '\0')
+    {
+        PC_ClearToken(token);
+        token->type = TT_NUMBER;
+        token->subtype = TT_INTEGER;
+        token->intvalue = (unsigned long)value;
+        token->floatvalue = (long double)value;
+        strncpy(token->string, lexeme, sizeof(token->string) - 1);
+        token->line = line;
+        return true;
     }
 
-    if (strncmp(stream->text + stream->position, token, len) == 0) {
-        stream->position += len;
+    double float_value = strtod(lexeme, &end);
+    if (end != NULL && *end == '\0')
+    {
+        PC_ClearToken(token);
+        token->type = TT_NUMBER;
+        token->subtype = TT_FLOAT;
+        token->intvalue = (unsigned long)float_value;
+        token->floatvalue = (long double)float_value;
+        strncpy(token->string, lexeme, sizeof(token->string) - 1);
+        token->line = line;
         return true;
     }
 
     return false;
 }
 
-static long long eval_to_integer(double value)
+static bool PC_IsNameChar(int ch)
 {
-    if (value >= 0.0) {
-        return (long long)(value + 0.5);
-    }
-    return (long long)(value - 0.5);
+    return isalnum(ch) || ch == '_' || ch == '/' || ch == '-' || ch == '.';
 }
 
-static double parse_expression(eval_stream_t *stream);
-
-static double parse_primary(eval_stream_t *stream)
+static void PC_ParseScript(pc_source_t *source, const char *script)
 {
-    eval_stream_skip_whitespace(stream);
-    if (stream->position >= stream->length) {
-        return 0.0;
-    }
-
-    char ch = stream->text[stream->position];
-    if (ch == '(') {
-        stream->position++;
-        double value = parse_expression(stream);
-        eval_stream_skip_whitespace(stream);
-        if (stream->position < stream->length && stream->text[stream->position] == ')') {
-            stream->position++;
-        }
-        return value;
-    }
-
-    if (isdigit((unsigned char)ch) || ch == '.') {
-        const char *start = stream->text + stream->position;
-        char *end = NULL;
-        if (stream->position + 2 <= stream->length && stream->text[stream->position] == '0' &&
-            (stream->text[stream->position + 1] == 'x' || stream->text[stream->position + 1] == 'X')) {
-            unsigned long long value = strtoull(start, &end, 0);
-            stream->position = (size_t)(end - stream->text);
-            return (double)value;
-        }
-        double value = strtod(start, &end);
-        stream->position = (size_t)(end - stream->text);
-        return value;
-    }
-
-    return 0.0;
-}
-
-static double parse_unary(eval_stream_t *stream)
-{
-    eval_stream_skip_whitespace(stream);
-    if (stream->position >= stream->length) {
-        return 0.0;
-    }
-
-    if (eval_stream_match(stream, "+")) {
-        return parse_unary(stream);
-    }
-    if (eval_stream_match(stream, "-")) {
-        return -parse_unary(stream);
-    }
-    if (eval_stream_match(stream, "!")) {
-        return parse_unary(stream) == 0.0 ? 1.0 : 0.0;
-    }
-    if (eval_stream_match(stream, "~")) {
-        long long value = eval_to_integer(parse_unary(stream));
-        return (double)(~value);
-    }
-
-    return parse_primary(stream);
-}
-
-static double parse_multiplicative(eval_stream_t *stream)
-{
-    double value = parse_unary(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "*")) {
-            value *= parse_unary(stream);
-        } else if (eval_stream_match(stream, "/")) {
-            double divisor = parse_unary(stream);
-            if (divisor != 0.0) {
-                value /= divisor;
-            }
-        } else if (eval_stream_match(stream, "%")) {
-            long long lhs = eval_to_integer(value);
-            long long rhs = eval_to_integer(parse_unary(stream));
-            if (rhs != 0) {
-                value = (double)(lhs % rhs);
-            }
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_additive(eval_stream_t *stream)
-{
-    double value = parse_multiplicative(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "+")) {
-            value += parse_multiplicative(stream);
-        } else if (eval_stream_match(stream, "-")) {
-            value -= parse_multiplicative(stream);
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_shift(eval_stream_t *stream)
-{
-    double value = parse_additive(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "<<")) {
-            long long lhs = eval_to_integer(value);
-            long long rhs = eval_to_integer(parse_additive(stream));
-            value = (double)(lhs << rhs);
-        } else if (eval_stream_match(stream, ">>")) {
-            long long lhs = eval_to_integer(value);
-            long long rhs = eval_to_integer(parse_additive(stream));
-            value = (double)(lhs >> rhs);
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_relational(eval_stream_t *stream)
-{
-    double value = parse_shift(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "<=")) {
-            double rhs = parse_shift(stream);
-            value = value <= rhs ? 1.0 : 0.0;
-        } else if (eval_stream_match(stream, ">=")) {
-            double rhs = parse_shift(stream);
-            value = value >= rhs ? 1.0 : 0.0;
-        } else if (eval_stream_match(stream, "<")) {
-            double rhs = parse_shift(stream);
-            value = value < rhs ? 1.0 : 0.0;
-        } else if (eval_stream_match(stream, ">")) {
-            double rhs = parse_shift(stream);
-            value = value > rhs ? 1.0 : 0.0;
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_equality(eval_stream_t *stream)
-{
-    double value = parse_relational(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "==")) {
-            double rhs = parse_relational(stream);
-            value = fabs(value - rhs) < 0.000001 ? 1.0 : 0.0;
-        } else if (eval_stream_match(stream, "!=")) {
-            double rhs = parse_relational(stream);
-            value = fabs(value - rhs) < 0.000001 ? 0.0 : 1.0;
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_bitwise_and(eval_stream_t *stream)
-{
-    double value = parse_equality(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "&")) {
-            long long lhs = eval_to_integer(value);
-            long long rhs = eval_to_integer(parse_equality(stream));
-            value = (double)(lhs & rhs);
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_bitwise_xor(eval_stream_t *stream)
-{
-    double value = parse_bitwise_and(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "^")) {
-            long long lhs = eval_to_integer(value);
-            long long rhs = eval_to_integer(parse_bitwise_and(stream));
-            value = (double)(lhs ^ rhs);
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_bitwise_or(eval_stream_t *stream)
-{
-    double value = parse_bitwise_xor(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "|")) {
-            long long lhs = eval_to_integer(value);
-            long long rhs = eval_to_integer(parse_bitwise_xor(stream));
-            value = (double)(lhs | rhs);
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_logical_and(eval_stream_t *stream)
-{
-    double value = parse_bitwise_or(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "&&")) {
-            double rhs = parse_bitwise_or(stream);
-            value = (value != 0.0 && rhs != 0.0) ? 1.0 : 0.0;
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_logical_or(eval_stream_t *stream)
-{
-    double value = parse_logical_and(stream);
-    while (true) {
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, "||")) {
-            double rhs = parse_logical_and(stream);
-            value = (value != 0.0 || rhs != 0.0) ? 1.0 : 0.0;
-        } else {
-            break;
-        }
-    }
-    return value;
-}
-
-static double parse_conditional(eval_stream_t *stream)
-{
-    double value = parse_logical_or(stream);
-    eval_stream_skip_whitespace(stream);
-    if (eval_stream_match(stream, "?")) {
-        double true_expr = parse_conditional(stream);
-        eval_stream_skip_whitespace(stream);
-        if (eval_stream_match(stream, ":")) {
-            double false_expr = parse_conditional(stream);
-            return value != 0.0 ? true_expr : false_expr;
-        }
-        return value != 0.0 ? true_expr : 0.0;
-    }
-    return value;
-}
-
-static double parse_expression(eval_stream_t *stream)
-{
-    return parse_conditional(stream);
-}
-typedef enum { qfalse = 0, qtrue = 1 } qboolean;
-
-#ifndef QDECL
-#define QDECL
-#endif
-
-#ifndef MAX_QPATH
-#define MAX_QPATH 256
-#endif
-
-#ifndef MAX_PATH
-#define MAX_PATH 1024
-#endif
-
-#define Log_Write BotLib_LogWrite
-
-#ifndef ERR_FATAL
-#define ERR_FATAL 1
-#endif
-
-#define Com_Error(code, fmt, ...)                                                                 \
-    do {                                                                                          \
-        BotLib_Print(PRT_FATAL, fmt, ##__VA_ARGS__);                                              \
-        abort();                                                                                  \
-    } while (0)
-
-typedef struct pc_define_s {
-    char *name;
-    int flags;
-    int builtin;
-    int numparms;
-    pc_token_t *parms;
-    pc_token_t *tokens;
-    struct pc_define_s *next;
-    struct pc_define_s *hashnext;
-} pc_define_t;
-
-typedef struct pc_indent_s {
-    int type;
-    qboolean skip;
-    pc_script_t *script;
-    struct pc_indent_s *next;
-} pc_indent_t;
-
-typedef struct pc_operator_s {
-    int operator;
-    int priority;
-    int parentheses;
-    struct pc_operator_s *prev;
-    struct pc_operator_s *next;
-} pc_operator_t;
-
-typedef struct pc_value_s {
-    signed long int intvalue;
-    double floatvalue;
-    int parentheses;
-    struct pc_value_s *prev;
-    struct pc_value_s *next;
-} pc_value_t;
-
-typedef struct pc_foundfile_s {
-    char filename[MAX_PATH];
-    struct pc_foundfile_s *next;
-} pc_foundfile_t;
-
-struct pc_source_s {
-    char filename[MAX_PATH];
-    char includepath[MAX_PATH];
-    const pc_punctuation_t *punctuations;
-    pc_script_t *scriptstack;
-    pc_token_t *tokens;
-    pc_define_t *defines;
-    pc_define_t **definehash;
-    pc_indent_t *indentstack;
-    int skip;
-    pc_token_t token;
-    pc_diagnostic_t *diagnostics_head;
-    pc_diagnostic_t *diagnostics_tail;
-    int fatal_errors;
-};
-
-static void PC_AppendDiagnostic(pc_source_t *source,
-                                pc_error_level_t level,
-                                int line,
-                                const char *message)
-{
-    if (source == NULL || message == NULL) {
+    if (source == NULL || script == NULL)
+    {
         return;
     }
 
-    pc_diagnostic_t *node = (pc_diagnostic_t *)calloc(1, sizeof(*node));
-    if (node == NULL) {
-        BotLib_Print(PRT_FATAL, "pc_precomp: out of memory while logging diagnostic\n");
-        return;
-    }
-
-    size_t length = strlen(message) + 1;
-    char *message_copy = (char *)malloc(length);
-    if (message_copy == NULL) {
-        free(node);
-        BotLib_Print(PRT_FATAL, "pc_precomp: out of memory while copying diagnostic message\n");
-        return;
-    }
-
-    memcpy(message_copy, message, length);
-
-    node->level = level;
-    node->line = line;
-    node->column = 0;
-    node->message = message_copy;
-    node->next = NULL;
-
-    if (source->diagnostics_tail != NULL) {
-        source->diagnostics_tail->next = node;
-    } else {
-        source->diagnostics_head = node;
-    }
-
-    source->diagnostics_tail = node;
-}
-
-static void PC_ReportDiagnostic(pc_source_t *source,
-                                pc_error_level_t level,
-                                const char *text)
-{
-    if (source == NULL || text == NULL) {
-        return;
-    }
-
-    int line = -1;
-    const char *filename = NULL;
-    if (source->scriptstack != NULL) {
-        line = source->scriptstack->line;
-        filename = source->scriptstack->filename;
-    }
-
-    int priority = PRT_MESSAGE;
-    switch (level) {
-        case PC_ERROR_LEVEL_WARNING:
-            priority = PRT_WARNING;
-            break;
-        case PC_ERROR_LEVEL_ERROR:
-            priority = PRT_ERROR;
-            break;
-        case PC_ERROR_LEVEL_FATAL:
-            priority = PRT_FATAL;
-            source->fatal_errors = 1;
-            break;
-    }
-
-    if (filename != NULL && line >= 0) {
-        BotLib_Print(priority, "file %s, line %d: %s\n", filename, line, text);
-    } else {
-        BotLib_Print(priority, "%s\n", text);
-    }
-
-    PC_AppendDiagnostic(source, level, line, text);
-}
-#ifndef PATHSEPERATOR_STR
-#if defined(_WIN32)
-#define PATHSEPERATOR_STR "\\"
-#else
-#define PATHSEPERATOR_STR "/"
-#endif
-#endif
-
-#ifndef PATHSEPERATOR_CHAR
-#if defined(_WIN32)
-#define PATHSEPERATOR_CHAR '\\'
-#else
-#define PATHSEPERATOR_CHAR '/'
-#endif
-#endif
-
-#define Q_stricmp strcasecmp
-
-
-#define MAX_DEFINEPARMS			128
-
-#define DEFINEHASHING			1
-
-//directive name with parse function
-typedef struct directive_s
-{
-	char *name;
-	int (*func)(pc_source_t *source);
-} directive_t;
-
-#define DEFINEHASHSIZE		1024
-
-#define TOKEN_HEAP_SIZE		4096
-
-int numtokens;
-/*
-int tokenheapinitialized;				//true when the token heap is initialized
-pc_token_t token_heap[TOKEN_HEAP_SIZE];	//heap with tokens
-pc_token_t *freetokens;					//free tokens from the heap
-*/
-
-//list with global defines added to every source loaded
-pc_define_t *globaldefines;
-
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void QDECL SourceError(pc_source_t *source, char *str, ...)
-{
-	if (!source || !str)
-	{
-		return;
-	}
-
-	char text[1024];
-	va_list ap;
-
-	va_start(ap, str);
-	vsnprintf(text, sizeof(text), str, ap);
-	va_end(ap);
-
-	PC_ReportDiagnostic(source, PC_ERROR_LEVEL_ERROR, text);
-} //end of the function SourceError
-//===========================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//===========================================================================
-void QDECL SourceWarning(pc_source_t *source, char *str, ...)
-{
-	if (!source || !str)
-	{
-		return;
-	}
-
-	char text[1024];
-	va_list ap;
-
-	va_start(ap, str);
-	vsnprintf(text, sizeof(text), str, ap);
-	va_end(ap);
-
-	if (source->scriptstack && (source->scriptstack->flags & SCFL_NOWARNINGS))
-	{
-		PC_AppendDiagnostic(source, PC_ERROR_LEVEL_WARNING, source->scriptstack->line, text);
-		return;
-	}
-
-	PC_ReportDiagnostic(source, PC_ERROR_LEVEL_WARNING, text);
-} //end of the function ScriptWarning
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_PushIndent(pc_source_t *source, int type, int skip)
-{
-	pc_indent_t *indent;
-
-	indent = (pc_indent_t *) GetMemory(sizeof(pc_indent_t));
-	indent->type = type;
-	indent->script = source->scriptstack;
-	indent->skip = (skip != 0);
-	source->skip += indent->skip;
-	indent->next = source->indentstack;
-	source->indentstack = indent;
-} //end of the function PC_PushIndent
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_PopIndent(pc_source_t *source, int *type, int *skip)
-{
-	pc_indent_t *indent;
-
-	*type = 0;
-	*skip = 0;
-
-	indent = source->indentstack;
-	if (!indent) return;
-
-	//must be an indent from the current script
-	if (source->indentstack->script != source->scriptstack) return;
-
-	*type = indent->type;
-	*skip = indent->skip;
-	source->indentstack = source->indentstack->next;
-	source->skip -= indent->skip;
-	FreeMemory(indent);
-} //end of the function PC_PopIndent
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_PushScript(pc_source_t *source, pc_script_t *script)
-{
-	pc_script_t *s;
-
-	for (s = source->scriptstack; s; s = s->next)
-	{
-		if (!Q_stricmp(s->filename, script->filename))
-		{
-			SourceError(source, "%s recursively included", script->filename);
-			return;
-		} //end if
-	} //end for
-	//push the script on the script stack
-	script->next = source->scriptstack;
-	source->scriptstack = script;
-} //end of the function PC_PushScript
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-void PC_InitTokenHeap(void)
-{
-	/*
-	int i;
-
-	if (tokenheapinitialized) return;
-	freetokens = NULL;
-	for (i = 0; i < TOKEN_HEAP_SIZE; i++)
-	{
-		token_heap[i].next = freetokens;
-		freetokens = &token_heap[i];
-	} //end for
-	tokenheapinitialized = qtrue;
-	*/
-} //end of the function PC_InitTokenHeap
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-pc_token_t *PC_CopyToken(pc_token_t *token)
-{
-	pc_token_t *t;
-
-//	t = (pc_token_t *) malloc(sizeof(pc_token_t));
-	t = (pc_token_t *) GetMemory(sizeof(pc_token_t));
-//	t = freetokens;
-	if (!t)
-	{
-#ifdef BSPC
-		Error("out of token space\n");
-#else
-		Com_Error(ERR_FATAL, "out of token space\n");
-#endif
-		return NULL;
-	} //end if
-//	freetokens = freetokens->next;
-	memcpy(t, token, sizeof(pc_token_t));
-	t->next = NULL;
-	numtokens++;
-	return t;
-} //end of the function PC_CopyToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_FreeToken(pc_token_t *token)
-{
-	//free(token);
-	FreeMemory(token);
-//	token->next = freetokens;
-//	freetokens = token;
-	numtokens--;
-} //end of the function PC_FreeToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ReadSourceToken(pc_source_t *source, pc_token_t *token)
-{
-	pc_token_t *t;
-	pc_script_t *script;
-	int type, skip;
-
-	//if there's no token already available
-	while(!source->tokens)
-	{
-		//if there's a token to read from the script
-		if (PS_ReadToken(source->scriptstack, token)) return qtrue;
-		//if at the end of the script
-		if (EndOfScript(source->scriptstack))
-		{
-			//remove all indents of the script
-			while(source->indentstack &&
-					source->indentstack->script == source->scriptstack)
-			{
-				SourceWarning(source, "missing #endif");
-				PC_PopIndent(source, &type, &skip);
-			} //end if
-		} //end if
-		//if this was the initial script
-		if (!source->scriptstack->next) return qfalse;
-		//remove the script and return to the last one
-		script = source->scriptstack;
-		source->scriptstack = source->scriptstack->next;
-		FreeScript(script);
-	} //end while
-	//copy the already available token
-	memcpy(token, source->tokens, sizeof(pc_token_t));
-	//free the read token
-	t = source->tokens;
-	source->tokens = source->tokens->next;
-	PC_FreeToken(t);
-	return qtrue;
-} //end of the function PC_ReadSourceToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_UnreadSourceToken(pc_source_t *source, pc_token_t *token)
-{
-	pc_token_t *t;
-
-	t = PC_CopyToken(token);
-	t->next = source->tokens;
-	source->tokens = t;
-	return qtrue;
-} //end of the function PC_UnreadSourceToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ReadDefineParms(pc_source_t *source, pc_define_t *define, pc_token_t **parms, int maxparms)
-{
-	pc_token_t token, *t, *last;
-	int i, done, lastcomma, numparms, indent;
-
-	if (!PC_ReadSourceToken(source, &token))
-	{
-		SourceError(source, "define %s missing parms", define->name);
-		return qfalse;
-	} //end if
-	//
-	if (define->numparms > maxparms)
-	{
-		SourceError(source, "define with more than %d parameters", maxparms);
-		return qfalse;
-	} //end if
-	//
-	for (i = 0; i < define->numparms; i++) parms[i] = NULL;
-	//if no leading "("
-	if (strcmp(token.string, "("))
-	{
-		PC_UnreadSourceToken(source, &token);
-		SourceError(source, "define %s missing parms", define->name);
-		return qfalse;
-	} //end if
-	//read the define parameters
-	for (done = 0, numparms = 0, indent = 0; !done;)
-	{
-		if (numparms >= maxparms)
-		{
-			SourceError(source, "define %s with too many parms", define->name);
-			return qfalse;
-		} //end if
-		if (numparms >= define->numparms)
-		{
-			SourceWarning(source, "define %s has too many parms", define->name);
-			return qfalse;
-		} //end if
-		parms[numparms] = NULL;
-		lastcomma = 1;
-		last = NULL;
-		while(!done)
-		{
-			//
-			if (!PC_ReadSourceToken(source, &token))
-			{
-				SourceError(source, "define %s incomplete", define->name);
-				return qfalse;
-			} //end if
-			//
-			if (!strcmp(token.string, ","))
-			{
-				if (indent <= 0)
-				{
-					if (lastcomma) SourceWarning(source, "too many comma's");
-					lastcomma = 1;
-					break;
-				} //end if
-			} //end if
-			lastcomma = 0;
-			//
-			if (!strcmp(token.string, "("))
-			{
-				indent++;
-				continue;
-			} //end if
-			else if (!strcmp(token.string, ")"))
-			{
-				if (--indent <= 0)
-				{
-					if (!parms[define->numparms-1])
-					{
-						SourceWarning(source, "too few define parms");
-					} //end if
-					done = 1;
-					break;
-				} //end if
-			} //end if
-			//
-			if (numparms < define->numparms)
-			{
-				//
-				t = PC_CopyToken(&token);
-				t->next = NULL;
-				if (last) last->next = t;
-				else parms[numparms] = t;
-				last = t;
-			} //end if
-		} //end while
-		numparms++;
-	} //end for
-	return qtrue;
-} //end of the function PC_ReadDefineParms
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_StringizeTokens(pc_token_t *tokens, pc_token_t *token)
-{
-	pc_token_t *t;
-
-	token->type = TT_STRING;
-	token->whitespace_p = NULL;
-	token->endwhitespace_p = NULL;
-	token->string[0] = '\0';
-	strcat(token->string, "\"");
-	for (t = tokens; t; t = t->next)
-	{
-		strncat(token->string, t->string, MAX_TOKEN - strlen(token->string));
-	} //end for
-	strncat(token->string, "\"", MAX_TOKEN - strlen(token->string));
-	return qtrue;
-} //end of the function PC_StringizeTokens
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_MergeTokens(pc_token_t *t1, pc_token_t *t2)
-{
-	//merging of a name with a name or number
-	if (t1->type == TT_NAME && (t2->type == TT_NAME || t2->type == TT_NUMBER))
-	{
-		strcat(t1->string, t2->string);
-		return qtrue;
-	} //end if
-	//merging of two strings
-	if (t1->type == TT_STRING && t2->type == TT_STRING)
-	{
-		//remove trailing double quote
-		t1->string[strlen(t1->string)-1] = '\0';
-		//concat without leading double quote
-		strcat(t1->string, &t2->string[1]);
-		return qtrue;
-	} //end if
-	//FIXME: merging of two number of the same sub type
-	return qfalse;
-} //end of the function PC_MergeTokens
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-/*
-void PC_PrintDefine(pc_define_t *define)
-{
-	printf("define->name = %s\n", define->name);
-	printf("define->flags = %d\n", define->flags);
-	printf("define->builtin = %d\n", define->builtin);
-	printf("define->numparms = %d\n", define->numparms);
-//	pc_token_t *parms;					//define parameters
-//	pc_token_t *tokens;					//macro tokens (possibly containing parm tokens)
-//	struct pc_define_s *next;			//next defined macro in a list
-} //end of the function PC_PrintDefine*/
-#if DEFINEHASHING
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_PrintDefineHashTable(pc_define_t **definehash)
-{
-	int i;
-	pc_define_t *d;
-
-	for (i = 0; i < DEFINEHASHSIZE; i++)
-	{
-		Log_Write("%4d:", i);
-		for (d = definehash[i]; d; d = d->hashnext)
-		{
-			Log_Write(" %s", d->name);
-		} //end for
-		Log_Write("\n");
-	} //end for
-} //end of the function PC_PrintDefineHashTable
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-//char primes[16] = {1, 3, 5, 7, 11, 13, 17, 19, 23, 27, 29, 31, 37, 41, 43, 47};
-
-int PC_NameHash(char *name)
-{
-	int register hash, i;
-
-	hash = 0;
-	for (i = 0; name[i] != '\0'; i++)
-	{
-		hash += name[i] * (119 + i);
-		//hash += (name[i] << 7) + i;
-		//hash += (name[i] << (i&15));
-	} //end while
-	hash = (hash ^ (hash >> 10) ^ (hash >> 20)) & (DEFINEHASHSIZE-1);
-	return hash;
-} //end of the function PC_NameHash
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_AddDefineToHash(pc_define_t *define, pc_define_t **definehash)
-{
-	int hash;
-
-	hash = PC_NameHash(define->name);
-	define->hashnext = definehash[hash];
-	definehash[hash] = define;
-} //end of the function PC_AddDefineToHash
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-pc_define_t *PC_FindHashedDefine(pc_define_t **definehash, char *name)
-{
-	pc_define_t *d;
-	int hash;
-
-	hash = PC_NameHash(name);
-	for (d = definehash[hash]; d; d = d->hashnext)
-	{
-		if (!strcmp(d->name, name)) return d;
-	} //end for
-	return NULL;
-} //end of the function PC_FindHashedDefine
-#endif //DEFINEHASHING
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-pc_define_t *PC_FindDefine(pc_define_t *defines, char *name)
-{
-	pc_define_t *d;
-
-	for (d = defines; d; d = d->next)
-	{
-		if (!strcmp(d->name, name)) return d;
-	} //end for
-	return NULL;
-} //end of the function PC_FindDefine
-//============================================================================
-//
-// Parameter:				-
-// Returns:					number of the parm
-//								if no parm found with the given name -1 is returned
-// Changes Globals:		-
-//============================================================================
-int PC_FindDefineParm(pc_define_t *define, char *name)
-{
-	pc_token_t *p;
-	int i;
-
-	i = 0;
-	for (p = define->parms; p; p = p->next)
-	{
-		if (!strcmp(p->string, name)) return i;
-		i++;
-	} //end for
-	return -1;
-} //end of the function PC_FindDefineParm
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_FreeDefine(pc_define_t *define)
-{
-	pc_token_t *t, *next;
-
-	//free the define parameters
-	for (t = define->parms; t; t = next)
-	{
-		next = t->next;
-		PC_FreeToken(t);
-	} //end for
-	//free the define tokens
-	for (t = define->tokens; t; t = next)
-	{
-		next = t->next;
-		PC_FreeToken(t);
-	} //end for
-	//free the define
-	FreeMemory(define);
-} //end of the function PC_FreeDefine
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_AddBuiltinDefines(pc_source_t *source)
-{
-	int i;
-	pc_define_t *define;
-	struct builtin
-	{
-		char *string;
-		int builtin;
-	} builtin[] = { // bk001204 - brackets
-		{ "__LINE__",	BUILTIN_LINE },
-		{ "__FILE__",	BUILTIN_FILE },
-		{ "__DATE__",	BUILTIN_DATE },
-		{ "__TIME__",	BUILTIN_TIME },
-//		{ "__STDC__", BUILTIN_STDC },
-		{ NULL, 0 }
-	};
-
-	for (i = 0; builtin[i].string; i++)
-	{
-		define = (pc_define_t *) GetMemory(sizeof(pc_define_t) + strlen(builtin[i].string) + 1);
-		memset(define, 0, sizeof(pc_define_t));
-		define->name = (char *) define + sizeof(pc_define_t);
-		strcpy(define->name, builtin[i].string);
-		define->flags |= DEFINE_FIXED;
-		define->builtin = builtin[i].builtin;
-		//add the define to the source
-#if DEFINEHASHING
-		PC_AddDefineToHash(define, source->definehash);
-#else
-		define->next = source->defines;
-		source->defines = define;
-#endif //DEFINEHASHING
-	} //end for
-} //end of the function PC_AddBuiltinDefines
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ExpandBuiltinDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_t *define,
-										pc_token_t **firsttoken, pc_token_t **lasttoken)
-{
-	pc_token_t *token;
-	unsigned long t;	//	time_t t; //to prevent LCC warning
-	char *curtime;
-
-	token = PC_CopyToken(deftoken);
-	switch(define->builtin)
-	{
-		case BUILTIN_LINE:
-		{
-			sprintf(token->string, "%d", deftoken->line);
-#ifdef NUMBERVALUE
-			token->intvalue = deftoken->line;
-			token->floatvalue = deftoken->line;
-#endif //NUMBERVALUE
-			token->type = TT_NUMBER;
-			token->subtype = TT_DECIMAL | TT_INTEGER;
-			*firsttoken = token;
-			*lasttoken = token;
-			break;
-		} //end case
-		case BUILTIN_FILE:
-		{
-			strcpy(token->string, source->scriptstack->filename);
-			token->type = TT_NAME;
-			token->subtype = strlen(token->string);
-			*firsttoken = token;
-			*lasttoken = token;
-			break;
-		} //end case
-		case BUILTIN_DATE:
-		{
-			t = time(NULL);
-			curtime = ctime(&t);
-			strcpy(token->string, "\"");
-			strncat(token->string, curtime+4, 7);
-			strncat(token->string+7, curtime+20, 4);
-			strcat(token->string, "\"");
-			free(curtime);
-			token->type = TT_NAME;
-			token->subtype = strlen(token->string);
-			*firsttoken = token;
-			*lasttoken = token;
-			break;
-		} //end case
-		case BUILTIN_TIME:
-		{
-			t = time(NULL);
-			curtime = ctime(&t);
-			strcpy(token->string, "\"");
-			strncat(token->string, curtime+11, 8);
-			strcat(token->string, "\"");
-			free(curtime);
-			token->type = TT_NAME;
-			token->subtype = strlen(token->string);
-			*firsttoken = token;
-			*lasttoken = token;
-			break;
-		} //end case
-		case BUILTIN_STDC:
-		default:
-		{
-			*firsttoken = NULL;
-			*lasttoken = NULL;
-			break;
-		} //end case
-	} //end switch
-	return qtrue;
-} //end of the function PC_ExpandBuiltinDefine
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ExpandDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_t *define,
-										pc_token_t **firsttoken, pc_token_t **lasttoken)
-{
-	pc_token_t *parms[MAX_DEFINEPARMS], *dt, *pt, *t;
-	pc_token_t *t1, *t2, *first, *last, *nextpt, token;
-	int parmnum, i;
-
-	//if it is a builtin define
-	if (define->builtin)
-	{
-		return PC_ExpandBuiltinDefine(source, deftoken, define, firsttoken, lasttoken);
-	} //end if
-	//if the define has parameters
-	if (define->numparms)
-	{
-		if (!PC_ReadDefineParms(source, define, parms, MAX_DEFINEPARMS)) return qfalse;
-#ifdef DEBUG_EVAL
-		for (i = 0; i < define->numparms; i++)
-		{
-			Log_Write("define parms %d:", i);
-			for (pt = parms[i]; pt; pt = pt->next)
-			{
-				Log_Write("%s", pt->string);
-			} //end for
-		} //end for
-#endif //DEBUG_EVAL
-	} //end if
-	//empty list at first
-	first = NULL;
-	last = NULL;
-	//create a list with tokens of the expanded define
-	for (dt = define->tokens; dt; dt = dt->next)
-	{
-		parmnum = -1;
-		//if the token is a name, it could be a define parameter
-		if (dt->type == TT_NAME)
-		{
-			parmnum = PC_FindDefineParm(define, dt->string);
-		} //end if
-		//if it is a define parameter
-		if (parmnum >= 0)
-		{
-			for (pt = parms[parmnum]; pt; pt = pt->next)
-			{
-				t = PC_CopyToken(pt);
-				//add the token to the list
-				t->next = NULL;
-				if (last) last->next = t;
-				else first = t;
-				last = t;
-			} //end for
-		} //end if
-		else
-		{
-			//if stringizing operator
-			if (dt->string[0] == '#' && dt->string[1] == '\0')
-			{
-				//the stringizing operator must be followed by a define parameter
-				if (dt->next) parmnum = PC_FindDefineParm(define, dt->next->string);
-				else parmnum = -1;
-				//
-				if (parmnum >= 0)
-				{
-					//step over the stringizing operator
-					dt = dt->next;
-					//stringize the define parameter tokens
-					if (!PC_StringizeTokens(parms[parmnum], &token))
-					{
-						SourceError(source, "can't stringize tokens");
-						return qfalse;
-					} //end if
-					t = PC_CopyToken(&token);
-				} //end if
-				else
-				{
-					SourceWarning(source, "stringizing operator without define parameter");
-					continue;
-				} //end if
-			} //end if
-			else
-			{
-				t = PC_CopyToken(dt);
-			} //end else
-			//add the token to the list
-			t->next = NULL;
-			if (last) last->next = t;
-			else first = t;
-			last = t;
-		} //end else
-	} //end for
-	//check for the merging operator
-	for (t = first; t; )
-	{
-		if (t->next)
-		{
-			//if the merging operator
-			if (t->next->string[0] == '#' && t->next->string[1] == '#')
-			{
-				t1 = t;
-				t2 = t->next->next;
-				if (t2)
-				{
-					if (!PC_MergeTokens(t1, t2))
-					{
-						SourceError(source, "can't merge %s with %s", t1->string, t2->string);
-						return qfalse;
-					} //end if
-					PC_FreeToken(t1->next);
-					t1->next = t2->next;
-					if (t2 == last) last = t1;
-					PC_FreeToken(t2);
-					continue;
-				} //end if
-			} //end if
-		} //end if
-		t = t->next;
-	} //end for
-	//store the first and last token of the list
-	*firsttoken = first;
-	*lasttoken = last;
-	//free all the parameter tokens
-	for (i = 0; i < define->numparms; i++)
-	{
-		for (pt = parms[i]; pt; pt = nextpt)
-		{
-			nextpt = pt->next;
-			PC_FreeToken(pt);
-		} //end for
-	} //end for
-	//
-	return qtrue;
-} //end of the function PC_ExpandDefine
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ExpandDefineIntoSource(pc_source_t *source, pc_token_t *deftoken, pc_define_t *define)
-{
-	pc_token_t *firsttoken, *lasttoken;
-
-	if (!PC_ExpandDefine(source, deftoken, define, &firsttoken, &lasttoken)) return qfalse;
-
-	if (firsttoken && lasttoken)
-	{
-		lasttoken->next = source->tokens;
-		source->tokens = firsttoken;
-		return qtrue;
-	} //end if
-	return qfalse;
-} //end of the function PC_ExpandDefineIntoSource
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_ConvertPath(char *path)
-{
-	char *ptr;
-
-	//remove double path seperators
-	for (ptr = path; *ptr;)
-	{
-		if ((*ptr == '\\' || *ptr == '/') &&
-				(*(ptr+1) == '\\' || *(ptr+1) == '/'))
-		{
-			strcpy(ptr, ptr+1);
-		} //end if
-		else
-		{
-			ptr++;
-		} //end else
-	} //end while
-	//set OS dependent path seperators
-	for (ptr = path; *ptr;)
-	{
-		if (*ptr == '/' || *ptr == '\\') *ptr = PATHSEPERATOR_CHAR;
-		ptr++;
-	} //end while
-} //end of the function PC_ConvertPath
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_include(pc_source_t *source)
-{
-	pc_script_t *script;
-	pc_token_t token;
-	char path[MAX_PATH];
-#ifdef QUAKE
-	pc_foundfile_t file;
-#endif //QUAKE
-
-	if (source->skip > 0) return qtrue;
-	//
-	if (!PC_ReadSourceToken(source, &token))
-	{
-		SourceError(source, "#include without file name");
-		return qfalse;
-	} //end if
-	if (token.linescrossed > 0)
-	{
-		SourceError(source, "#include without file name");
-		return qfalse;
-	} //end if
-	if (token.type == TT_STRING)
-	{
-		StripDoubleQuotes(token.string);
-		PC_ConvertPath(token.string);
-		script = LoadScriptFile(token.string);
-		if (!script)
-		{
-			strcpy(path, source->includepath);
-			strcat(path, token.string);
-			script = LoadScriptFile(path);
-		} //end if
-	} //end if
-	else if (token.type == TT_PUNCTUATION && *token.string == '<')
-	{
-		strcpy(path, source->includepath);
-		while(PC_ReadSourceToken(source, &token))
-		{
-			if (token.linescrossed > 0)
-			{
-				PC_UnreadSourceToken(source, &token);
-				break;
-			} //end if
-			if (token.type == TT_PUNCTUATION && *token.string == '>') break;
-			strncat(path, token.string, MAX_PATH);
-		} //end while
-		if (*token.string != '>')
-		{
-			SourceWarning(source, "#include missing trailing >");
-		} //end if
-		if (!strlen(path))
-		{
-			SourceError(source, "#include without file name between < >");
-			return qfalse;
-		} //end if
-		PC_ConvertPath(path);
-		script = LoadScriptFile(path);
-	} //end if
-	else
-	{
-		SourceError(source, "#include without file name");
-		return qfalse;
-	} //end else
-#ifdef QUAKE
-	if (!script)
-	{
-		memset(&file, 0, sizeof(pc_foundfile_t));
-		script = LoadScriptFile(path);
-		if (script) strncpy(script->filename, path, MAX_PATH);
-	} //end if
-#endif //QUAKE
-	if (!script)
-	{
-#ifdef SCREWUP
-		SourceWarning(source, "file %s not found", path);
-		return qtrue;
-#else
-		SourceError(source, "file %s not found", path);
-		return qfalse;
-#endif //SCREWUP
-	} //end if
-	PC_PushScript(source, script);
-	return qtrue;
-} //end of the function PC_Directive_include
-//============================================================================
-// reads a token from the current line, continues reading on the next
-// line only if a backslash '\' is encountered.
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ReadLine(pc_source_t *source, pc_token_t *token)
-{
-	int crossline;
-
-	crossline = 0;
-	do
-	{
-		if (!PC_ReadSourceToken(source, token)) return qfalse;
-		
-		if (token->linescrossed > crossline)
-		{
-			PC_UnreadSourceToken(source, token);
-			return qfalse;
-		} //end if
-		crossline = 1;
-	} while(!strcmp(token->string, "\\"));
-	return qtrue;
-} //end of the function PC_ReadLine
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_WhiteSpaceBeforeToken(pc_token_t *token)
-{
-	return token->endwhitespace_p - token->whitespace_p > 0;
-} //end of the function PC_WhiteSpaceBeforeToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_ClearTokenWhiteSpace(pc_token_t *token)
-{
-	token->whitespace_p = NULL;
-	token->endwhitespace_p = NULL;
-	token->linescrossed = 0;
-} //end of the function PC_ClearTokenWhiteSpace
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_undef(pc_source_t *source)
-{
-	pc_token_t token;
-	pc_define_t *define, *lastdefine;
-	int hash;
-
-	if (source->skip > 0) return qtrue;
-	//
-	if (!PC_ReadLine(source, &token))
-	{
-		SourceError(source, "undef without name");
-		return qfalse;
-	} //end if
-	if (token.type != TT_NAME)
-	{
-		PC_UnreadSourceToken(source, &token);
-		SourceError(source, "expected name, found %s", token.string);
-		return qfalse;
-	} //end if
-#if DEFINEHASHING
-
-	hash = PC_NameHash(token.string);
-	for (lastdefine = NULL, define = source->definehash[hash]; define; define = define->hashnext)
-	{
-		if (!strcmp(define->name, token.string))
-		{
-			if (define->flags & DEFINE_FIXED)
-			{
-				SourceWarning(source, "can't undef %s", token.string);
-			} //end if
-			else
-			{
-				if (lastdefine) lastdefine->hashnext = define->hashnext;
-				else source->definehash[hash] = define->hashnext;
-				PC_FreeDefine(define);
-			} //end else
-			break;
-		} //end if
-		lastdefine = define;
-	} //end for
-#else //DEFINEHASHING
-	for (lastdefine = NULL, define = source->defines; define; define = define->next)
-	{
-		if (!strcmp(define->name, token.string))
-		{
-			if (define->flags & DEFINE_FIXED)
-			{
-				SourceWarning(source, "can't undef %s", token.string);
-			} //end if
-			else
-			{
-				if (lastdefine) lastdefine->next = define->next;
-				else source->defines = define->next;
-				PC_FreeDefine(define);
-			} //end else
-			break;
-		} //end if
-		lastdefine = define;
-	} //end for
-#endif //DEFINEHASHING
-	return qtrue;
-} //end of the function PC_Directive_undef
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_define(pc_source_t *source)
-{
-	pc_token_t token, *t, *last;
-	pc_define_t *define;
-
-	if (source->skip > 0) return qtrue;
-	//
-	if (!PC_ReadLine(source, &token))
-	{
-		SourceError(source, "#define without name");
-		return qfalse;
-	} //end if
-	if (token.type != TT_NAME)
-	{
-		PC_UnreadSourceToken(source, &token);
-		SourceError(source, "expected name after #define, found %s", token.string);
-		return qfalse;
-	} //end if
-	//check if the define already exists
-#if DEFINEHASHING
-	define = PC_FindHashedDefine(source->definehash, token.string);
-#else
-	define = PC_FindDefine(source->defines, token.string);
-#endif //DEFINEHASHING
-	if (define)
-	{
-		if (define->flags & DEFINE_FIXED)
-		{
-			SourceError(source, "can't redefine %s", token.string);
-			return qfalse;
-		} //end if
-		SourceWarning(source, "redefinition of %s", token.string);
-		//unread the define name before executing the #undef directive
-		PC_UnreadSourceToken(source, &token);
-		if (!PC_Directive_undef(source)) return qfalse;
-		//if the define was not removed (define->flags & DEFINE_FIXED)
-#if DEFINEHASHING
-		define = PC_FindHashedDefine(source->definehash, token.string);
-#else
-		define = PC_FindDefine(source->defines, token.string);
-#endif //DEFINEHASHING
-	} //end if
-	//allocate define
-	define = (pc_define_t *) GetMemory(sizeof(pc_define_t) + strlen(token.string) + 1);
-	memset(define, 0, sizeof(pc_define_t));
-	define->name = (char *) define + sizeof(pc_define_t);
-	strcpy(define->name, token.string);
-	//add the define to the source
-#if DEFINEHASHING
-	PC_AddDefineToHash(define, source->definehash);
-#else //DEFINEHASHING
-	define->next = source->defines;
-	source->defines = define;
-#endif //DEFINEHASHING
-	//if nothing is defined, just return
-	if (!PC_ReadLine(source, &token)) return qtrue;
-	//if it is a define with parameters
-	if (!PC_WhiteSpaceBeforeToken(&token) && !strcmp(token.string, "("))
-	{
-		//read the define parameters
-		last = NULL;
-		if (!PC_CheckTokenString(source, ")"))
-		{
-			while(1)
-			{
-				if (!PC_ReadLine(source, &token))
-				{
-					SourceError(source, "expected define parameter");
-					return qfalse;
-				} //end if
-				//if it isn't a name
-				if (token.type != TT_NAME)
-				{
-					SourceError(source, "invalid define parameter");
-					return qfalse;
-				} //end if
-				//
-				if (PC_FindDefineParm(define, token.string) >= 0)
-				{
-					SourceError(source, "two the same define parameters");
-					return qfalse;
-				} //end if
-				//add the define parm
-				t = PC_CopyToken(&token);
-				PC_ClearTokenWhiteSpace(t);
-				t->next = NULL;
-				if (last) last->next = t;
-				else define->parms = t;
-				last = t;
-				define->numparms++;
-				//read next token
-				if (!PC_ReadLine(source, &token))
-				{
-					SourceError(source, "define parameters not terminated");
-					return qfalse;
-				} //end if
-				//
-				if (!strcmp(token.string, ")")) break;
-				//then it must be a comma
-				if (strcmp(token.string, ","))
-				{
-					SourceError(source, "define not terminated");
-					return qfalse;
-				} //end if
-			} //end while
-		} //end if
-		if (!PC_ReadLine(source, &token)) return qtrue;
-	} //end if
-	//read the defined stuff
-	last = NULL;
-	do
-	{
-		t = PC_CopyToken(&token);
-		if (t->type == TT_NAME && !strcmp(t->string, define->name))
-		{
-			SourceError(source, "recursive define (removed recursion)");
-			continue;
-		} //end if
-		PC_ClearTokenWhiteSpace(t);
-		t->next = NULL;
-		if (last) last->next = t;
-		else define->tokens = t;
-		last = t;
-	} while(PC_ReadLine(source, &token));
-	//
-	if (last)
-	{
-		//check for merge operators at the beginning or end
-		if (!strcmp(define->tokens->string, "##") ||
-				!strcmp(last->string, "##"))
-		{
-			SourceError(source, "define with misplaced ##");
-			return qfalse;
-		} //end if
-	} //end if
-	return qtrue;
-} //end of the function PC_Directive_define
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-pc_define_t *PC_DefineFromString(char *string)
-{
-	pc_script_t *script;
-	pc_source_t src;
-	pc_token_t *t;
-	int res, i;
-	pc_define_t *def;
-
-	PC_InitTokenHeap();
-
-	script = LoadScriptMemory(string, strlen(string), "*extern");
-	//create a new source
-	memset(&src, 0, sizeof(pc_source_t));
-	strncpy(src.filename, "*extern", MAX_PATH);
-	src.scriptstack = script;
-#if DEFINEHASHING
-	src.definehash = GetClearedMemory(DEFINEHASHSIZE * sizeof(pc_define_t *));
-#endif //DEFINEHASHING
-	//create a define from the source
-	res = PC_Directive_define(&src);
-	//free any tokens if left
-	for (t = src.tokens; t; t = src.tokens)
-	{
-		src.tokens = src.tokens->next;
-		PC_FreeToken(t);
-	} //end for
-#ifdef DEFINEHASHING
-	def = NULL;
-	for (i = 0; i < DEFINEHASHSIZE; i++)
-	{
-		if (src.definehash[i])
-		{
-			def = src.definehash[i];
-			break;
-		} //end if
-	} //end for
-#else
-	def = src.defines;
-#endif //DEFINEHASHING
-	//
-#if DEFINEHASHING
-	FreeMemory(src.definehash);
-#endif //DEFINEHASHING
-	//
-	FreeScript(script);
-	//if the define was created succesfully
-	if (res > 0) return def;
-	//free the define is created
-	if (src.defines) PC_FreeDefine(def);
-	//
-	return NULL;
-} //end of the function PC_DefineFromString
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_AddDefine(pc_source_t *source, char *string)
-{
-	pc_define_t *define;
-
-static bool evaluate_evalfloat_expression(const char *expression, size_t length, double *out_value)
-{
-    if (!expression || !out_value) {
-        return false;
-    }
-
-    eval_stream_t stream;
-    stream.text = expression;
-    stream.length = length;
-    stream.position = 0;
-
-    double value = parse_expression(&stream);
-    *out_value = value;
-    return true;
-}
-
-static char *process_evalfloat_directives(const char *input)
-{
-    if (!input) {
-        return NULL;
-    }
-
-    string_buffer_t output;
-    string_buffer_init(&output);
-
-    size_t length = strlen(input);
-    for (size_t i = 0; i < length;) {
-        if (strncmp(&input[i], "$evalfloat", 10) == 0) {
-            size_t start = i + 10;
-            while (start < length && isspace((unsigned char)input[start])) {
-                start++;
-            }
-            if (start >= length || input[start] != '(') {
-                string_buffer_append(&output, &input[i], 10);
-                i += 10;
-                continue;
-            }
-
-            size_t depth = 0;
-            size_t end = start;
-            do {
-                if (end >= length) {
-                    break;
-                }
-                if (input[end] == '(') {
-                    depth++;
-                } else if (input[end] == ')') {
-                    if (depth == 0) {
-                        break;
-                    }
-                    depth--;
-                    if (depth == 0) {
-                        break;
-                    }
-                }
-                end++;
-            } while (end < length);
-
-            if (end >= length || input[end] != ')') {
-                string_buffer_append(&output, &input[i], length - i);
-                break;
-            }
-
-            const char *expr = &input[start + 1];
-            size_t expr_length = end - (start + 1);
-            double value = 0.0;
-            if (!evaluate_evalfloat_expression(expr, expr_length, &value)) {
-                string_buffer_append(&output, &input[i], (end + 1) - i);
-            } else {
-                char number[64];
-                if (fabs(value) < 0.00001) {
-                    value = 0.0;
-                }
-                snprintf(number, sizeof(number), "%.2f", value);
-                string_buffer_append(&output, number, strlen(number));
-            }
-
-            i = end + 1;
-        } else {
-            string_buffer_append_char(&output, input[i]);
-            i++;
-        }
-    }
-
-    string_buffer_null_terminate(&output);
-    return output.data;
-}
-
-static bool is_identifier_start(char ch)
-{
-    return isalpha((unsigned char)ch) || ch == '_';
-}
-
-static bool is_identifier_char(char ch)
-{
-    return isalnum((unsigned char)ch) || ch == '_';
-}
-
-static bool is_number_start(char ch)
-{
-    return (ch >= '0' && ch <= '9') || ch == '.';
-}
-
-static bool tokenize_number(const char *text, size_t length, size_t *position, int line, pc_token_t *token)
-{
-    size_t start = *position;
-    size_t i = start;
-    bool is_hex = false;
-    bool is_float = false;
-
-    if (i + 2 <= length && text[i] == '0' && (text[i + 1] == 'x' || text[i + 1] == 'X')) {
-        is_hex = true;
-        i += 2;
-        while (i < length && isxdigit((unsigned char)text[i])) {
-            ++i;
-        }
-    } else {
-        bool seen_digits = false;
-        while (i < length && isdigit((unsigned char)text[i])) {
-            ++i;
-            seen_digits = true;
-        }
-        if (i < length && text[i] == '.') {
-            is_float = true;
-            ++i;
-            while (i < length && isdigit((unsigned char)text[i])) {
-                ++i;
-            }
-        }
-        if (!seen_digits && !is_float) {
-            return false;
-        }
-        if (i < length && (text[i] == 'e' || text[i] == 'E')) {
-            is_float = true;
-            ++i;
-            if (i < length && (text[i] == '+' || text[i] == '-')) {
-                ++i;
-            }
-            while (i < length && isdigit((unsigned char)text[i])) {
-                ++i;
-            }
-        }
-    }
-
-    size_t token_length = i - start;
-    if (token_length == 0 || token_length >= sizeof(token->string)) {
-        return false;
-    }
-
-    memcpy(token->string, text + start, token_length);
-    token->string[token_length] = '\0';
-    token->type = TT_NUMBER;
-    token->line = line;
-    token->linescrossed = 0;
-    token->next = NULL;
-
-    if (is_hex) {
-        token->subtype = TT_INTEGER | TT_HEX | TT_LONG;
-        token->intvalue = strtoull(token->string, NULL, 16);
-        token->floatvalue = (long double)token->intvalue;
-    } else if (!is_float && token->string[0] == '0' && token_length > 1) {
-        token->subtype = TT_INTEGER | TT_OCTAL;
-        token->intvalue = strtoull(token->string, NULL, 8);
-        token->floatvalue = (long double)token->intvalue;
-    } else if (is_float) {
-        token->subtype = TT_FLOAT | TT_DECIMAL;
-        token->floatvalue = strtold(token->string, NULL);
-        token->intvalue = (unsigned long int)token->floatvalue;
-    } else {
-        token->subtype = TT_INTEGER | TT_DECIMAL;
-        token->intvalue = strtoull(token->string, NULL, 10);
-        token->floatvalue = (long double)token->intvalue;
-    }
-
-    *position = i;
-    return true;
-}
-
-static bool tokenize_identifier(const char *text, size_t length, size_t *position, int line, pc_token_t *token)
-{
-    size_t start = *position;
-    size_t i = start;
-    while (i < length && is_identifier_char(text[i])) {
-        ++i;
-    }
-
-    size_t token_length = i - start;
-    if (token_length == 0 || token_length >= sizeof(token->string)) {
-        return false;
-    }
-
-    memcpy(token->string, text + start, token_length);
-    token->string[token_length] = '\0';
-    token->type = TT_NAME;
-    token->subtype = (int)token_length;
-    token->line = line;
-    token->linescrossed = 0;
-    token->next = NULL;
-    token->intvalue = 0;
-    token->floatvalue = 0.0L;
-
-    *position = i;
-    return true;
-}
-
-static bool tokenize_string_literal(const char *text, size_t length, size_t *position, int *line, pc_token_t *token)
-{
-    size_t start = *position;
-    size_t i = start + 1; // Skip opening quote.
-    size_t out_index = 0;
-
-    while (i < length) {
-        char ch = text[i++];
-        if (ch == '\\' && i < length) {
-            char next = text[i++];
-            switch (next) {
-            case 'n':
-                ch = '\n';
-                break;
-            case 't':
-                ch = '\t';
-                break;
-            case 'r':
-                ch = '\r';
-                break;
-            case '\\':
-                ch = '\\';
-                break;
-            case '\"':
-                ch = '\"';
-                break;
-            default:
-                ch = next;
-                break;
-            }
-        } else if (ch == '"') {
-            break;
-        } else if (ch == '\n') {
-            (*line)++;
-        }
-
-        if (out_index + 1 < sizeof(token->string)) {
-            token->string[out_index++] = ch;
-        }
-    }
-
-    token->string[out_index] = '\0';
-    token->type = TT_STRING;
-    token->subtype = (int)out_index;
-    token->line = *line;
-    token->linescrossed = 0;
-    token->next = NULL;
-    token->intvalue = 0;
-    token->floatvalue = 0.0L;
-
-    *position = i;
-    return true;
-}
-
-static bool tokenize_punctuation(const char *text, size_t length, size_t *position, int line, pc_token_t *token)
-{
-    static const char *punctuations[] = {
-        "<<=", ">>=", "++", "--", "->", "<=", ">=", "==", "!=", "&&", "||", "+=", "-=", "*=", "/=", "%=", "<<", ">>",
-        "&=", "|=", "^=", "::", NULL
-    };
-
-    size_t i = *position;
-    for (size_t idx = 0; punctuations[idx]; ++idx) {
-        size_t len = strlen(punctuations[idx]);
-        if (i + len <= length && strncmp(&text[i], punctuations[idx], len) == 0) {
-            memcpy(token->string, punctuations[idx], len + 1);
-            token->type = TT_PUNCTUATION;
-            token->subtype = 0;
-            token->line = line;
-            token->linescrossed = 0;
-            token->next = NULL;
-            token->intvalue = 0;
-            token->floatvalue = 0.0L;
-            *position = i + len;
-            return true;
-        }
-    }
-
-    token->string[0] = text[i];
-    token->string[1] = '\0';
-    token->type = TT_PUNCTUATION;
-    token->subtype = 0;
-    token->line = line;
-    token->linescrossed = 0;
-    token->next = NULL;
-    token->intvalue = 0;
-    token->floatvalue = 0.0L;
-    *position = i + 1;
-    return true;
-}
-
-static bool tokenize_text(const char *text, token_array_t *tokens)
-{
-    if (!text || !tokens) {
-        return false;
-    }
-
-    size_t length = strlen(text);
-    size_t position = 0;
+    size_t length = strlen(script);
+    size_t index = 0;
     int line = 1;
 
-    while (position < length) {
-        char ch = text[position];
-        if (ch == '\r') {
-            position++;
-            continue;
-        }
-        if (ch == '\n') {
+    while (index < length)
+    {
+        unsigned char ch = (unsigned char)script[index];
+        if (ch == '\n')
+        {
             line++;
-            position++;
+            index++;
             continue;
         }
-        if (isspace((unsigned char)ch)) {
-            position++;
+        if (isspace(ch))
+        {
+            index++;
             continue;
         }
-        if (ch == '/' && position + 1 < length && text[position + 1] == '/') {
-            position += 2;
-            while (position < length && text[position] != '\n') {
-                position++;
-            }
+
+        if (ch == '{' || ch == '}' || ch == ',' || ch == ';' || ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == ':')
+        {
+            char lexeme[2] = {(char)ch, '\0'};
+            PC_EmitPunctuation(source, lexeme, line);
+            index++;
             continue;
         }
-        if (ch == '/' && position + 1 < length && text[position + 1] == '*') {
-            position += 2;
-            while (position + 1 < length && !(text[position] == '*' && text[position + 1] == '/')) {
-                if (text[position] == '\n') {
-                    line++;
+
+        if (ch == '"')
+        {
+            size_t start = ++index;
+            while (index < length && script[index] != '"')
+            {
+                if (script[index] == '\\' && index + 1 < length)
+                {
+                    index += 2;
                 }
-                position++;
+                else
+                {
+                    index++;
+                }
             }
-            if (position + 1 < length) {
-                position += 2;
-            }
-            continue;
-        }
-        if (ch == '"') {
+            size_t span = (index > start) ? (index - start) : 0;
             pc_token_t token;
-            if (!tokenize_string_literal(text, length, &position, &line, &token)) {
-                return false;
+            PC_ClearToken(&token);
+            token.type = TT_STRING;
+            token.subtype = (int)span;
+            token.line = line;
+            if (span >= sizeof(token.string))
+            {
+                span = sizeof(token.string) - 1;
             }
-            if (!token_array_push(tokens, &token)) {
-                return false;
-            }
-            continue;
-        }
-        if (is_identifier_start(ch)) {
-            pc_token_t token;
-            if (!tokenize_identifier(text, length, &position, line, &token)) {
-                return false;
-            }
-            if (!token_array_push(tokens, &token)) {
-                return false;
-            }
-            continue;
-        }
-        if (is_number_start(ch)) {
-            pc_token_t token;
-            if (!tokenize_number(text, length, &position, line, &token)) {
-                return false;
-            }
-            if (!token_array_push(tokens, &token)) {
-                return false;
+            memcpy(token.string, &script[start], span);
+            token.string[span] = '\0';
+            PC_PushToken(source, &token);
+            if (index < length && script[index] == '"')
+            {
+                index++;
             }
             continue;
         }
 
-        if (ch == '\\' && position + 1 < length && text[position + 1] == '\n') {
-            position += 2;
-            line++;
+        size_t start = index;
+        while (index < length && PC_IsNameChar(script[index]))
+        {
+            index++;
+        }
+
+        if (index > start)
+        {
+            size_t span = index - start;
+            char lexeme[1024];
+            if (span >= sizeof(lexeme))
+            {
+                span = sizeof(lexeme) - 1;
+            }
+            memcpy(lexeme, &script[start], span);
+            lexeme[span] = '\0';
+
+            pc_token_t token;
+            if (PC_ParseNumber(lexeme, line, &token))
+            {
+                PC_PushToken(source, &token);
+            }
+            else
+            {
+                PC_ClearToken(&token);
+                token.type = TT_NAME;
+                token.subtype = (int)span;
+                token.line = line;
+                strncpy(token.string, lexeme, sizeof(token.string) - 1);
+                PC_PushToken(source, &token);
+            }
             continue;
         }
 
-        pc_token_t token;
-        if (!tokenize_punctuation(text, length, &position, line, &token)) {
-            return false;
-        }
-        if (!token_array_push(tokens, &token)) {
-            return false;
-        }
+        char lexeme[2] = {(char)ch, '\0'};
+        PC_EmitPunctuation(source, lexeme, line);
+        index++;
     }
-
-    return true;
 }
 
-static pc_source_t *create_source_from_text(char *buffer)
-{
-    if (!buffer) {
-        return NULL;
-    }
+void PC_InitLexer(void) {}
 
+void PC_ShutdownLexer(void) {}
+
+static pc_source_t *PC_AllocateSource(void)
+{
     pc_source_t *source = (pc_source_t *)calloc(1, sizeof(pc_source_t));
-    if (!source) {
-        free(buffer);
+    if (source == NULL)
+    {
         return NULL;
     }
-
-    token_array_init(&source->tokens);
-    if (!tokenize_text(buffer, &source->tokens)) {
-        token_array_destroy(&source->tokens);
-        free(source);
-        free(buffer);
-        return NULL;
-    }
-
-    source->preprocessed_buffer = buffer;
-    source->cursor = 0;
-    source->diagnostics = NULL;
     return source;
 }
 
-static pc_source_t *load_source_from_file_internal(const char *path)
+static void PC_FreeDiagnostics(pc_source_t *source)
 {
-    char *preprocessed = NULL;
-    if (!run_cpp_on_file(path, &preprocessed)) {
-        return NULL;
+    if (source == NULL)
+    {
+        return;
     }
 
-    char *evaluated = process_evalfloat_directives(preprocessed);
-    free(preprocessed);
-    if (!evaluated) {
-        return NULL;
+    pc_diagnostic_t *node = source->diagnostics_head;
+    while (node != NULL)
+    {
+        pc_diagnostic_t *next = node->next;
+        free((void *)node->message);
+        free(node);
+        node = next;
     }
-
-    return create_source_from_text(evaluated);
-}
-
-static pc_source_t *load_source_from_memory_internal(const char *name, const char *buffer, size_t buffer_size)
-{
-    (void)name;
-    if (!buffer) {
-        return NULL;
-    }
-
-    char template[] = "/tmp/gladiator_source_XXXXXX";
-    int fd = mkstemp(template);
-    if (fd < 0) {
-        return NULL;
-    }
-
-    FILE *file = fdopen(fd, "wb");
-    if (!file) {
-        close(fd);
-        unlink(template);
-        return NULL;
-    }
-
-    size_t written = fwrite(buffer, 1, buffer_size, file);
-    fclose(file);
-    if (written != buffer_size) {
-        unlink(template);
-        return NULL;
-    }
-
-    pc_source_t *source = load_source_from_file_internal(template);
-    unlink(template);
-    return source;
-}
-
-void PC_InitLexer(void)
-{
-}
-
-void PC_ShutdownLexer(void)
-{
+    source->diagnostics_head = NULL;
+    source->diagnostics_tail = NULL;
 }
 
 pc_source_t *PC_LoadSourceFile(const char *path)
 {
-    return load_source_from_file_internal(path);
+    if (path == NULL)
+    {
+        return NULL;
+    }
+
+    FILE *fp = fopen(path, "rb");
+    if (fp == NULL)
+    {
+        return NULL;
+    }
+
+    if (fseek(fp, 0, SEEK_END) != 0)
+    {
+        fclose(fp);
+        return NULL;
+    }
+    long size = ftell(fp);
+    if (size < 0)
+    {
+        fclose(fp);
+        return NULL;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0)
+    {
+        fclose(fp);
+        return NULL;
+    }
+
+    char *buffer = (char *)malloc((size_t)size + 1);
+    if (buffer == NULL)
+    {
+        fclose(fp);
+        return NULL;
+    }
+
+    size_t read = fread(buffer, 1, (size_t)size, fp);
+    fclose(fp);
+    if (read != (size_t)size)
+    {
+        free(buffer);
+        return NULL;
+    }
+    buffer[size] = '\0';
+
+    pc_source_t *source = PC_LoadSourceMemory(path, buffer, (size_t)size);
+    free(buffer);
+    return source;
 }
 
 pc_source_t *PC_LoadSourceMemory(const char *name, const char *buffer, size_t buffer_size)
 {
-    return load_source_from_memory_internal(name, buffer, buffer_size);
+    (void)name;
+    if (buffer == NULL)
+    {
+        return NULL;
+    }
+
+    char *copy = (char *)malloc(buffer_size + 1);
+    if (copy == NULL)
+    {
+        return NULL;
+    }
+
+    memcpy(copy, buffer, buffer_size);
+    copy[buffer_size] = '\0';
+
+    pc_source_t *source = PC_AllocateSource();
+    if (source == NULL)
+    {
+        free(copy);
+        return NULL;
+    }
+
+    PC_ParseScript(source, copy);
+    free(copy);
+
+    source->cursor = 0;
+    source->has_last_token = false;
+    return source;
 }
 
 void PC_FreeSource(pc_source_t *source)
 {
-    if (!source) {
+    if (source == NULL)
+    {
         return;
     }
 
-    token_array_destroy(&source->tokens);
-    free(source->preprocessed_buffer);
+    free(source->tokens);
+    PC_FreeDiagnostics(source);
     free(source);
 }
 
+static int PC_ReadRawToken(pc_source_t *source, pc_token_t *token)
+{
+    if (source == NULL || token == NULL)
+    {
+        return 0;
+    }
+
+    if (source->cursor >= source->count)
+    {
+        return 0;
+    }
+
+    *token = source->tokens[source->cursor++];
+    return 1;
+}
+
 int PC_ReadToken(pc_source_t *source, pc_token_t *token)
 {
-    if (!source || !token) {
+    if (source == NULL || token == NULL)
+    {
         return 0;
     }
 
-    if (source->cursor >= source->tokens.count) {
-        return 0;
+    int status = PC_ReadRawToken(source, token);
+    if (status == 1)
+    {
+        source->last_token = *token;
+        source->has_last_token = true;
     }
-
-    *token = source->tokens.data[source->cursor++];
-    return 1;
+    return status;
 }
 
 int PC_PeekToken(pc_source_t *source, pc_token_t *token)
 {
-    if (!source || !token) {
+    if (source == NULL || token == NULL)
+    {
         return 0;
     }
 
-    if (source->cursor >= source->tokens.count) {
+    if (source->cursor >= source->count)
+    {
         return 0;
     }
 
-    *token = source->tokens.data[source->cursor];
+    *token = source->tokens[source->cursor];
     return 1;
 }
 
-void PC_UnreadToken(pc_source_t *source)
+void PC_UnreadToken(pc_source_t *source, pc_token_t *token)
 {
-    if (!source) {
+    if (source == NULL || token == NULL || source->cursor == 0)
+    {
         return;
     }
 
-    if (source->cursor > 0) {
-        source->cursor--;
+    source->cursor--;
+    source->tokens[source->cursor] = *token;
+    source->has_last_token = false;
+}
+
+void PC_UnreadLastToken(pc_source_t *source)
+{
+    if (source == NULL || !source->has_last_token || source->cursor == 0)
+    {
+        return;
+    }
+
+    source->cursor--;
+    source->tokens[source->cursor] = source->last_token;
+    source->has_last_token = false;
+}
+
+int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token)
+{
+    if (PC_ReadToken(source, token))
+    {
+        return 1;
+    }
+
+    SourceError(source, "couldn't read expected token");
+    return 0;
+}
+
+int PC_ExpectTokenString(pc_source_t *source, char *string)
+{
+    if (source == NULL || string == NULL)
+    {
+        return 0;
+    }
+
+    pc_token_t token;
+    if (!PC_ReadToken(source, &token))
+    {
+        SourceError(source, "couldn't find expected %s", string);
+        return 0;
+    }
+
+    if (strcmp(token.string, string) != 0)
+    {
+        SourceError(source, "expected %s, found %s", string, token.string);
+        return 0;
+    }
+
+    return 1;
+}
+
+int PC_CheckTokenString(pc_source_t *source, char *string)
+{
+    if (source == NULL || string == NULL)
+    {
+        return 0;
+    }
+
+    pc_token_t token;
+    if (!PC_PeekToken(source, &token))
+    {
+        return 0;
+    }
+
+    if (strcmp(token.string, string) != 0)
+    {
+        return 0;
+    }
+
+    PC_ReadToken(source, &token);
+    return 1;
+}
+
+int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token)
+{
+    pc_token_t local;
+    if (token == NULL)
+    {
+        token = &local;
+    }
+
+    if (!PC_ReadToken(source, token))
+    {
+        SourceError(source, "couldn't read expected token");
+        return 0;
+    }
+
+    if (token->type != type)
+    {
+        SourceError(source, "expected a different token type");
+        return 0;
+    }
+
+    if (subtype != 0 && token->subtype != subtype)
+    {
+        SourceError(source, "expected a different token subtype");
+        return 0;
+    }
+
+    return 1;
+}
+
+const pc_diagnostic_t *PC_GetDiagnostics(const pc_source_t *source)
+{
+    if (source == NULL)
+    {
+        return NULL;
+    }
+    return source->diagnostics_head;
+}
+
+int PC_AddGlobalDefine(char *string)
+{
+    (void)string;
+    return 1;
+}
+
+void StripSingleQuotes(char *string)
+{
+    if (string == NULL)
+    {
+        return;
+    }
+
+    size_t length = strlen(string);
+    if (length >= 2 && string[0] == '\'' && string[length - 1] == '\'')
+    {
+        memmove(string, string + 1, length - 2);
+        string[length - 2] = '\0';
     }
 }
 
-const pc_diagnostic_t *PC_GetDiagnostics(const pc_source_t *source)
+void StripDoubleQuotes(char *string)
 {
-    return source ? source->diagnostics : NULL;
-}
-	define = PC_DefineFromString(string);
-	if (!define) return qfalse;
-#if DEFINEHASHING
-	PC_AddDefineToHash(define, source->definehash);
-#else //DEFINEHASHING
-	define->next = source->defines;
-	source->defines = define;
-#endif //DEFINEHASHING
-	return qtrue;
-} //end of the function PC_AddDefine
-//============================================================================
-// add a globals define that will be added to all opened sources
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_AddGlobalDefine(char *string)
-{
-	pc_define_t *define;
+    if (string == NULL)
+    {
+        return;
+    }
 
-	define = PC_DefineFromString(string);
-	if (!define) return qfalse;
-	define->next = globaldefines;
-	globaldefines = define;
-	return qtrue;
-} //end of the function PC_AddGlobalDefine
-//============================================================================
-// remove the given global define
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_RemoveGlobalDefine(char *name)
-{
-	pc_define_t *define;
-
-	define = PC_FindDefine(globaldefines, name);
-	if (define)
-	{
-		PC_FreeDefine(define);
-		return qtrue;
-	} //end if
-	return qfalse;
-} //end of the function PC_RemoveGlobalDefine
-//============================================================================
-// remove all globals defines
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_RemoveAllGlobalDefines(void)
-{
-	pc_define_t *define;
-
-	for (define = globaldefines; define; define = globaldefines)
-	{
-		globaldefines = globaldefines->next;
-		PC_FreeDefine(define);
-	} //end for
-} //end of the function PC_RemoveAllGlobalDefines
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-pc_define_t *PC_CopyDefine(pc_source_t *source, pc_define_t *define)
-{
-	pc_define_t *newdefine;
-	pc_token_t *token, *newtoken, *lasttoken;
-
-	newdefine = (pc_define_t *) GetMemory(sizeof(pc_define_t) + strlen(define->name) + 1);
-	//copy the define name
-	newdefine->name = (char *) newdefine + sizeof(pc_define_t);
-	strcpy(newdefine->name, define->name);
-	newdefine->flags = define->flags;
-	newdefine->builtin = define->builtin;
-	newdefine->numparms = define->numparms;
-	//the define is not linked
-	newdefine->next = NULL;
-	newdefine->hashnext = NULL;
-	//copy the define tokens
-	newdefine->tokens = NULL;
-	for (lasttoken = NULL, token = define->tokens; token; token = token->next)
-	{
-		newtoken = PC_CopyToken(token);
-		newtoken->next = NULL;
-		if (lasttoken) lasttoken->next = newtoken;
-		else newdefine->tokens = newtoken;
-		lasttoken = newtoken;
-	} //end for
-	//copy the define parameters
-	newdefine->parms = NULL;
-	for (lasttoken = NULL, token = define->parms; token; token = token->next)
-	{
-		newtoken = PC_CopyToken(token);
-		newtoken->next = NULL;
-		if (lasttoken) lasttoken->next = newtoken;
-		else newdefine->parms = newtoken;
-		lasttoken = newtoken;
-	} //end for
-	return newdefine;
-} //end of the function PC_CopyDefine
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_AddGlobalDefinesToSource(pc_source_t *source)
-{
-	pc_define_t *define, *newdefine;
-
-	for (define = globaldefines; define; define = define->next)
-	{
-		newdefine = PC_CopyDefine(source, define);
-#if DEFINEHASHING
-		PC_AddDefineToHash(newdefine, source->definehash);
-#else //DEFINEHASHING
-		newdefine->next = source->defines;
-		source->defines = newdefine;
-#endif //DEFINEHASHING
-	} //end for
-} //end of the function PC_AddGlobalDefinesToSource
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_if_def(pc_source_t *source, int type)
-{
-	pc_token_t token;
-	pc_define_t *d;
-	int skip;
-
-	if (!PC_ReadLine(source, &token))
-	{
-		SourceError(source, "#ifdef without name");
-		return qfalse;
-	} //end if
-	if (token.type != TT_NAME)
-	{
-		PC_UnreadSourceToken(source, &token);
-		SourceError(source, "expected name after #ifdef, found %s", token.string);
-		return qfalse;
-	} //end if
-#if DEFINEHASHING
-	d = PC_FindHashedDefine(source->definehash, token.string);
-#else
-	d = PC_FindDefine(source->defines, token.string);
-#endif //DEFINEHASHING
-	skip = (type == INDENT_IFDEF) == (d == NULL);
-	PC_PushIndent(source, type, skip);
-	return qtrue;
-} //end of the function PC_Directiveif_def
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_ifdef(pc_source_t *source)
-{
-	return PC_Directive_if_def(source, INDENT_IFDEF);
-} //end of the function PC_Directive_ifdef
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_ifndef(pc_source_t *source)
-{
-	return PC_Directive_if_def(source, INDENT_IFNDEF);
-} //end of the function PC_Directive_ifndef
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_else(pc_source_t *source)
-{
-	int type, skip;
-
-	PC_PopIndent(source, &type, &skip);
-	if (!type)
-	{
-		SourceError(source, "misplaced #else");
-		return qfalse;
-	} //end if
-	if (type == INDENT_ELSE)
-	{
-		SourceError(source, "#else after #else");
-		return qfalse;
-	} //end if
-	PC_PushIndent(source, INDENT_ELSE, !skip);
-	return qtrue;
-} //end of the function PC_Directive_else
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_endif(pc_source_t *source)
-{
-	int type, skip;
-
-	PC_PopIndent(source, &type, &skip);
-	if (!type)
-	{
-		SourceError(source, "misplaced #endif");
-		return qfalse;
-	} //end if
-	return qtrue;
-} //end of the function PC_Directive_endif
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-typedef struct operator_s
-{
-	int operator;
-	int priority;
-	int parentheses;
-	struct operator_s *prev, *next;
-} pc_operator_t;
-
-typedef struct value_s
-{
-	signed long int intvalue;
-	double floatvalue;
-	int parentheses;
-	struct value_s *prev, *next;
-} pc_value_t;
-
-int PC_OperatorPriority(int op)
-{
-	switch(op)
-	{
-		case P_MUL: return 15;
-		case P_DIV: return 15;
-		case P_MOD: return 15;
-		case P_ADD: return 14;
-		case P_SUB: return 14;
-
-		case P_LOGIC_AND: return 7;
-		case P_LOGIC_OR: return 6;
-		case P_LOGIC_GEQ: return 12;
-		case P_LOGIC_LEQ: return 12;
-		case P_LOGIC_EQ: return 11;
-		case P_LOGIC_UNEQ: return 11;
-
-		case P_LOGIC_NOT: return 16;
-		case P_LOGIC_GREATER: return 12;
-		case P_LOGIC_LESS: return 12;
-
-		case P_RSHIFT: return 13;
-		case P_LSHIFT: return 13;
-
-		case P_BIN_AND: return 10;
-		case P_BIN_OR: return 8;
-		case P_BIN_XOR: return 9;
-		case P_BIN_NOT: return 16;
-
-		case P_COLON: return 5;
-		case P_QUESTIONMARK: return 5;
-	} //end switch
-	return qfalse;
-} //end of the function PC_OperatorPriority
-
-//#define AllocValue()			GetClearedMemory(sizeof(pc_value_t));
-//#define FreeValue(val)		FreeMemory(val)
-//#define AllocOperator(op)		op = (pc_operator_t *) GetClearedMemory(sizeof(pc_operator_t));
-//#define FreeOperator(op)		FreeMemory(op);
-
-#define MAX_VALUES		64
-#define MAX_OPERATORS	64
-#define AllocValue(val)									\
-	if (numvalues >= MAX_VALUES) {						\
-		SourceError(source, "out of value space\n");		\
-		error = 1;										\
-		break;											\
-	}													\
-	else												\
-		val = &value_heap[numvalues++];
-#define FreeValue(val)
-//
-#define AllocOperator(op)								\
-	if (numoperators >= MAX_OPERATORS) {				\
-		SourceError(source, "out of operator space\n");	\
-		error = 1;										\
-		break;											\
-	}													\
-	else												\
-		op = &operator_heap[numoperators++];
-#define FreeOperator(op)
-
-int PC_EvaluateTokens(pc_source_t *source, pc_token_t *tokens, signed long int *intvalue,
-																	double *floatvalue, int integer)
-{
-	pc_operator_t *o, *firstoperator, *lastoperator;
-	pc_value_t *v, *firstvalue, *lastvalue, *v1, *v2;
-	pc_token_t *t;
-	int brace = 0;
-	int parentheses = 0;
-	int error = 0;
-	int lastwasvalue = 0;
-	int negativevalue = 0;
-	int questmarkintvalue = 0;
-	double questmarkfloatvalue = 0;
-	int gotquestmarkvalue = qfalse;
-	int lastoperatortype = 0;
-	//
-	pc_operator_t operator_heap[MAX_OPERATORS];
-	int numoperators = 0;
-	pc_value_t value_heap[MAX_VALUES];
-	int numvalues = 0;
-
-	firstoperator = lastoperator = NULL;
-	firstvalue = lastvalue = NULL;
-	if (intvalue) *intvalue = 0;
-	if (floatvalue) *floatvalue = 0;
-	for (t = tokens; t; t = t->next)
-	{
-		switch(t->type)
-		{
-			case TT_NAME:
-			{
-				if (lastwasvalue || negativevalue)
-				{
-					SourceError(source, "syntax error in #if/#elif");
-					error = 1;
-					break;
-				} //end if
-				if (strcmp(t->string, "defined"))
-				{
-					SourceError(source, "undefined name %s in #if/#elif", t->string);
-					error = 1;
-					break;
-				} //end if
-				t = t->next;
-				if (!strcmp(t->string, "("))
-				{
-					brace = qtrue;
-					t = t->next;
-				} //end if
-				if (!t || t->type != TT_NAME)
-				{
-					SourceError(source, "defined without name in #if/#elif");
-					error = 1;
-					break;
-				} //end if
-				//v = (pc_value_t *) GetClearedMemory(sizeof(pc_value_t));
-				AllocValue(v);
-#if DEFINEHASHING
-				if (PC_FindHashedDefine(source->definehash, t->string))
-#else			
-				if (PC_FindDefine(source->defines, t->string))
-#endif //DEFINEHASHING
-				{
-					v->intvalue = 1;
-					v->floatvalue = 1;
-				} //end if
-				else
-				{
-					v->intvalue = 0;
-					v->floatvalue = 0;
-				} //end else
-				v->parentheses = parentheses;
-				v->next = NULL;
-				v->prev = lastvalue;
-				if (lastvalue) lastvalue->next = v;
-				else firstvalue = v;
-				lastvalue = v;
-				if (brace)
-				{
-					t = t->next;
-					if (!t || strcmp(t->string, ")"))
-					{
-						SourceError(source, "defined without ) in #if/#elif");
-						error = 1;
-						break;
-					} //end if
-				} //end if
-				brace = qfalse;
-				// defined() creates a value
-				lastwasvalue = 1;
-				break;
-			} //end case
-			case TT_NUMBER:
-			{
-				if (lastwasvalue)
-				{
-					SourceError(source, "syntax error in #if/#elif");
-					error = 1;
-					break;
-				} //end if
-				//v = (pc_value_t *) GetClearedMemory(sizeof(pc_value_t));
-				AllocValue(v);
-				if (negativevalue)
-				{
-					v->intvalue = - (signed int) t->intvalue;
-					v->floatvalue = - t->floatvalue;
-				} //end if
-				else
-				{
-					v->intvalue = t->intvalue;
-					v->floatvalue = t->floatvalue;
-				} //end else
-				v->parentheses = parentheses;
-				v->next = NULL;
-				v->prev = lastvalue;
-				if (lastvalue) lastvalue->next = v;
-				else firstvalue = v;
-				lastvalue = v;
-				//last token was a value
-				lastwasvalue = 1;
-				//
-				negativevalue = 0;
-				break;
-			} //end case
-			case TT_PUNCTUATION:
-			{
-				if (negativevalue)
-				{
-					SourceError(source, "misplaced minus sign in #if/#elif");
-					error = 1;
-					break;
-				} //end if
-				if (t->subtype == P_PARENTHESESOPEN)
-				{
-					parentheses++;
-					break;
-				} //end if
-				else if (t->subtype == P_PARENTHESESCLOSE)
-				{
-					parentheses--;
-					if (parentheses < 0)
-					{
-						SourceError(source, "too many ) in #if/#elsif");
-						error = 1;
-					} //end if
-					break;
-				} //end else if
-				//check for invalid operators on floating point values
-				if (!integer)
-				{
-					if (t->subtype == P_BIN_NOT || t->subtype == P_MOD ||
-						t->subtype == P_RSHIFT || t->subtype == P_LSHIFT ||
-						t->subtype == P_BIN_AND || t->subtype == P_BIN_OR ||
-						t->subtype == P_BIN_XOR)
-					{
-						SourceError(source, "illigal operator %s on floating point operands\n", t->string);
-						error = 1;
-						break;
-					} //end if
-				} //end if
-				switch(t->subtype)
-				{
-					case P_LOGIC_NOT:
-					case P_BIN_NOT:
-					{
-						if (lastwasvalue)
-						{
-							SourceError(source, "! or ~ after value in #if/#elif");
-							error = 1;
-							break;
-						} //end if
-						break;
-					} //end case
-					case P_INC:
-					case P_DEC:
-					{
-						SourceError(source, "++ or -- used in #if/#elif");
-						break;
-					} //end case
-					case P_SUB:
-					{
-						if (!lastwasvalue)
-						{
-							negativevalue = 1;
-							break;
-						} //end if
-					} //end case
-					
-					case P_MUL:
-					case P_DIV:
-					case P_MOD:
-					case P_ADD:
-
-					case P_LOGIC_AND:
-					case P_LOGIC_OR:
-					case P_LOGIC_GEQ:
-					case P_LOGIC_LEQ:
-					case P_LOGIC_EQ:
-					case P_LOGIC_UNEQ:
-
-					case P_LOGIC_GREATER:
-					case P_LOGIC_LESS:
-
-					case P_RSHIFT:
-					case P_LSHIFT:
-
-					case P_BIN_AND:
-					case P_BIN_OR:
-					case P_BIN_XOR:
-
-					case P_COLON:
-					case P_QUESTIONMARK:
-					{
-						if (!lastwasvalue)
-						{
-							SourceError(source, "operator %s after operator in #if/#elif", t->string);
-							error = 1;
-							break;
-						} //end if
-						break;
-					} //end case
-					default:
-					{
-						SourceError(source, "invalid operator %s in #if/#elif", t->string);
-						error = 1;
-						break;
-					} //end default
-				} //end switch
-				if (!error && !negativevalue)
-				{
-					//o = (pc_operator_t *) GetClearedMemory(sizeof(pc_operator_t));
-					AllocOperator(o);
-					o->operator = t->subtype;
-					o->priority = PC_OperatorPriority(t->subtype);
-					o->parentheses = parentheses;
-					o->next = NULL;
-					o->prev = lastoperator;
-					if (lastoperator) lastoperator->next = o;
-					else firstoperator = o;
-					lastoperator = o;
-					lastwasvalue = 0;
-				} //end if
-				break;
-			} //end case
-			default:
-			{
-				SourceError(source, "unknown %s in #if/#elif", t->string);
-				error = 1;
-				break;
-			} //end default
-		} //end switch
-		if (error) break;
-	} //end for
-	if (!error)
-	{
-		if (!lastwasvalue)
-		{
-			SourceError(source, "trailing operator in #if/#elif");
-			error = 1;
-		} //end if
-		else if (parentheses)
-		{
-			SourceError(source, "too many ( in #if/#elif");
-			error = 1;
-		} //end else if
-	} //end if
-	//
-	gotquestmarkvalue = qfalse;
-	questmarkintvalue = 0;
-	questmarkfloatvalue = 0;
-	//while there are operators
-	while(!error && firstoperator)
-	{
-		v = firstvalue;
-		for (o = firstoperator; o->next; o = o->next)
-		{
-			//if the current operator is nested deeper in parentheses
-			//than the next operator
-			if (o->parentheses > o->next->parentheses) break;
-			//if the current and next operator are nested equally deep in parentheses
-			if (o->parentheses == o->next->parentheses)
-			{
-				//if the priority of the current operator is equal or higher
-				//than the priority of the next operator
-				if (o->priority >= o->next->priority) break;
-			} //end if
-			//if the arity of the operator isn't equal to 1
-			if (o->operator != P_LOGIC_NOT
-					&& o->operator != P_BIN_NOT) v = v->next;
-			//if there's no value or no next value
-			if (!v)
-			{
-				SourceError(source, "mising values in #if/#elif");
-				error = 1;
-				break;
-			} //end if
-		} //end for
-		if (error) break;
-		v1 = v;
-		v2 = v->next;
-#ifdef DEBUG_EVAL
-		if (integer)
-		{
-			Log_Write("operator %s, value1 = %d", PunctuationFromNum(source->scriptstack, o->operator), v1->intvalue);
-			if (v2) Log_Write("value2 = %d", v2->intvalue);
-		} //end if
-		else
-		{
-			Log_Write("operator %s, value1 = %f", PunctuationFromNum(source->scriptstack, o->operator), v1->floatvalue);
-			if (v2) Log_Write("value2 = %f", v2->floatvalue);
-		} //end else
-#endif //DEBUG_EVAL
-		switch(o->operator)
-		{
-			case P_LOGIC_NOT:		v1->intvalue = !v1->intvalue;
-									v1->floatvalue = !v1->floatvalue; break;
-			case P_BIN_NOT:			v1->intvalue = ~v1->intvalue;
-									break;
-			case P_MUL:				v1->intvalue *= v2->intvalue;
-									v1->floatvalue *= v2->floatvalue; break;
-			case P_DIV:				if (!v2->intvalue || !v2->floatvalue)
-									{
-										SourceError(source, "divide by zero in #if/#elif\n");
-										error = 1;
-										break;
-									}
-									v1->intvalue /= v2->intvalue;
-									v1->floatvalue /= v2->floatvalue; break;
-			case P_MOD:				if (!v2->intvalue)
-									{
-										SourceError(source, "divide by zero in #if/#elif\n");
-										error = 1;
-										break;
-									}
-									v1->intvalue %= v2->intvalue; break;
-			case P_ADD:				v1->intvalue += v2->intvalue;
-									v1->floatvalue += v2->floatvalue; break;
-			case P_SUB:				v1->intvalue -= v2->intvalue;
-									v1->floatvalue -= v2->floatvalue; break;
-			case P_LOGIC_AND:		v1->intvalue = v1->intvalue && v2->intvalue;
-									v1->floatvalue = v1->floatvalue && v2->floatvalue; break;
-			case P_LOGIC_OR:		v1->intvalue = v1->intvalue || v2->intvalue;
-									v1->floatvalue = v1->floatvalue || v2->floatvalue; break;
-			case P_LOGIC_GEQ:		v1->intvalue = v1->intvalue >= v2->intvalue;
-									v1->floatvalue = v1->floatvalue >= v2->floatvalue; break;
-			case P_LOGIC_LEQ:		v1->intvalue = v1->intvalue <= v2->intvalue;
-									v1->floatvalue = v1->floatvalue <= v2->floatvalue; break;
-			case P_LOGIC_EQ:		v1->intvalue = v1->intvalue == v2->intvalue;
-									v1->floatvalue = v1->floatvalue == v2->floatvalue; break;
-			case P_LOGIC_UNEQ:		v1->intvalue = v1->intvalue != v2->intvalue;
-									v1->floatvalue = v1->floatvalue != v2->floatvalue; break;
-			case P_LOGIC_GREATER:	v1->intvalue = v1->intvalue > v2->intvalue;
-									v1->floatvalue = v1->floatvalue > v2->floatvalue; break;
-			case P_LOGIC_LESS:		v1->intvalue = v1->intvalue < v2->intvalue;
-									v1->floatvalue = v1->floatvalue < v2->floatvalue; break;
-			case P_RSHIFT:			v1->intvalue >>= v2->intvalue;
-									break;
-			case P_LSHIFT:			v1->intvalue <<= v2->intvalue;
-									break;
-			case P_BIN_AND:			v1->intvalue &= v2->intvalue;
-									break;
-			case P_BIN_OR:			v1->intvalue |= v2->intvalue;
-									break;
-			case P_BIN_XOR:			v1->intvalue ^= v2->intvalue;
-									break;
-			case P_COLON:
-			{
-				if (!gotquestmarkvalue)
-				{
-					SourceError(source, ": without ? in #if/#elif");
-					error = 1;
-					break;
-				} //end if
-				if (integer)
-				{
-					if (!questmarkintvalue) v1->intvalue = v2->intvalue;
-				} //end if
-				else
-				{
-					if (!questmarkfloatvalue) v1->floatvalue = v2->floatvalue;
-				} //end else
-				gotquestmarkvalue = qfalse;
-				break;
-			} //end case
-			case P_QUESTIONMARK:
-			{
-				if (gotquestmarkvalue)
-				{
-					SourceError(source, "? after ? in #if/#elif");
-					error = 1;
-					break;
-				} //end if
-				questmarkintvalue = v1->intvalue;
-				questmarkfloatvalue = v1->floatvalue;
-				gotquestmarkvalue = qtrue;
-				break;
-			} //end if
-		} //end switch
-#ifdef DEBUG_EVAL
-		if (integer) Log_Write("result value = %d", v1->intvalue);
-		else Log_Write("result value = %f", v1->floatvalue);
-#endif //DEBUG_EVAL
-		if (error) break;
-		lastoperatortype = o->operator;
-		//if not an operator with arity 1
-		if (o->operator != P_LOGIC_NOT
-				&& o->operator != P_BIN_NOT)
-		{
-			//remove the second value if not question mark operator
-			if (o->operator != P_QUESTIONMARK) v = v->next;
-			//
-			if (v->prev) v->prev->next = v->next;
-			else firstvalue = v->next;
-			if (v->next) v->next->prev = v->prev;
-			else lastvalue = v->prev;
-			//FreeMemory(v);
-			FreeValue(v);
-		} //end if
-		//remove the operator
-		if (o->prev) o->prev->next = o->next;
-		else firstoperator = o->next;
-		if (o->next) o->next->prev = o->prev;
-		else lastoperator = o->prev;
-		//FreeMemory(o);
-		FreeOperator(o);
-	} //end while
-	if (firstvalue)
-	{
-		if (intvalue) *intvalue = firstvalue->intvalue;
-		if (floatvalue) *floatvalue = firstvalue->floatvalue;
-	} //end if
-	for (o = firstoperator; o; o = lastoperator)
-	{
-		lastoperator = o->next;
-		//FreeMemory(o);
-		FreeOperator(o);
-	} //end for
-	for (v = firstvalue; v; v = lastvalue)
-	{
-		lastvalue = v->next;
-		//FreeMemory(v);
-		FreeValue(v);
-	} //end for
-	if (!error) return qtrue;
-	if (intvalue) *intvalue = 0;
-	if (floatvalue) *floatvalue = 0;
-	return qfalse;
-} //end of the function PC_EvaluateTokens
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Evaluate(pc_source_t *source, signed long int *intvalue,
-												double *floatvalue, int integer)
-{
-	pc_token_t token, *firsttoken, *lasttoken;
-	pc_token_t *t, *nexttoken;
-	pc_define_t *define;
-	int defined = qfalse;
-
-	if (intvalue) *intvalue = 0;
-	if (floatvalue) *floatvalue = 0;
-	//
-	if (!PC_ReadLine(source, &token))
-	{
-		SourceError(source, "no value after #if/#elif");
-		return qfalse;
-	} //end if
-	firsttoken = NULL;
-	lasttoken = NULL;
-	do
-	{
-		//if the token is a name
-		if (token.type == TT_NAME)
-		{
-			if (defined)
-			{
-				defined = qfalse;
-				t = PC_CopyToken(&token);
-				t->next = NULL;
-				if (lasttoken) lasttoken->next = t;
-				else firsttoken = t;
-				lasttoken = t;
-			} //end if
-			else if (!strcmp(token.string, "defined"))
-			{
-				defined = qtrue;
-				t = PC_CopyToken(&token);
-				t->next = NULL;
-				if (lasttoken) lasttoken->next = t;
-				else firsttoken = t;
-				lasttoken = t;
-			} //end if
-			else
-			{
-				//then it must be a define
-#if DEFINEHASHING
-				define = PC_FindHashedDefine(source->definehash, token.string);
-#else
-				define = PC_FindDefine(source->defines, token.string);
-#endif //DEFINEHASHING
-				if (!define)
-				{
-					SourceError(source, "can't evaluate %s, not defined", token.string);
-					return qfalse;
-				} //end if
-				if (!PC_ExpandDefineIntoSource(source, &token, define)) return qfalse;
-			} //end else
-		} //end if
-		//if the token is a number or a punctuation
-		else if (token.type == TT_NUMBER || token.type == TT_PUNCTUATION)
-		{
-			t = PC_CopyToken(&token);
-			t->next = NULL;
-			if (lasttoken) lasttoken->next = t;
-			else firsttoken = t;
-			lasttoken = t;
-		} //end else
-		else //can't evaluate the token
-		{
-			SourceError(source, "can't evaluate %s", token.string);
-			return qfalse;
-		} //end else
-	} while(PC_ReadLine(source, &token));
-	//
-	if (!PC_EvaluateTokens(source, firsttoken, intvalue, floatvalue, integer)) return qfalse;
-	//
-#ifdef DEBUG_EVAL
-	Log_Write("eval:");
-#endif //DEBUG_EVAL
-	for (t = firsttoken; t; t = nexttoken)
-	{
-#ifdef DEBUG_EVAL
-		Log_Write(" %s", t->string);
-#endif //DEBUG_EVAL
-		nexttoken = t->next;
-		PC_FreeToken(t);
-	} //end for
-#ifdef DEBUG_EVAL
-	if (integer) Log_Write("eval result: %d", *intvalue);
-	else Log_Write("eval result: %f", *floatvalue);
-#endif //DEBUG_EVAL
-	//
-	return qtrue;
-} //end of the function PC_Evaluate
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_DollarEvaluate(pc_source_t *source, signed long int *intvalue,
-												double *floatvalue, int integer)
-{
-	int indent, defined = qfalse;
-	pc_token_t token, *firsttoken, *lasttoken;
-	pc_token_t *t, *nexttoken;
-	pc_define_t *define;
-
-	if (intvalue) *intvalue = 0;
-	if (floatvalue) *floatvalue = 0;
-	//
-	if (!PC_ReadSourceToken(source, &token))
-	{
-		SourceError(source, "no leading ( after $evalint/$evalfloat");
-		return qfalse;
-	} //end if
-	if (!PC_ReadSourceToken(source, &token))
-	{
-		SourceError(source, "nothing to evaluate");
-		return qfalse;
-	} //end if
-	indent = 1;
-	firsttoken = NULL;
-	lasttoken = NULL;
-	do
-	{
-		//if the token is a name
-		if (token.type == TT_NAME)
-		{
-			if (defined)
-			{
-				defined = qfalse;
-				t = PC_CopyToken(&token);
-				t->next = NULL;
-				if (lasttoken) lasttoken->next = t;
-				else firsttoken = t;
-				lasttoken = t;
-			} //end if
-			else if (!strcmp(token.string, "defined"))
-			{
-				defined = qtrue;
-				t = PC_CopyToken(&token);
-				t->next = NULL;
-				if (lasttoken) lasttoken->next = t;
-				else firsttoken = t;
-				lasttoken = t;
-			} //end if
-			else
-			{
-				//then it must be a define
-#if DEFINEHASHING
-				define = PC_FindHashedDefine(source->definehash, token.string);
-#else
-				define = PC_FindDefine(source->defines, token.string);
-#endif //DEFINEHASHING
-				if (!define)
-				{
-					SourceError(source, "can't evaluate %s, not defined", token.string);
-					return qfalse;
-				} //end if
-				if (!PC_ExpandDefineIntoSource(source, &token, define)) return qfalse;
-			} //end else
-		} //end if
-		//if the token is a number or a punctuation
-		else if (token.type == TT_NUMBER || token.type == TT_PUNCTUATION)
-		{
-			if (*token.string == '(') indent++;
-			else if (*token.string == ')') indent--;
-			if (indent <= 0) break;
-			t = PC_CopyToken(&token);
-			t->next = NULL;
-			if (lasttoken) lasttoken->next = t;
-			else firsttoken = t;
-			lasttoken = t;
-		} //end else
-		else //can't evaluate the token
-		{
-			SourceError(source, "can't evaluate %s", token.string);
-			return qfalse;
-		} //end else
-	} while(PC_ReadSourceToken(source, &token));
-	//
-	if (!PC_EvaluateTokens(source, firsttoken, intvalue, floatvalue, integer)) return qfalse;
-	//
-#ifdef DEBUG_EVAL
-	Log_Write("$eval:");
-#endif //DEBUG_EVAL
-	for (t = firsttoken; t; t = nexttoken)
-	{
-#ifdef DEBUG_EVAL
-		Log_Write(" %s", t->string);
-#endif //DEBUG_EVAL
-		nexttoken = t->next;
-		PC_FreeToken(t);
-	} //end for
-#ifdef DEBUG_EVAL
-	if (integer) Log_Write("$eval result: %d", *intvalue);
-	else Log_Write("$eval result: %f", *floatvalue);
-#endif //DEBUG_EVAL
-	//
-	return qtrue;
-} //end of the function PC_DollarEvaluate
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_elif(pc_source_t *source)
-{
-	signed long int value;
-	int type, skip;
-
-	PC_PopIndent(source, &type, &skip);
-	if (!type || type == INDENT_ELSE)
-	{
-		SourceError(source, "misplaced #elif");
-		return qfalse;
-	} //end if
-	if (!PC_Evaluate(source, &value, NULL, qtrue)) return qfalse;
-	skip = (value == 0);
-	PC_PushIndent(source, INDENT_ELIF, skip);
-	return qtrue;
-} //end of the function PC_Directive_elif
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_if(pc_source_t *source)
-{
-	signed long int value;
-	int skip;
-
-	if (!PC_Evaluate(source, &value, NULL, qtrue)) return qfalse;
-	skip = (value == 0);
-	PC_PushIndent(source, INDENT_IF, skip);
-	return qtrue;
-} //end of the function PC_Directive
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_line(pc_source_t *source)
-{
-	SourceError(source, "#line directive not supported");
-	return qfalse;
-} //end of the function PC_Directive_line
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_error(pc_source_t *source)
-{
-	pc_token_t token;
-
-	strcpy(token.string, "");
-	PC_ReadSourceToken(source, &token);
-	SourceError(source, "#error directive: %s", token.string);
-	return qfalse;
-} //end of the function PC_Directive_error
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_pragma(pc_source_t *source)
-{
-	pc_token_t token;
-
-	SourceWarning(source, "#pragma directive not supported");
-	while(PC_ReadLine(source, &token)) ;
-	return qtrue;
-} //end of the function PC_Directive_pragma
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void UnreadSignToken(pc_source_t *source)
-{
-	pc_token_t token;
-
-	token.line = source->scriptstack->line;
-	token.whitespace_p = source->scriptstack->script_p;
-	token.endwhitespace_p = source->scriptstack->script_p;
-	token.linescrossed = 0;
-	strcpy(token.string, "-");
-	token.type = TT_PUNCTUATION;
-	token.subtype = P_SUB;
-	PC_UnreadSourceToken(source, &token);
-} //end of the function UnreadSignToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_eval(pc_source_t *source)
-{
-	signed long int value;
-	pc_token_t token;
-
-	if (!PC_Evaluate(source, &value, NULL, qtrue)) return qfalse;
-	//
-	token.line = source->scriptstack->line;
-	token.whitespace_p = source->scriptstack->script_p;
-	token.endwhitespace_p = source->scriptstack->script_p;
-	token.linescrossed = 0;
-	sprintf(token.string, "%d", abs(value));
-	token.type = TT_NUMBER;
-	token.subtype = TT_INTEGER|TT_LONG|TT_DECIMAL;
-	PC_UnreadSourceToken(source, &token);
-	if (value < 0) UnreadSignToken(source);
-	return qtrue;
-} //end of the function PC_Directive_eval
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_Directive_evalfloat(pc_source_t *source)
-{
-	double value;
-	pc_token_t token;
-
-	if (!PC_Evaluate(source, NULL, &value, qfalse)) return qfalse;
-	token.line = source->scriptstack->line;
-	token.whitespace_p = source->scriptstack->script_p;
-	token.endwhitespace_p = source->scriptstack->script_p;
-	token.linescrossed = 0;
-	sprintf(token.string, "%1.2f", fabs(value));
-	token.type = TT_NUMBER;
-	token.subtype = TT_FLOAT|TT_LONG|TT_DECIMAL;
-	PC_UnreadSourceToken(source, &token);
-	if (value < 0) UnreadSignToken(source);
-	return qtrue;
-} //end of the function PC_Directive_evalfloat
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-directive_t directives[20] =
-{
-	{"if", PC_Directive_if},
-	{"ifdef", PC_Directive_ifdef},
-	{"ifndef", PC_Directive_ifndef},
-	{"elif", PC_Directive_elif},
-	{"else", PC_Directive_else},
-	{"endif", PC_Directive_endif},
-	{"include", PC_Directive_include},
-	{"define", PC_Directive_define},
-	{"undef", PC_Directive_undef},
-	{"line", PC_Directive_line},
-	{"error", PC_Directive_error},
-	{"pragma", PC_Directive_pragma},
-	{"eval", PC_Directive_eval},
-	{"evalfloat", PC_Directive_evalfloat},
-	{NULL, NULL}
-};
-
-int PC_ReadDirective(pc_source_t *source)
-{
-	pc_token_t token;
-	int i;
-
-	//read the directive name
-	if (!PC_ReadSourceToken(source, &token))
-	{
-		SourceError(source, "found # without name");
-		return qfalse;
-	} //end if
-	//directive name must be on the same line
-	if (token.linescrossed > 0)
-	{
-		PC_UnreadSourceToken(source, &token);
-		SourceError(source, "found # at end of line");
-		return qfalse;
-	} //end if
-	//if if is a name
-	if (token.type == TT_NAME)
-	{
-		//find the precompiler directive
-		for (i = 0; directives[i].name; i++)
-		{
-			if (!strcmp(directives[i].name, token.string))
-			{
-				return directives[i].func(source);
-			} //end if
-		} //end for
-	} //end if
-	SourceError(source, "unknown precompiler directive %s", token.string);
-	return qfalse;
-} //end of the function PC_ReadDirective
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_DollarDirective_evalint(pc_source_t *source)
-{
-	signed long int value;
-	pc_token_t token;
-
-	if (!PC_DollarEvaluate(source, &value, NULL, qtrue)) return qfalse;
-	//
-	token.line = source->scriptstack->line;
-	token.whitespace_p = source->scriptstack->script_p;
-	token.endwhitespace_p = source->scriptstack->script_p;
-	token.linescrossed = 0;
-	sprintf(token.string, "%d", abs(value));
-	token.type = TT_NUMBER;
-	token.subtype = TT_INTEGER|TT_LONG|TT_DECIMAL;
-#ifdef NUMBERVALUE
-	token.intvalue = value;
-	token.floatvalue = value;
-#endif //NUMBERVALUE
-	PC_UnreadSourceToken(source, &token);
-	if (value < 0) UnreadSignToken(source);
-	return qtrue;
-} //end of the function PC_DollarDirective_evalint
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_DollarDirective_evalfloat(pc_source_t *source)
-{
-	double value;
-	pc_token_t token;
-
-	if (!PC_DollarEvaluate(source, NULL, &value, qfalse)) return qfalse;
-	token.line = source->scriptstack->line;
-	token.whitespace_p = source->scriptstack->script_p;
-	token.endwhitespace_p = source->scriptstack->script_p;
-	token.linescrossed = 0;
-	sprintf(token.string, "%1.2f", fabs(value));
-	token.type = TT_NUMBER;
-	token.subtype = TT_FLOAT|TT_LONG|TT_DECIMAL;
-#ifdef NUMBERVALUE
-	token.intvalue = (unsigned long) value;
-	token.floatvalue = value;
-#endif //NUMBERVALUE
-	PC_UnreadSourceToken(source, &token);
-	if (value < 0) UnreadSignToken(source);
-	return qtrue;
-} //end of the function PC_DollarDirective_evalfloat
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-directive_t dollardirectives[20] =
-{
-	{"evalint", PC_DollarDirective_evalint},
-	{"evalfloat", PC_DollarDirective_evalfloat},
-	{NULL, NULL}
-};
-
-int PC_ReadDollarDirective(pc_source_t *source)
-{
-	pc_token_t token;
-	int i;
-
-	//read the directive name
-	if (!PC_ReadSourceToken(source, &token))
-	{
-		SourceError(source, "found $ without name");
-		return qfalse;
-	} //end if
-	//directive name must be on the same line
-	if (token.linescrossed > 0)
-	{
-		PC_UnreadSourceToken(source, &token);
-		SourceError(source, "found $ at end of line");
-		return qfalse;
-	} //end if
-	//if if is a name
-	if (token.type == TT_NAME)
-	{
-		//find the precompiler directive
-		for (i = 0; dollardirectives[i].name; i++)
-		{
-			if (!strcmp(dollardirectives[i].name, token.string))
-			{
-				return dollardirectives[i].func(source);
-			} //end if
-		} //end for
-	} //end if
-	PC_UnreadSourceToken(source, &token);
-	SourceError(source, "unknown precompiler directive %s", token.string);
-	return qfalse;
-} //end of the function PC_ReadDirective
-
-#ifdef QUAKEC
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int BuiltinFunction(pc_source_t *source)
-{
-	pc_token_t token;
-
-	if (!PC_ReadSourceToken(source, &token)) return qfalse;
-	if (token.type == TT_NUMBER)
-	{
-		PC_UnreadSourceToken(source, &token);
-		return qtrue;
-	} //end if
-	else
-	{
-		PC_UnreadSourceToken(source, &token);
-		return qfalse;
-	} //end else
-} //end of the function BuiltinFunction
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int QuakeCMacro(pc_source_t *source)
-{
-	int i;
-	pc_token_t token;
-
-	if (!PC_ReadSourceToken(source, &token)) return qtrue;
-	if (token.type != TT_NAME)
-	{
-		PC_UnreadSourceToken(source, &token);
-		return qtrue;
-	} //end if
-	//find the precompiler directive
-	for (i = 0; dollardirectives[i].name; i++)
-	{
-		if (!strcmp(dollardirectives[i].name, token.string))
-		{
-			PC_UnreadSourceToken(source, &token);
-			return qfalse;
-		} //end if
-	} //end for
-	PC_UnreadSourceToken(source, &token);
-	return qtrue;
-} //end of the function QuakeCMacro
-#endif //QUAKEC
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ReadToken(pc_source_t *source, pc_token_t *token)
-{
-	pc_define_t *define;
-
-	while(1)
-	{
-		if (!PC_ReadSourceToken(source, token)) return qfalse;
-		//check for precompiler directives
-		if (token->type == TT_PUNCTUATION && *token->string == '#')
-		{
-#ifdef QUAKEC
-			if (!BuiltinFunction(source))
-#endif //QUAKC
-			{
-				//read the precompiler directive
-				if (!PC_ReadDirective(source)) return qfalse;
-				continue;
-			} //end if
-		} //end if
-		if (token->type == TT_PUNCTUATION && *token->string == '$')
-		{
-#ifdef QUAKEC
-			if (!QuakeCMacro(source))
-#endif //QUAKEC
-			{
-				//read the precompiler directive
-				if (!PC_ReadDollarDirective(source)) return qfalse;
-				continue;
-			} //end if
-		} //end if
-		// recursively concatenate strings that are behind each other still resolving defines
-		if (token->type == TT_STRING)
-		{
-			pc_token_t newtoken;
-			if (PC_ReadToken(source, &newtoken))
-			{
-				if (newtoken.type == TT_STRING)
-				{
-					token->string[strlen(token->string)-1] = '\0';
-					if (strlen(token->string) + strlen(newtoken.string+1) + 1 >= MAX_TOKEN)
-					{
-						SourceError(source, "string longer than MAX_TOKEN %d\n", MAX_TOKEN);
-						return qfalse;
-					}
-					strcat(token->string, newtoken.string+1);
-				}
-				else
-				{
-					PC_UnreadToken(source, &newtoken);
-				}
-			}
-		} //end if
-		//if skipping source because of conditional compilation
-		if (source->skip) continue;
-		//if the token is a name
-		if (token->type == TT_NAME)
-		{
-			//check if the name is a define macro
-#if DEFINEHASHING
-			define = PC_FindHashedDefine(source->definehash, token->string);
-#else
-			define = PC_FindDefine(source->defines, token->string);
-#endif //DEFINEHASHING
-			//if it is a define macro
-			if (define)
-			{
-				//expand the defined macro
-				if (!PC_ExpandDefineIntoSource(source, token, define)) return qfalse;
-				continue;
-			} //end if
-		} //end if
-		//copy token for unreading
-		memcpy(&source->token, token, sizeof(pc_token_t));
-		//found a token
-		return qtrue;
-	} //end while
-} //end of the function PC_ReadToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ExpectTokenString(pc_source_t *source, char *string)
-{
-	pc_token_t token;
-
-	if (!PC_ReadToken(source, &token))
-	{
-		SourceError(source, "couldn't find expected %s", string);
-		return qfalse;
-	} //end if
-
-	if (strcmp(token.string, string))
-	{
-		SourceError(source, "expected %s, found %s", string, token.string);
-		return qfalse;
-	} //end if
-	return qtrue;
-} //end of the function PC_ExpectTokenString
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token)
-{
-	char str[MAX_TOKEN];
-
-	if (!PC_ReadToken(source, token))
-	{
-		SourceError(source, "couldn't read expected token");
-		return qfalse;
-	} //end if
-
-	if (token->type != type)
-	{
-		strcpy(str, "");
-		if (type == TT_STRING) strcpy(str, "string");
-		if (type == TT_LITERAL) strcpy(str, "literal");
-		if (type == TT_NUMBER) strcpy(str, "number");
-		if (type == TT_NAME) strcpy(str, "name");
-		if (type == TT_PUNCTUATION) strcpy(str, "punctuation");
-		SourceError(source, "expected a %s, found %s", str, token->string);
-		return qfalse;
-	} //end if
-	if (token->type == TT_NUMBER)
-	{
-		if ((token->subtype & subtype) != subtype)
-		{
-			if (subtype & TT_DECIMAL) strcpy(str, "decimal");
-			if (subtype & TT_HEX) strcpy(str, "hex");
-			if (subtype & TT_OCTAL) strcpy(str, "octal");
-			if (subtype & TT_BINARY) strcpy(str, "binary");
-			if (subtype & TT_LONG) strcat(str, " long");
-			if (subtype & TT_UNSIGNED) strcat(str, " unsigned");
-			if (subtype & TT_FLOAT) strcat(str, " float");
-			if (subtype & TT_INTEGER) strcat(str, " integer");
-			SourceError(source, "expected %s, found %s", str, token->string);
-			return qfalse;
-		} //end if
-	} //end if
-	else if (token->type == TT_PUNCTUATION)
-	{
-		if (token->subtype != subtype)
-		{
-			SourceError(source, "found %s", token->string);
-			return qfalse;
-		} //end if
-	} //end else if
-	return qtrue;
-} //end of the function PC_ExpectTokenType
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token)
-{
-	if (!PC_ReadToken(source, token))
-	{
-		SourceError(source, "couldn't read expected token");
-		return qfalse;
-	} //end if
-	else
-	{
-		return qtrue;
-	} //end else
-} //end of the function PC_ExpectAnyToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_CheckTokenString(pc_source_t *source, char *string)
-{
-	pc_token_t tok;
-
-	if (!PC_ReadToken(source, &tok)) return qfalse;
-	//if the token is available
-	if (!strcmp(tok.string, string)) return qtrue;
-	//
-	PC_UnreadSourceToken(source, &tok);
-	return qfalse;
-} //end of the function PC_CheckTokenString
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_CheckTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token)
-{
-	pc_token_t tok;
-
-	if (!PC_ReadToken(source, &tok)) return qfalse;
-	//if the type matches
-	if (tok.type == type &&
-			(tok.subtype & subtype) == subtype)
-	{
-		memcpy(token, &tok, sizeof(pc_token_t));
-		return qtrue;
-	} //end if
-	//
-	PC_UnreadSourceToken(source, &tok);
-	return qfalse;
-} //end of the function PC_CheckTokenType
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-int PC_SkipUntilString(pc_source_t *source, char *string)
-{
-	pc_token_t token;
-
-	while(PC_ReadToken(source, &token))
-	{
-		if (!strcmp(token.string, string)) return qtrue;
-	} //end while
-	return qfalse;
-} //end of the function PC_SkipUntilString
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_UnreadLastToken(pc_source_t *source)
-{
-	PC_UnreadSourceToken(source, &source->token);
-} //end of the function PC_UnreadLastToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_UnreadToken(pc_source_t *source, pc_token_t *token)
-{
-	PC_UnreadSourceToken(source, token);
-} //end of the function PC_UnreadToken
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_SetIncludePath(pc_source_t *source, char *path)
-{
-	strncpy(source->includepath, path, MAX_PATH);
-	//add trailing path seperator
-	if (source->includepath[strlen(source->includepath)-1] != '\\' &&
-		source->includepath[strlen(source->includepath)-1] != '/')
-	{
-		strcat(source->includepath, PATHSEPERATOR_STR);
-	} //end if
-} //end of the function PC_SetIncludePath
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void PC_SetPunctuations(pc_source_t *source, pc_punctuation_t *p)
-{
-	source->punctuations = p;
-} //end of the function PC_SetPunctuations
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-void PC_InitLexer(void)
-{
-        PC_RemoveAllGlobalDefines();
+    size_t length = strlen(string);
+    if (length >= 2 && string[0] == '"' && string[length - 1] == '"')
+    {
+        memmove(string, string + 1, length - 2);
+        string[length - 2] = '\0';
+    }
 }
 
-void PC_ShutdownLexer(void)
+static void PC_LogMessage(pc_source_t *source, pc_error_level_t level, const char *prefix, const char *fmt, va_list ap)
 {
-        PC_RemoveAllGlobalDefines();
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), fmt, ap);
+
+    int priority = (level == PC_ERROR_LEVEL_ERROR) ? PRT_ERROR : PRT_WARNING;
+    if (prefix != NULL)
+    {
+        BotLib_Print(priority, "%s%s\n", prefix, buffer);
+    }
+    else
+    {
+        BotLib_Print(priority, "%s\n", buffer);
+    }
+
+    int line = 0;
+    if (source != NULL && source->cursor > 0 && source->cursor <= source->count)
+    {
+        line = source->tokens[source->cursor - 1].line;
+    }
+    PC_AddDiagnostic(source, level, line, 0, buffer);
 }
 
-pc_source_t *PC_LoadSourceFile(const char *filename)
+void QDECL SourceError(pc_source_t *source, char *str, ...)
 {
-        return LoadSourceFile(filename);
+    va_list ap;
+    va_start(ap, str);
+    PC_LogMessage(source, PC_ERROR_LEVEL_ERROR, "error: ", str, ap);
+    va_end(ap);
 }
 
-pc_source_t *PC_LoadSourceMemory(const char *name, const char *buffer, size_t buffer_size)
+void QDECL SourceWarning(pc_source_t *source, char *str, ...)
 {
-        if (buffer == NULL || buffer_size == 0 || buffer_size > INT_MAX)
-        {
-                return NULL;
-        }
-
-        char local_name[MAX_PATH];
-        if (name != NULL)
-        {
-                strncpy(local_name, name, sizeof(local_name) - 1);
-                local_name[sizeof(local_name) - 1] = '\0';
-        }
-        else
-        {
-                strncpy(local_name, "<memory>", sizeof(local_name) - 1);
-                local_name[sizeof(local_name) - 1] = '\0';
-        }
-
-        return LoadSourceMemory((char *)buffer, (int)buffer_size, local_name);
+    va_list ap;
+    va_start(ap, str);
+    PC_LogMessage(source, PC_ERROR_LEVEL_WARNING, "warning: ", str, ap);
+    va_end(ap);
 }
-
-void PC_FreeSource(pc_source_t *source)
-{
-        if (source != NULL)
-        {
-                FreeSource(source);
-        }
-}
-
-int PC_PeekToken(pc_source_t *source, pc_token_t *token)
-{
-        if (source == NULL || token == NULL)
-        {
-                return 0;
-        }
-
-        pc_token_t temp;
-        if (!PC_ReadToken(source, &temp))
-        {
-                return 0;
-        }
-
-        PC_UnreadToken(source, &temp);
-        memcpy(token, &temp, sizeof(pc_token_t));
-        return 1;
-}
-
-const pc_diagnostic_t *PC_GetDiagnostics(const pc_source_t *source)
-{
-        if (source == NULL)
-        {
-                return NULL;
-        }
-
-        return source->diagnostics_head;
-}
-
-pc_source_t *LoadSourceFile(const char *filename)
-{
-        pc_source_t *source;
-        pc_script_t *script;
-
-	PC_InitTokenHeap();
-
-	script = LoadScriptFile(filename);
-	if (!script) return NULL;
-
-	script->next = NULL;
-
-	source = (pc_source_t *) GetMemory(sizeof(pc_source_t));
-	memset(source, 0, sizeof(pc_source_t));
-
-	strncpy(source->filename, filename, MAX_PATH);
-	source->scriptstack = script;
-	source->tokens = NULL;
-	source->defines = NULL;
-	source->indentstack = NULL;
-	source->skip = 0;
-
-#if DEFINEHASHING
-	source->definehash = GetClearedMemory(DEFINEHASHSIZE * sizeof(pc_define_t *));
-#endif //DEFINEHASHING
-	PC_AddGlobalDefinesToSource(source);
-	return source;
-} //end of the function LoadSourceFile
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-pc_source_t *LoadSourceMemory(char *ptr, int length, char *name)
-{
-	pc_source_t *source;
-	pc_script_t *script;
-
-	PC_InitTokenHeap();
-
-	script = LoadScriptMemory(ptr, length, name);
-	if (!script) return NULL;
-	script->next = NULL;
-
-	source = (pc_source_t *) GetMemory(sizeof(pc_source_t));
-	memset(source, 0, sizeof(pc_source_t));
-
-	strncpy(source->filename, name, MAX_PATH);
-	source->scriptstack = script;
-	source->tokens = NULL;
-	source->defines = NULL;
-	source->indentstack = NULL;
-	source->skip = 0;
-
-#if DEFINEHASHING
-	source->definehash = GetClearedMemory(DEFINEHASHSIZE * sizeof(pc_define_t *));
-#endif //DEFINEHASHING
-	PC_AddGlobalDefinesToSource(source);
-	return source;
-} //end of the function LoadSourceMemory
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void FreeSource(pc_source_t *source)
-{
-	pc_script_t *script;
-	pc_token_t *token;
-	pc_define_t *define;
-	pc_indent_t *indent;
-	int i;
-
-	//PC_PrintDefineHashTable(source->definehash);
-	//free all the scripts
-	while(source->scriptstack)
-	{
-		script = source->scriptstack;
-		source->scriptstack = source->scriptstack->next;
-		FreeScript(script);
-	} //end for
-	//free all the tokens
-	while(source->tokens)
-	{
-		token = source->tokens;
-		source->tokens = source->tokens->next;
-		PC_FreeToken(token);
-	} //end for
-#if DEFINEHASHING
-	for (i = 0; i < DEFINEHASHSIZE; i++)
-	{
-		while(source->definehash[i])
-		{
-			define = source->definehash[i];
-			source->definehash[i] = source->definehash[i]->hashnext;
-			PC_FreeDefine(define);
-		} //end while
-	} //end for
-#else //DEFINEHASHING
-	//free all defines
-	while(source->defines)
-	{
-		define = source->defines;
-		source->defines = source->defines->next;
-		PC_FreeDefine(define);
-	} //end for
-#endif //DEFINEHASHING
-	//free all indents
-	while(source->indentstack)
-	{
-		indent = source->indentstack;
-		source->indentstack = source->indentstack->next;
-		FreeMemory(indent);
-	} //end for
-#if DEFINEHASHING
-        //
-        if (source->definehash)
-        {
-                FreeMemory(source->definehash);
-        }
-#endif //DEFINEHASHING
-
-        pc_diagnostic_t *diag = source->diagnostics_head;
-        while (diag != NULL)
-        {
-                pc_diagnostic_t *next = diag->next;
-                if (diag->message != NULL)
-                {
-                        free((void *)diag->message);
-                }
-                free(diag);
-                diag = next;
-        }
-
-        //free the source itself
-        FreeMemory(source);
-} //end of the function FreeSource
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-
-#define MAX_SOURCEFILES		64
-
-pc_source_t *sourceFiles[MAX_SOURCEFILES];
-
-int PC_LoadSourceHandle(const char *filename)
-{
-	pc_source_t *source;
-	int i;
-
-	for (i = 1; i < MAX_SOURCEFILES; i++)
-	{
-		if (!sourceFiles[i])
-			break;
-	} //end for
-	if (i >= MAX_SOURCEFILES)
-		return 0;
-	PS_SetBaseFolder("");
-	source = LoadSourceFile(filename);
-	if (!source)
-		return 0;
-	sourceFiles[i] = source;
-	return i;
-} //end of the function PC_LoadSourceHandle
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-int PC_FreeSourceHandle(int handle)
-{
-	if (handle < 1 || handle >= MAX_SOURCEFILES)
-		return qfalse;
-	if (!sourceFiles[handle])
-		return qfalse;
-
-	FreeSource(sourceFiles[handle]);
-	sourceFiles[handle] = NULL;
-	return qtrue;
-} //end of the function PC_FreeSourceHandle
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-int PC_ReadTokenHandle(int handle, pc_token_t *pc_token)
-{
-	pc_token_t token;
-	int ret;
-
-	if (handle < 1 || handle >= MAX_SOURCEFILES)
-		return 0;
-	if (!sourceFiles[handle])
-		return 0;
-
-	ret = PC_ReadToken(sourceFiles[handle], &token);
-	strcpy(pc_token->string, token.string);
-	pc_token->type = token.type;
-	pc_token->subtype = token.subtype;
-	pc_token->intvalue = token.intvalue;
-	pc_token->floatvalue = token.floatvalue;
-	if (pc_token->type == TT_STRING)
-		StripDoubleQuotes(pc_token->string);
-	return ret;
-} //end of the function PC_ReadTokenHandle
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-int PC_SourceFileAndLine(int handle, char *filename, int *line)
-{
-	if (handle < 1 || handle >= MAX_SOURCEFILES)
-		return qfalse;
-	if (!sourceFiles[handle])
-		return qfalse;
-
-        if (filename != NULL)
-        {
-                strncpy(filename, sourceFiles[handle]->filename, MAX_PATH - 1);
-                filename[MAX_PATH - 1] = '\0';
-        }
-	if (sourceFiles[handle]->scriptstack)
-		*line = sourceFiles[handle]->scriptstack->line;
-	else
-		*line = 0;
-	return qtrue;
-} //end of the function PC_SourceFileAndLine
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-void PC_SetBaseFolder(char *path)
-{
-	PS_SetBaseFolder(path);
-} //end of the function PC_SetBaseFolder
-//============================================================================
-//
-// Parameter:			-
-// Returns:				-
-// Changes Globals:		-
-//============================================================================
-void PC_CheckOpenSourceHandles(void)
-{
-        int i;
-
-        for (i = 1; i < MAX_SOURCEFILES; i++)
-        {
-                if (sourceFiles[i])
-                {
-                        const char *filename = sourceFiles[i]->scriptstack != NULL ?
-                                                   sourceFiles[i]->scriptstack->filename :
-                                                   sourceFiles[i]->filename;
-                        BotLib_Print(PRT_ERROR, "file %s still open in precompiler\n", filename);
-                } //end if
-        } //end for
-} //end of the function PC_CheckOpenSourceHandles
-

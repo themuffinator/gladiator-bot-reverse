@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "botlib/aas/aas_sound.h"
 #include "botlib/ai/goal_move_orchestrator.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/ea/ea_local.h"
@@ -45,6 +46,9 @@ struct ai_dm_state_s
     int last_selected_weapon;
     int last_avoid_entity;
     float last_avoid_time;
+    vec3_t sound_alert_origin;
+    float sound_alert_expiry;
+    int sound_alert_type;
 };
 
 static void AI_DMState_RefreshConfig(ai_dm_state_t *state)
@@ -145,6 +149,9 @@ void AI_DMState_Reset(ai_dm_state_t *state)
     state->last_selected_weapon = -1;
     state->last_avoid_entity = -1;
     state->last_avoid_time = -FLT_MAX;
+    VectorClear(state->sound_alert_origin);
+    state->sound_alert_expiry = -FLT_MAX;
+    state->sound_alert_type = AAS_SOUNDTYPE_IGNORE;
     state->config_initialised = false;
     AI_DMState_RefreshConfig(state);
 }
@@ -189,6 +196,23 @@ static bool AI_DMState_ShouldRecordAvoid(const ai_dm_state_t *state,
     return true;
 }
 
+static bool AI_DMState_IsCombatSound(int sound_type)
+{
+    switch (sound_type)
+    {
+        case AAS_SOUNDTYPE_FIRINGWEAPON:
+        case AAS_SOUNDTYPE_PLAYER:
+        case AAS_SOUNDTYPE_PLAYERSTEPS:
+        case AAS_SOUNDTYPE_PLAYERJUMP:
+        case AAS_SOUNDTYPE_PLAYERWATERIN:
+        case AAS_SOUNDTYPE_PLAYERWATEROUT:
+        case AAS_SOUNDTYPE_PLAYERFALL:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void AI_DMState_Update(ai_dm_state_t *state,
                        const bot_client_state_t *client_state,
                        const ai_goal_selection_t *selection,
@@ -214,6 +238,48 @@ void AI_DMState_Update(ai_dm_state_t *state,
     {
         EA_SelectWeapon(client, desired_weapon);
         state->last_selected_weapon = desired_weapon;
+    }
+
+    if (now >= state->sound_alert_expiry)
+    {
+        state->sound_alert_type = AAS_SOUNDTYPE_IGNORE;
+    }
+
+    aas_sound_event_summary_t sound_summaries[8];
+    size_t sound_count =
+        AAS_SoundSubsystem_QuerySoundSummaries(now, sound_summaries, sizeof(sound_summaries) / sizeof(sound_summaries[0]));
+    bool alerted_this_frame = false;
+    for (size_t i = 0; i < sound_count; ++i)
+    {
+        const aas_sound_event_summary_t *summary = &sound_summaries[i];
+        if (!AI_DMState_IsCombatSound(summary->type))
+        {
+            continue;
+        }
+
+        VectorCopy(summary->origin, state->sound_alert_origin);
+        state->sound_alert_expiry = summary->expiry;
+        state->sound_alert_type = summary->type;
+        alerted_this_frame = true;
+
+        aas_pointlight_event_summary_t light_summaries[4];
+        size_t light_count = AAS_SoundSubsystem_QueryPointLightSummaries(
+            now, light_summaries, sizeof(light_summaries) / sizeof(light_summaries[0]));
+        for (size_t light_index = 0; light_index < light_count; ++light_index)
+        {
+            const aas_pointlight_event_summary_t *light = &light_summaries[light_index];
+            if (light->ent == summary->ent && light->expiry >= now)
+            {
+                VectorCopy(light->origin, state->sound_alert_origin);
+                break;
+            }
+        }
+        break;
+    }
+
+    if (alerted_this_frame && state->attack_cooldown > 0.0f)
+    {
+        state->last_attack_time = now - state->attack_cooldown;
     }
 
     bool enemy_valid = (enemy != NULL) && enemy->valid;
@@ -243,6 +309,10 @@ void AI_DMState_Update(ai_dm_state_t *state,
                 state->last_jump_time = now;
             }
         }
+    }
+    else if (state->sound_alert_type != AAS_SOUNDTYPE_IGNORE && state->sound_alert_expiry > now)
+    {
+        EA_LookAtPoint(client, eye_position, state->sound_alert_origin);
     }
 
     bool path_failed = false;

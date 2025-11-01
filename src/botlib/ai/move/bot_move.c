@@ -475,7 +475,7 @@ int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type)
     return 1;
 }
 
-void BotResetAvoidReach(int movestate)
+static void BotMove_ResetAvoidReach(int movestate)
 {
     bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
     if (ms == NULL)

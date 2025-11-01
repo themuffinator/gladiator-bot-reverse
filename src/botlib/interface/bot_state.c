@@ -5,6 +5,7 @@
 
 #include "../../q2bridge/botlib.h"
 #include "../ai/goal/ai_goal.h"
+#include "../ai/character/bot_character.h"
 
 static bot_client_state_t *g_bot_state_table[MAX_CLIENTS];
 

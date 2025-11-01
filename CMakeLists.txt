@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(gladiator-bot-reverse LANGUAGES C CXX)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 include(GNUInstallDirs)
 
 # TODO: Define targets for shared utilities under src/shared.

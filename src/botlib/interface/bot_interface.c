@@ -68,6 +68,8 @@ static float g_botInterfaceFrameTime = 0.0f;
 static unsigned int g_botInterfaceFrameNumber = 0;
 static bool g_botInterfaceDebugDrawEnabled = false;
 
+static void BotInterface_Printf(int priority, const char *fmt, ...);
+
 static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
 {
     if (info == NULL)
@@ -325,6 +327,83 @@ static void BotInterface_ResetGoalSnapshot(bot_client_state_t *state)
 
     state->goal_snapshot_count = 0;
     memset(state->goal_snapshot, 0, sizeof(state->goal_snapshot));
+    memset(state->goal_snapshot_weights, 0, sizeof(state->goal_snapshot_weights));
+}
+
+static float BotInterface_SoundGoalWeight(int sound_type)
+{
+    switch (sound_type)
+    {
+        case AAS_SOUNDTYPE_PICKUPWEAPON:
+            return 80.0f;
+        case AAS_SOUNDTYPE_PICKUPPOWERUP:
+            return 90.0f;
+        case AAS_SOUNDTYPE_PICKUPARMOR:
+        case AAS_SOUNDTYPE_PICKUPARMORSHARD:
+            return 60.0f;
+        case AAS_SOUNDTYPE_PICKUPAMMO:
+            return 45.0f;
+        case AAS_SOUNDTYPE_PICKUPHEALTH_SMALL:
+        case AAS_SOUNDTYPE_PICKUPHEALTH_NORMAL:
+        case AAS_SOUNDTYPE_PICKUPHEALTH_LARGE:
+        case AAS_SOUNDTYPE_PICKUPHEALTH_MEGA:
+            return 35.0f;
+        case AAS_SOUNDTYPE_USINGPOWERUP:
+            return 55.0f;
+        default:
+            return 0.0f;
+    }
+}
+
+static int BotInterface_SoundGoalId(const aas_sound_event_summary_t *summary, size_t ordinal)
+{
+    int seed = (summary != NULL) ? ((summary->type & 0xff) << 24) ^ (summary->ent & 0xffff) ^ (int)ordinal : (int)ordinal;
+    if (seed >= 0)
+    {
+        seed = -seed - 1;
+    }
+    return seed;
+}
+
+static void BotInterface_AppendSoundGoals(bot_client_state_t *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    const size_t capacity = sizeof(state->goal_snapshot) / sizeof(state->goal_snapshot[0]);
+    if (state->goal_snapshot_count >= (int)capacity)
+    {
+        return;
+    }
+
+    aas_sound_event_summary_t summaries[3];
+    size_t summary_count = AAS_SoundSubsystem_QuerySoundSummaries(
+        g_botInterfaceFrameTime, summaries, sizeof(summaries) / sizeof(summaries[0]));
+
+    for (size_t index = 0; index < summary_count && state->goal_snapshot_count < (int)capacity; ++index)
+    {
+        const aas_sound_event_summary_t *summary = &summaries[index];
+        float weight = BotInterface_SoundGoalWeight(summary->type);
+        if (weight <= 0.0f)
+        {
+            continue;
+        }
+
+        bot_goal_t goal;
+        memset(&goal, 0, sizeof(goal));
+        VectorCopy(summary->origin, goal.origin);
+        goal.areanum = 0;
+        goal.entitynum = summary->ent;
+        goal.number = BotInterface_SoundGoalId(summary, index);
+        goal.flags = GFL_ROAM;
+        goal.iteminfo = summary->type;
+
+        state->goal_snapshot[state->goal_snapshot_count] = goal;
+        state->goal_snapshot_weights[state->goal_snapshot_count] = weight;
+        state->goal_snapshot_count += 1;
+    }
 }
 
 static void BotInterface_UpdateGoalSnapshot(bot_client_state_t *state)
@@ -355,6 +434,8 @@ static void BotInterface_UpdateGoalSnapshot(bot_client_state_t *state)
             state->goal_snapshot[state->goal_snapshot_count++] = goal;
         }
     }
+
+    BotInterface_AppendSoundGoals(state);
 }
 
 static const bot_goal_t *BotInterface_FindSnapshotGoal(const bot_client_state_t *state, int number)
@@ -430,21 +511,26 @@ static int BotInterface_RebuildGoalCandidates(bot_client_state_t *state)
         candidate.travel_flags = TFL_DEFAULT;
         VectorCopy(goal->origin, candidate.origin);
 
-        int start_area = AI_GoalState_GetCurrentArea(state->goal_state);
-        int travel_time = 0;
-        float weight = BotGoal_EvaluateStackGoal(state->goal_handle,
-                                                 goal,
-                                                 state->last_client_update.origin,
-                                                 start_area,
-                                                 state->last_client_update.inventory,
-                                                 candidate.travel_flags,
-                                                 &travel_time);
-        if (weight <= -FLT_MAX)
+        float base_weight = state->goal_snapshot_weights[index];
+        if (base_weight <= 0.0f)
         {
-            continue;
+            int start_area = AI_GoalState_GetCurrentArea(state->goal_state);
+            int travel_time = 0;
+            float evaluated = BotGoal_EvaluateStackGoal(state->goal_handle,
+                                                        goal,
+                                                        state->last_client_update.origin,
+                                                        start_area,
+                                                        state->last_client_update.inventory,
+                                                        candidate.travel_flags,
+                                                        &travel_time);
+            if (evaluated <= -FLT_MAX)
+            {
+                continue;
+            }
+            base_weight = evaluated;
         }
 
-        candidate.base_weight = weight;
+        candidate.base_weight = base_weight;
         AI_GoalState_AddCandidate(state->goal_state, &candidate);
     }
 
@@ -463,6 +549,19 @@ static float BotInterface_GoalWeight(void *ctx, const ai_goal_candidate_t *candi
     if (goal == NULL)
     {
         return candidate->base_weight;
+    }
+
+    for (int index = 0; index < state->goal_snapshot_count; ++index)
+    {
+        if (&state->goal_snapshot[index] == goal)
+        {
+            float stored = state->goal_snapshot_weights[index];
+            if (stored > 0.0f)
+            {
+                return stored;
+            }
+            break;
+        }
     }
 
     int start_area = AI_GoalState_GetCurrentArea(state->goal_state);
@@ -494,6 +593,18 @@ static float BotInterface_GoalTravelTime(void *ctx, int start_area, const ai_goa
     if (goal == NULL)
     {
         return -1.0f;
+    }
+
+    for (int index = 0; index < state->goal_snapshot_count; ++index)
+    {
+        if (&state->goal_snapshot[index] == goal)
+        {
+            if (state->goal_snapshot_weights[index] > 0.0f)
+            {
+                return 0.0f;
+            }
+            break;
+        }
     }
 
     if (start_area <= 0 || goal->areanum <= 0)

@@ -255,6 +255,9 @@ static int setup_bot_interface(void **state)
     LibVarSet("max_weaponinfo", "64");
     LibVarSet("max_projectileinfo", "64");
     LibVarSet("itemconfig", "items.c");
+    LibVarSet("soundconfig", "sounds.c");
+    LibVarSet("max_soundinfo", "256");
+    LibVarSet("max_aassounds", "256");
     LibVarSet("gladiator_asset_dir", context->assets.asset_root);
 
     g_active_mock = &context->mock;
@@ -548,6 +551,88 @@ static void test_bot_update_entity_populates_aas(void **state)
     context->api->BotShutdownLibrary();
 }
 
+static void test_sound_config_respects_max_bounds(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    LibVarSet("max_soundinfo", "70000");
+    LibVarSet("max_aassounds", "70000");
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_non_null(Mock_FindPrint(&context->mock, "max_soundinfo out of range [0, 65535]"));
+    assert_non_null(Mock_FindPrint(&context->mock, "max_aassounds out of range [0, 65536]"));
+
+    context->api->BotShutdownLibrary();
+}
+
+static void test_bot_ai_reacts_to_weapon_sound(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    if (!ensure_map_fixture(&context->assets, "test2"))
+    {
+        cmocka_skip();
+    }
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    char sound0[] = "sound/weapons/machinegun/machinegun_fire.wav";
+    char *soundindex[] = {sound0};
+    status = context->api->BotLoadMap("maps/test2.bsp", 0, NULL, 1, soundindex, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_settings_t settings;
+    memset(&settings, 0, sizeof(settings));
+    snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    settings.ailibrary[0] = '\0';
+
+    status = context->api->BotSetupClient(1, &settings);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotStartFrame(1.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateclient_t update;
+    memset(&update, 0, sizeof(update));
+    update.origin[2] = 24.0f;
+    status = context->api->BotUpdateClient(1, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    vec3_t sound_origin = {0.0f, 128.0f, 24.0f};
+    status = context->api->BotAddSound(sound_origin, 5, 0, 0, 1.0f, 1.0f, 0.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(context->mock.bot_input_count > 0);
+
+    const bot_input_t *input = &context->mock.inputs[context->mock.bot_input_count - 1];
+    assert_float_equal(input->viewangles[1], 90.0f, 5.0f);
+
+    const bot_client_state_t *client_state = BotState_Get(1);
+    assert_non_null(client_state);
+    bool found_sound_goal = false;
+    for (int i = 0; i < client_state->goal_snapshot_count; ++i)
+    {
+        if (client_state->goal_snapshot_weights[i] > 0.0f)
+        {
+            found_sound_goal = true;
+            break;
+        }
+    }
+    assert_true(found_sound_goal);
+
+    context->api->BotShutdownClient(1);
+    context->api->BotShutdownLibrary();
+}
+
 static bool ensure_map_fixture(const asset_env_t *assets, const char *stem)
 {
     if (assets == NULL || stem == NULL)
@@ -678,6 +763,12 @@ int main(void)
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_sound_config_respects_max_bounds,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_ai_reacts_to_weapon_sound,
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,

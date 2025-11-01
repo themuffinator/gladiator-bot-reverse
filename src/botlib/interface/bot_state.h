@@ -49,7 +49,8 @@ struct bot_client_state_s {
     int weapon_state;
     int current_weapon;
     int goal_handle;
-    bot_goal_t goal_snapshot[2];
+    bot_goal_t goal_snapshot[3];
+    float goal_snapshot_weights[3];
     int goal_snapshot_count;
     bot_updateclient_t last_client_update;
     bool client_update_valid;

@@ -438,6 +438,8 @@ static int AAS_ReadLump(FILE *file,
     }
 
     return BLERR_NOERROR;
+}
+
 static size_t AAS_AreaBitWordCount(void)
 {
     int numAreas = aasworld.numAreas;

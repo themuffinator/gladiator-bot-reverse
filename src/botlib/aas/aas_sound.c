@@ -37,6 +37,34 @@ typedef struct aas_sound_state_s
 
 static aas_sound_state_t g_aas_sound_state;
 
+#define AAS_SOUND_DEFAULT_CAPACITY 256
+#define AAS_SOUNDINFO_MAX_LIMIT 65535
+#define AAS_AASSOUNDS_MAX_LIMIT 65536
+#define AAS_SOUND_DEFAULT_DURATION 0.5f
+#define AAS_POINTLIGHT_DEFAULT_DECAY 0.5f
+
+static bool AAS_Sound_PushInfo(const aas_soundinfo_t *info);
+
+static int AAS_Sound_ClampSoundInfoLimit(int requested)
+{
+    if (requested < 0 || requested > AAS_SOUNDINFO_MAX_LIMIT)
+    {
+        BotLib_Print(PRT_ERROR, "max_soundinfo out of range [0, 65535]\n");
+        return AAS_SOUND_DEFAULT_CAPACITY;
+    }
+    return requested;
+}
+
+static int AAS_Sound_ClampAASSoundLimit(int requested)
+{
+    if (requested < 0 || requested > AAS_AASSOUNDS_MAX_LIMIT)
+    {
+        BotLib_Print(PRT_ERROR, "max_aassounds out of range [0, 65536]\n");
+        return AAS_SOUND_DEFAULT_CAPACITY;
+    }
+    return requested;
+}
+
 static void AAS_Sound_NormalizeName(const char *input, char *output, size_t size)
 {
     if (output == NULL || size == 0)
@@ -650,15 +678,18 @@ int AAS_SoundSubsystem_Init(const botlib_library_variables_t *vars)
 
     AAS_SoundSubsystem_Shutdown();
 
-    if (vars->max_soundinfo <= 0)
+    int max_soundinfo = AAS_Sound_ClampSoundInfoLimit(vars->max_soundinfo);
+    int max_aassounds = AAS_Sound_ClampAASSoundLimit(vars->max_aassounds);
+
+    if (max_soundinfo <= 0)
     {
         BotLib_Print(PRT_WARNING, "AAS_Sound: max_soundinfo disabled\n");
         return BLERR_NOERROR;
     }
 
-    g_aas_sound_state.info_capacity = (size_t)vars->max_soundinfo;
+    g_aas_sound_state.info_capacity = (size_t)max_soundinfo;
     g_aas_sound_state.sound_event_capacity =
-        (vars->max_aassounds > 0) ? (size_t)vars->max_aassounds : (size_t)vars->max_soundinfo;
+        (max_aassounds > 0) ? (size_t)max_aassounds : (size_t)max_soundinfo;
     g_aas_sound_state.pointlight_event_capacity = g_aas_sound_state.sound_event_capacity;
 
     if (g_aas_sound_state.sound_event_capacity > 0U)
@@ -986,6 +1017,103 @@ const aas_pointlight_event_t *AAS_SoundSubsystem_PointLight(size_t index)
         return NULL;
     }
     return &g_aas_sound_state.pointlight_events[index];
+}
+
+static float AAS_Sound_EventDuration(const aas_sound_event_t *event)
+{
+    if (event == NULL)
+    {
+        return 0.0f;
+    }
+
+    float duration = AAS_SOUND_DEFAULT_DURATION;
+    if (event->info_index >= 0 && (size_t)event->info_index < g_aas_sound_state.info_count)
+    {
+        const aas_soundinfo_t *info = &g_aas_sound_state.infos[event->info_index];
+        if (info->duration > 0.0f)
+        {
+            duration = info->duration;
+        }
+    }
+    return duration;
+}
+
+size_t AAS_SoundSubsystem_QuerySoundSummaries(float now,
+                                              aas_sound_event_summary_t *summaries,
+                                              size_t max_summaries)
+{
+    if (!g_aas_sound_state.initialised || summaries == NULL || max_summaries == 0U)
+    {
+        return 0U;
+    }
+
+    size_t produced = 0U;
+    for (size_t index = g_aas_sound_state.sound_event_count; index > 0 && produced < max_summaries; --index)
+    {
+        const aas_sound_event_t *event = &g_aas_sound_state.sound_events[index - 1U];
+        float timestamp = event->timestamp;
+        float expiry = timestamp + AAS_Sound_EventDuration(event);
+        if (timestamp > now || expiry < now)
+        {
+            continue;
+        }
+
+        aas_sound_event_summary_t *summary = &summaries[produced];
+        VectorCopy(event->origin, summary->origin);
+        summary->ent = event->ent;
+        summary->soundindex = event->soundindex;
+        summary->timestamp = timestamp;
+        summary->expiry = expiry;
+        summary->volume = event->volume;
+
+        if (event->info_index >= 0 && (size_t)event->info_index < g_aas_sound_state.info_count)
+        {
+            summary->type = g_aas_sound_state.infos[event->info_index].type;
+        }
+        else
+        {
+            summary->type = AAS_SOUNDTYPE_IGNORE;
+        }
+
+        produced += 1U;
+    }
+
+    return produced;
+}
+
+size_t AAS_SoundSubsystem_QueryPointLightSummaries(
+    float now,
+    aas_pointlight_event_summary_t *summaries,
+    size_t max_summaries)
+{
+    if (!g_aas_sound_state.initialised || summaries == NULL || max_summaries == 0U)
+    {
+        return 0U;
+    }
+
+    size_t produced = 0U;
+    for (size_t index = g_aas_sound_state.pointlight_event_count; index > 0 && produced < max_summaries; --index)
+    {
+        const aas_pointlight_event_t *event = &g_aas_sound_state.pointlight_events[index - 1U];
+        float timestamp = (event->time > 0.0f) ? event->time : g_aas_sound_state.frame_time;
+        float decay = (event->decay > 0.0f) ? event->decay : AAS_POINTLIGHT_DEFAULT_DECAY;
+        float expiry = timestamp + decay;
+        if (timestamp > now || expiry < now)
+        {
+            continue;
+        }
+
+        aas_pointlight_event_summary_t *summary = &summaries[produced];
+        VectorCopy(event->origin, summary->origin);
+        summary->ent = event->ent;
+        summary->radius = event->radius;
+        summary->timestamp = timestamp;
+        summary->expiry = expiry;
+
+        produced += 1U;
+    }
+
+    return produced;
 }
 
 size_t AAS_SoundSubsystem_InfoCount(void)

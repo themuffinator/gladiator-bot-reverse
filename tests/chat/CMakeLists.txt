@@ -18,4 +18,5 @@ target_include_directories(bot_chat_tests
 target_compile_features(bot_chat_tests PRIVATE c_std_11)
 target_compile_definitions(bot_chat_tests PRIVATE BOT_ASSET_ROOT="${PROJECT_SOURCE_DIR}/dev_tools/assets")
 
+
 add_test(NAME bot_chat COMMAND bot_chat_tests)

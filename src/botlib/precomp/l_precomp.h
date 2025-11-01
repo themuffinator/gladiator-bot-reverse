@@ -39,6 +39,18 @@
 extern "C" {
 #endif
 
+#ifndef QDECL
+#define QDECL
+#endif
+
+#ifndef MAX_TOKEN
+#define MAX_TOKEN 1024
+#endif
+
+#ifndef MAX_PATH
+#define MAX_PATH 1024
+#endif
+
 // Forward declarations keep the interface dependency light.  The actual
 // definitions live in the implementation once the lexer/parser is restored.
 typedef struct pc_token_s pc_token_t;
@@ -96,10 +108,41 @@ int PC_PeekToken(pc_source_t *source, pc_token_t *token);
 // Pushes the last token read back into the stream.
 void PC_UnreadToken(pc_source_t *source, pc_token_t *token);
 
+// Replays the previously read token without modifying the caller supplied
+// buffer. Useful when parsers need a single-token look-behind.
+void PC_UnreadLastToken(pc_source_t *source);
+
+// Reads the next token and verifies it matches the expected string.  Returns 1
+// on success and emits a diagnostic otherwise.
+int PC_ExpectTokenString(pc_source_t *source, char *string);
+
+// Reads any token, storing it in the supplied buffer.  Emits a diagnostic when
+// the stream is exhausted.
+int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token);
+
+// Reads the next token and ensures it matches the expected type/subtype.
+int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token);
+
+// Peeks the next token and consumes it only when it matches the supplied
+// string.  Returns 1 when matched.
+int PC_CheckTokenString(pc_source_t *source, char *string);
+
 // Returns the head of the diagnostic chain built while lexing the supplied
 // source.  Callers can iterate the list and display the messages using their
 // own logging facilities.
 const pc_diagnostic_t *PC_GetDiagnostics(const pc_source_t *source);
+
+// Registers a global preprocessor define.  The simplified implementation accepts
+// the define without performing substitution.
+int PC_AddGlobalDefine(char *string);
+
+// Quote helpers mirrored from the legacy codebase.
+void StripSingleQuotes(char *string);
+void StripDoubleQuotes(char *string);
+
+// Logging helpers used by the higher level parsers.
+void QDECL SourceError(pc_source_t *source, char *str, ...);
+void QDECL SourceWarning(pc_source_t *source, char *str, ...);
 
 #ifdef __cplusplus
 } // extern "C"

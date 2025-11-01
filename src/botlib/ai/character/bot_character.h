@@ -9,6 +9,17 @@ extern "C" {
 
 typedef struct ai_character_profile_s ai_character_profile_t;
 
+typedef struct ai_character_definition_s ai_character_definition_t;
+
+struct ai_character_profile_s {
+    char character_filename[128];
+    float requested_skill;
+    bot_weight_config_t *item_weights;
+    ai_weapon_weights_t *weapon_weights;
+    void *chat_state;
+    ai_character_definition_t *definition_blob;
+};
+
 ai_character_profile_t *AI_LoadCharacter(const char *filename, float skill);
 void AI_FreeCharacter(ai_character_profile_t *profile);
 

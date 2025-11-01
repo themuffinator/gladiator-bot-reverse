@@ -36,6 +36,10 @@ void *GetClearedMemory(size_t size) {
     return calloc(1, size);
 }
 
+void *GetMemory(size_t size) {
+    return malloc(size);
+}
+
 void FreeMemory(void *ptr) {
     free(ptr);
 }

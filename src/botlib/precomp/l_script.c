@@ -44,6 +44,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "l_precomp.h"
 #include "l_script.h"
 
+extern pc_punctuation_t default_punctuations[];
+
 typedef enum { qfalse = 0, qtrue = 1 } qboolean;
 
 #ifndef QDECL
@@ -1459,34 +1461,7 @@ char PS_NextWhiteSpaceChar(pc_script_t *script)
 // Returns:					-
 // Changes Globals:		-
 //============================================================================
-void StripDoubleQuotes(char *string)
-{
-	if (*string == '\"')
-	{
-		strcpy(string, string+1);
-	} //end if
-	if (string[strlen(string)-1] == '\"')
-	{
-		string[strlen(string)-1] = '\0';
-	} //end if
-} //end of the function StripDoubleQuotes
 //============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-void StripSingleQuotes(char *string)
-{
-	if (*string == '\'')
-	{
-		strcpy(string, string+1);
-	} //end if
-	if (string[strlen(string)-1] == '\'')
-	{
-		string[strlen(string)-1] = '\0';
-	} //end if
-} //end of the function StripSingleQuotes
 //============================================================================
 //
 // Parameter:				-
