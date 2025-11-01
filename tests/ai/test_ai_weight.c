@@ -116,11 +116,77 @@ static void test_default_item_quad_weight_matches_reference(void **state)
     FreeWeightConfig(config);
 }
 
+static void test_writer_serialises_weights_like_reference(void **state)
+{
+    (void)state;
+
+    char fixture_root[512];
+    int written = snprintf(fixture_root, sizeof(fixture_root), "%s/tests/support/assets", PROJECT_SOURCE_DIR);
+    assert_true(written > 0 && written < (int)sizeof(fixture_root));
+
+    char default_root[512];
+    written = snprintf(default_root, sizeof(default_root), "%s/dev_tools/assets", PROJECT_SOURCE_DIR);
+    assert_true(written > 0 && written < (int)sizeof(default_root));
+
+    LibVarSet("gladiator_asset_dir", fixture_root);
+
+    int handle = BotAllocWeightConfig();
+    assert_true(handle > 0);
+
+    assert_true(BotLoadWeights(handle, "bots/sample_weight.c"));
+
+    const char *relative_output = "bots/sample_weight_out.w";
+
+    char expected_path[512];
+    written = snprintf(expected_path, sizeof(expected_path), "%s/tests/support/assets/bots/sample_weight_expected.w", PROJECT_SOURCE_DIR);
+    assert_true(written > 0 && written < (int)sizeof(expected_path));
+
+    char output_path[512];
+    written = snprintf(output_path, sizeof(output_path), "%s/tests/support/assets/bots/sample_weight_out.w", PROJECT_SOURCE_DIR);
+    assert_true(written > 0 && written < (int)sizeof(output_path));
+
+    remove(output_path);
+
+    assert_true(BotWriteWeights(handle, relative_output));
+
+    FILE *expected = fopen(expected_path, "rb");
+    assert_non_null(expected);
+    FILE *actual = fopen(output_path, "rb");
+    assert_non_null(actual);
+
+    fseek(expected, 0, SEEK_END);
+    long expected_size = ftell(expected);
+    fseek(expected, 0, SEEK_SET);
+
+    fseek(actual, 0, SEEK_END);
+    long actual_size = ftell(actual);
+    fseek(actual, 0, SEEK_SET);
+
+    assert_true(expected_size >= 0 && actual_size >= 0);
+    assert_int_equal(expected_size, actual_size);
+
+    while (expected_size-- > 0) {
+        int c_expected = fgetc(expected);
+        int c_actual = fgetc(actual);
+        assert_int_equal(c_expected, c_actual);
+    }
+
+    fclose(expected);
+    fclose(actual);
+
+    remove(output_path);
+
+    BotFreeWeightConfig(handle);
+
+    LibVarSet("gladiator_asset_dir", default_root);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_default_weapon_shotgun_weight_matches_reference),
         cmocka_unit_test(test_default_item_quad_weight_matches_reference),
+        cmocka_unit_test(test_writer_serialises_weights_like_reference),
     };
 
     return cmocka_run_group_tests(tests, weight_tests_setup, weight_tests_teardown);
