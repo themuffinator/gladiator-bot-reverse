@@ -12,6 +12,7 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
+#include "q2bridge/botlib.h"
 
 #include "inv.h"
 
@@ -218,11 +219,62 @@ static void test_weapon_weights_align_with_reference_values(void **state)
     teardown_botlib_environment();
 }
 
+static void test_bot_choose_best_fight_weapon_matches_reference(void **state)
+{
+    (void)state;
+
+    char weapon_config_path[512];
+    char weight_config_path[512];
+    asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
+    asset_path_or_skip("dev_tools/assets/default/defaul_w.c", weight_config_path, sizeof(weight_config_path));
+
+    setup_botlib_environment();
+    LibVarSet("weaponconfig", weapon_config_path);
+    LibVarSet("max_weaponinfo", "64");
+    LibVarSet("max_projectileinfo", "64");
+
+    ai_weapon_library_t *library = AI_LoadWeaponLibrary(weapon_config_path);
+    assert_non_null(library);
+
+    int weapon_handle = BotAllocWeaponState();
+    assert_true(weapon_handle > 0);
+    assert_int_equal(BotLoadWeaponWeights(weapon_handle, weight_config_path), BLERR_NOERROR);
+
+    int inventory[MAX_ITEMS];
+    memset(inventory, 0, sizeof(inventory));
+
+    inventory[INVENTORY_BLASTER] = 1;
+    int best_weapon = BotChooseBestFightWeapon(weapon_handle, inventory);
+    assert_int_equal(best_weapon, 0);
+
+    memset(inventory, 0, sizeof(inventory));
+    inventory[INVENTORY_BLASTER] = 1;
+    inventory[INVENTORY_MACHINEGUN] = 1;
+    inventory[INVENTORY_BULLETS] = 50;
+    best_weapon = BotChooseBestFightWeapon(weapon_handle, inventory);
+    assert_int_equal(best_weapon, 3);
+
+    memset(inventory, 0, sizeof(inventory));
+    inventory[INVENTORY_BLASTER] = 1;
+    inventory[INVENTORY_MACHINEGUN] = 1;
+    inventory[INVENTORY_BULLETS] = 50;
+    inventory[INVENTORY_ROCKETLAUNCHER] = 1;
+    inventory[INVENTORY_ROCKETS] = 10;
+    inventory[ENEMY_HORIZONTAL_DIST] = 999;
+    best_weapon = BotChooseBestFightWeapon(weapon_handle, inventory);
+    assert_int_equal(best_weapon, 7);
+
+    BotFreeWeaponState(weapon_handle);
+    AI_UnloadWeaponLibrary(library);
+    teardown_botlib_environment();
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_weapon_library_reports_expected_counts),
         cmocka_unit_test(test_weapon_weights_align_with_reference_values),
+        cmocka_unit_test(test_bot_choose_best_fight_weapon_matches_reference),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);
