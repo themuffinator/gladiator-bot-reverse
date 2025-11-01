@@ -462,6 +462,8 @@ static size_t AAS_AreaBitWordCount(void)
 
 static void AAS_ClearWorld(void)
 {
+    AAS_RouteFrameResetDiagnostics();
+    AAS_ReachabilityFrameResetDiagnostics();
     AAS_FreeAllRoutingCaches();
     AAS_ClearReachabilityData();
 

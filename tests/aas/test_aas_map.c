@@ -28,6 +28,7 @@
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/aas_translation.h"
 #include "q2bridge/botlib.h"
+#include "q2bridge/bridge_config.h"
 
 #ifndef PROJECT_SOURCE_DIR
 #error "PROJECT_SOURCE_DIR must be defined so regression tests can resolve asset paths."
@@ -42,6 +43,7 @@ typedef struct aas_test_environment_s {
     bool libvar_initialised;
     bool memory_initialised;
     bool import_table_set;
+    bool bridge_config_initialised;
 } aas_test_environment_t;
 
 static void test_capture_print(int priority, const char *fmt, ...)
@@ -190,6 +192,13 @@ static int aas_environment_setup(void **state)
     LibVar_Init();
     env->libvar_initialised = true;
 
+    if (!BridgeConfig_Init()) {
+        aas_environment_cleanup(env);
+        free(env);
+        cmocka_skip();
+    }
+    env->bridge_config_initialised = true;
+
     if (!BotMemory_Init(TEST_BOTLIB_HEAP_SIZE)) {
         aas_environment_cleanup(env);
         free(env);
@@ -209,6 +218,11 @@ static int aas_environment_teardown(void **state)
     }
 
     AAS_Shutdown();
+
+    if (env->bridge_config_initialised) {
+        BridgeConfig_Shutdown();
+        env->bridge_config_initialised = false;
+    }
 
     if (env->memory_initialised) {
         BotMemory_Shutdown();
@@ -402,6 +416,96 @@ static void test_aas_entity_linking_and_reachability(void **state)
     AAS_Shutdown();
 }
 
+static void test_routing_frame_respects_framereachability(void **state)
+{
+    (void)state;
+
+    LibVarSet("forcewrite", "0");
+    LibVarSet("framereachability", "0");
+
+    AAS_RouteFrameResetDiagnostics();
+    AAS_RouteFrameUpdate();
+
+    assert_int_equal(AAS_RouteFrameWorkCounter(), 0);
+    assert_int_equal(AAS_RouteFrameSkipCounter(), 1);
+    assert_int_equal(AAS_RouteFrameLastBudget(), 0);
+    assert_false(AAS_RouteFrameForceWriteActive());
+
+    LibVarSet("framereachability", "8");
+
+    AAS_RouteFrameResetDiagnostics();
+    AAS_RouteFrameUpdate();
+
+    assert_int_equal(AAS_RouteFrameWorkCounter(), 1);
+    assert_int_equal(AAS_RouteFrameSkipCounter(), 0);
+    assert_int_equal(AAS_RouteFrameLastBudget(), 8);
+
+    LibVarSet("framereachability", "0");
+}
+
+static void test_routing_frame_forcewrite_toggle(void **state)
+{
+    (void)state;
+
+    LibVarSet("framereachability", "4");
+
+    LibVarSet("forcewrite", "0");
+    AAS_RouteFrameResetDiagnostics();
+    AAS_RouteFrameUpdate();
+    assert_false(AAS_RouteFrameForceWriteActive());
+
+    LibVarSet("forcewrite", "1");
+    AAS_RouteFrameResetDiagnostics();
+    AAS_RouteFrameUpdate();
+    assert_true(AAS_RouteFrameForceWriteActive());
+
+    LibVarSet("forcewrite", "0");
+    LibVarSet("framereachability", "0");
+}
+
+static void test_reachability_force_reachability_toggle(void **state)
+{
+    (void)state;
+
+    LibVarSet("forcereachability", "0");
+    LibVarSet("forceclustering", "0");
+
+    AAS_ReachabilityFrameResetDiagnostics();
+    AAS_ReachabilityFrameUpdate();
+
+    assert_int_equal(AAS_ReachabilityFrameWorkCounter(), 0);
+    assert_int_equal(AAS_ReachabilityFrameSkipCounter(), 1);
+    assert_false(AAS_ReachabilityForceReachabilityActive());
+    assert_false(AAS_ReachabilityForceClusteringActive());
+
+    LibVarSet("forcereachability", "1");
+
+    AAS_ReachabilityFrameResetDiagnostics();
+    AAS_ReachabilityFrameUpdate();
+
+    assert_int_equal(AAS_ReachabilityFrameWorkCounter(), 1);
+    assert_true(AAS_ReachabilityForceReachabilityActive());
+
+    LibVarSet("forcereachability", "0");
+}
+
+static void test_reachability_force_clustering_toggle(void **state)
+{
+    (void)state;
+
+    LibVarSet("forcereachability", "0");
+    LibVarSet("forceclustering", "1");
+
+    AAS_ReachabilityFrameResetDiagnostics();
+    AAS_ReachabilityFrameUpdate();
+
+    assert_int_equal(AAS_ReachabilityFrameWorkCounter(), 1);
+    assert_true(AAS_ReachabilityForceClusteringActive());
+    assert_false(AAS_ReachabilityForceReachabilityActive());
+
+    LibVarSet("forceclustering", "0");
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -409,6 +513,18 @@ int main(void)
                                         aas_environment_setup,
                                         aas_environment_teardown),
         cmocka_unit_test_setup_teardown(test_aas_entity_linking_and_reachability,
+                                        aas_environment_setup,
+                                        aas_environment_teardown),
+        cmocka_unit_test_setup_teardown(test_routing_frame_respects_framereachability,
+                                        aas_environment_setup,
+                                        aas_environment_teardown),
+        cmocka_unit_test_setup_teardown(test_routing_frame_forcewrite_toggle,
+                                        aas_environment_setup,
+                                        aas_environment_teardown),
+        cmocka_unit_test_setup_teardown(test_reachability_force_reachability_toggle,
+                                        aas_environment_setup,
+                                        aas_environment_teardown),
+        cmocka_unit_test_setup_teardown(test_reachability_force_clustering_toggle,
                                         aas_environment_setup,
                                         aas_environment_teardown),
     };

@@ -1,6 +1,7 @@
 #ifndef GLADIATOR_BOTLIB_AAS_AAS_LOCAL_H
 #define GLADIATOR_BOTLIB_AAS_AAS_LOCAL_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "../../shared/q_shared.h"
@@ -245,6 +246,18 @@ int AAS_PrepareReachability(void);
 void AAS_FreeAllRoutingCaches(void);
 void AAS_InvalidateRouteCache(void);
 int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, int travelflags);
+void AAS_RouteFrameUpdate(void);
+void AAS_RouteFrameResetDiagnostics(void);
+int AAS_RouteFrameWorkCounter(void);
+int AAS_RouteFrameSkipCounter(void);
+int AAS_RouteFrameLastBudget(void);
+bool AAS_RouteFrameForceWriteActive(void);
+void AAS_ReachabilityFrameUpdate(void);
+void AAS_ReachabilityFrameResetDiagnostics(void);
+int AAS_ReachabilityFrameWorkCounter(void);
+int AAS_ReachabilityFrameSkipCounter(void);
+bool AAS_ReachabilityForceReachabilityActive(void);
+bool AAS_ReachabilityForceClusteringActive(void);
 
 #ifdef __cplusplus
 } /* extern "C" */

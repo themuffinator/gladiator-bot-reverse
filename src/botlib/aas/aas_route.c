@@ -1,13 +1,26 @@
 #include "aas_local.h"
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../common/l_log.h"
+#include "../common/l_libvar.h"
+#include "../../q2bridge/bridge_config.h"
 
 #define ROUTECACHE_TABLE_SIZE 256U
 #define ROUTE_INVALID_TIME 0xFFFFU
+
+typedef struct
+{
+    int frames_with_work;
+    int frames_skipped;
+    int last_budget;
+    bool forcewrite_active;
+} aas_route_frame_state_t;
+
+static aas_route_frame_state_t g_route_frame_state;
 
 typedef struct
 {
@@ -545,4 +558,67 @@ int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, in
     }
 
     return (int)total;
+}
+
+void AAS_RouteFrameResetDiagnostics(void)
+{
+    memset(&g_route_frame_state, 0, sizeof(g_route_frame_state));
+}
+
+static int AAS_ReadIntLibVar(libvar_t *var)
+{
+    if (var == NULL)
+    {
+        return 0;
+    }
+
+    return (int)var->value;
+}
+
+static bool AAS_LibVarEnabled(libvar_t *var)
+{
+    if (var == NULL)
+    {
+        return false;
+    }
+
+    return var->value != 0.0f;
+}
+
+void AAS_RouteFrameUpdate(void)
+{
+    int budget = AAS_ReadIntLibVar(Bridge_FrameReachability());
+    g_route_frame_state.last_budget = budget;
+    g_route_frame_state.forcewrite_active = AAS_LibVarEnabled(Bridge_ForceWrite());
+
+    if (budget <= 0)
+    {
+        g_route_frame_state.frames_skipped += 1;
+        return;
+    }
+
+    g_route_frame_state.frames_with_work += 1;
+
+    /* Ensure the routing cache table exists as part of the maintenance pass. */
+    (void)RouteCache_EnsureTable();
+}
+
+int AAS_RouteFrameWorkCounter(void)
+{
+    return g_route_frame_state.frames_with_work;
+}
+
+int AAS_RouteFrameSkipCounter(void)
+{
+    return g_route_frame_state.frames_skipped;
+}
+
+int AAS_RouteFrameLastBudget(void)
+{
+    return g_route_frame_state.last_budget;
+}
+
+bool AAS_RouteFrameForceWriteActive(void)
+{
+    return g_route_frame_state.forcewrite_active;
 }

@@ -63,6 +63,10 @@ typedef struct botlib_library_variables_s {
     int max_soundinfo;
     int max_aassounds;
     char soundconfig[BOTLIB_MAX_SOUNDCONFIG_PATH];
+    int forceclustering;
+    int forcereachability;
+    int forcewrite;
+    int framereachability;
 } botlib_library_variables_t;
 
 /**

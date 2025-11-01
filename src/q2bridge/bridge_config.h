@@ -39,6 +39,10 @@ libvar_t *Bridge_MaxAASSounds(void);
 libvar_t *Bridge_DMFlags(void);
 libvar_t *Bridge_UseHook(void);
 libvar_t *Bridge_RocketJump(void);
+libvar_t *Bridge_ForceClustering(void);
+libvar_t *Bridge_ForceReachability(void);
+libvar_t *Bridge_ForceWrite(void);
+libvar_t *Bridge_FrameReachability(void);
 
 #ifdef __cplusplus
 }

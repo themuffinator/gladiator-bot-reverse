@@ -34,6 +34,10 @@ typedef struct bridge_config_cache_s {
     libvar_t *dmflags;
     libvar_t *usehook;
     libvar_t *rocketjump;
+    libvar_t *forceclustering;
+    libvar_t *forcereachability;
+    libvar_t *forcewrite;
+    libvar_t *framereachability;
 } bridge_config_cache_t;
 
 static bridge_config_cache_t g_bridge_config_cache;
@@ -113,6 +117,10 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.dmflags, "dmflags", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.usehook, "usehook", "1");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.rocketjump, "rocketjump", "1");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.forceclustering, "forceclustering", "0");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.forcereachability, "forcereachability", "0");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.forcewrite, "forcewrite", "0");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.framereachability, "framereachability", "0");
 
     g_bridge_config_initialised = true;
     return true;
@@ -257,4 +265,24 @@ libvar_t *Bridge_UseHook(void)
 libvar_t *Bridge_RocketJump(void)
 {
     return g_bridge_config_cache.rocketjump;
+}
+
+libvar_t *Bridge_ForceClustering(void)
+{
+    return g_bridge_config_cache.forceclustering;
+}
+
+libvar_t *Bridge_ForceReachability(void)
+{
+    return g_bridge_config_cache.forcereachability;
+}
+
+libvar_t *Bridge_ForceWrite(void)
+{
+    return g_bridge_config_cache.forcewrite;
+}
+
+libvar_t *Bridge_FrameReachability(void)
+{
+    return g_bridge_config_cache.framereachability;
 }
