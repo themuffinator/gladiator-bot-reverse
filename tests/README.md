@@ -112,6 +112,17 @@ ${PROJECT_SOURCE_DIR}/dev_tools/assets/maps/test_mover.aas`, and the test calls
 should install the BSP/AAS pair in the listed directory so the mover parity
 checks remain active.
 
+### Precompiler lexer parity fixtures
+
+`tests/parity/test_precompiler_lexer.c` lexes `${PROJECT_SOURCE_DIR}/dev_tools/assets/fw_items.c`
+and `${PROJECT_SOURCE_DIR}/dev_tools/assets/syn.c` and compares the output token
+stream against the catalogue recorded from the Gladiator HLIL traces. With the
+lexer implementation in place the regression now asserts that
+`PC_LoadSourceFile`, `PC_ReadToken`, `PC_PeekToken`, and `PC_UnreadToken`
+reproduce the same sequence. The fixture only reports a skip when either asset
+file is missing; otherwise divergences surface as descriptive assertion
+failures so regressions are caught immediately.
+
 To streamline build-system integration, we anticipate driving these tests via
 `CTest` invoking a lightweight **GoogleTest** harness.  The harness will provide
 fixtures for seeding the mocked `bot_import_t` table, helpers for table diffing,
