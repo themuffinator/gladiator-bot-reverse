@@ -33,6 +33,18 @@ typedef struct aas_node_s
     int children[2];    /* <0 means leaf/area, 0 means solid */
 } aas_node_t;
 
+typedef struct aas_reachability_s
+{
+    int areanum;
+    int facenum;
+    int edgenum;
+    vec3_t start;
+    vec3_t end;
+    int traveltype;
+    unsigned short traveltime;
+    unsigned short reserved; /* padding observed in the original binary */
+} aas_reachability_t;
+
 typedef struct aas_link_s
 {
     int entnum;
@@ -95,16 +107,19 @@ typedef struct aas_world_s
     qboolean loaded;        /* mirrors data_100667e0 */
     qboolean initialized;   /* mirrors data_100667e4 */
     qboolean entitiesValid; /* mirrors data_100667e8 */
-    int bspChecksum;        /* value pushed through data_100667ec */
-
-    float time;             /* current engine time */
-    int numFrames;          /* used by perf counters */
+    float time;             /* mirrors data_100667ec */
+    int numFrames;          /* frame counter updated each BotStartFrame */
+    int bspChecksum;        /* checksum recorded during AAS_LoadMap */
+    int aasChecksum;        /* checksum of the loaded .aas file */
 
     char aasFilePath[MAX_FILEPATH];
     char mapName[MAX_FILEPATH];
 
     int numAreas;
     aas_area_t *areas;
+
+    int numReachability;
+    aas_reachability_t *reachability;
 
     int numNodes;
     aas_node_t *nodes;
