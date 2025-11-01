@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +9,6 @@
 #include <cmocka.h>
 
 #include <math.h>
-#include <sys/stat.h>
 
 #ifdef _WIN32
 #include <direct.h>
@@ -27,6 +27,7 @@
 #include "botlib/interface/bot_state.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/botlib.h"
+#include "../support/asset_env.h"
 
 #ifndef PROJECT_SOURCE_DIR
 #error "PROJECT_SOURCE_DIR must be defined so regression tests can resolve asset paths."
@@ -41,12 +42,7 @@ typedef struct test_log_message_s {
 } test_log_message_t;
 
 typedef struct test_environment_s {
-    char asset_root[PATH_MAX];
-    char previous_cwd[PATH_MAX];
-    bool have_previous_cwd;
-    bool created_syn;
-    bool created_match;
-    bool created_rchat;
+    asset_env_t assets;
     bool libvar_initialised;
     bool memory_initialised;
     bool import_table_set;
@@ -216,170 +212,6 @@ static bot_import_t g_test_bot_import = {
     .DebugLineShow = test_debug_line_show,
 };
 
-#ifdef _WIN32
-static int test_setenv(const char *name, const char *value)
-{
-    return _putenv_s(name, value);
-}
-
-static void test_unsetenv(const char *name)
-{
-    _putenv_s(name, "");
-}
-#else
-static int test_setenv(const char *name, const char *value)
-{
-    return setenv(name, value, 1);
-}
-
-static void test_unsetenv(const char *name)
-{
-    unsetenv(name);
-}
-#endif
-
-static bool copy_file(const char *src, const char *dst)
-{
-    FILE *input = fopen(src, "rb");
-    if (input == NULL) {
-        return false;
-    }
-
-    FILE *output = fopen(dst, "wb");
-    if (output == NULL) {
-        fclose(input);
-        return false;
-    }
-
-    char buffer[4096];
-    size_t read_bytes;
-    bool ok = true;
-    while ((read_bytes = fread(buffer, 1, sizeof(buffer), input)) > 0) {
-        if (fwrite(buffer, 1, read_bytes, output) != read_bytes) {
-            ok = false;
-            break;
-        }
-    }
-
-    fclose(output);
-    fclose(input);
-
-    if (!ok) {
-        unlink(dst);
-    }
-
-    return ok;
-}
-
-static bool ensure_asset_bridge(test_environment_t *env, const char *filename, bool *created_flag)
-{
-    char destination[PATH_MAX];
-    snprintf(destination, sizeof(destination), "%s/bots/%s", env->asset_root, filename);
-
-    struct stat info;
-    if (stat(destination, &info) == 0) {
-        return true;
-    }
-
-    char source[PATH_MAX];
-    snprintf(source, sizeof(source), "%s/%s", env->asset_root, filename);
-    if (stat(source, &info) != 0) {
-        return false;
-    }
-
-    if (!copy_file(source, destination)) {
-        return false;
-    }
-
-    if (created_flag != NULL) {
-        *created_flag = true;
-    }
-
-    return true;
-}
-
-static bool test_environment_initialise(test_environment_t *env)
-{
-    if (env == NULL) {
-        return false;
-    }
-
-    int written = snprintf(env->asset_root,
-                           sizeof(env->asset_root),
-                           "%s/dev_tools/assets",
-                           PROJECT_SOURCE_DIR);
-    if (written <= 0 || (size_t)written >= sizeof(env->asset_root)) {
-        return false;
-    }
-
-    char character_path[PATH_MAX];
-    snprintf(character_path, sizeof(character_path), "%s/bots/babe_c.c", env->asset_root);
-    FILE *probe = fopen(character_path, "rb");
-    if (probe == NULL) {
-        return false;
-    }
-    fclose(probe);
-
-    if (getcwd(env->previous_cwd, sizeof(env->previous_cwd)) != NULL) {
-        env->have_previous_cwd = true;
-    }
-
-    if (chdir(env->asset_root) != 0) {
-        return false;
-    }
-
-    if (test_setenv("GLADIATOR_ASSET_DIR", env->asset_root) != 0) {
-        return false;
-    }
-
-    if (!ensure_asset_bridge(env, "syn.c", &env->created_syn)) {
-        return false;
-    }
-    if (!ensure_asset_bridge(env, "match.c", &env->created_match)) {
-        return false;
-    }
-    if (!ensure_asset_bridge(env, "rchat.c", &env->created_rchat)) {
-        return false;
-    }
-
-    return true;
-}
-
-static void test_environment_cleanup(test_environment_t *env)
-{
-    if (env == NULL) {
-        return;
-    }
-
-    if (env->created_syn) {
-        char path[PATH_MAX];
-        snprintf(path, sizeof(path), "%s/bots/syn.c", env->asset_root);
-        unlink(path);
-        env->created_syn = false;
-    }
-
-    if (env->created_match) {
-        char path[PATH_MAX];
-        snprintf(path, sizeof(path), "%s/bots/match.c", env->asset_root);
-        unlink(path);
-        env->created_match = false;
-    }
-
-    if (env->created_rchat) {
-        char path[PATH_MAX];
-        snprintf(path, sizeof(path), "%s/bots/rchat.c", env->asset_root);
-        unlink(path);
-        env->created_rchat = false;
-    }
-
-    test_unsetenv("GLADIATOR_ASSET_DIR");
-
-    if (env->have_previous_cwd) {
-        chdir(env->previous_cwd);
-        env->have_previous_cwd = false;
-    }
-}
-
 static int goal_move_setup(void **state)
 {
     test_environment_t *env = (test_environment_t *)calloc(1, sizeof(test_environment_t));
@@ -387,8 +219,8 @@ static int goal_move_setup(void **state)
         return -1;
     }
 
-    if (!test_environment_initialise(env)) {
-        test_environment_cleanup(env);
+    if (!asset_env_initialise(&env->assets)) {
+        asset_env_cleanup(&env->assets);
         free(env);
         cmocka_skip();
     }
@@ -448,7 +280,7 @@ static int goal_move_teardown(void **state)
         env->import_table_set = false;
     }
 
-    test_environment_cleanup(env);
+    asset_env_cleanup(&env->assets);
     free(env);
     *state = NULL;
     return 0;
