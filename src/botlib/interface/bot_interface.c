@@ -1711,6 +1711,7 @@ static int BotLoadMap(char *mapname,
     BotInterface_ResetFrameQueues();
     BotInterface_ResetEntityCache();
     BotInterface_ResetMapCache();
+    TranslateEntity_SetWorldLoaded(qfalse);
 
     int status = AAS_LoadMap(mapname,
                              modelindexes,
@@ -1737,6 +1738,9 @@ static int BotLoadMap(char *mapname,
                              mapname);
         return BLERR_INVALIDIMPORT;
     }
+
+    TranslateEntity_SetWorldLoaded(qtrue);
+    TranslateEntity_SetCurrentTime(0.0f);
 
     return BLERR_NOERROR;
 }

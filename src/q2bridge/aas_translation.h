@@ -166,7 +166,6 @@ bot_status_t TranslateClientUpdate(int client_num,
  */
 bot_status_t TranslateEntityUpdate(int ent_num,
                                    const bot_updateentity_t *src,
-                                   float current_time,
                                    AASEntityFrame *dst);
 
 /**
