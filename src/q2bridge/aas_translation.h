@@ -161,9 +161,12 @@ bot_status_t TranslateClientUpdate(int client_num,
  *    j_sub_10005e60 / j_sub_1001c620 equivalents for spatial maintenance.
  *  - For brush models (solid == 3) ensure the orientation vector is copied when
  *    mins/maxs differ, matching the DLL's arg1 flag semantics.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10409】
+ *  - Track the bridge-provided timestamps so downstream code can compute
+ *    consistent delta times with the historic DLL implementation.
  */
 bot_status_t TranslateEntityUpdate(int ent_num,
                                    const bot_updateentity_t *src,
+                                   float current_time,
                                    AASEntityFrame *dst);
 
 /**

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "q2bridge/bridge.h"
+#include "botlib/aas/aas_map.h"
 
 static qboolean g_aas_loaded = qfalse;
 static float g_aas_current_time = 0.0f;
