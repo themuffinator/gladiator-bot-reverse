@@ -92,6 +92,7 @@ int AAS_LoadMap(const char *mapname,
                 int soundindexes, char *soundindex[],
                 int imageindexes, char *imageindex[]);
 
+int AAS_Init(void);
 void AAS_Shutdown(void);
 
 int AAS_UpdateEntity(int ent, bot_updateentity_t *state);

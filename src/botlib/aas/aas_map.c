@@ -12,6 +12,7 @@
 
 #include "aas_local.h"
 #include "../common/l_log.h"
+#include "interface/botlib_interface.h"
 
 static void AAS_UnlinkEntityFromAreas(aas_entity_t *entity);
 static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs);
@@ -20,12 +21,26 @@ static int AAS_PrepareEntityBitset(aas_entity_t *entity);
 static int AAS_EnsureAreaListArray(void);
 static size_t AAS_AreaBitWordCount(void);
 static void AAS_ClampMinsMaxs(vec3_t mins, vec3_t maxs);
+static void AAS_ClearWorld(void);
 
 /*
  * Global AAS world state.  The original DLL zeroed the data_100667e0 block
  * during shutdown; the struct layout mirrors that memory region.
  */
 aas_world_t aasworld = {0};
+
+int AAS_Init(void)
+{
+    if (aasworld.initialized)
+    {
+        return BLERR_NOERROR;
+    }
+
+    AAS_ClearWorld();
+    aasworld.initialized = qtrue;
+    BotLib_Print(PRT_MESSAGE, "AAS initialized.\n");
+    return BLERR_NOERROR;
+}
 
 static int32_t AAS_LittleLong(int32_t value)
 {
