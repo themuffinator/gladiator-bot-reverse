@@ -14,6 +14,7 @@
 #include "q2bridge/bridge.h"
 #include "q2bridge/update_translator.h"
 #include "botlib/ai/move/mover_catalogue.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib_contract_loader.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
@@ -439,6 +440,44 @@ static void test_bot_update_entity_logging_stops_after_map_load(void **state)
     assert_int_equal(context->print_count, 0U);
 }
 
+static void test_bridge_entity_cache_tracks_maxentities(void **state)
+{
+    (void)state;
+
+    TranslateEntity_SetWorldLoaded(qtrue);
+
+    bot_updateentity_t update;
+    memset(&update, 0, sizeof(update));
+
+    LibVarSet("maxentities", "1200");
+    Bridge_ResetCachedUpdates();
+    TranslateEntity_SetWorldLoaded(qtrue);
+
+    int status = Bridge_UpdateEntity(1100, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = Bridge_UpdateEntity(1199, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = Bridge_UpdateEntity(1200, &update);
+    assert_int_equal(status, BLERR_INVALIDENTITYNUMBER);
+
+    LibVarSet("maxentities", "1400");
+    TranslateEntity_SetWorldLoaded(qtrue);
+
+    status = Bridge_UpdateEntity(1300, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = Bridge_UpdateEntity(1399, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = Bridge_UpdateEntity(1400, &update);
+    assert_int_equal(status, BLERR_INVALIDENTITYNUMBER);
+
+    LibVarSet("maxentities", "1024");
+    Bridge_ResetCachedUpdates();
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -455,6 +494,9 @@ int main(void)
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bot_update_entity_logging_stops_after_map_load,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_entity_cache_tracks_maxentities,
                                         translator_setup,
                                         translator_teardown),
     };

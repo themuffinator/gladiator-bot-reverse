@@ -2,12 +2,17 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "q2bridge/aas_translation.h"
 #include "q2bridge/bridge.h"
+#include "q2bridge/bridge_config.h"
 
-#define BRIDGE_MAX_ENTITIES 1024
+#include "botlib/common/l_libvar.h"
+
+#define BRIDGE_DEFAULT_MAX_ENTITIES 1024
+#define Q2_ABSOLUTE_MAX_ENTITIES 2048
 
 typedef struct bridge_client_slot_s
 {
@@ -29,10 +34,133 @@ typedef struct bridge_entity_slot_s
 } bridge_entity_slot_t;
 
 static bridge_client_slot_t g_bridge_clients[MAX_CLIENTS];
-static bridge_entity_slot_t g_bridge_entities[BRIDGE_MAX_ENTITIES];
+static bridge_entity_slot_t *g_bridge_entities = NULL;
+static int g_bridge_entity_capacity = 0;
 static int g_bridge_max_client_index = MAX_CLIENTS - 1;
-static int g_bridge_max_entity_index = BRIDGE_MAX_ENTITIES - 1;
+static int g_bridge_max_entity_index = -1;
 static float g_bridge_frame_time = 0.0f;
+
+static int Bridge_ReadConfiguredMaxEntities(void)
+{
+    int configured = 0;
+
+    const libvar_t *maxentities = Bridge_MaxEntities();
+    if (maxentities != NULL && maxentities->name != NULL)
+    {
+        configured = (int)LibVarValue(maxentities->name, "0");
+    }
+    else
+    {
+        configured = (int)LibVarValue("maxentities", "0");
+    }
+
+    if (configured <= 0)
+    {
+        configured = BRIDGE_DEFAULT_MAX_ENTITIES;
+    }
+    if (configured > Q2_ABSOLUTE_MAX_ENTITIES)
+    {
+        configured = Q2_ABSOLUTE_MAX_ENTITIES;
+    }
+
+    return configured;
+}
+
+static qboolean Bridge_GrowEntityTable(int new_capacity)
+{
+    if (new_capacity <= g_bridge_entity_capacity)
+    {
+        return qtrue;
+    }
+
+    size_t new_size = (size_t)new_capacity * sizeof(*g_bridge_entities);
+    bridge_entity_slot_t *resized =
+        (bridge_entity_slot_t *)realloc(g_bridge_entities, new_size);
+    if (resized == NULL)
+    {
+        Bridge_LogMessage(PRT_ERROR,
+                          "[q2bridge] failed to grow entity cache to %d slots\n",
+                          new_capacity);
+        return qfalse;
+    }
+
+    size_t old_size = (size_t)g_bridge_entity_capacity * sizeof(*resized);
+    if (new_size > old_size)
+    {
+        memset((unsigned char *)resized + old_size, 0, new_size - old_size);
+    }
+
+    g_bridge_entities = resized;
+    g_bridge_entity_capacity = new_capacity;
+    return qtrue;
+}
+
+static void Bridge_ResetEntityTable(void)
+{
+    int configured = Bridge_ReadConfiguredMaxEntities();
+
+    if (configured != g_bridge_entity_capacity)
+    {
+        bridge_entity_slot_t *fresh = NULL;
+        if (configured > 0)
+        {
+            fresh = (bridge_entity_slot_t *)calloc((size_t)configured, sizeof(*fresh));
+            if (fresh == NULL)
+            {
+                Bridge_LogMessage(PRT_ERROR,
+                                  "[q2bridge] failed to allocate entity cache for %d slots\n",
+                                  configured);
+                configured = g_bridge_entity_capacity;
+            }
+            else
+            {
+                free(g_bridge_entities);
+                g_bridge_entities = fresh;
+                g_bridge_entity_capacity = configured;
+            }
+        }
+        else
+        {
+            free(g_bridge_entities);
+            g_bridge_entities = NULL;
+            g_bridge_entity_capacity = 0;
+        }
+    }
+    else if (g_bridge_entities != NULL)
+    {
+        memset(g_bridge_entities, 0, (size_t)g_bridge_entity_capacity * sizeof(*g_bridge_entities));
+    }
+
+    if (configured > g_bridge_entity_capacity)
+    {
+        configured = g_bridge_entity_capacity;
+    }
+
+    g_bridge_max_entity_index = (configured > 0) ? configured - 1 : -1;
+}
+
+static void Bridge_SynchroniseEntityLimit(void)
+{
+    int configured = Bridge_ReadConfiguredMaxEntities();
+    if (configured > g_bridge_entity_capacity)
+    {
+        if (!Bridge_GrowEntityTable(configured))
+        {
+            configured = g_bridge_entity_capacity;
+        }
+        else
+        {
+            g_bridge_entity_capacity = configured;
+        }
+    }
+
+    if (configured > g_bridge_entity_capacity)
+    {
+        configured = g_bridge_entity_capacity;
+    }
+
+    g_bridge_max_entity_index = (configured > 0) ? configured - 1 : -1;
+}
 
 static void Bridge_LogMessage(int priority, const char *fmt, ...)
 {
@@ -87,6 +215,8 @@ static qboolean Bridge_CheckClientNumber(int client, const char *caller)
 
 static qboolean Bridge_CheckEntityNumber(int ent, const char *caller)
 {
+    Bridge_SynchroniseEntityLimit();
+
     if (ent < 0 || ent > g_bridge_max_entity_index)
     {
         Bridge_LogMessage(PRT_ERROR,
@@ -188,6 +318,14 @@ int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update)
         return BLERR_INVALIDENTITYNUMBER;
     }
 
+    if (g_bridge_entities == NULL)
+    {
+        Bridge_LogMessage(PRT_ERROR,
+                          "BotUpdateEntity: entity cache unavailable for index %d\n",
+                          ent);
+        return BLERR_INVALIDENTITYNUMBER;
+    }
+
     bridge_entity_slot_t *slot = &g_bridge_entities[ent];
     memcpy(&slot->snapshot, update, sizeof(*update));
 
@@ -211,7 +349,7 @@ int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update)
 void Bridge_ResetCachedUpdates(void)
 {
     memset(g_bridge_clients, 0, sizeof(g_bridge_clients));
-    memset(g_bridge_entities, 0, sizeof(g_bridge_entities));
+    Bridge_ResetEntityTable();
     g_bridge_frame_time = 0.0f;
 }
 
@@ -294,6 +432,11 @@ qboolean Bridge_ReadClientFrame(int client, AASClientFrame *frame_out)
 qboolean Bridge_ReadEntityFrame(int ent, AASEntityFrame *frame_out)
 {
     if (!Bridge_CheckEntityNumber(ent, "Bridge_ReadEntityFrame"))
+    {
+        return qfalse;
+    }
+
+    if (g_bridge_entities == NULL)
     {
         return qfalse;
     }
