@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "q2bridge/bridge.h"
+#include "q2bridge/aas_translation.h"
 
 #define BRIDGE_MAX_ENTITIES 1024
 
@@ -20,12 +21,15 @@ typedef struct bridge_entity_slot_s
     qboolean seen;
     qboolean logged;
     bot_updateentity_t snapshot;
+    qboolean translated_valid;
+    q2bridge_aas_entity_frame_t translated;
 } bridge_entity_slot_t;
 
 static bridge_client_slot_t g_bridge_clients[MAX_CLIENTS];
 static bridge_entity_slot_t g_bridge_entities[BRIDGE_MAX_ENTITIES];
 static int g_bridge_max_client_index = MAX_CLIENTS - 1;
 static int g_bridge_max_entity_index = BRIDGE_MAX_ENTITIES - 1;
+static float g_bridge_frame_time = 0.0f;
 
 static void Bridge_LogMessage(int priority, const char *fmt, ...)
 {
@@ -42,7 +46,7 @@ static void Bridge_LogMessage(int priority, const char *fmt, ...)
         vsnprintf(buffer, sizeof(buffer), fmt, args_copy);
         va_end(args_copy);
 
-        imports->Print(priority, "%s", buffer);
+        imports->Print(priority, buffer);
     }
     else
     {
@@ -108,7 +112,7 @@ static void Bridge_LogFirstCapture(qboolean *logged, const char *fmt, ...)
     {
         char buffer[512];
         vsnprintf(buffer, sizeof(buffer), fmt, args);
-        imports->Print(PRT_MESSAGE, "%s", buffer);
+        imports->Print(PRT_MESSAGE, buffer);
     }
     else
     {
@@ -170,6 +174,16 @@ int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update)
     bridge_entity_slot_t *slot = &g_bridge_entities[ent];
     memcpy(&slot->snapshot, update, sizeof(*update));
     slot->seen = qtrue;
+    slot->translated_valid = qfalse;
+
+    q2bridge::AASEntityFrame &frame = slot->translated;
+    int status = q2bridge::TranslateEntityUpdate(ent, *update, g_bridge_frame_time, frame);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
+    slot->translated_valid = qtrue;
 
     Bridge_LogFirstCapture(&slot->logged,
                            "[q2bridge] captured BotUpdateEntity frame for ent %d\n",
@@ -182,6 +196,28 @@ void Bridge_ResetCachedUpdates(void)
 {
     memset(g_bridge_clients, 0, sizeof(g_bridge_clients));
     memset(g_bridge_entities, 0, sizeof(g_bridge_entities));
+    g_bridge_frame_time = 0.0f;
+}
+
+void Bridge_SetFrameTime(float time)
+{
+    g_bridge_frame_time = time;
+}
+
+const q2bridge_aas_entity_frame_t *Bridge_GetEntityFrame(int ent)
+{
+    if (!Bridge_CheckEntityNumber(ent, "Bridge_GetEntityFrame"))
+    {
+        return NULL;
+    }
+
+    bridge_entity_slot_t *slot = &g_bridge_entities[ent];
+    if (!slot->translated_valid)
+    {
+        return NULL;
+    }
+
+    return &slot->translated;
 }
 
 void Bridge_ClearClientSlot(int client)

@@ -2016,6 +2016,7 @@ static int BotStartFrame(float time)
     }
 
     BotInterface_BeginFrame(time);
+    Bridge_SetFrameTime(time);
     aasworld.time = time;
     aasworld.numFrames += 1;
 
@@ -2086,7 +2087,13 @@ static int BotUpdateEntity(int ent, bot_updateentity_t *bue)
         return status;
     }
 
-    status = AAS_UpdateEntity(ent, bue);
+    const q2bridge_aas_entity_frame_t *frame = Bridge_GetEntityFrame(ent);
+    if (frame == NULL)
+    {
+        return BLERR_INVALIDENTITYNUMBER;
+    }
+
+    status = AAS_UpdateEntity(ent, frame);
     if (status != BLERR_NOERROR)
     {
         return status;

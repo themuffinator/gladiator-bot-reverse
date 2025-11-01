@@ -2,6 +2,7 @@
 #define Q2BRIDGE_UPDATE_TRANSLATOR_H
 
 #include "q2bridge/botlib.h"
+#include "q2bridge/aas_translation.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,6 +34,16 @@ int Bridge_UpdateClient(int client, const bot_updateclient_t *update);
  *         fails.
  */
 int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update);
+
+/**
+ * @brief Record the time of the current bridge frame.
+ */
+void Bridge_SetFrameTime(float time);
+
+/**
+ * @brief Retrieve the translated entity frame for the requested slot.
+ */
+const q2bridge_aas_entity_frame_t *Bridge_GetEntityFrame(int ent);
 
 /**
  * @brief Reset the cached bridge state.

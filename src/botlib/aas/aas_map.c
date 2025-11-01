@@ -1113,10 +1113,11 @@ static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absm
     return BLERR_NOERROR;
 }
 
-int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
+int AAS_UpdateEntity(int ent, const q2bridge_aas_entity_frame_t *frame)
 {
     if (!aasworld.loaded)
     {
+        BotlibLog(PRT_WARNING, "AAS_UpdateEntity: not loaded\n");
         return BLERR_NOAASFILE;
     }
 
@@ -1131,7 +1132,7 @@ int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
 
     entity->number = ent;
 
-    if (state == NULL)
+    if (frame == NULL)
     {
         AAS_UnlinkEntityFromAreas(entity);
         AAS_ResetEntityBitset(entity);
@@ -1141,51 +1142,59 @@ int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
         return BLERR_NOERROR;
     }
 
-    /* Preserve the historical fields before copying the new state. */
-    vec3_t oldOrigin;
-    VectorCopy(entity->origin, oldOrigin);
-    VectorCopy(entity->origin, entity->previousOrigin);
-    VectorCopy(state->angles, entity->angles);
-
-    VectorCopy(state->origin, entity->origin);
-    VectorCopy(state->old_origin, entity->old_origin);
-    VectorCopy(state->mins, entity->mins);
-    VectorCopy(state->maxs, entity->maxs);
-
     entity->inuse = qtrue;
-    entity->solid = state->solid;
-    entity->modelindex = state->modelindex;
-    entity->modelindex2 = state->modelindex2;
-    entity->modelindex3 = state->modelindex3;
-    entity->modelindex4 = state->modelindex4;
-    entity->frame = state->frame;
-    entity->skinnum = state->skinnum;
-    entity->effects = state->effects;
-    entity->renderfx = state->renderfx;
-    entity->sound = state->sound;
-    entity->eventid = state->event;
+    entity->solid = frame->solid;
+    entity->modelindex = frame->modelindex;
+    entity->modelindex2 = frame->modelindex2;
+    entity->modelindex3 = frame->modelindex3;
+    entity->modelindex4 = frame->modelindex4;
+    entity->frame = frame->frame;
+    entity->skinnum = frame->skinnum;
+    entity->effects = frame->effects;
+    entity->renderfx = frame->renderfx;
+    entity->sound = frame->sound;
+    entity->eventid = frame->event_id;
 
-    float previousUpdate = entity->lastUpdateTime;
-    entity->lastUpdateTime = aasworld.time;
-    entity->deltaTime = (previousUpdate > 0.0f) ? (aasworld.time - previousUpdate) : 0.0f;
+    VectorCopy(frame->angles, entity->angles);
+    VectorCopy(frame->origin, entity->origin);
+    VectorCopy(frame->old_origin, entity->old_origin);
+    VectorCopy(frame->previous_origin, entity->previousOrigin);
+    VectorCopy(frame->mins, entity->mins);
+    VectorCopy(frame->maxs, entity->maxs);
 
-    vec3_t absmins;
-    vec3_t absmaxs;
-    VectorAdd(entity->origin, entity->mins, absmins);
-    VectorAdd(entity->origin, entity->maxs, absmaxs);
-    AAS_ClampMinsMaxs(absmins, absmaxs);
+    entity->lastUpdateTime = frame->last_update_time;
+    entity->deltaTime = frame->frame_delta;
 
-    int linkStatus = AAS_LinkEntityToComputedAreas(entity, absmins, absmaxs);
-    if (linkStatus != BLERR_NOERROR)
+    qboolean needsRelink = frame->origin_dirty;
+    if (frame->solid == SOLID_BBOX && frame->bounds_dirty)
     {
-        return linkStatus;
+        needsRelink = qtrue;
+    }
+    if (frame->solid == SOLID_BSP && frame->angles_dirty)
+    {
+        needsRelink = qtrue;
     }
 
-    if (entity->solid == SOLID_BSP)
+    if (needsRelink)
     {
-        float dx = fabsf(entity->origin[0] - oldOrigin[0]);
-        float dy = fabsf(entity->origin[1] - oldOrigin[1]);
-        float dz = fabsf(entity->origin[2] - oldOrigin[2]);
+        vec3_t absmins;
+        vec3_t absmaxs;
+        VectorAdd(frame->origin, frame->mins, absmins);
+        VectorAdd(frame->origin, frame->maxs, absmaxs);
+        AAS_ClampMinsMaxs(absmins, absmaxs);
+
+        int linkStatus = AAS_LinkEntityToComputedAreas(entity, absmins, absmaxs);
+        if (linkStatus != BLERR_NOERROR)
+        {
+            return linkStatus;
+        }
+    }
+
+    if (frame->solid == SOLID_BSP && frame->origin_dirty)
+    {
+        float dx = fabsf(frame->origin[0] - frame->previous_origin[0]);
+        float dy = fabsf(frame->origin[1] - frame->previous_origin[1]);
+        float dz = fabsf(frame->origin[2] - frame->previous_origin[2]);
         if (dx > 0.125f || dy > 0.125f || dz > 0.125f)
         {
             AAS_InvalidateRouteCache();

@@ -124,8 +124,11 @@ static inline bsp_trace_t Q2_Trace(vec3_t start, vec3_t mins, vec3_t maxs, vec3_
         return imports->Trace(start, mins, maxs, end, passent, contentmask);
     }
 
-    const bsp_trace_t empty = {0};
-    return empty;
+#ifdef __cplusplus
+    return bsp_trace_t{};
+#else
+    return (bsp_trace_t){0};
+#endif
 }
 
 static inline int Q2_PointContents(vec3_t point)
