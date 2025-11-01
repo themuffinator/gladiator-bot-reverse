@@ -131,6 +131,7 @@ typedef struct bot_input_s {
     vec3_t dir;
     float speed;
     vec3_t viewangles;
+    int   weapon;
     int   actionflags;
 } bot_input_t;
 

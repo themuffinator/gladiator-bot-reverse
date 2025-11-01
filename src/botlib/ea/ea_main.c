@@ -456,6 +456,28 @@ void EA_ClearMovement(int client)
     input->speed = 0.0f;
 }
 
+void EA_SelectWeapon(int client, int weapon)
+{
+    if (!g_ea_initialised)
+    {
+        return;
+    }
+
+    ea_client_state_t *state = EA_ClientState(client);
+    if (state == NULL)
+    {
+        return;
+    }
+
+    bot_input_t *input = EA_AccessPendingInput(state);
+    if (input == NULL)
+    {
+        return;
+    }
+
+    input->weapon = weapon;
+}
+
 static void EA_SetActionFlag(int client, int action_flag)
 {
     if (!g_ea_initialised)
