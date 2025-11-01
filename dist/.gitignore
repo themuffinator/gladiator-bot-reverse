@@ -1,0 +1,4 @@
+# Generated distribution artifacts
+pak*.pak
+*.pak
+.pak_cache/
