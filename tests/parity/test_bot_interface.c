@@ -50,6 +50,7 @@ typedef struct bot_interface_test_context_s
 } bot_interface_test_context_t;
 
 static mock_bot_import_t *g_active_mock = NULL;
+static int g_mock_import_libvar_set_status = BLERR_NOERROR;
 
 static void Mock_Print(int type, char *fmt, ...)
 {
@@ -106,6 +107,13 @@ static void Mock_BotInput(int client, bot_input_t *input)
     g_active_mock->inputs[index] = *input;
     g_active_mock->input_clients[index] = client;
     g_active_mock->bot_input_count += 1U;
+}
+
+static int Mock_ImportBotLibVarSet(const char *var_name, const char *value)
+{
+    (void)var_name;
+    (void)value;
+    return g_mock_import_libvar_set_status;
 }
 
 static void Mock_BotClientCommand(int client, char *fmt, ...)
@@ -278,6 +286,7 @@ static int teardown_bot_interface(void **state)
 
     BotState_ShutdownAll();
     g_active_mock = NULL;
+    BotInterface_SetImportTable(NULL);
     if (context != NULL)
     {
         BotlibContract_Free(&context->catalogue);
@@ -409,6 +418,35 @@ static void test_bot_console_message_and_ai_pipeline(void **state)
     assert_int_equal(status, BLERR_AIUPDATEINACTIVECLIENT);
 
     context->api->BotShutdownLibrary();
+}
+
+static void test_bot_lib_var_set_propagates_import_status(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    const botlib_import_table_t *original_imports = BotInterface_GetImportTable();
+    assert_non_null(original_imports);
+
+    botlib_import_table_t override_imports = *original_imports;
+    override_imports.BotLibVarSet = Mock_ImportBotLibVarSet;
+
+    BotInterface_SetImportTable(&override_imports);
+
+    g_mock_import_libvar_set_status = BLERR_NOERROR;
+    int status = context->api->BotLibVarSet("test_override", "42");
+    assert_int_equal(status, BLERR_NOERROR);
+
+    g_mock_import_libvar_set_status = BLERR_LIBRARYNOTSETUP;
+    status = context->api->BotLibVarSet("test_override", "84");
+    assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+
+    g_mock_import_libvar_set_status = BLERR_INVALIDIMPORT;
+    status = context->api->BotLibVarSet("test_override", "168");
+    assert_int_equal(status, BLERR_INVALIDIMPORT);
+
+    BotInterface_SetImportTable(original_imports);
 }
 
 static void test_bot_update_entity_populates_aas(void **state)
@@ -561,6 +599,9 @@ int main(void)
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_console_message_and_ai_pipeline,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_lib_var_set_propagates_import_status,
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,

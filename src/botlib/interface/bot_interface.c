@@ -820,8 +820,13 @@ static int BotLibVarSetWrapper(char *var_name, char *value)
         return BLERR_INVALIDIMPORT;
     }
 
-    LibVarSet(var_name, value);
-    return status;
+    int status = LibVarSetStatus(var_name, value);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
+    return BLERR_NOERROR;
 }
 
 static int BotInterface_BotLibraryInitialized(void)
