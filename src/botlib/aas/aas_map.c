@@ -30,6 +30,11 @@ static void AAS_ClearWorld(void);
  */
 aas_world_t aasworld = {0};
 
+qboolean AAS_WorldLoaded(void)
+{
+    return aasworld.loaded;
+}
+
 int AAS_Init(void)
 {
     if (aasworld.initialized)
@@ -1113,10 +1118,11 @@ static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absm
     return BLERR_NOERROR;
 }
 
-int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
+int AAS_UpdateEntity(int ent, const AASEntityFrame *state)
 {
     if (!aasworld.loaded)
     {
+        BotlibLog(PRT_MESSAGE, "AAS_UpdateEntity: not loaded\n");
         return BLERR_NOAASFILE;
     }
 
@@ -1138,19 +1144,10 @@ int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
         entity->inuse = qfalse;
         entity->outsideAllAreas = qtrue;
         entity->lastOutsideUpdate = aasworld.time;
+        entity->lastUpdateTime = 0.0f;
+        entity->deltaTime = 0.0f;
         return BLERR_NOERROR;
     }
-
-    /* Preserve the historical fields before copying the new state. */
-    vec3_t oldOrigin;
-    VectorCopy(entity->origin, oldOrigin);
-    VectorCopy(entity->origin, entity->previousOrigin);
-    VectorCopy(state->angles, entity->angles);
-
-    VectorCopy(state->origin, entity->origin);
-    VectorCopy(state->old_origin, entity->old_origin);
-    VectorCopy(state->mins, entity->mins);
-    VectorCopy(state->maxs, entity->maxs);
 
     entity->inuse = qtrue;
     entity->solid = state->solid;
@@ -1163,29 +1160,38 @@ int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
     entity->effects = state->effects;
     entity->renderfx = state->renderfx;
     entity->sound = state->sound;
-    entity->eventid = state->event;
+    entity->eventid = state->event_id;
 
-    float previousUpdate = entity->lastUpdateTime;
-    entity->lastUpdateTime = aasworld.time;
-    entity->deltaTime = (previousUpdate > 0.0f) ? (aasworld.time - previousUpdate) : 0.0f;
+    VectorCopy(state->angles, entity->angles);
+    VectorCopy(state->origin, entity->origin);
+    VectorCopy(state->old_origin, entity->old_origin);
+    VectorCopy(state->previous_origin, entity->previousOrigin);
+    VectorCopy(state->mins, entity->mins);
+    VectorCopy(state->maxs, entity->maxs);
 
-    vec3_t absmins;
-    vec3_t absmaxs;
-    VectorAdd(entity->origin, entity->mins, absmins);
-    VectorAdd(entity->origin, entity->maxs, absmaxs);
-    AAS_ClampMinsMaxs(absmins, absmaxs);
+    entity->lastUpdateTime = state->last_update_time;
+    entity->deltaTime = state->frame_delta;
 
-    int linkStatus = AAS_LinkEntityToComputedAreas(entity, absmins, absmaxs);
-    if (linkStatus != BLERR_NOERROR)
+    if (state->bounds_dirty || state->origin_dirty)
     {
-        return linkStatus;
+        vec3_t absmins;
+        vec3_t absmaxs;
+        VectorAdd(entity->origin, entity->mins, absmins);
+        VectorAdd(entity->origin, entity->maxs, absmaxs);
+        AAS_ClampMinsMaxs(absmins, absmaxs);
+
+        int linkStatus = AAS_LinkEntityToComputedAreas(entity, absmins, absmaxs);
+        if (linkStatus != BLERR_NOERROR)
+        {
+            return linkStatus;
+        }
     }
 
-    if (entity->solid == SOLID_BSP)
+    if (state->origin_dirty && entity->solid == SOLID_BSP)
     {
-        float dx = fabsf(entity->origin[0] - oldOrigin[0]);
-        float dy = fabsf(entity->origin[1] - oldOrigin[1]);
-        float dz = fabsf(entity->origin[2] - oldOrigin[2]);
+        float dx = fabsf(state->origin[0] - state->previous_origin[0]);
+        float dy = fabsf(state->origin[1] - state->previous_origin[1]);
+        float dz = fabsf(state->origin[2] - state->previous_origin[2]);
         if (dx > 0.125f || dy > 0.125f || dz > 0.125f)
         {
             AAS_InvalidateRouteCache();

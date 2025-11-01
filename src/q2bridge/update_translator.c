@@ -24,6 +24,8 @@ typedef struct bridge_entity_slot_s
     qboolean seen;
     qboolean logged;
     bot_updateentity_t snapshot;
+    qboolean frame_valid;
+    AASEntityFrame frame;
 } bridge_entity_slot_t;
 
 static bridge_client_slot_t g_bridge_clients[MAX_CLIENTS];
@@ -188,6 +190,15 @@ int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update)
 
     bridge_entity_slot_t *slot = &g_bridge_entities[ent];
     memcpy(&slot->snapshot, update, sizeof(*update));
+
+    slot->frame_valid = qfalse;
+    bot_status_t status = TranslateEntityUpdate(ent, update, g_bridge_frame_time, &slot->frame);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
+    slot->frame_valid = qtrue;
     slot->seen = qtrue;
 
     Bridge_LogFirstCapture(&slot->logged,
@@ -270,6 +281,23 @@ qboolean Bridge_ReadClientFrame(int client, AASClientFrame *frame_out)
     }
 
     bridge_client_slot_t *slot = &g_bridge_clients[client];
+    if (!slot->frame_valid || frame_out == NULL)
+    {
+        return qfalse;
+    }
+
+    *frame_out = slot->frame;
+    return qtrue;
+}
+
+qboolean Bridge_ReadEntityFrame(int ent, AASEntityFrame *frame_out)
+{
+    if (!Bridge_CheckEntityNumber(ent, "Bridge_ReadEntityFrame"))
+    {
+        return qfalse;
+    }
+
+    bridge_entity_slot_t *slot = &g_bridge_entities[ent];
     if (!slot->frame_valid || frame_out == NULL)
     {
         return qfalse;

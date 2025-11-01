@@ -2115,13 +2115,24 @@ static int BotUpdateEntity(int ent, bot_updateentity_t *bue)
         return BLERR_LIBRARYNOTSETUP;
     }
 
+    if (bue == NULL)
+    {
+        return AAS_UpdateEntity(ent, NULL);
+    }
+
     int status = Bridge_UpdateEntity(ent, bue);
     if (status != BLERR_NOERROR)
     {
         return status;
     }
 
-    status = AAS_UpdateEntity(ent, bue);
+    AASEntityFrame translated = {0};
+    if (!Bridge_ReadEntityFrame(ent, &translated))
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    status = AAS_UpdateEntity(ent, &translated);
     if (status != BLERR_NOERROR)
     {
         return status;

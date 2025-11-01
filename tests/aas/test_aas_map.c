@@ -26,6 +26,7 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
+#include "q2bridge/aas_translation.h"
 #include "q2bridge/botlib.h"
 
 #ifndef PROJECT_SOURCE_DIR
@@ -360,7 +361,10 @@ static void test_aas_entity_linking_and_reachability(void **state)
     fixtures[2].maxs[2] = 8.0f;
 
     aasworld.time = 1.0f;
-    status = AAS_UpdateEntity(1, &fixtures[0]);
+    AASEntityFrame translated = {0};
+    status = TranslateEntityUpdate(1, &fixtures[0], aasworld.time, &translated);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = AAS_UpdateEntity(1, &translated);
     assert_int_equal(status, BLERR_NOERROR);
     assert_true(aasworld.entitiesValid);
     assert_non_null(aasworld.entities);
@@ -371,7 +375,9 @@ static void test_aas_entity_linking_and_reachability(void **state)
     assert_area_entity_list_contains(1, 1);
 
     aasworld.time = 2.0f;
-    status = AAS_UpdateEntity(1, &fixtures[1]);
+    status = TranslateEntityUpdate(1, &fixtures[1], aasworld.time, &translated);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = AAS_UpdateEntity(1, &translated);
     assert_int_equal(status, BLERR_NOERROR);
     assert_false(aasworld.entities[1].outsideAllAreas);
     assert_int_equal(aasworld.entities[1].areaOccupancyCount, 2);
@@ -381,7 +387,9 @@ static void test_aas_entity_linking_and_reachability(void **state)
     assert_area_entity_list_contains(2, 1);
 
     aasworld.time = 3.0f;
-    status = AAS_UpdateEntity(1, &fixtures[2]);
+    status = TranslateEntityUpdate(1, &fixtures[2], aasworld.time, &translated);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = AAS_UpdateEntity(1, &translated);
     assert_int_equal(status, BLERR_NOERROR);
     assert_true(aasworld.entities[1].outsideAllAreas);
     assert_int_equal(aasworld.entities[1].areaOccupancyCount, 0);

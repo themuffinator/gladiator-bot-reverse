@@ -65,6 +65,11 @@ void Bridge_SetClientActive(int client, qboolean active);
  */
 qboolean Bridge_ReadClientFrame(int client, AASClientFrame *frame_out);
 
+/**
+ * @brief Fetch the translated entity frame stored by Bridge_UpdateEntity.
+ */
+qboolean Bridge_ReadEntityFrame(int ent, AASEntityFrame *frame_out);
+
 #ifdef __cplusplus
 }
 #endif
