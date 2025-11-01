@@ -30,6 +30,7 @@
 #include "../ai/weight/bot_weight.h"
 #include "../ai/goal/ai_goal.h"
 #include "../ai/goal_move_orchestrator.h"
+#include "../ai/move/mover_catalogue.h"
 #include "../ea/ea_local.h"
 #include "../precomp/l_precomp.h"
 #include "botlib_interface.h"
@@ -653,6 +654,7 @@ static void BotInterface_ResetEntityCache(void)
 
 static void BotInterface_ResetMapCache(void)
 {
+    BotMove_MoverCatalogueReset();
     BotInterface_FreeAssetList(&g_botInterfaceMapCache.models);
     BotInterface_FreeAssetList(&g_botInterfaceMapCache.sounds);
     BotInterface_FreeAssetList(&g_botInterfaceMapCache.images);
