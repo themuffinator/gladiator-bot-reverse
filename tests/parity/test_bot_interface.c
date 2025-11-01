@@ -377,6 +377,19 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     assert_string_equal(event_info->name, "weapons/blastf1a.wav");
     assert_int_equal(AAS_SoundSubsystem_SoundTypeForIndex(event->soundindex), event_info->type);
 
+    const aas_sound_event_summary_t *sound_summaries = NULL;
+    size_t summary_count = AAS_SoundSubsystem_SoundSummaries(&sound_summaries);
+    assert_int_equal(summary_count, 1);
+    assert_non_null(sound_summaries);
+    const aas_sound_event_summary_t *summary = &sound_summaries[0];
+    assert_non_null(summary);
+    assert_non_null(summary->event);
+    assert_ptr_equal(summary->event, event);
+    assert_true(summary->has_info);
+    assert_ptr_equal(summary->info, event_info);
+    assert_int_equal(summary->sound_type, event_info->type);
+    assert_false(summary->expired);
+
     status = context->api->BotAddSound(origin, 4, 2, 5, 0.3f, 1.0f, 0.1f);
     assert_int_equal(status, BLERR_INVALIDSOUNDINDEX);
     assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 1);
@@ -384,6 +397,18 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     status = context->api->BotAddPointLight(origin, 5, 128.0f, 1.0f, 0.3f, 0.2f, 0.0f, 0.25f);
     assert_int_equal(status, BLERR_NOERROR);
     assert_int_equal((int)AAS_SoundSubsystem_PointLightCount(), 1);
+
+    const aas_pointlight_event_summary_t *light_summaries = NULL;
+    size_t light_summary_count = AAS_SoundSubsystem_PointLightSummaries(&light_summaries);
+    assert_int_equal(light_summary_count, 1);
+    assert_non_null(light_summaries);
+    const aas_pointlight_event_summary_t *light_summary = &light_summaries[0];
+    assert_non_null(light_summary);
+    assert_non_null(light_summary->event);
+    assert_ptr_equal(light_summary->event, AAS_SoundSubsystem_PointLight(0));
+    assert_true(light_summary->has_expiry);
+    assert_float_equal(light_summary->expiry_time, 0.25f, 0.0001f);
+    assert_false(light_summary->expired);
 
     context->api->Test(0, "sounds", origin, origin);
     assert_non_null(Mock_FindPrint(&context->mock, "sound[0]"));
