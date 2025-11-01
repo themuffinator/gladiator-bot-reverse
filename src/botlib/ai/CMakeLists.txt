@@ -10,6 +10,7 @@ set(BOTLIB_AI_SOURCES
     weapon/bot_weapon.c
     character/bot_character.c
     chat/ai_chat.c
+    ea/ea_main.c
 )
 
 add_library(botlib_ai OBJECT ${BOTLIB_AI_SOURCES})

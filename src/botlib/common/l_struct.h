@@ -1,6 +1,10 @@
 #ifndef BOTLIB_COMMON_L_STRUCT_H
 #define BOTLIB_COMMON_L_STRUCT_H
 
-// TODO: Define the data-driven structure description helpers used for bot configuration parsing.
+#include <stdbool.h>
+
+bool L_Struct_Init(void);
+void L_Struct_Shutdown(void);
+bool L_Struct_IsInitialised(void);
 
 #endif // BOTLIB_COMMON_L_STRUCT_H

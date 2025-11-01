@@ -4,10 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../aas/aas_map.h"
+#include "../ai/ea/ea_main.h"
 #include "../ai/weapon/bot_weapon.h"
+#include "../common/l_struct.h"
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
+#include "../common/l_utils.h"
 #include "q2bridge/bridge_config.h"
 
 #define BOTLIB_DEFAULT_WEAPONCONFIG "weapons.c"
@@ -89,24 +93,35 @@ static void Botlib_CacheLibraryVariables(void)
     g_library_variables.weaponconfig[sizeof(g_library_variables.weaponconfig) - 1] = '\0';
 }
 
-static void Botlib_SetupAASSubsystem(void)
+static int Botlib_SetupAASSubsystem(void)
 {
     if (g_subsystem_state.aas_initialised) {
-        return;
+        return BLERR_NOERROR;
     }
 
-    // TODO: Implement actual AAS subsystem initialisation.
+    int status = AAS_Init();
+    if (status != BLERR_NOERROR) {
+        return status;
+    }
+
     g_subsystem_state.aas_initialised = true;
+    return BLERR_NOERROR;
 }
 
-static void Botlib_SetupEASubsystem(void)
+static int Botlib_SetupEASubsystem(void)
 {
     if (g_subsystem_state.ea_initialised) {
-        return;
+        return BLERR_NOERROR;
     }
 
-    // TODO: Implement actual EA subsystem initialisation.
+    int max_clients = (g_library_variables.maxclients > 0) ? g_library_variables.maxclients : 0;
+    int status = EA_Init(max_clients);
+    if (status != BLERR_NOERROR) {
+        return status;
+    }
+
     g_subsystem_state.ea_initialised = true;
+    return BLERR_NOERROR;
 }
 
 static bool Botlib_SetupAISubsystem(void)
@@ -127,14 +142,32 @@ static bool Botlib_SetupAISubsystem(void)
     return true;
 }
 
-static void Botlib_SetupUtilities(void)
+static int Botlib_SetupUtilities(void)
 {
     if (g_subsystem_state.utilities_initialised) {
-        return;
+        return BLERR_NOERROR;
     }
 
-    // TODO: Implement actual utility subsystem initialisation.
+    if (!BridgeConfig_Init()) {
+        BotLib_Print(PRT_ERROR, "Botlib_SetupUtilities: failed to initialise bridge configuration\n");
+        return BLERR_INVALIDIMPORT;
+    }
+
+    if (!L_Utils_Init()) {
+        BridgeConfig_Shutdown();
+        BotLib_Print(PRT_ERROR, "Botlib_SetupUtilities: l_utils bootstrap failed\n");
+        return BLERR_INVALIDIMPORT;
+    }
+
+    if (!L_Struct_Init()) {
+        L_Utils_Shutdown();
+        BridgeConfig_Shutdown();
+        BotLib_Print(PRT_ERROR, "Botlib_SetupUtilities: l_struct bootstrap failed\n");
+        return BLERR_INVALIDIMPORT;
+    }
+
     g_subsystem_state.utilities_initialised = true;
+    return BLERR_NOERROR;
 }
 
 static void Botlib_ShutdownUtilities(void)
@@ -143,7 +176,9 @@ static void Botlib_ShutdownUtilities(void)
         return;
     }
 
-    // TODO: Implement actual utility subsystem shutdown.
+    L_Struct_Shutdown();
+    L_Utils_Shutdown();
+    BridgeConfig_Shutdown();
     g_subsystem_state.utilities_initialised = false;
 }
 
@@ -167,7 +202,7 @@ static void Botlib_ShutdownEASubsystem(void)
         return;
     }
 
-    // TODO: Implement actual EA subsystem shutdown.
+    EA_Shutdown();
     g_subsystem_state.ea_initialised = false;
 }
 
@@ -177,7 +212,7 @@ static void Botlib_ShutdownAASSubsystem(void)
         return;
     }
 
-    // TODO: Implement actual AAS subsystem shutdown.
+    AAS_Shutdown();
     g_subsystem_state.aas_initialised = false;
 }
 
@@ -210,11 +245,37 @@ int BotSetupLibrary(void)
     LibVar_ResetCache();
     BotLib_LogShutdown();
 
-    BridgeConfig_Init();
+    int status = Botlib_SetupUtilities();
+    if (status != BLERR_NOERROR) {
+        Botlib_ResetLibraryVariables();
+        Botlib_ResetSubsystemState();
+        LibVar_Shutdown();
+        BotMemory_Shutdown();
+        return status;
+    }
+
     Botlib_CacheLibraryVariables();
 
-    Botlib_SetupAASSubsystem();
-    Botlib_SetupEASubsystem();
+    status = Botlib_SetupAASSubsystem();
+    if (status != BLERR_NOERROR) {
+        Botlib_ShutdownUtilities();
+        Botlib_ResetLibraryVariables();
+        Botlib_ResetSubsystemState();
+        LibVar_Shutdown();
+        BotMemory_Shutdown();
+        return status;
+    }
+
+    status = Botlib_SetupEASubsystem();
+    if (status != BLERR_NOERROR) {
+        Botlib_ShutdownAASSubsystem();
+        Botlib_ShutdownUtilities();
+        Botlib_ResetLibraryVariables();
+        Botlib_ResetSubsystemState();
+        LibVar_Shutdown();
+        BotMemory_Shutdown();
+        return status;
+    }
 
     /*
      * The Gladiator HLIL initialises shared data before exposing the bot state
@@ -229,14 +290,13 @@ int BotSetupLibrary(void)
     if (!Botlib_SetupAISubsystem()) {
         Botlib_ShutdownEASubsystem();
         Botlib_ShutdownAASSubsystem();
+        Botlib_ShutdownUtilities();
         Botlib_ResetLibraryVariables();
         Botlib_ResetSubsystemState();
-        BridgeConfig_Shutdown();
         LibVar_Shutdown();
         BotMemory_Shutdown();
         return BLERR_CANNOTLOADWEAPONCONFIG;
     }
-    Botlib_SetupUtilities();
 
     g_library_initialised = true;
     return BLERR_NOERROR;
@@ -248,14 +308,13 @@ int BotShutdownLibrary(void)
         return BLERR_LIBRARYNOTSETUP;
     }
 
-    Botlib_ShutdownUtilities();
     Botlib_ShutdownAISubsystem();
     Botlib_ShutdownEASubsystem();
     Botlib_ShutdownAASSubsystem();
+    Botlib_ShutdownUtilities();
 
     Botlib_ResetLibraryVariables();
     Botlib_ResetSubsystemState();
-    BridgeConfig_Shutdown();
     LibVar_Shutdown();
 
     g_library_initialised = false;

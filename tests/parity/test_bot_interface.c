@@ -11,12 +11,16 @@
 #include "botlib/interface/bot_interface.h"
 #include "botlib/interface/bot_state.h"
 #include "botlib/ai/chat/ai_chat.h"
+#include "botlib/ai/ea/ea_main.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_struct.h"
+#include "botlib/common/l_utils.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib_contract_loader.h"
 #include "../support/asset_env.h"
+#include "q2bridge/bridge_config.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -319,6 +323,13 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     int status = context->api->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
 
+    assert_non_null(Mock_FindPrint(&context->mock, "AAS initialized."));
+    assert_true(aasworld.initialized);
+    assert_true(EA_IsInitialised());
+    assert_true(L_Utils_IsInitialised());
+    assert_true(L_Struct_IsInitialised());
+    assert_non_null(Bridge_MaxClients());
+
     char *sounds[] = {"world/ambient.wav", "weapons/impact.wav"};
     status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 2, sounds, 0, NULL);
     assert_int_equal(status, BLERR_NOERROR);
@@ -340,6 +351,12 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     assert_non_null(Mock_FindPrint(&context->mock, "pointlights"));
 
     context->api->BotShutdownLibrary();
+
+    assert_false(aasworld.initialized);
+    assert_false(EA_IsInitialised());
+    assert_false(L_Utils_IsInitialised());
+    assert_false(L_Struct_IsInitialised());
+    assert_null(Bridge_MaxClients());
 }
 
 static void test_bot_console_message_and_ai_pipeline(void **state)
