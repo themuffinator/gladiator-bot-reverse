@@ -155,6 +155,7 @@ static bsp_trace_t test_trace(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end
     (void)contentmask;
     bsp_trace_t trace;
     memset(&trace, 0, sizeof(trace));
+    trace.fraction = 1.0f;
     return trace;
 }
 
@@ -651,6 +652,168 @@ static void test_dm_rocketjump_respects_libvar(void **state)
     assert_true((g_bot_input_log.last_command.actionflags & ACTION_JUMP) == 0);
 }
 
+static void test_dm_enemy_selection_filters_invisible_and_chat(void **state)
+{
+    test_environment_t *env = (test_environment_t *)(*state);
+    activate_test_client(env);
+
+    bot_client_state_t *self = BotState_Get(0);
+    assert_non_null(self);
+    self->team = 1;
+
+    bot_updateclient_t self_update;
+    memset(&self_update, 0, sizeof(self_update));
+    VectorSet(self_update.origin, 0.0f, 0.0f, 24.0f);
+    VectorSet(self_update.viewangles, 0.0f, 0.0f, 0.0f);
+    self_update.stats[STAT_HEALTH] = 100;
+    for (int i = 0; i < MAX_ITEMS; ++i)
+    {
+        self_update.inventory[i] = 1;
+    }
+
+    bot_updateclient_t enemy_update;
+    memset(&enemy_update, 0, sizeof(enemy_update));
+    VectorSet(enemy_update.origin, 128.0f, 0.0f, 24.0f);
+    VectorSet(enemy_update.viewangles, 0.0f, 180.0f, 0.0f);
+    enemy_update.stats[STAT_HEALTH] = 100;
+
+    bot_updateentity_t enemy_entity;
+    memset(&enemy_entity, 0, sizeof(enemy_entity));
+    VectorCopy(enemy_update.origin, enemy_entity.origin);
+
+    bot_client_state_t *enemy_state = BotState_Create(1);
+    assert_non_null(enemy_state);
+    enemy_state->active = true;
+    enemy_state->team = 1;
+    enemy_state->last_client_update = enemy_update;
+    enemy_state->client_update_valid = true;
+
+    int status = env->exports->BotStartFrame(0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateClient(0, &self_update);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(self->combat.current_enemy, -1);
+
+    enemy_state->team = 2;
+    enemy_entity.renderfx = RF_TRANSLUCENT;
+
+    status = env->exports->BotStartFrame(0.2f);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateClient(0, &self_update);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    assert_int_equal(status, BLERR_NOERROR);
+    enemy_state->last_client_update = enemy_update;
+    enemy_state->client_update_valid = true;
+
+    status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(self->combat.current_enemy, -1);
+
+    enemy_entity.renderfx = 0;
+    enemy_state->last_client_update.stats[STAT_LAYOUTS] = 1;
+
+    status = env->exports->BotStartFrame(0.3f);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateClient(0, &self_update);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(self->combat.current_enemy, -1);
+
+    enemy_state->last_client_update.stats[STAT_LAYOUTS] = 0;
+
+    status = env->exports->BotStartFrame(0.4f);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateClient(0, &self_update);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(self->combat.current_enemy, 1);
+    assert_true(self->combat.enemy_visible);
+
+    BotState_Destroy(1);
+}
+
+static void test_dm_enemy_selection_damage_alert(void **state)
+{
+    test_environment_t *env = (test_environment_t *)(*state);
+    activate_test_client(env);
+
+    bot_client_state_t *self = BotState_Get(0);
+    assert_non_null(self);
+    self->team = 1;
+
+    bot_updateclient_t self_update;
+    memset(&self_update, 0, sizeof(self_update));
+    VectorSet(self_update.origin, 0.0f, 0.0f, 24.0f);
+    VectorSet(self_update.viewangles, 0.0f, 0.0f, 0.0f);
+    self_update.stats[STAT_HEALTH] = 100;
+    for (int i = 0; i < MAX_ITEMS; ++i)
+    {
+        self_update.inventory[i] = 1;
+    }
+
+    bot_updateclient_t enemy_update;
+    memset(&enemy_update, 0, sizeof(enemy_update));
+    VectorSet(enemy_update.origin, -128.0f, 0.0f, 24.0f);
+    VectorSet(enemy_update.viewangles, 0.0f, 0.0f, 0.0f);
+    enemy_update.stats[STAT_HEALTH] = 100;
+
+    bot_updateentity_t enemy_entity;
+    memset(&enemy_entity, 0, sizeof(enemy_entity));
+    VectorCopy(enemy_update.origin, enemy_entity.origin);
+
+    bot_client_state_t *enemy_state = BotState_Create(1);
+    assert_non_null(enemy_state);
+    enemy_state->active = true;
+    enemy_state->team = 2;
+    enemy_state->last_client_update = enemy_update;
+    enemy_state->client_update_valid = true;
+
+    int status = env->exports->BotStartFrame(1.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateClient(0, &self_update);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(self->combat.current_enemy, -1);
+
+    self_update.stats[STAT_HEALTH] = 60;
+    enemy_state->last_client_update = enemy_update;
+    enemy_state->client_update_valid = true;
+
+    status = env->exports->BotStartFrame(1.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateClient(0, &self_update);
+    assert_int_equal(status, BLERR_NOERROR);
+    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(self->combat.current_enemy, 1);
+    assert_true(self->combat.took_damage);
+    assert_true(self->combat.enemy_visible);
+    assert_true(self->combat.last_damage_time >= 1.1f);
+
+    BotState_Destroy(1);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -670,6 +833,12 @@ int main(void)
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_dm_rocketjump_respects_libvar,
+                                        goal_move_setup,
+                                        goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_dm_enemy_selection_filters_invisible_and_chat,
+                                        goal_move_setup,
+                                        goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_dm_enemy_selection_damage_alert,
                                         goal_move_setup,
                                         goal_move_teardown),
     };

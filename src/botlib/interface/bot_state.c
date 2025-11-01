@@ -1,5 +1,6 @@
 #include "bot_state.h"
 
+#include <float.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -7,6 +8,31 @@
 #include "../ai/goal/ai_goal.h"
 
 static bot_client_state_t *g_bot_state_table[MAX_CLIENTS];
+
+static void BotState_ResetCombat(bot_combat_state_t *combat)
+{
+    if (combat == NULL)
+    {
+        return;
+    }
+
+    memset(combat, 0, sizeof(*combat));
+    combat->current_enemy = -1;
+    combat->enemy_visible = false;
+    combat->enemy_visible_time = -FLT_MAX;
+    combat->enemy_sight_time = -FLT_MAX;
+    combat->enemy_death_time = -FLT_MAX;
+    combat->enemy_last_seen_time = -FLT_MAX;
+    combat->revenge_enemy = -1;
+    combat->revenge_kills = 0;
+    combat->last_known_health = 0;
+    combat->last_damage_amount = 0;
+    combat->last_damage_time = -FLT_MAX;
+    combat->last_health_valid = false;
+    combat->took_damage = false;
+    VectorClear(combat->last_enemy_origin);
+    VectorClear(combat->last_enemy_velocity);
+}
 
 static void BotState_FreeResources(bot_client_state_t *state)
 {
@@ -75,6 +101,8 @@ static void BotState_FreeResources(bot_client_state_t *state)
     state->has_move_result = false;
     state->goal_avoid_duration = 0.0f;
     state->active_goal_number = 0;
+    BotState_ResetCombat(&state->combat);
+    state->team = -1;
     memset(&state->last_client_update, 0, sizeof(state->last_client_update));
     state->client_update_valid = false;
     state->last_update_time = 0.0f;
@@ -162,6 +190,8 @@ bot_client_state_t *BotState_Create(int client)
     }
 
     state->client_number = client;
+    state->team = -1;
+    BotState_ResetCombat(&state->combat);
     g_bot_state_table[client] = state;
     return state;
 }
