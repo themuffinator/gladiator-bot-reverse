@@ -1,6 +1,7 @@
 #include "mover_catalogue.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "../../common/l_memory.h"
@@ -108,6 +109,8 @@ bool BotMove_MoverCatalogueInsert(const bot_mover_catalogue_entry_t *entry)
     if (existing != NULL)
     {
         *existing = *entry;
+        existing->modelindex = -1;
+        existing->ready = false;
         return true;
     }
 
@@ -117,14 +120,88 @@ bool BotMove_MoverCatalogueInsert(const bot_mover_catalogue_entry_t *entry)
     }
 
     s_entries[s_entry_count] = *entry;
+    s_entries[s_entry_count].modelindex = -1;
+    s_entries[s_entry_count].ready = false;
     ++s_entry_count;
     return true;
+}
+
+bool BotMove_MoverCatalogueFinalize(const botinterface_asset_list_t *models)
+{
+    BotMove_MoverCatalogueEnsureInit();
+
+    if (s_entry_count == 0U)
+    {
+        return true;
+    }
+
+    if (models == NULL)
+    {
+        for (size_t i = 0U; i < s_entry_count; ++i)
+        {
+            s_entries[i].modelindex = -1;
+            s_entries[i].ready = false;
+        }
+        return false;
+    }
+
+    bool success = true;
+
+    for (size_t entry_index = 0U; entry_index < s_entry_count; ++entry_index)
+    {
+        bot_mover_catalogue_entry_t *entry = &s_entries[entry_index];
+        entry->modelindex = -1;
+        entry->ready = false;
+
+        char target[16] = {0};
+        int written = snprintf(target, sizeof(target), "*%d", entry->modelnum);
+        if (written < 0 || (size_t)written >= sizeof(target))
+        {
+            success = false;
+            continue;
+        }
+
+        if (models->entries == NULL || models->count == 0U)
+        {
+            success = false;
+            continue;
+        }
+
+        for (size_t model_index = 0U; model_index < models->count; ++model_index)
+        {
+            const char *model_name = models->entries[model_index];
+            if (model_name == NULL)
+            {
+                continue;
+            }
+
+            if (strcmp(model_name, target) == 0)
+            {
+                entry->modelindex = (int)model_index;
+                entry->ready = true;
+                break;
+            }
+        }
+
+        if (!entry->ready)
+        {
+            success = false;
+        }
+    }
+
+    return success;
 }
 
 const bot_mover_catalogue_entry_t *BotMove_MoverCatalogueFindByModel(int modelnum)
 {
     BotMove_MoverCatalogueEnsureInit();
-    return BotMove_MoverCatalogueFindMutable(modelnum);
+    const bot_mover_catalogue_entry_t *entry = BotMove_MoverCatalogueFindMutable(modelnum);
+    if (entry == NULL || !entry->ready)
+    {
+        return NULL;
+    }
+
+    return entry;
 }
 
 bool BotMove_MoverCatalogueIsModelMover(int modelnum)
