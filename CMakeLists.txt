@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(gladiator-bot-reverse LANGUAGES C CXX)
 
+include(GNUInstallDirs)
+
 # TODO: Define targets for shared utilities under src/shared.
 # TODO: Flesh out the remaining Q2 bridge entry points in src/q2bridge.
 # TODO: Expand the botlib interface implementation in src/botlib/interface.
@@ -14,6 +16,36 @@ add_subdirectory(src/botlib/ea)
 add_subdirectory(src/botlib/ai)
 add_subdirectory(src/q2bridge)
 add_subdirectory(src/botlib/interface)
+
+add_library(gladiator SHARED)
+target_link_libraries(gladiator
+    PRIVATE
+        botlib_interface
+        botlib_common
+        botlib_precomp
+        botlib_aas
+        botlib_ai
+        botlib_ea
+        q2bridge
+)
+set_target_properties(gladiator
+    PROPERTIES
+        OUTPUT_NAME gladiator
+)
+
+install(
+    TARGETS gladiator
+    EXPORT GladiatorTargets
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+install(
+    EXPORT GladiatorTargets
+    NAMESPACE gladiator::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gladiator
+)
 
 include(CTest)
 if(BUILD_TESTING)
