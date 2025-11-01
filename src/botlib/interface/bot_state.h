@@ -8,6 +8,8 @@
 #include "../ai/weapon/bot_weapon.h"
 #include "../ai/weight/bot_weight.h"
 #include "../ai/goal_move_orchestrator.h"
+#include "../ai/move/bot_move.h"
+#include "../ai/goal/bot_goal.h"
 #include "../ai/ai_dm.h"
 
 #ifdef __cplusplus
@@ -42,13 +44,20 @@ struct bot_client_state_s {
     bot_chatstate_t *chat_state;
     ai_goal_state_t *goal_state;
     ai_move_state_t *move_state;
+    int move_handle;
     ai_dm_state_t *dm_state;
     int weapon_state;
     int current_weapon;
     int goal_handle;
+    bot_goal_t goal_snapshot[2];
+    int goal_snapshot_count;
     bot_updateclient_t last_client_update;
     bool client_update_valid;
     float last_update_time;
+    bot_moveresult_t last_move_result;
+    bool has_move_result;
+    float goal_avoid_duration;
+    int active_goal_number;
 };
 
 bot_client_state_t *BotState_Get(int client);

@@ -21,6 +21,9 @@
 #define PATH_MAX 4096
 #endif
 
+#include "botlib/aas/aas_local.h"
+#include "botlib/ai/goal/ai_goal.h"
+#include "botlib/ai/goal/bot_goal.h"
 #include "botlib/ai/goal_move_orchestrator.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
@@ -338,155 +341,100 @@ static void test_setup_allocates_goal_move_states(void **state)
     assert_ptr_equal(goal_avoid, move_avoid);
 }
 
-typedef struct goal_move_log_s {
-    int entries[8];
-    int count;
-} goal_move_log_t;
-
-enum goal_move_log_marker {
-    GOAL_LOG_NOTIFY = 1,
-    GOAL_LOG_PATH = 2,
-    GOAL_LOG_SUBMIT = 3,
-};
-
-static void goal_move_log_append(goal_move_log_t *log, int marker)
+static void reset_goal_runtime(bot_client_state_t *slot)
 {
-    if (log == NULL || log->count >= (int)(sizeof(log->entries) / sizeof(log->entries[0]))) {
-        return;
+    assert_non_null(slot);
+
+    if (slot->goal_handle > 0)
+    {
+        AI_GoalBotlib_ResetState(slot->goal_handle);
     }
-    log->entries[log->count++] = marker;
+
+    slot->goal_snapshot_count = 0;
+    memset(slot->goal_snapshot, 0, sizeof(slot->goal_snapshot));
+    slot->active_goal_number = 0;
 }
 
-typedef struct goal_move_service_context_s {
-    int start_area;
-    int blocked_item;
-    float travel_time;
-    int path_status;
-    goal_move_log_t *log;
-} goal_move_service_context_t;
-
-static float test_goal_weight(void *ctx, const ai_goal_candidate_t *candidate)
+static float test_normalise_direction(vec3_t out, const vec3_t in)
 {
-    (void)ctx;
-    return (candidate != NULL) ? candidate->base_weight : 0.0f;
-}
-
-static float test_goal_travel(void *ctx, int start_area, const ai_goal_candidate_t *candidate)
-{
-    goal_move_service_context_t *context = (goal_move_service_context_t *)ctx;
-    if (context == NULL || candidate == NULL) {
+    if (out == NULL || in == NULL)
+    {
         return 0.0f;
     }
 
-    if (candidate->item_index == context->blocked_item) {
-        return -1.0f;
+    float length = sqrtf(in[0] * in[0] + in[1] * in[1] + in[2] * in[2]);
+    if (length <= 0.0001f)
+    {
+        VectorClear(out);
+        return 0.0f;
     }
 
-    (void)start_area;
-    return context->travel_time;
+    float inv = 1.0f / length;
+    out[0] = in[0] * inv;
+    out[1] = in[1] * inv;
+    out[2] = in[2] * inv;
+    return length;
 }
 
-static void test_goal_notify(void *ctx, const ai_goal_selection_t *selection)
+static void push_stack_goal(test_environment_t *env,
+                            int number,
+                            const vec3_t origin,
+                            int areanum,
+                            float base_weight)
 {
-    goal_move_service_context_t *context = (goal_move_service_context_t *)ctx;
-    (void)selection;
-    goal_move_log_append(context->log, GOAL_LOG_NOTIFY);
-}
+    assert_non_null(env);
 
-static int test_goal_area(void *ctx, const vec3_t origin)
-{
-    goal_move_service_context_t *context = (goal_move_service_context_t *)ctx;
-    (void)origin;
-    return context != NULL ? context->start_area : 0;
-}
+    bot_client_state_t *slot = BotState_Get(0);
+    assert_non_null(slot);
 
-static int test_move_path(void *ctx,
-                          const ai_goal_selection_t *goal,
-                          ai_avoid_list_t *avoid,
-                          bot_input_t *out_input)
-{
-    goal_move_service_context_t *context = (goal_move_service_context_t *)ctx;
-    goal_move_log_append(context->log, GOAL_LOG_PATH);
+    char classname[32];
+    snprintf(classname, sizeof(classname), "test_item_%d", number);
 
-    if (context->path_status != BLERR_NOERROR) {
-        return context->path_status;
-    }
-
-    if (out_input != NULL && goal != NULL && goal->valid) {
-        VectorCopy(goal->candidate.origin, out_input->dir);
-        out_input->speed = goal->score;
-    }
-
-    (void)avoid;
-    return BLERR_NOERROR;
-}
-
-static void test_move_submit(void *ctx, int client, const bot_input_t *input)
-{
-    goal_move_service_context_t *context = (goal_move_service_context_t *)ctx;
-    goal_move_log_append(context->log, GOAL_LOG_SUBMIT);
-    test_bot_input(client, (bot_input_t *)input);
-}
-
-static void prepare_goal_move_services(bot_client_state_t *slot,
-                                       goal_move_service_context_t *context,
-                                       goal_move_log_t *log)
-{
-    context->start_area = 7;
-    context->blocked_item = 2;
-    context->travel_time = 3.0f;
-    context->path_status = BLERR_NOERROR;
-    context->log = log;
-
-    ai_goal_services_t goal_services = {
-        .weight_fn = test_goal_weight,
-        .travel_time_fn = test_goal_travel,
-        .notify_fn = test_goal_notify,
-        .area_fn = test_goal_area,
-        .userdata = context,
-        .avoid_duration = 4.0f,
+    bot_levelitem_setup_t setup = {
+        .classname = classname,
+        .goal = {
+            .areanum = areanum,
+            .entitynum = number,
+            .number = number,
+            .flags = GFL_ITEM,
+        },
+        .respawntime = 0.0f,
+        .weight = base_weight,
+        .flags = GFL_ITEM,
     };
+    VectorCopy(origin, setup.goal.origin);
+    VectorSet(setup.goal.mins, -16.0f, -16.0f, -16.0f);
+    VectorSet(setup.goal.maxs, 16.0f, 16.0f, 16.0f);
 
-    ai_move_services_t move_services = {
-        .path_fn = test_move_path,
-        .submit_fn = test_move_submit,
-        .userdata = context,
-    };
+    int registered = BotGoal_RegisterLevelItem(&setup);
+    assert_int_equal(registered, number);
 
-    AI_GoalState_SetServices(slot->goal_state, &goal_services);
-    AI_MoveState_SetServices(slot->move_state, &move_services);
+    int pushed = env->exports->BotPushGoal(slot->goal_handle, &setup.goal);
+    assert_int_not_equal(pushed, 0);
 }
 
-static void seed_goal_candidates(bot_client_state_t *slot)
+static void submit_client_update(bot_export_t *exports,
+                                 float frame_time,
+                                 const vec3_t origin,
+                                 const vec3_t viewangles)
 {
-    AI_GoalState_ClearCandidates(slot->goal_state);
-
-    ai_goal_candidate_t primary = {
-        .item_index = 1,
-        .area = 10,
-        .travel_flags = 0,
-        .base_weight = 25.0f,
-    };
-    VectorSet(primary.origin, 128.0f, 0.0f, 0.0f);
-    assert_true(AI_GoalState_AddCandidate(slot->goal_state, &primary));
-
-    ai_goal_candidate_t blocked = {
-        .item_index = 2,
-        .area = 12,
-        .travel_flags = 0,
-        .base_weight = 40.0f,
-    };
-    VectorSet(blocked.origin, -64.0f, 32.0f, 0.0f);
-    assert_true(AI_GoalState_AddCandidate(slot->goal_state, &blocked));
-}
+    assert_non_null(exports);
 
 static void submit_client_update(bot_export_t *exports, float time)
 {
     bot_updateclient_t update;
     memset(&update, 0, sizeof(update));
-    VectorSet(update.origin, 16.0f, 8.0f, 0.0f);
-    VectorSet(update.viewangles, 5.0f, 10.0f, -2.0f);
 
+    if (origin != NULL)
+    {
+        VectorCopy(origin, update.origin);
+    }
+    if (viewangles != NULL)
+    {
+        VectorCopy(viewangles, update.viewangles);
+    }
+
+    exports->BotStartFrame(frame_time);
     for (int i = 0; i < MAX_ITEMS; ++i) {
         update.inventory[i] = 1;
     }
@@ -513,10 +461,21 @@ static void test_goal_refresh_and_movement_dispatch_order(void **state)
     bot_client_state_t *slot = BotState_Get(0);
     assert_non_null(slot);
 
-    goal_move_service_context_t context;
-    goal_move_log_t log = {0};
-    prepare_goal_move_services(slot, &context, &log);
-    seed_goal_candidates(slot);
+    reset_goal_runtime(slot);
+
+    vec3_t secondary_origin;
+    VectorSet(secondary_origin, -64.0f, 32.0f, 0.0f);
+    vec3_t primary_origin;
+    VectorSet(primary_origin, 128.0f, 0.0f, 0.0f);
+
+    push_stack_goal(env, 7, secondary_origin, 77, 15.0f);
+    push_stack_goal(env, 3, primary_origin, 33, 25.0f);
+
+    vec3_t client_origin;
+    VectorSet(client_origin, 16.0f, 8.0f, 0.0f);
+    vec3_t client_viewangles;
+    VectorSet(client_viewangles, 5.0f, 10.0f, -2.0f);
+    submit_client_update(env->exports, 1.0f, client_origin, client_viewangles);
 
     submit_client_update(env->exports, 1.0f);
     test_reset_bot_input_log();
@@ -524,18 +483,30 @@ static void test_goal_refresh_and_movement_dispatch_order(void **state)
     int status = env->exports->BotAI(0, 0.1f);
     assert_int_equal(status, BLERR_NOERROR);
 
-    assert_int_equal(log.count, 3);
-    assert_int_equal(log.entries[0], GOAL_LOG_NOTIFY);
-    assert_int_equal(log.entries[1], GOAL_LOG_PATH);
-    assert_int_equal(log.entries[2], GOAL_LOG_SUBMIT);
-
-    ai_avoid_list_t *avoid = AI_GoalState_GetAvoidList(slot->goal_state);
-    assert_true(AI_AvoidList_Contains(avoid, context.blocked_item, 1.0f));
+    assert_int_equal(slot->goal_snapshot_count, 2);
+    assert_int_equal(slot->goal_snapshot[0].number, 3);
+    assert_int_equal(slot->goal_snapshot[1].number, 7);
+    assert_int_equal(slot->active_goal_number, 3);
 
     assert_int_equal(g_bot_input_log.count, 1);
     assert_int_equal(g_bot_input_log.last_client, 0);
     assert_float_equal(g_bot_input_log.last_command.thinktime, 0.1f, 0.0001f);
-    assert_float_equal(g_bot_input_log.last_command.speed, context.travel_time == 0.0f ? 25.0f : (25.0f - context.travel_time), 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.viewangles[0], client_viewangles[0], 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.viewangles[1], client_viewangles[1], 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.viewangles[2], client_viewangles[2], 0.0001f);
+
+    vec3_t expected_delta;
+    VectorSubtract(primary_origin, client_origin, expected_delta);
+    vec3_t expected_dir;
+    float expected_speed = test_normalise_direction(expected_dir, expected_delta);
+
+    assert_float_equal(g_bot_input_log.last_command.speed, expected_speed, 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.dir[0], expected_dir[0], 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.dir[1], expected_dir[1], 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.dir[2], expected_dir[2], 0.0001f);
+
+    assert_int_equal(slot->current_weapon, 0);
+    assert_false(slot->has_move_result);
 }
 
 static void test_movement_error_propagates_without_submission(void **state)
@@ -546,11 +517,23 @@ static void test_movement_error_propagates_without_submission(void **state)
     bot_client_state_t *slot = BotState_Get(0);
     assert_non_null(slot);
 
-    goal_move_service_context_t context;
-    goal_move_log_t log = {0};
-    prepare_goal_move_services(slot, &context, &log);
-    context.path_status = BLERR_INVALIDIMPORT;
-    seed_goal_candidates(slot);
+    reset_goal_runtime(slot);
+
+    vec3_t goal_origin;
+    VectorSet(goal_origin, 128.0f, 0.0f, 0.0f);
+    push_stack_goal(env, 11, goal_origin, 41, 20.0f);
+
+    vec3_t client_origin;
+    VectorSet(client_origin, 16.0f, 8.0f, 0.0f);
+    vec3_t client_viewangles;
+    VectorSet(client_viewangles, 0.0f, 90.0f, 0.0f);
+    submit_client_update(env->exports, 2.0f, client_origin, client_viewangles);
+
+    int original_handle = slot->move_handle;
+    qboolean previous_loaded = aasworld.loaded;
+
+    slot->move_handle = MAX_CLIENTS + 5;
+    aasworld.loaded = qtrue;
 
     submit_client_update(env->exports, 1.0f);
     test_reset_bot_input_log();
@@ -558,10 +541,12 @@ static void test_movement_error_propagates_without_submission(void **state)
     int status = env->exports->BotAI(0, 0.2f);
     assert_int_equal(status, BLERR_INVALIDIMPORT);
 
-    assert_int_equal(log.count, 2);
-    assert_int_equal(log.entries[0], GOAL_LOG_NOTIFY);
-    assert_int_equal(log.entries[1], GOAL_LOG_PATH);
+    ai_avoid_list_t *avoid = AI_GoalState_GetAvoidList(slot->goal_state);
+    assert_true(AI_AvoidList_Contains(avoid, 11, 0.0f));
     assert_int_equal(g_bot_input_log.count, 0);
+
+    slot->move_handle = original_handle;
+    aasworld.loaded = previous_loaded;
 }
 
 static int failing_goal_area(void *ctx, const vec3_t origin)
@@ -580,8 +565,8 @@ static void test_bot_update_client_propagates_area_errors(void **state)
     assert_non_null(slot);
 
     ai_goal_services_t goal_services = {
-        .weight_fn = test_goal_weight,
-        .travel_time_fn = test_goal_travel,
+        .weight_fn = NULL,
+        .travel_time_fn = NULL,
         .notify_fn = NULL,
         .area_fn = failing_goal_area,
         .userdata = NULL,
@@ -672,7 +657,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_setup_allocates_goal_move_states,
                                         goal_move_setup,
                                         goal_move_teardown),
-        cmocka_unit_test_setup_teardown(test_goal_refresh_and_movement_dispatch_order,
+        cmocka_unit_test_setup_teardown(test_goal_snapshot_and_dispatch_uses_stack,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_movement_error_propagates_without_submission,

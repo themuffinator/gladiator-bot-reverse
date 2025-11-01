@@ -9,6 +9,7 @@
 
 #include "botlib/ea/ea_local.h"
 #include "botlib/interface/botlib_interface.h"
+#include "botlib/ai/move/bot_move.h"
 
 struct ai_goal_state_s {
     ai_goal_services_t services;
@@ -25,6 +26,8 @@ struct ai_move_state_s {
     ai_goal_selection_t last_goal;
     bot_input_t last_input;
     bool has_last_input;
+    bot_moveresult_t last_result;
+    bool has_last_result;
 };
 
 static void ai_goal_state_reset(ai_goal_state_t *state)
@@ -53,6 +56,32 @@ static void ai_move_state_reset(ai_move_state_t *state)
     memset(&state->services, 0, sizeof(state->services));
     memset(&state->last_goal, 0, sizeof(state->last_goal));
     memset(&state->last_input, 0, sizeof(state->last_input));
+    memset(&state->last_result, 0, sizeof(state->last_result));
+    state->has_last_result = false;
+}
+
+static void ai_move_apply_result(bot_input_t *input, const bot_moveresult_t *result)
+{
+    if (input == NULL || result == NULL) {
+        return;
+    }
+
+    if (result->flags & MOVERESULT_MOVEMENTWEAPON) {
+        input->actionflags |= ACTION_ATTACK;
+    }
+
+    if (result->traveltype == TRAVEL_JUMP || result->traveltype == TRAVEL_ROCKETJUMP ||
+        result->traveltype == TRAVEL_BFGJUMP || result->traveltype == TRAVEL_WATERJUMP) {
+        input->actionflags |= ACTION_JUMP;
+    }
+
+    if (result->traveltype == TRAVEL_CROUCH) {
+        input->actionflags |= ACTION_CROUCH;
+    }
+
+    if (result->flags & MOVERESULT_WAITING) {
+        input->speed = 0.0f;
+    }
 }
 
 static float ai_goal_default_weight(void *ctx, const ai_goal_candidate_t *candidate)
@@ -433,6 +462,7 @@ int AI_MoveOrchestrator_Dispatch(ai_move_state_t *state,
 
     memset(out_input, 0, sizeof(*out_input));
     state->has_last_input = false;
+    state->has_last_result = false;
 
     if (selection == NULL || !selection->valid) {
         state->last_goal = (ai_goal_selection_t){0};
@@ -474,12 +504,20 @@ int AI_MoveOrchestrator_Submit(ai_move_state_t *state, int client, const bot_inp
         command = &state->last_input;
     }
 
+    bot_input_t enriched = *command;
+    if (state->has_last_result) {
+        ai_move_apply_result(&enriched, &state->last_result);
+    }
+
+    state->last_input = enriched;
+    state->has_last_input = true;
+
     if (state->services.submit_fn != NULL) {
-        state->services.submit_fn(state->services.userdata, client, command);
+        state->services.submit_fn(state->services.userdata, client, &enriched);
         return BLERR_NOERROR;
     }
 
-    int status = EA_SubmitInput(client, command);
+    int status = EA_SubmitInput(client, &enriched);
     return status;
 }
 

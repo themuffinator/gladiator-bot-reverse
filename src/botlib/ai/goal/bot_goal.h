@@ -100,6 +100,14 @@ int BotChooseNBGItem(int handle,
                      const bot_goal_t *ltg,
                      float maxtime);
 
+float BotGoal_EvaluateStackGoal(int handle,
+                                const bot_goal_t *goal,
+                                const vec3_t origin,
+                                int start_area,
+                                const int *inventory,
+                                int travelflags,
+                                int *travel_time);
+
 int BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal);
 void BotGoalName(int number, char *name, int size);
 void BotDumpAvoidGoals(int handle);
