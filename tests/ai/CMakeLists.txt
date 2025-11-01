@@ -7,6 +7,7 @@ set(AI_TEST_SOURCES
     test_ai_goal_move.c
     test_ai_weight.c
     test_ai_weapon.c
+    ../support/asset_env.c
 )
 
 add_executable(ai_character_tests ${AI_TEST_SOURCES})

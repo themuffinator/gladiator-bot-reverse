@@ -12,6 +12,7 @@
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/aas/aas_local.h"
+#include "../support/asset_env.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -33,6 +34,7 @@ typedef struct mock_bot_import_s
 
 typedef struct bot_interface_test_context_s
 {
+    asset_env_t assets;
     mock_bot_import_t mock;
     bot_export_t *api;
 } bot_interface_test_context_t;
@@ -197,6 +199,13 @@ static int setup_bot_interface(void **state)
     context->mock.table.DebugLineDelete = Mock_DebugLineDelete;
     context->mock.table.DebugLineShow = Mock_DebugLineShow;
 
+    if (!asset_env_initialise(&context->assets))
+    {
+        asset_env_cleanup(&context->assets);
+        free(context);
+        cmocka_skip();
+    }
+
     g_active_mock = &context->mock;
     context->api = GetBotAPI(&context->mock.table);
     assert_non_null(context->api);
@@ -213,6 +222,11 @@ static int teardown_bot_interface(void **state)
     if (context != NULL && context->api != NULL)
     {
         context->api->BotShutdownLibrary();
+    }
+
+    if (context != NULL)
+    {
+        asset_env_cleanup(&context->assets);
     }
 
     BotState_ShutdownAll();
