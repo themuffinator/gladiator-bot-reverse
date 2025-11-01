@@ -8,6 +8,7 @@ set(PARITY_TEST_SOURCES
     botlib_contract_loader.c
     jsmn.c
     test_bot_interface.c
+    test_bot_move.c
     test_precompiler_lexer.c
     test_aas_debug.c
     test_update_translator.c
