@@ -14,6 +14,7 @@
 #include "aas_sound.h"
 #include "../common/l_log.h"
 #include "interface/botlib_interface.h"
+#include "../ai/move/mover_catalogue.h"
 
 static void AAS_UnlinkEntityFromAreas(aas_entity_t *entity);
 static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs);
@@ -462,6 +463,7 @@ static size_t AAS_AreaBitWordCount(void)
 
 static void AAS_ClearWorld(void)
 {
+    BotMove_MoverCatalogueReset();
     AAS_RouteFrameResetDiagnostics();
     AAS_ReachabilityFrameResetDiagnostics();
     AAS_FreeAllRoutingCaches();
