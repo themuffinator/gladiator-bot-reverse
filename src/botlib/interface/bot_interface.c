@@ -1721,7 +1721,7 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
     return BLERR_INVALIDIMPORT;
 }
 
-bot_export_t *GetBotAPI(bot_import_t *import)
+GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 {
     static bot_export_t exportTable;
 

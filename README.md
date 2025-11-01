@@ -27,6 +27,20 @@ cmake --install build --prefix /path/to/gladiator/install
 The install step places the module and an export file under the configured
 prefix so downstream engines can link or load the library directly.
 
+### Exported symbols
+
+Projects that embed or extend the reconstructed botlib should include
+`src/shared/platform_export.h` to access the `GLADIATOR_API` annotation used by
+`GetBotAPI`. The macro maps to `__declspec(dllexport)` on Windows and uses
+default ELF visibility on other platforms so the entry point remains visible to
+dynamic loaders.
+
+The CMake target now explicitly disables `WINDOWS_EXPORT_ALL_SYMBOLS`, meaning
+additional public functions must use `GLADIATOR_API` (or a downstream override)
+to be exported from the final `gladiator` DLL/SO. Consumers that previously
+relied on the automatic export behaviour should update their declarations to
+use the macro before upgrading.
+
 ## Credits
 
 - Mr Elusive for creating the Gladiator Bot and the Quake III Botlib.

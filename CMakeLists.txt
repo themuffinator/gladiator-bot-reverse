@@ -31,6 +31,7 @@ target_link_libraries(gladiator
 set_target_properties(gladiator
     PROPERTIES
         OUTPUT_NAME gladiator
+        WINDOWS_EXPORT_ALL_SYMBOLS OFF
 )
 
 install(
