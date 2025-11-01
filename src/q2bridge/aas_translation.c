@@ -7,6 +7,7 @@
 
 #include "q2bridge/bridge.h"
 #include "botlib/aas/aas_map.h"
+#include "botlib/ai/move/mover_catalogue.h"
 
 static qboolean g_aas_loaded = qfalse;
 static float g_aas_current_time = 0.0f;
@@ -222,7 +223,12 @@ bot_status_t TranslateEntityUpdate(int ent_num,
     dst->bounds_dirty = bounds_changed;
     dst->origin_dirty = origin_changed;
 
-    if (bounds_changed && src->solid == 3)
+    bool was_mover = dst->is_mover;
+    bool is_mover = BotMove_MoverCatalogueIsModelMover(src->modelindex);
+    dst->is_mover = is_mover;
+    bool mover_changed = was_mover != is_mover;
+
+    if ((bounds_changed && src->solid == 3) || mover_changed)
     {
         BotlibLog(PRT_MESSAGE, "[q2bridge] relinking brush model ent %d\n", ent_num);
     }

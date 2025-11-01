@@ -8,4 +8,6 @@ add_library(q2bridge STATIC
 target_include_directories(q2bridge
     PUBLIC
         ${PROJECT_SOURCE_DIR}/src
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/botlib/ai
 )

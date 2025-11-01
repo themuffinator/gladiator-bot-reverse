@@ -708,6 +708,7 @@ static void test_bot_update_entity_populates_aas(void **state)
     assert_true(Bridge_ReadEntityFrame(5, &translated));
     assert_float_equal(translated.last_update_time, 0.0f, 0.0001f);
     assert_float_equal(translated.frame_delta, 0.0f, 0.0001f);
+    assert_false(translated.is_mover);
 
     status = context->api->BotStartFrame(0.25f);
     assert_int_equal(status, BLERR_NOERROR);
@@ -727,6 +728,7 @@ static void test_bot_update_entity_populates_aas(void **state)
     assert_float_equal(translated.last_update_time, 0.25f, 0.0001f);
     assert_float_equal(translated.frame_delta, 0.25f, 0.0001f);
     assert_true(translated.frame_delta > 0.0f);
+    assert_false(translated.is_mover);
 
     context->api->BotShutdownLibrary();
 }
