@@ -43,7 +43,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
+
+#include "../../shared/q_platform.h"
 #include <time.h>
 
 #include "../common/l_assets.h"
@@ -77,8 +78,6 @@ typedef enum { qfalse = 0, qtrue = 1 } qboolean;
         BotLib_Print(PRT_FATAL, fmt, ##__VA_ARGS__);                                       \
         abort();                                                                           \
     } while (0)
-
-#define Q_stricmp strcasecmp
 
 #define DEFINE_FIXED                    0x0001
 
@@ -428,9 +427,6 @@ static void PC_SetSourceIncludePath(pc_source_t *source, const char *absolute_pa
 #define PATHSEPERATOR_CHAR '/'
 #endif
 #endif
-
-#define Q_stricmp strcasecmp
-
 
 #define MAX_DEFINEPARMS			128
 
