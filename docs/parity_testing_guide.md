@@ -33,6 +33,9 @@ This guide outlines how to configure a development environment for the botlib pa
    ```
    - Use `-V` for verbose cmocka output when diagnosing guard or logging mismatches.
    - Individual cmocka tests map directly to the scenarios catalogued in `tests/parity/README.md`, such as import-table discipline, lifecycle parity, and diagnostic parity checks. 【F:tests/parity/README.md†L1-L64】
+   - The translator fixtures introduced in `test_update_translator.c` rely on the bridge helpers `TranslateEntity_SetWorldLoaded`
+     and `TranslateEntity_SetCurrentTime` to emulate the AAS runtime. Ensure `tests/reference/botlib_contract.json` ships with
+     the `BridgeDiagnostics` catalogue entry so mocked `Print` captures can be compared against the HLIL-derived strings. 【F:tests/parity/test_update_translator.c†L1-L324】【F:tests/reference/botlib_contract.json†L1-L230】
 
 3. **Interpreting results**
    - **Pass** – All expectations drawn from the HLIL trace matched (import-call order, guard behaviour, diagnostic strings). A clean run will show `100% tests passed` in CTest.

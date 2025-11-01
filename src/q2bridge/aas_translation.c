@@ -7,6 +7,19 @@
 
 #include "q2bridge/bridge.h"
 
+static qboolean g_aas_loaded = qfalse;
+static float g_aas_current_time = 0.0f;
+
+void TranslateEntity_SetWorldLoaded(qboolean loaded)
+{
+    g_aas_loaded = loaded;
+}
+
+void TranslateEntity_SetCurrentTime(float time)
+{
+    g_aas_current_time = time;
+}
+
 static float QuantizeComponent(float angle)
 {
     const float to_short = 65536.0f / 360.0f;
@@ -118,6 +131,102 @@ bot_status_t TranslateClientUpdate(int client_num,
             dst->frame_delta = 0.0f;
         }
     }
+
+    return BLERR_NOERROR;
+}
+
+static void CopyScalarFrameFields(const bot_updateentity_t *src, AASEntityFrame *dst)
+{
+    dst->solid = src->solid;
+    dst->modelindex = src->modelindex;
+    dst->modelindex2 = src->modelindex2;
+    dst->modelindex3 = src->modelindex3;
+    dst->modelindex4 = src->modelindex4;
+    dst->frame = src->frame;
+    dst->skinnum = src->skinnum;
+    dst->effects = src->effects;
+    dst->renderfx = src->renderfx;
+    dst->sound = src->sound;
+    dst->event_id = src->event;
+}
+
+bot_status_t TranslateEntityUpdate(int ent_num,
+                                   const bot_updateentity_t *src,
+                                   AASEntityFrame *dst)
+{
+    if (src == NULL || dst == NULL)
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    if (!g_aas_loaded)
+    {
+        BotlibLog(PRT_MESSAGE, "AAS_UpdateEntity: not loaded\n");
+        return BLERR_NOAASFILE;
+    }
+
+    float previous_time = dst->last_update_time;
+    dst->last_update_time = g_aas_current_time;
+    if (previous_time <= 0.0f)
+    {
+        dst->frame_delta = 0.0f;
+    }
+    else
+    {
+        dst->frame_delta = g_aas_current_time - previous_time;
+        if (dst->frame_delta < 0.0f)
+        {
+            dst->frame_delta = 0.0f;
+        }
+    }
+
+    dst->number = ent_num;
+
+    vec3_t previous_origin;
+    previous_origin[0] = dst->origin[0];
+    previous_origin[1] = dst->origin[1];
+    previous_origin[2] = dst->origin[2];
+
+    CopyVec3(src->old_origin, dst->old_origin);
+
+    bool origin_changed = CopyIfChanged(src->origin, dst->origin);
+    if (origin_changed)
+    {
+        CopyVec3(previous_origin, dst->previous_origin);
+    }
+
+    bool mins_changed = CopyIfChanged(src->mins, dst->mins);
+    bool maxs_changed = CopyIfChanged(src->maxs, dst->maxs);
+    bool bounds_changed = mins_changed || maxs_changed;
+
+    vec3_t quantized_angles;
+    CopyVec3(src->angles, quantized_angles);
+    if (src->solid == 3)
+    {
+        QuantizeEulerDegrees(quantized_angles);
+    }
+
+    bool angles_changed = CopyIfChanged(quantized_angles, dst->angles);
+    if (!angles_changed && src->solid == 3 && bounds_changed)
+    {
+        /* Brush models relay their orientation through mins/maxs flags. */
+        CopyVec3(quantized_angles, dst->angles);
+        dst->angles_dirty = true;
+    }
+    else
+    {
+        dst->angles_dirty = angles_changed;
+    }
+
+    dst->bounds_dirty = bounds_changed;
+    dst->origin_dirty = origin_changed;
+
+    if (bounds_changed && src->solid == 3)
+    {
+        BotlibLog(PRT_MESSAGE, "[q2bridge] relinking brush model ent %d\n", ent_num);
+    }
+
+    CopyScalarFrameFields(src, dst);
 
     return BLERR_NOERROR;
 }
