@@ -76,9 +76,12 @@ static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
     }
 
     info->valid = false;
+    info->visible = false;
     info->entity = -1;
     VectorClear(info->origin);
+    VectorClear(info->velocity);
     info->distance = 0.0f;
+    info->last_seen_time = -FLT_MAX;
 }
 
 static int BotAI_MaxTrackedClients(void)
@@ -156,9 +159,15 @@ static void BotAI_FindEnemy(const bot_client_state_t *state, ai_dm_enemy_info_t 
     if (best_entity >= 0 && best_distance_sq < FLT_MAX)
     {
         enemy->valid = true;
+        enemy->visible = true;
         enemy->entity = best_entity;
         VectorCopy(best_origin, enemy->origin);
+        const bot_updateentity_t *snapshot = &g_botInterfaceEntityCache[best_entity].state;
+        vec3_t displacement;
+        VectorSubtract(snapshot->origin, snapshot->old_origin, displacement);
+        VectorCopy(displacement, enemy->velocity);
         enemy->distance = sqrtf(best_distance_sq);
+        enemy->last_seen_time = g_botInterfaceFrameTime;
     }
 }
 
