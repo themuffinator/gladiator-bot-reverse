@@ -12,6 +12,7 @@
 #include "botlib/interface/bot_state.h"
 #include "botlib/ai/chat/ai_chat.h"
 #include "botlib/ea/ea_local.h"
+#include "botlib/ai/move/mover_catalogue.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_libvar.h"
@@ -25,6 +26,10 @@
 #include "q2bridge/update_translator.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
+
+#ifndef AREACONTENTS_MOVER
+#define AREACONTENTS_MOVER 1024
+#endif
 
 typedef struct captured_print_s
 {
@@ -762,6 +767,41 @@ static bool ensure_map_fixture(const asset_env_t *assets, const char *stem)
     return true;
 }
 
+static bool ensure_mover_fixture(const asset_env_t *assets)
+{
+    return ensure_map_fixture(assets, "test_mover");
+}
+
+static bool find_mover_area_center(vec3_t center_out, int *area_out)
+{
+    if (!aasworld.loaded || aasworld.areasettings == NULL || aasworld.areas == NULL)
+    {
+        return false;
+    }
+
+    for (int area = 1; area <= aasworld.numAreas; ++area)
+    {
+        if ((aasworld.areasettings[area].contents & AREACONTENTS_MOVER) == 0)
+        {
+            continue;
+        }
+
+        if (center_out != NULL)
+        {
+            VectorCopy(aasworld.areas[area].center, center_out);
+        }
+
+        if (area_out != NULL)
+        {
+            *area_out = area;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
 static void assert_success_status(const botlib_contract_catalogue_t *catalogue,
                                   const char *export_name,
                                   int status)
@@ -844,6 +884,122 @@ static void test_bot_end_to_end_pipeline_with_assets(void **state)
     context->api->BotShutdownClient(1);
 }
 
+static void test_bot_bridge_tracks_mover_entity_updates(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    if (!ensure_mover_fixture(&context->assets))
+    {
+        cmocka_skip();
+    }
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotLoadMap("maps/test_mover.bsp", 0, NULL, 0, NULL, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(aasworld.loaded);
+
+    vec3_t mover_center;
+    int mover_areanum = 0;
+    assert_true(find_mover_area_center(mover_center, &mover_areanum));
+    assert_true(mover_areanum > 0);
+
+    const bot_mover_catalogue_entry_t *mover_entry = NULL;
+    int mover_modelnum = 0;
+    for (int candidate = 1; candidate < 64; ++candidate)
+    {
+        mover_entry = BotMove_MoverCatalogueFindByModel(candidate);
+        if (mover_entry != NULL)
+        {
+            mover_modelnum = candidate;
+            break;
+        }
+    }
+    assert_non_null(mover_entry);
+    assert_true(BotMove_MoverCatalogueIsModelMover(mover_modelnum));
+
+    bot_settings_t settings;
+    memset(&settings, 0, sizeof(settings));
+    snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    status = context->api->BotSetupClient(1, &settings);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateclient_t client_update;
+    memset(&client_update, 0, sizeof(client_update));
+    client_update.pm_type = PM_NORMAL;
+    VectorCopy(mover_center, client_update.origin);
+    client_update.origin[2] = aasworld.areas[mover_areanum].maxs[2] + 24.0f;
+    client_update.pm_flags = 0;
+    client_update.stats[STAT_HEALTH] = 100;
+    for (int item = 0; item < MAX_ITEMS; ++item)
+    {
+        client_update.inventory[item] = 1;
+    }
+
+    status = context->api->BotStartFrame(0.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateentity_t mover_update;
+    memset(&mover_update, 0, sizeof(mover_update));
+    VectorCopy(mover_center, mover_update.origin);
+    mover_update.origin[2] = aasworld.areas[mover_areanum].mins[2];
+    VectorCopy(mover_update.origin, mover_update.old_origin);
+    VectorSet(mover_update.mins, -16.0f, -16.0f, -8.0f);
+    VectorSet(mover_update.maxs, 16.0f, 16.0f, 8.0f);
+    mover_update.solid = 3;
+    mover_update.modelindex = mover_modelnum;
+
+    const int mover_entity_num = 32;
+    status = context->api->BotUpdateEntity(mover_entity_num, &mover_update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateClient(1, &client_update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotStartFrame(0.2f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateentity_t mover_raised = mover_update;
+    mover_raised.old_origin[2] = mover_update.origin[2];
+    mover_raised.origin[2] = aasworld.areas[mover_areanum].maxs[2];
+    status = context->api->BotUpdateEntity(mover_entity_num, &mover_raised);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateclient_t client_on_mover = client_update;
+    client_on_mover.origin[2] = mover_raised.origin[2];
+    client_on_mover.pm_flags = PMF_ON_GROUND;
+    status = context->api->BotUpdateClient(1, &client_on_mover);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(context->mock.bot_input_count > 0);
+
+    AASEntityFrame mover_frame;
+    memset(&mover_frame, 0, sizeof(mover_frame));
+    assert_true(Bridge_ReadEntityFrame(mover_entity_num, &mover_frame));
+    assert_true(mover_frame.is_mover);
+    assert_true(mover_frame.origin_dirty);
+    assert_float_equal(mover_frame.origin[2], mover_raised.origin[2], 0.0001f);
+    assert_float_equal(mover_frame.previous_origin[2], mover_update.origin[2], 0.0001f);
+    assert_float_equal(mover_frame.frame_delta, 0.2f, 0.0001f);
+
+    AASClientFrame client_frame;
+    memset(&client_frame, 0, sizeof(client_frame));
+    assert_true(Bridge_ReadClientFrame(1, &client_frame));
+    assert_float_equal(client_frame.origin[2], client_on_mover.origin[2], 0.0001f);
+    assert_float_equal(client_frame.last_update_time, 0.2f, 0.0001f);
+    assert_float_equal(client_frame.frame_delta, 0.2f, 0.0001f);
+
+    assert_int_equal(AAS_ModelNumForEntity(mover_entity_num), mover_modelnum);
+
+    context->api->BotShutdownClient(1);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -866,6 +1022,9 @@ int main(void)
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_bridge_tracks_mover_entity_updates,
                                         setup_bot_interface,
                                         teardown_bot_interface),
     };
