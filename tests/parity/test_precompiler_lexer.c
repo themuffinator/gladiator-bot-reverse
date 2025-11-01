@@ -62,20 +62,12 @@ static void test_pc_loads_fw_items_and_matches_hlil_tokens(void **state)
     PC_InitLexer();
 
     pc_source_t *source = PC_LoadSourceFile(g_fw_items_source_path);
-    if (source == NULL) {
-        PC_ShutdownLexer();
-        cmocka_skip("PC_LoadSourceFile is not yet implemented");
-    }
+    assert_non_null(source);
 
     for (size_t i = 0; i < ARRAY_SIZE(g_fw_items_token_expectations); ++i) {
         pc_token_t token;
         const int status = PC_ReadToken(source, &token);
-        if (status <= 0) {
-            PC_FreeSource(source);
-            PC_ShutdownLexer();
-            cmocka_skip("PC_ReadToken is not yet implemented");
-        }
-
+        assert_int_equal(1, status);
         assert_token_matches(&g_fw_items_token_expectations[i], &token);
     }
 
@@ -96,20 +88,12 @@ static void test_pc_loads_synonyms_and_matches_hlil_tokens(void **state)
     PC_InitLexer();
 
     pc_source_t *source = PC_LoadSourceFile(g_synonyms_source_path);
-    if (source == NULL) {
-        PC_ShutdownLexer();
-        cmocka_skip("PC_LoadSourceFile is not yet implemented");
-    }
+    assert_non_null(source);
 
     for (size_t i = 0; i < ARRAY_SIZE(g_synonyms_token_expectations); ++i) {
         pc_token_t token;
         const int status = PC_ReadToken(source, &token);
-        if (status <= 0) {
-            PC_FreeSource(source);
-            PC_ShutdownLexer();
-            cmocka_skip("PC_ReadToken is not yet implemented");
-        }
-
+        assert_int_equal(1, status);
         assert_token_matches(&g_synonyms_token_expectations[i], &token);
     }
 
@@ -130,17 +114,10 @@ static void test_pc_peek_and_unread_mirror_hlil_behaviour(void **state)
     PC_InitLexer();
 
     pc_source_t *source = PC_LoadSourceFile(g_fw_items_source_path);
-    if (source == NULL) {
-        PC_ShutdownLexer();
-        cmocka_skip("PC_LoadSourceFile is not yet implemented");
-    }
+    assert_non_null(source);
 
     pc_token_t peeked;
-    if (PC_PeekToken(source, &peeked) <= 0) {
-        PC_FreeSource(source);
-        PC_ShutdownLexer();
-        cmocka_skip("PC_PeekToken is not yet implemented");
-    }
+    assert_int_equal(1, PC_PeekToken(source, &peeked));
 
     assert_token_matches(&g_fw_items_token_expectations[0], &peeked);
 
