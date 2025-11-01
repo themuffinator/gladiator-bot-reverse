@@ -17,6 +17,7 @@
 #include "../common/l_log.h"
 #include "../aas/aas_map.h"
 #include "../aas/aas_local.h"
+#include "../aas/aas_debug.h"
 #include "../ai/chat/ai_chat.h"
 #include "../ai/character/bot_character.h"
 #include "../ai/weight/bot_weight.h"
@@ -1308,9 +1309,6 @@ static int BotConsoleMessage(int client, int type, char *message)
 
 static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 {
-    (void)parm2;
-    (void)parm3;
-
     if (g_botImport == NULL)
     {
         return BLERR_LIBRARYNOTSETUP;
@@ -1325,7 +1323,7 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
     if (parm1 == NULL || *parm1 == '\0')
     {
         BotInterface_Printf(PRT_MESSAGE,
-                             "[bot_interface] Test commands: dump_chat, sounds, pointlights, debug_draw\n");
+                             "[bot_interface] Test commands: dump_chat, sounds, pointlights, debug_draw, bot_test, aas_showpath, aas_showareas\n");
         return BLERR_INVALIDIMPORT;
     }
 
@@ -1484,6 +1482,82 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
                                  event->color[2]);
         }
 
+        return BLERR_NOERROR;
+    }
+
+    if (BotInterface_StringCompareIgnoreCase(command, "bot_test") == 0)
+    {
+        AAS_DebugBotTest(parm0, arguments, parm2, parm3);
+        return BLERR_NOERROR;
+    }
+
+    if (BotInterface_StringCompareIgnoreCase(command, "aas_showpath") == 0)
+    {
+        int startArea = 0;
+        int goalArea = 0;
+
+        if (arguments != NULL && *arguments != '\0')
+        {
+            char *cursor = arguments;
+            char *endptr = NULL;
+            startArea = (int)strtol(cursor, &endptr, 10);
+            if (endptr != cursor)
+            {
+                cursor = endptr;
+                while (*cursor != '\0' && (isspace((unsigned char)*cursor) || *cursor == ','))
+                {
+                    ++cursor;
+                }
+
+                if (*cursor != '\0')
+                {
+                    goalArea = (int)strtol(cursor, &endptr, 10);
+                    if (endptr != cursor)
+                    {
+                        cursor = endptr;
+                    }
+                }
+            }
+        }
+
+        AAS_DebugShowPath(startArea, goalArea, parm2, parm3);
+        return BLERR_NOERROR;
+    }
+
+    if (BotInterface_StringCompareIgnoreCase(command, "aas_showareas") == 0)
+    {
+        int areaBuffer[32];
+        size_t areaCount = 0U;
+
+        if (arguments != NULL && *arguments != '\0')
+        {
+            char *cursor = arguments;
+            while (*cursor != '\0' && areaCount < (sizeof(areaBuffer) / sizeof(areaBuffer[0])))
+            {
+                while (*cursor != '\0' && (isspace((unsigned char)*cursor) || *cursor == ','))
+                {
+                    ++cursor;
+                }
+
+                if (*cursor == '\0')
+                {
+                    break;
+                }
+
+                char *endptr = NULL;
+                long value = strtol(cursor, &endptr, 10);
+                if (endptr == cursor)
+                {
+                    ++cursor;
+                    continue;
+                }
+
+                areaBuffer[areaCount++] = (int)value;
+                cursor = endptr;
+            }
+        }
+
+        AAS_DebugShowAreas((areaCount > 0U) ? areaBuffer : NULL, areaCount);
         return BLERR_NOERROR;
     }
 
