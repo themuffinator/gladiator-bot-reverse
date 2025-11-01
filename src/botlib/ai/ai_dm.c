@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "botlib/ai/goal_move_orchestrator.h"
+#include "botlib/ai/character/characteristics.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/ea/ea_local.h"
 #include "botlib/interface/bot_state.h"
@@ -217,6 +218,30 @@ void AI_DMState_Update(ai_dm_state_t *state,
     }
 
     bool enemy_valid = (enemy != NULL) && enemy->valid;
+    bool enemy_visible = enemy_valid && enemy->visible;
+    bool attack_ready = enemy_visible;
+    if (attack_ready)
+    {
+        bool bypass_reaction = enemy->recently_damaged || enemy->enemy_shooting;
+        if (!bypass_reaction && client_state->enemy_sight_time > -FLT_MAX)
+        {
+            float reaction = 0.0f;
+            if (client_state->character_handle > 0)
+            {
+                reaction = Characteristic_BFloat(client_state->character_handle,
+                                                 CHARACTERISTIC_REACTIONTIME,
+                                                 0.0f,
+                                                 1.0f);
+            }
+
+            float reaction_delay = 0.5f * reaction;
+            if (now < client_state->enemy_sight_time + reaction_delay)
+            {
+                attack_ready = false;
+            }
+        }
+    }
+
     vec3_t eye_position = {0.0f, 0.0f, 0.0f};
     VectorCopy(client_state->last_client_update.origin, eye_position);
 
@@ -228,7 +253,8 @@ void AI_DMState_Update(ai_dm_state_t *state,
         EA_Move(client, direction, speed);
         EA_LookAtPoint(client, eye_position, enemy->origin);
 
-        if (state->attack_cooldown <= 0.0f || now >= state->last_attack_time + state->attack_cooldown)
+        if (attack_ready &&
+            (state->attack_cooldown <= 0.0f || now >= state->last_attack_time + state->attack_cooldown))
         {
             EA_Attack(client);
             state->last_attack_time = now;
@@ -256,7 +282,7 @@ void AI_DMState_Update(ai_dm_state_t *state,
         }
     }
 
-    if (path_failed && enemy_valid && client_state->goal_state != NULL)
+    if (path_failed && enemy_visible && client_state->goal_state != NULL)
     {
         if (AI_DMState_ShouldRecordAvoid(state, enemy, now))
         {

@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "../../shared/q_shared.h"
+#include "../goal/bot_goal.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,18 +59,6 @@ extern "C" {
 #define RESULTTYPE_WAITFORFUNCBOBBING 2
 #define RESULTTYPE_BADGRAPPLEPATH     4
 #define RESULTTYPE_INSOLIDAREA        8
-
-typedef struct bot_goal_s
-{
-    vec3_t origin;
-    int areanum;
-    vec3_t mins;
-    vec3_t maxs;
-    int entitynum;
-    int number;
-    int flags;
-    int iteminfo;
-} bot_goal_t;
 
 typedef struct bot_initmove_s
 {

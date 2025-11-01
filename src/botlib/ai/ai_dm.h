@@ -14,7 +14,16 @@ typedef struct ai_dm_enemy_info_s {
     bool valid;
     int entity;
     vec3_t origin;
+    vec3_t velocity;
     float distance;
+    bool visible;
+    bool recently_damaged;
+    bool enemy_invisible;
+    bool enemy_shooting;
+    bool enemy_chatting;
+    float fov_used;
+    float sight_time;
+    float last_visible_time;
 } ai_dm_enemy_info_t;
 
 struct bot_client_state_s;

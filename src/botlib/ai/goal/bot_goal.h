@@ -2,7 +2,7 @@
 
 #include <stdbool.h>
 
-#include "../../common/l_precomp.h"
+#include "../precomp/l_precomp.h"
 #include "../../common/l_log.h"
 #include "../../common/l_memory.h"
 #include "../weight/bot_weight.h"

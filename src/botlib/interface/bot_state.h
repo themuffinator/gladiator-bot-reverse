@@ -58,7 +58,19 @@ struct bot_client_state_s {
     bool has_move_result;
     float goal_avoid_duration;
     int active_goal_number;
-};
+    int enemy_entity;
+    vec3_t enemy_last_known_origin;
+    float enemy_sight_time;
+    float enemy_visible_time;
+    float enemy_death_time;
+    int last_health;
+    int last_frame_health;
+    float last_damage_time;
+    unsigned int last_damage_frame;
+    bool took_damage_this_frame;
+    int revenge_enemy;
+    int revenge_kills;
+}; 
 
 bot_client_state_t *BotState_Get(int client);
 bot_client_state_t *BotState_Create(int client);

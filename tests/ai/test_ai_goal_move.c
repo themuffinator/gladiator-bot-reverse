@@ -145,6 +145,119 @@ static void test_bot_client_command(int client, char *fmt, ...)
     (void)fmt;
 }
 
+typedef struct goal_move_log_s {
+    int notify_count;
+    ai_goal_selection_t last_selection;
+} goal_move_log_t;
+
+typedef struct goal_move_service_context_s {
+    bot_client_state_t *slot;
+    goal_move_log_t *log;
+    float travel_time;
+    int default_area;
+} goal_move_service_context_t;
+
+static float goal_service_weight(void *ctx, const ai_goal_candidate_t *candidate)
+{
+    (void)ctx;
+    if (candidate == NULL)
+    {
+        return 0.0f;
+    }
+    return candidate->base_weight;
+}
+
+static float goal_service_travel(void *ctx, int start_area, const ai_goal_candidate_t *candidate)
+{
+    goal_move_service_context_t *context = (goal_move_service_context_t *)ctx;
+    if (context == NULL || candidate == NULL)
+    {
+        return 0.0f;
+    }
+
+    if (context->travel_time > 0.0f)
+    {
+        return context->travel_time;
+    }
+
+    if (start_area <= 0 || candidate->area <= 0)
+    {
+        return 0.0f;
+    }
+
+    vec3_t origin = {0.0f, 0.0f, 0.0f};
+    if (context->slot != NULL && context->slot->client_update_valid)
+    {
+        VectorCopy(context->slot->last_client_update.origin, origin);
+    }
+
+    vec3_t delta;
+    VectorSubtract(candidate->origin, origin, delta);
+    return sqrtf(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+}
+
+static void goal_service_notify(void *ctx, const ai_goal_selection_t *selection)
+{
+    goal_move_service_context_t *context = (goal_move_service_context_t *)ctx;
+    if (context == NULL || context->log == NULL || selection == NULL)
+    {
+        return;
+    }
+
+    context->log->notify_count += 1;
+    context->log->last_selection = *selection;
+}
+
+static int goal_service_area(void *ctx, const vec3_t origin)
+{
+    (void)origin;
+    goal_move_service_context_t *context = (goal_move_service_context_t *)ctx;
+    if (context == NULL || context->default_area <= 0)
+    {
+        return 1;
+    }
+    return context->default_area;
+}
+
+static void prepare_goal_move_services(bot_client_state_t *slot,
+                                       goal_move_service_context_t *context,
+                                       goal_move_log_t *log)
+{
+    assert_non_null(slot);
+    assert_non_null(context);
+
+    context->slot = slot;
+    context->log = log;
+    context->travel_time = 0.0f;
+    context->default_area = 1;
+
+    ai_goal_services_t services = {
+        .weight_fn = goal_service_weight,
+        .travel_time_fn = goal_service_travel,
+        .notify_fn = goal_service_notify,
+        .area_fn = goal_service_area,
+        .userdata = context,
+        .avoid_duration = 5.0f,
+    };
+    AI_GoalState_SetServices(slot->goal_state, &services);
+    AI_GoalState_SetCurrentArea(slot->goal_state, context->default_area);
+}
+
+static void seed_goal_candidates(bot_client_state_t *slot)
+{
+    assert_non_null(slot);
+
+    AI_GoalState_ClearCandidates(slot->goal_state);
+
+    ai_goal_candidate_t candidate;
+    memset(&candidate, 0, sizeof(candidate));
+    candidate.item_index = 1;
+    candidate.area = 1;
+    candidate.base_weight = 25.0f;
+    VectorSet(candidate.origin, 128.0f, 0.0f, 0.0f);
+    assert_true(AI_GoalState_AddCandidate(slot->goal_state, &candidate));
+}
+
 static bsp_trace_t test_trace(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask)
 {
     (void)start;
@@ -413,15 +526,17 @@ static void push_stack_goal(test_environment_t *env,
     assert_int_not_equal(pushed, 0);
 }
 
-static void submit_client_update(bot_export_t *exports,
-                                 float frame_time,
-                                 const vec3_t origin,
-                                 const vec3_t viewangles)
+/**
+ * Drives the BotUpdateClient bridge with optional origin/view overrides so
+ * tests can seed precise positional data without duplicating boilerplate.
+ */
+static void submit_client_update_with_view(bot_export_t *exports,
+                                           float frame_time,
+                                           const vec3_t origin,
+                                           const vec3_t viewangles)
 {
     assert_non_null(exports);
 
-static void submit_client_update(bot_export_t *exports, float time)
-{
     bot_updateclient_t update;
     memset(&update, 0, sizeof(update));
 
@@ -435,13 +550,18 @@ static void submit_client_update(bot_export_t *exports, float time)
     }
 
     exports->BotStartFrame(frame_time);
-    for (int i = 0; i < MAX_ITEMS; ++i) {
+    for (int i = 0; i < MAX_ITEMS; ++i)
+    {
         update.inventory[i] = 1;
     }
 
-    exports->BotStartFrame(time);
     int status = exports->BotUpdateClient(0, &update);
     assert_int_equal(status, BLERR_NOERROR);
+}
+
+static void submit_client_update(bot_export_t *exports, float frame_time)
+{
+    submit_client_update_with_view(exports, frame_time, NULL, NULL);
 }
 
 static void submit_enemy_entity(bot_export_t *exports, int ent, const vec3_t origin)
@@ -475,7 +595,7 @@ static void test_goal_refresh_and_movement_dispatch_order(void **state)
     VectorSet(client_origin, 16.0f, 8.0f, 0.0f);
     vec3_t client_viewangles;
     VectorSet(client_viewangles, 5.0f, 10.0f, -2.0f);
-    submit_client_update(env->exports, 1.0f, client_origin, client_viewangles);
+    submit_client_update_with_view(env->exports, 1.0f, client_origin, client_viewangles);
 
     submit_client_update(env->exports, 1.0f);
     test_reset_bot_input_log();
@@ -527,7 +647,7 @@ static void test_movement_error_propagates_without_submission(void **state)
     VectorSet(client_origin, 16.0f, 8.0f, 0.0f);
     vec3_t client_viewangles;
     VectorSet(client_viewangles, 0.0f, 90.0f, 0.0f);
-    submit_client_update(env->exports, 2.0f, client_origin, client_viewangles);
+    submit_client_update_with_view(env->exports, 2.0f, client_origin, client_viewangles);
 
     int original_handle = slot->move_handle;
     qboolean previous_loaded = aasworld.loaded;
@@ -651,6 +771,90 @@ static void test_dm_rocketjump_respects_libvar(void **state)
     assert_true((g_bot_input_log.last_command.actionflags & ACTION_JUMP) == 0);
 }
 
+static void test_dm_enemy_skips_invisible_targets(void **state)
+{
+    test_environment_t *env = (test_environment_t *)(*state);
+    activate_test_client(env);
+
+    bot_client_state_t *slot = BotState_Get(0);
+    assert_non_null(slot);
+    reset_goal_runtime(slot);
+
+    vec3_t client_origin = {0.0f, 0.0f, 0.0f};
+    vec3_t client_viewangles = {0.0f, 0.0f, 0.0f};
+    submit_client_update_with_view(env->exports, 1.0f, client_origin, client_viewangles);
+    submit_client_update(env->exports, 1.0f);
+
+    bot_updateentity_t self_entity;
+    memset(&self_entity, 0, sizeof(self_entity));
+    VectorCopy(client_origin, self_entity.origin);
+    self_entity.renderfx = RF_SHELL_RED;
+    assert_int_equal(env->exports->BotUpdateEntity(0, &self_entity), BLERR_NOERROR);
+
+    bot_updateentity_t invisible;
+    memset(&invisible, 0, sizeof(invisible));
+    VectorSet(invisible.origin, 256.0f, 0.0f, 0.0f);
+    invisible.renderfx = RF_TRANSLUCENT;
+    assert_int_equal(env->exports->BotUpdateEntity(1, &invisible), BLERR_NOERROR);
+
+    bot_updateentity_t visible;
+    memset(&visible, 0, sizeof(visible));
+    VectorSet(visible.origin, 128.0f, 0.0f, 0.0f);
+    assert_int_equal(env->exports->BotUpdateEntity(2, &visible), BLERR_NOERROR);
+
+    submit_client_update(env->exports, 1.5f);
+    test_reset_bot_input_log();
+
+    int status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(slot->enemy_entity, 2);
+    assert_float_equal(slot->enemy_last_known_origin[0], visible.origin[0], 0.01f);
+    assert_float_equal(slot->enemy_last_known_origin[1], visible.origin[1], 0.01f);
+    assert_float_equal(slot->enemy_last_known_origin[2], visible.origin[2], 0.01f);
+}
+
+static void test_dm_enemy_skips_chatting_targets_for_cautious_bots(void **state)
+{
+    test_environment_t *env = (test_environment_t *)(*state);
+    activate_test_client(env);
+
+    bot_client_state_t *slot = BotState_Get(0);
+    assert_non_null(slot);
+    reset_goal_runtime(slot);
+
+    vec3_t client_origin = {0.0f, 0.0f, 0.0f};
+    vec3_t client_viewangles = {0.0f, 0.0f, 0.0f};
+    submit_client_update_with_view(env->exports, 2.0f, client_origin, client_viewangles);
+    submit_client_update(env->exports, 2.0f);
+
+    bot_updateentity_t self_entity;
+    memset(&self_entity, 0, sizeof(self_entity));
+    VectorCopy(client_origin, self_entity.origin);
+    self_entity.renderfx = RF_SHELL_RED;
+    assert_int_equal(env->exports->BotUpdateEntity(0, &self_entity), BLERR_NOERROR);
+
+    bot_updateentity_t chatting;
+    memset(&chatting, 0, sizeof(chatting));
+    VectorSet(chatting.origin, 64.0f, 0.0f, 0.0f);
+    chatting.sound = CHAN_VOICE;
+    assert_int_equal(env->exports->BotUpdateEntity(3, &chatting), BLERR_NOERROR);
+
+    bot_updateentity_t quiet;
+    memset(&quiet, 0, sizeof(quiet));
+    VectorSet(quiet.origin, 192.0f, 0.0f, 0.0f);
+    assert_int_equal(env->exports->BotUpdateEntity(4, &quiet), BLERR_NOERROR);
+
+    submit_client_update(env->exports, 2.5f);
+    test_reset_bot_input_log();
+
+    int status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(slot->enemy_entity, 4);
+    assert_float_equal(slot->enemy_last_known_origin[0], quiet.origin[0], 0.01f);
+    assert_float_equal(slot->enemy_last_known_origin[1], quiet.origin[1], 0.01f);
+    assert_float_equal(slot->enemy_last_known_origin[2], quiet.origin[2], 0.01f);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -670,6 +874,12 @@ int main(void)
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_dm_rocketjump_respects_libvar,
+                                        goal_move_setup,
+                                        goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_dm_enemy_skips_invisible_targets,
+                                        goal_move_setup,
+                                        goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_dm_enemy_skips_chatting_targets_for_cautious_bots,
                                         goal_move_setup,
                                         goal_move_teardown),
     };

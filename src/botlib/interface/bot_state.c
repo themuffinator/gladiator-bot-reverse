@@ -1,5 +1,6 @@
 #include "bot_state.h"
 
+#include <float.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -75,6 +76,18 @@ static void BotState_FreeResources(bot_client_state_t *state)
     state->has_move_result = false;
     state->goal_avoid_duration = 0.0f;
     state->active_goal_number = 0;
+    state->enemy_entity = -1;
+    VectorClear(state->enemy_last_known_origin);
+    state->enemy_sight_time = -FLT_MAX;
+    state->enemy_visible_time = -FLT_MAX;
+    state->enemy_death_time = -FLT_MAX;
+    state->last_health = -1;
+    state->last_frame_health = -1;
+    state->last_damage_time = -FLT_MAX;
+    state->last_damage_frame = 0;
+    state->took_damage_this_frame = false;
+    state->revenge_enemy = -1;
+    state->revenge_kills = 0;
     memset(&state->last_client_update, 0, sizeof(state->last_client_update));
     state->client_update_valid = false;
     state->last_update_time = 0.0f;
@@ -162,6 +175,14 @@ bot_client_state_t *BotState_Create(int client)
     }
 
     state->client_number = client;
+    state->enemy_entity = -1;
+    state->enemy_sight_time = -FLT_MAX;
+    state->enemy_visible_time = -FLT_MAX;
+    state->enemy_death_time = -FLT_MAX;
+    state->last_health = -1;
+    state->last_frame_health = -1;
+    state->last_damage_time = -FLT_MAX;
+    state->revenge_enemy = -1;
     g_bot_state_table[client] = state;
     return state;
 }
