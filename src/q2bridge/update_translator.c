@@ -192,7 +192,7 @@ int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update)
     memcpy(&slot->snapshot, update, sizeof(*update));
 
     slot->frame_valid = qfalse;
-    bot_status_t status = TranslateEntityUpdate(ent, update, g_bridge_frame_time, &slot->frame);
+    bot_status_t status = TranslateEntityUpdate(ent, update, &slot->frame);
     if (status != BLERR_NOERROR)
     {
         return status;
@@ -256,6 +256,7 @@ int Bridge_MoveClientSlot(int old_client, int new_client)
 void Bridge_SetFrameTime(float time)
 {
     g_bridge_frame_time = time;
+    TranslateEntity_SetCurrentTime(time);
 }
 
 void Bridge_SetClientActive(int client, qboolean active)

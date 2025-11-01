@@ -22,6 +22,7 @@
 #include "botlib_contract_loader.h"
 #include "../support/asset_env.h"
 #include "q2bridge/bridge_config.h"
+#include "q2bridge/update_translator.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -683,11 +684,17 @@ static void test_bot_update_entity_populates_aas(void **state)
     status = context->api->BotLoadMap("maps/test2.bsp", 0, NULL, 0, NULL, 0, NULL);
     assert_int_equal(status, BLERR_NOERROR);
 
+    status = context->api->BotStartFrame(0.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+
     bot_updateentity_t entity;
     memset(&entity, 0, sizeof(entity));
     entity.origin[0] = 16.0f;
     entity.origin[1] = 24.0f;
     entity.origin[2] = 48.0f;
+    entity.old_origin[0] = 16.0f;
+    entity.old_origin[1] = 24.0f;
+    entity.old_origin[2] = 48.0f;
     entity.solid = 31;
     entity.modelindex = 2;
 
@@ -696,6 +703,30 @@ static void test_bot_update_entity_populates_aas(void **state)
     assert_true(aasworld.entitiesValid);
     assert_non_null(aasworld.entities);
     assert_int_equal(aasworld.entities[5].number, 5);
+
+    AASEntityFrame translated;
+    assert_true(Bridge_ReadEntityFrame(5, &translated));
+    assert_float_equal(translated.last_update_time, 0.0f, 0.0001f);
+    assert_float_equal(translated.frame_delta, 0.0f, 0.0001f);
+
+    status = context->api->BotStartFrame(0.25f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateentity_t follow_up = entity;
+    follow_up.origin[0] = 24.0f;
+    follow_up.origin[1] = 32.0f;
+    follow_up.origin[2] = 52.0f;
+    follow_up.old_origin[0] = entity.origin[0];
+    follow_up.old_origin[1] = entity.origin[1];
+    follow_up.old_origin[2] = entity.origin[2];
+
+    status = context->api->BotUpdateEntity(5, &follow_up);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    assert_true(Bridge_ReadEntityFrame(5, &translated));
+    assert_float_equal(translated.last_update_time, 0.25f, 0.0001f);
+    assert_float_equal(translated.frame_delta, 0.25f, 0.0001f);
+    assert_true(translated.frame_delta > 0.0f);
 
     context->api->BotShutdownLibrary();
 }
