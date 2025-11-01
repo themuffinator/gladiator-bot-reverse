@@ -199,6 +199,9 @@ void BotState_Move(int old_client, int new_client)
 
     if (state != NULL) {
         state->client_number = new_client;
+        if (state->dm_state != NULL) {
+            AI_DMState_SetClient(state->dm_state, new_client);
+        }
     }
 }
 

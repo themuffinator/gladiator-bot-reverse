@@ -59,6 +59,8 @@ extern "C" {
 #define RESULTTYPE_BADGRAPPLEPATH     4
 #define RESULTTYPE_INSOLIDAREA        8
 
+#ifndef BOT_GOAL_STRUCT_DEFINED
+#define BOT_GOAL_STRUCT_DEFINED
 typedef struct bot_goal_s
 {
     vec3_t origin;
@@ -70,6 +72,7 @@ typedef struct bot_goal_s
     int flags;
     int iteminfo;
 } bot_goal_t;
+#endif
 
 typedef struct bot_initmove_s
 {

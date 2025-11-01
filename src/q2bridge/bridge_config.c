@@ -242,6 +242,8 @@ libvar_t *Bridge_MaxSoundInfo(void)
 libvar_t *Bridge_MaxAASSounds(void)
 {
     return g_bridge_config_cache.max_aassounds;
+}
+
 libvar_t *Bridge_DMFlags(void)
 {
     return g_bridge_config_cache.dmflags;

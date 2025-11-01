@@ -23,6 +23,8 @@ extern "C" {
 
 struct bot_goalstate_s;
 
+#ifndef BOT_GOAL_STRUCT_DEFINED
+#define BOT_GOAL_STRUCT_DEFINED
 typedef struct bot_goal_s
 {
     vec3_t origin;
@@ -34,6 +36,7 @@ typedef struct bot_goal_s
     int flags;
     int iteminfo;
 } bot_goal_t;
+#endif
 
 typedef struct bot_avoidgoal_s
 {
