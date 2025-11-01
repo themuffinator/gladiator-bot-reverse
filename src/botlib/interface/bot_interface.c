@@ -89,6 +89,8 @@ static float g_botInterfaceFrameTime = 0.0f;
 static unsigned int g_botInterfaceFrameNumber = 0;
 static bool g_botInterfaceDebugDrawEnabled = false;
 
+static char *BotInterface_CopyString(const char *text);
+
 static int BotInterface_StringCompareIgnoreCase(const char *lhs, const char *rhs)
 {
     if (lhs == NULL || rhs == NULL)
@@ -164,7 +166,7 @@ static bool BotInterface_CopyAssetList(botinterface_asset_list_t *target,
             continue;
         }
 
-        table[index] = strdup(source[index]);
+        table[index] = BotInterface_CopyString(source[index]);
         if (table[index] == NULL)
         {
             for (size_t rollback = 0; rollback < index; ++rollback)
@@ -398,14 +400,14 @@ static botinterface_import_libvar_t *BotInterface_EnsureImportLibVar(const char 
         return NULL;
     }
 
-    entry->name = strdup(name);
+    entry->name = BotInterface_CopyString(name);
     if (entry->name == NULL)
     {
         free(entry);
         return NULL;
     }
 
-    entry->value = strdup("");
+    entry->value = BotInterface_CopyString("");
     if (entry->value == NULL)
     {
         free(entry->name);
@@ -510,7 +512,7 @@ static int BotInterface_BotLibVarSetWrapper(const char *var_name, const char *va
         return -1;
     }
 
-    char *copy = strdup(value);
+    char *copy = BotInterface_CopyString(value);
     if (copy == NULL)
     {
         return -1;
