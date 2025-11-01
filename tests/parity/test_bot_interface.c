@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,7 @@
 #include "botlib/ai/chat/ai_chat.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib_contract_loader.h"
 #include "../support/asset_env.h"
@@ -40,6 +42,7 @@ typedef struct bot_interface_test_context_s
     mock_bot_import_t mock;
     bot_export_t *api;
     botlib_contract_catalogue_t catalogue;
+    bool libvar_initialised;
 } bot_interface_test_context_t;
 
 static mock_bot_import_t *g_active_mock = NULL;
@@ -163,6 +166,9 @@ static void Mock_Reset(mock_bot_import_t *mock)
         return;
     }
 
+    memset(mock->prints, 0, sizeof(mock->prints));
+    memset(mock->inputs, 0, sizeof(mock->inputs));
+    memset(mock->input_clients, 0, sizeof(mock->input_clients));
     mock->print_count = 0;
     mock->bot_input_count = 0;
 }
@@ -210,12 +216,32 @@ static int setup_bot_interface(void **state)
     context->mock.table.DebugLineDelete = Mock_DebugLineDelete;
     context->mock.table.DebugLineShow = Mock_DebugLineShow;
 
+    LibVar_Init();
+    context->libvar_initialised = true;
+
     if (!asset_env_initialise(&context->assets))
     {
         asset_env_cleanup(&context->assets);
         free(context);
         cmocka_skip();
     }
+
+    char weapon_config_path[PATH_MAX];
+    int written = snprintf(weapon_config_path,
+                           sizeof(weapon_config_path),
+                           "%s/weapons.c",
+                           context->assets.asset_root);
+    if (written <= 0 || (size_t)written >= sizeof(weapon_config_path))
+    {
+        asset_env_cleanup(&context->assets);
+        free(context);
+        cmocka_skip();
+    }
+
+    LibVarSet("weaponconfig", weapon_config_path);
+    LibVarSet("max_weaponinfo", "64");
+    LibVarSet("max_projectileinfo", "64");
+    LibVarSet("GLADIATOR_ASSET_DIR", context->assets.asset_root);
 
     g_active_mock = &context->mock;
     context->api = GetBotAPI(&context->mock.table);
@@ -238,6 +264,12 @@ static int teardown_bot_interface(void **state)
     if (context != NULL)
     {
         asset_env_cleanup(&context->assets);
+    }
+
+    if (context != NULL && context->libvar_initialised)
+    {
+        LibVar_Shutdown();
+        context->libvar_initialised = false;
     }
 
     BotState_ShutdownAll();
@@ -382,6 +414,117 @@ static void test_bot_update_entity_populates_aas(void **state)
     context->api->BotShutdownLibrary();
 }
 
+static bool ensure_map_fixture(const asset_env_t *assets, const char *stem)
+{
+    if (assets == NULL || stem == NULL)
+    {
+        return false;
+    }
+
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/maps/%s.bsp", assets->asset_root, stem);
+    FILE *file = fopen(path, "rb");
+    if (file == NULL)
+    {
+        print_message("bot interface parity skipped: missing %s\n", path);
+        return false;
+    }
+    fclose(file);
+
+    snprintf(path, sizeof(path), "%s/maps/%s.aas", assets->asset_root, stem);
+    file = fopen(path, "rb");
+    if (file == NULL)
+    {
+        print_message("bot interface parity skipped: missing %s\n", path);
+        return false;
+    }
+    fclose(file);
+
+    return true;
+}
+
+static void assert_success_status(const botlib_contract_catalogue_t *catalogue,
+                                  const char *export_name,
+                                  int status)
+{
+    const botlib_contract_export_t *export_entry =
+        BotlibContract_FindExport(catalogue, export_name);
+    assert_non_null(export_entry);
+
+    const botlib_contract_scenario_t *scenario =
+        BotlibContract_FindScenario(export_entry, "success");
+    if (scenario == NULL)
+    {
+        scenario = BotlibContract_FindScenario(export_entry, NULL);
+    }
+    assert_non_null(scenario);
+
+    const botlib_contract_return_code_t *expected =
+        BotlibContract_FindReturnCode(scenario, status);
+
+    if (expected != NULL)
+    {
+        assert_int_equal(status, expected->value);
+    }
+    else
+    {
+        assert_int_equal(status, BLERR_NOERROR);
+    }
+}
+
+static void test_bot_end_to_end_pipeline_with_assets(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    if (!ensure_map_fixture(&context->assets, "2box4"))
+    {
+        cmocka_skip();
+    }
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_success_status(&context->catalogue, "BotLibSetup", status);
+    assert_non_null(Mock_FindPrint(&context->mock, "------- BotLib Initialization -------"));
+
+    status = context->api->BotLoadMap("maps/2box4.bsp", 0, NULL, 0, NULL, 0, NULL);
+    assert_success_status(&context->catalogue, "BotLibLoadMap", status);
+    assert_true(aasworld.loaded);
+
+    bot_settings_t settings;
+    memset(&settings, 0, sizeof(settings));
+    snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    settings.ailibrary[0] = '\0';
+
+    status = context->api->BotSetupClient(1, &settings);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotConsoleMessage(1, CMS_CHAT, "hello gladiator");
+    assert_success_status(&context->catalogue, "BotLibConsoleMessage", status);
+
+    context->api->Test(1, "dump_chat", NULL, NULL);
+    assert_non_null(Mock_FindPrint(&context->mock, "hello gladiator"));
+
+    status = context->api->BotStartFrame(0.1f);
+    assert_success_status(&context->catalogue, "BotLibStartFrame", status);
+
+    bot_updateclient_t update;
+    memset(&update, 0, sizeof(update));
+    update.viewangles[1] = 45.0f;
+
+    status = context->api->BotUpdateClient(1, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(context->mock.bot_input_count > 0);
+    assert_int_equal(context->mock.input_clients[0], 1);
+    assert_float_equal(context->mock.inputs[0].thinktime, 0.05f, 0.0001f);
+
+    context->api->BotShutdownClient(1);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -395,6 +538,9 @@ int main(void)
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,
                                         setup_bot_interface,
                                         teardown_bot_interface),
     };
