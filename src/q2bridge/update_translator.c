@@ -176,8 +176,8 @@ int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update)
     slot->seen = qtrue;
     slot->translated_valid = qfalse;
 
-    q2bridge::AASEntityFrame &frame = slot->translated;
-    int status = q2bridge::TranslateEntityUpdate(ent, *update, g_bridge_frame_time, frame);
+    q2bridge_aas_entity_frame_t *frame = &slot->translated;
+    int status = Q2Bridge_TranslateEntityUpdate(ent, update, g_bridge_frame_time, frame);
     if (status != BLERR_NOERROR)
     {
         return status;

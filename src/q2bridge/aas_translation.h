@@ -5,10 +5,6 @@
 
 #include "botlib.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /**
  * \brief Runtime mirror of the Gladiator botlib per-client state.
  */
@@ -70,28 +66,17 @@ typedef struct q2bridge_aas_entity_frame_s {
  */
 void BotlibLog(int level, const char *fmt, ...);
 
-#ifdef __cplusplus
-} // extern "C"
+bool Q2Bridge_CopyIfChanged(const vec3_t src, vec3_t dst_out);
 
-namespace q2bridge {
+int Q2Bridge_TranslateClientUpdate(int client_num,
+                                   const bot_updateclient_t *src,
+                                   q2bridge_aas_client_frame_t *dst);
 
-using AASClientFrame = q2bridge_aas_client_frame_t;
-using AASEntityFrame = q2bridge_aas_entity_frame_t;
+int Q2Bridge_TranslateEntityUpdate(int ent_num,
+                                   const bot_updateentity_t *src,
+                                   float current_time,
+                                   q2bridge_aas_entity_frame_t *dst);
 
-void QuantizeEulerDegrees(vec3_t angles);
-
-bool CopyIfChanged(const vec3_t src, vec3_t dst_out);
-
-int TranslateClientUpdate(int client_num,
-                          const bot_updateclient_t &src,
-                          AASClientFrame &dst);
-
-int TranslateEntityUpdate(int ent_num,
-                          const bot_updateentity_t &src,
-                          float current_time,
-                          AASEntityFrame &dst);
-
-} // namespace q2bridge
-#endif // __cplusplus
+void Q2Bridge_QuantizeEulerDegrees(vec3_t angles);
 
 #endif // Q2BRIDGE_AAS_TRANSLATION_H
