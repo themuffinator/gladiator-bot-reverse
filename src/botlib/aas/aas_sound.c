@@ -5,7 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
+
+#include "../../shared/q_platform.h"
 
 #include "aas_local.h"
 #include "../common/l_assets.h"
@@ -110,7 +111,7 @@ static void AAS_Sound_RegisterMacro(const char *name, int value)
 
     for (size_t i = 0; i < g_aas_sound_macro_count; ++i)
     {
-        if (strcasecmp(g_aas_sound_macros[i].name, name) == 0)
+        if (Q_stricmp(g_aas_sound_macros[i].name, name) == 0)
         {
             g_aas_sound_macros[i].value = value;
             return;
@@ -135,7 +136,7 @@ static bool AAS_Sound_FindMacroValue(const char *name, int *out)
 
     for (size_t i = 0; i < g_aas_sound_macro_count; ++i)
     {
-        if (strcasecmp(g_aas_sound_macros[i].name, name) == 0)
+        if (Q_stricmp(g_aas_sound_macros[i].name, name) == 0)
         {
             *out = g_aas_sound_macros[i].value;
             return true;

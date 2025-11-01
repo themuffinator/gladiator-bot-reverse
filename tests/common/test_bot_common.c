@@ -13,6 +13,7 @@
 #include "botlib/common/l_struct.h"
 #include "botlib/common/l_utils.h"
 #include "botlib/precomp/l_precomp.h"
+#include "shared/q_platform.h"
 
 #include <errno.h>
 #include <sys/stat.h>
@@ -58,6 +59,13 @@ static void test_struct_initialisation_flags(void) {
     assert(L_Struct_IsInitialised());
     L_Struct_Shutdown();
     assert(!L_Struct_IsInitialised());
+}
+
+static void test_case_insensitive_compare_helpers(void) {
+    assert(Q_stricmp("Alpha", "alpha") == 0);
+    assert(Q_stricmp("Beta", "gamma") != 0);
+    assert(Q_strnicmp("PrefixValue", "prefix-other", 6) == 0);
+    assert(Q_strnicmp("PrefixValue", "prefix-other", 12) != 0);
 }
 
 static void test_crc_matches_reference(void) {
@@ -342,6 +350,7 @@ static void test_resolve_asset_path_prefers_cddir_over_new_knob(void)
 int main(void) {
     test_utils_initialisation_flags();
     test_struct_initialisation_flags();
+    test_case_insensitive_compare_helpers();
     test_crc_matches_reference();
     test_read_structure_parses_basic_types();
     test_vector2angles_and_angle_helpers();

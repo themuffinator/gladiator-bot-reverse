@@ -37,7 +37,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
+
+#include "../../shared/q_platform.h"
 
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
@@ -58,7 +59,6 @@ typedef enum { qfalse = 0, qtrue = 1 } qboolean;
 #define MAX_PATH 1024
 #endif
 
-#define Q_stricmp strcasecmp
 #define Log_Write BotLib_LogWrite
 
 extern int PC_ExpectTokenString(pc_source_t *source, char *string);
