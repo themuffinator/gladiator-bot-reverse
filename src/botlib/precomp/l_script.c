@@ -65,6 +65,10 @@ extern int PC_ExpectTokenString(pc_source_t *source, char *string);
 extern int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token);
 extern int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token);
 
+extern pc_punctuation_t default_punctuations[];
+void FreeScript(pc_script_t *script);
+int EndOfScript(pc_script_t *script);
+
 static void PS_AppendDiagnostic(pc_script_t *script,
                                 pc_error_level_t level,
                                 const char *message)
