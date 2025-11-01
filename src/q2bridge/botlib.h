@@ -223,6 +223,14 @@ typedef struct bot_export_s {
     int (*BotRegisterLevelItem)(const bot_levelitem_setup_t *setup);
     void (*BotUnregisterLevelItem)(int number);
     void (*BotMarkLevelItemTaken)(int number, float respawn_delay);
+    int (*BotLoadCharacter)(const char *character_file, float skill);
+    void (*BotFreeCharacter)(int handle);
+    int (*BotLoadCharacterSkill)(const char *character_file, float skill);
+    float (*Characteristic_Float)(int handle, int index);
+    float (*Characteristic_BFloat)(int handle, int index, float minimum, float maximum);
+    int (*Characteristic_Integer)(int handle, int index);
+    int (*Characteristic_BInteger)(int handle, int index, int minimum, int maximum);
+    void (*Characteristic_String)(int handle, int index, char *buffer, int buffer_size);
 } bot_export_t;
 
 // Bot library imported functions

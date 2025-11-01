@@ -953,8 +953,8 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 
     memcpy(&state->settings, settings, sizeof(*settings));
 
-    ai_character_profile_t *profile = AI_LoadCharacter(settings->characterfile, 1.0f);
-    if (profile == NULL)
+    int character_handle = BotLoadCharacter(settings->characterfile, 1.0f);
+    if (character_handle <= 0)
     {
         BotInterface_Printf(PRT_ERROR,
                             "[bot_interface] BotSetupClient: failed to load character '%s' for client %d\n",
@@ -964,7 +964,7 @@ static int BotSetupClient(int client, bot_settings_t *settings)
         return BLERR_INVALIDIMPORT;
     }
 
-    BotState_AttachCharacter(state, profile);
+    BotState_AttachCharacter(state, character_handle);
 
     state->goal_state = AI_GoalState_Create();
     if (state->goal_state == NULL)
@@ -1752,6 +1752,14 @@ bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotRegisterLevelItem = AI_GoalBotlib_RegisterLevelItem;
     exportTable.BotUnregisterLevelItem = AI_GoalBotlib_UnregisterLevelItem;
     exportTable.BotMarkLevelItemTaken = AI_GoalBotlib_MarkItemTaken;
+    exportTable.BotLoadCharacter = BotLoadCharacter;
+    exportTable.BotFreeCharacter = BotFreeCharacter;
+    exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
+    exportTable.Characteristic_Float = Characteristic_Float;
+    exportTable.Characteristic_BFloat = Characteristic_BFloat;
+    exportTable.Characteristic_Integer = Characteristic_Integer;
+    exportTable.Characteristic_BInteger = Characteristic_BInteger;
+    exportTable.Characteristic_String = Characteristic_String;
 
     return &exportTable;
 }

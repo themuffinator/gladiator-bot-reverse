@@ -34,6 +34,7 @@ struct bot_client_state_s {
     bool active;
     bot_settings_t settings;
     bot_clientsettings_t client_settings;
+    int character_handle;
     ai_character_profile_t *character;
     bot_weight_config_t *item_weights;
     ai_weapon_weights_t *weapon_weights;
@@ -53,7 +54,7 @@ bot_client_state_t *BotState_Create(int client);
 void BotState_Destroy(int client);
 void BotState_Move(int old_client, int new_client);
 void BotState_ShutdownAll(void);
-void BotState_AttachCharacter(bot_client_state_t *state, ai_character_profile_t *profile);
+void BotState_AttachCharacter(bot_client_state_t *state, int character_handle);
 
 #ifdef __cplusplus
 } // extern "C"
