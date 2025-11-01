@@ -12,6 +12,7 @@
 
 #include "aas_local.h"
 #include "aas_sound.h"
+#include "../ai/move/mover_catalogue.h"
 #include "../common/l_log.h"
 #include "interface/botlib_interface.h"
 #include "../ai/move/mover_catalogue.h"
@@ -24,6 +25,7 @@ static int AAS_EnsureAreaListArray(void);
 static size_t AAS_AreaBitWordCount(void);
 static void AAS_ClampMinsMaxs(vec3_t mins, vec3_t maxs);
 static void AAS_ClearWorld(void);
+static void AAS_ParseEntityLump(const char *data, size_t length);
 
 /*
  * Global AAS world state.  The original DLL zeroed the data_100667e0 block
@@ -94,6 +96,603 @@ static float AAS_LittleFloat(float value)
     swapper.u = AAS_LittleUnsigned(swapper.u);
     return swapper.f;
 #endif
+}
+
+typedef struct aas_parsed_entity_s
+{
+    char classname[64];
+    qboolean hasClassname;
+    char model[64];
+    qboolean hasModel;
+    float lip;
+    qboolean hasLip;
+    float height;
+    qboolean hasHeight;
+    float speed;
+    qboolean hasSpeed;
+    int spawnflags;
+    qboolean hasSpawnflags;
+} aas_parsed_entity_t;
+
+enum
+{
+    AAS_MOVER_DOORTYPE_NONE = 0,
+    AAS_MOVER_DOORTYPE_STANDARD = 1,
+    AAS_MOVER_DOORTYPE_ROTATING = 2,
+    AAS_MOVER_DOORTYPE_SECRET = 3
+};
+
+static qboolean AAS_ParseFloatValue(const char *value, float *outValue);
+static qboolean AAS_ParseIntValue(const char *value, int *outValue);
+static qboolean AAS_ParseQuotedToken(const char **cursor, const char *end, char **outToken);
+static void AAS_SkipMalformedEntity(const char **cursor, const char *end);
+static void AAS_ParseEntityKeyValue(aas_parsed_entity_t *entity, const char *key, const char *value);
+static void AAS_RegisterMoverEntity(const aas_parsed_entity_t *entity);
+
+static qboolean AAS_ParseFloatValue(const char *value, float *outValue)
+{
+    if (value == NULL || outValue == NULL)
+    {
+        return qfalse;
+    }
+
+    errno = 0;
+    char *endPtr = NULL;
+    float parsed = strtof(value, &endPtr);
+    if (endPtr == value || errno == ERANGE)
+    {
+        return qfalse;
+    }
+
+    while (endPtr != NULL && *endPtr != '\0' && isspace((unsigned char)*endPtr))
+    {
+        ++endPtr;
+    }
+
+    if (endPtr != NULL && *endPtr != '\0')
+    {
+        return qfalse;
+    }
+
+    *outValue = parsed;
+    return qtrue;
+}
+
+static qboolean AAS_ParseIntValue(const char *value, int *outValue)
+{
+    if (value == NULL || outValue == NULL)
+    {
+        return qfalse;
+    }
+
+    errno = 0;
+    char *endPtr = NULL;
+    long parsed = strtol(value, &endPtr, 10);
+    if (endPtr == value || errno == ERANGE)
+    {
+        return qfalse;
+    }
+
+    while (endPtr != NULL && *endPtr != '\0' && isspace((unsigned char)*endPtr))
+    {
+        ++endPtr;
+    }
+
+    if (endPtr != NULL && *endPtr != '\0')
+    {
+        return qfalse;
+    }
+
+    if (parsed > INT_MAX || parsed < INT_MIN)
+    {
+        return qfalse;
+    }
+
+    *outValue = (int)parsed;
+    return qtrue;
+}
+
+static void AAS_CopyStringField(char *destination,
+                                size_t destinationSize,
+                                const char *source,
+                                const char *fieldName)
+{
+    if (destination == NULL || destinationSize == 0U || source == NULL)
+    {
+        return;
+    }
+
+    size_t length = strlen(source);
+    if (length >= destinationSize)
+    {
+        BotLib_Print(PRT_WARNING,
+                     "AAS_ParseEntityLump: %s value truncated from %zu characters\n",
+                     fieldName,
+                     length);
+        length = destinationSize - 1U;
+    }
+
+    memcpy(destination, source, length);
+    destination[length] = '\0';
+}
+
+static qboolean AAS_ParseQuotedToken(const char **cursor, const char *end, char **outToken)
+{
+    if (cursor == NULL || *cursor == NULL || outToken == NULL)
+    {
+        return qfalse;
+    }
+
+    const char *position = *cursor;
+    while (position < end && isspace((unsigned char)*position))
+    {
+        ++position;
+    }
+
+    if (position >= end || *position != '"')
+    {
+        *cursor = position;
+        return qfalse;
+    }
+
+    ++position;
+    const char *start = position;
+    qboolean escape = qfalse;
+    while (position < end)
+    {
+        char ch = *position;
+        if (!escape && ch == '\\')
+        {
+            escape = qtrue;
+            ++position;
+            continue;
+        }
+
+        if (!escape && ch == '"')
+        {
+            size_t rawLength = (size_t)(position - start);
+            char *token = (char *)malloc(rawLength + 1U);
+            if (token == NULL)
+            {
+                BotLib_Print(PRT_WARNING,
+                             "AAS_ParseEntityLump: out of memory parsing entity token\n");
+                *cursor = position;
+                return qfalse;
+            }
+
+            const char *reader = start;
+            char *writer = token;
+            escape = qfalse;
+            while (reader < position)
+            {
+                char rc = *reader++;
+                if (!escape && rc == '\\')
+                {
+                    escape = qtrue;
+                    continue;
+                }
+
+                *writer++ = rc;
+                escape = qfalse;
+            }
+            *writer = '\0';
+
+            ++position;
+            *cursor = position;
+            *outToken = token;
+            return qtrue;
+        }
+
+        escape = qfalse;
+        ++position;
+    }
+
+    BotLib_Print(PRT_WARNING,
+                 "AAS_ParseEntityLump: unterminated quoted string in entity lump\n");
+    *cursor = position;
+    return qfalse;
+}
+
+static void AAS_SkipMalformedEntity(const char **cursor, const char *end)
+{
+    if (cursor == NULL || *cursor == NULL)
+    {
+        return;
+    }
+
+    const char *position = *cursor;
+    while (position < end)
+    {
+        if (*position == '}')
+        {
+            ++position;
+            break;
+        }
+        ++position;
+    }
+
+    *cursor = position;
+}
+
+static qboolean AAS_IsMoverClassname(const char *classname,
+                                     float *defaultLip,
+                                     float *defaultHeight,
+                                     float *defaultSpeed,
+                                     int *doorType)
+{
+    if (classname == NULL)
+    {
+        return qfalse;
+    }
+
+    if (strcmp(classname, "func_plat") == 0 || strcmp(classname, "func_plat2") == 0)
+    {
+        if (defaultLip != NULL)
+        {
+            *defaultLip = 8.0f;
+        }
+        if (defaultHeight != NULL)
+        {
+            *defaultHeight = 0.0f;
+        }
+        if (defaultSpeed != NULL)
+        {
+            *defaultSpeed = 200.0f;
+        }
+        if (doorType != NULL)
+        {
+            *doorType = AAS_MOVER_DOORTYPE_NONE;
+        }
+        return qtrue;
+    }
+
+    if (strcmp(classname, "func_bobbing") == 0)
+    {
+        if (defaultLip != NULL)
+        {
+            *defaultLip = 0.0f;
+        }
+        if (defaultHeight != NULL)
+        {
+            *defaultHeight = 32.0f;
+        }
+        if (defaultSpeed != NULL)
+        {
+            *defaultSpeed = 4.0f;
+        }
+        if (doorType != NULL)
+        {
+            *doorType = AAS_MOVER_DOORTYPE_NONE;
+        }
+        return qtrue;
+    }
+
+    if (strcmp(classname, "func_door") == 0)
+    {
+        if (defaultLip != NULL)
+        {
+            *defaultLip = 8.0f;
+        }
+        if (defaultHeight != NULL)
+        {
+            *defaultHeight = 0.0f;
+        }
+        if (defaultSpeed != NULL)
+        {
+            *defaultSpeed = 100.0f;
+        }
+        if (doorType != NULL)
+        {
+            *doorType = AAS_MOVER_DOORTYPE_STANDARD;
+        }
+        return qtrue;
+    }
+
+    if (strcmp(classname, "func_door_rotating") == 0)
+    {
+        if (defaultLip != NULL)
+        {
+            *defaultLip = 0.0f;
+        }
+        if (defaultHeight != NULL)
+        {
+            *defaultHeight = 0.0f;
+        }
+        if (defaultSpeed != NULL)
+        {
+            *defaultSpeed = 100.0f;
+        }
+        if (doorType != NULL)
+        {
+            *doorType = AAS_MOVER_DOORTYPE_ROTATING;
+        }
+        return qtrue;
+    }
+
+    if (strcmp(classname, "func_door_secret") == 0
+        || strcmp(classname, "func_door_secret2") == 0)
+    {
+        if (defaultLip != NULL)
+        {
+            *defaultLip = 8.0f;
+        }
+        if (defaultHeight != NULL)
+        {
+            *defaultHeight = 0.0f;
+        }
+        if (defaultSpeed != NULL)
+        {
+            *defaultSpeed = 50.0f;
+        }
+        if (doorType != NULL)
+        {
+            *doorType = AAS_MOVER_DOORTYPE_SECRET;
+        }
+        return qtrue;
+    }
+
+    return qfalse;
+}
+
+static void AAS_ParseEntityKeyValue(aas_parsed_entity_t *entity, const char *key, const char *value)
+{
+    if (entity == NULL || key == NULL || value == NULL)
+    {
+        return;
+    }
+
+    if (strcmp(key, "classname") == 0)
+    {
+        AAS_CopyStringField(entity->classname, sizeof(entity->classname), value, key);
+        entity->hasClassname = qtrue;
+    }
+    else if (strcmp(key, "model") == 0)
+    {
+        AAS_CopyStringField(entity->model, sizeof(entity->model), value, key);
+        entity->hasModel = qtrue;
+    }
+    else if (strcmp(key, "lip") == 0)
+    {
+        float parsed = 0.0f;
+        if (AAS_ParseFloatValue(value, &parsed))
+        {
+            entity->lip = parsed;
+            entity->hasLip = qtrue;
+        }
+        else
+        {
+            BotLib_Print(PRT_WARNING,
+                         "AAS_ParseEntityLump: failed to parse lip value '%s'\n",
+                         value);
+        }
+    }
+    else if (strcmp(key, "height") == 0)
+    {
+        float parsed = 0.0f;
+        if (AAS_ParseFloatValue(value, &parsed))
+        {
+            entity->height = parsed;
+            entity->hasHeight = qtrue;
+        }
+        else
+        {
+            BotLib_Print(PRT_WARNING,
+                         "AAS_ParseEntityLump: failed to parse height value '%s'\n",
+                         value);
+        }
+    }
+    else if (strcmp(key, "speed") == 0)
+    {
+        float parsed = 0.0f;
+        if (AAS_ParseFloatValue(value, &parsed))
+        {
+            entity->speed = parsed;
+            entity->hasSpeed = qtrue;
+        }
+        else
+        {
+            BotLib_Print(PRT_WARNING,
+                         "AAS_ParseEntityLump: failed to parse speed value '%s'\n",
+                         value);
+        }
+    }
+    else if (strcmp(key, "spawnflags") == 0)
+    {
+        int parsed = 0;
+        if (AAS_ParseIntValue(value, &parsed))
+        {
+            entity->spawnflags = parsed;
+            entity->hasSpawnflags = qtrue;
+        }
+        else
+        {
+            BotLib_Print(PRT_WARNING,
+                         "AAS_ParseEntityLump: failed to parse spawnflags value '%s'\n",
+                         value);
+        }
+    }
+}
+
+static void AAS_RegisterMoverEntity(const aas_parsed_entity_t *entity)
+{
+    if (entity == NULL || !entity->hasClassname)
+    {
+        return;
+    }
+
+    float defaultLip = 0.0f;
+    float defaultHeight = 0.0f;
+    float defaultSpeed = 0.0f;
+    int doorType = AAS_MOVER_DOORTYPE_NONE;
+    if (!AAS_IsMoverClassname(entity->classname,
+                              &defaultLip,
+                              &defaultHeight,
+                              &defaultSpeed,
+                              &doorType))
+    {
+        return;
+    }
+
+    if (!entity->hasModel)
+    {
+        BotLib_Print(PRT_WARNING,
+                     "AAS_ParseEntityLump: mover '%s' missing model key\n",
+                     entity->classname);
+        return;
+    }
+
+    if (entity->model[0] != '*')
+    {
+        BotLib_Print(PRT_WARNING,
+                     "AAS_ParseEntityLump: mover '%s' has non-brush model '%s'\n",
+                     entity->classname,
+                     entity->model);
+        return;
+    }
+
+    int modelnum = 0;
+    if (!AAS_ParseIntValue(entity->model + 1, &modelnum))
+    {
+        BotLib_Print(PRT_WARNING,
+                     "AAS_ParseEntityLump: mover '%s' has invalid model '%s'\n",
+                     entity->classname,
+                     entity->model);
+        return;
+    }
+
+    float lip = entity->hasLip ? entity->lip : defaultLip;
+    float height = entity->hasHeight ? entity->height : defaultHeight;
+    float speed = entity->hasSpeed ? entity->speed : defaultSpeed;
+    int spawnflags = entity->hasSpawnflags ? entity->spawnflags : 0;
+
+    bot_mover_catalogue_entry_t entry = {
+        .modelnum = modelnum,
+        .lip = lip,
+        .height = height,
+        .speed = speed,
+        .spawnflags = spawnflags,
+        .doortype = doorType,
+    };
+
+    if (!BotMove_MoverCatalogueInsert(&entry))
+    {
+        BotLib_Print(PRT_WARNING,
+                     "AAS_ParseEntityLump: failed to register mover model %d\n",
+                     modelnum);
+    }
+}
+
+static void AAS_ParseEntityLump(const char *data, size_t length)
+{
+    if (data == NULL || length == 0U)
+    {
+        return;
+    }
+
+    const char *cursor = data;
+    const char *end = data + length;
+
+    while (cursor < end)
+    {
+        while (cursor < end && isspace((unsigned char)*cursor))
+        {
+            ++cursor;
+        }
+
+        if (cursor >= end)
+        {
+            break;
+        }
+
+        if (*cursor != '{')
+        {
+            ++cursor;
+            continue;
+        }
+
+        ++cursor;
+        aas_parsed_entity_t entity = {0};
+        qboolean malformed = qfalse;
+
+        while (cursor < end)
+        {
+            while (cursor < end && isspace((unsigned char)*cursor))
+            {
+                ++cursor;
+            }
+
+            if (cursor >= end)
+            {
+                BotLib_Print(PRT_WARNING,
+                             "AAS_ParseEntityLump: unterminated entity definition in BSP\n");
+                malformed = qtrue;
+                break;
+            }
+
+            if (*cursor == '}')
+            {
+                ++cursor;
+                break;
+            }
+
+            char *key = NULL;
+            if (!AAS_ParseQuotedToken(&cursor, end, &key))
+            {
+                BotLib_Print(PRT_WARNING,
+                             "AAS_ParseEntityLump: expected quoted key in entity definition\n");
+                if (key != NULL)
+                {
+                    free(key);
+                }
+                malformed = qtrue;
+                AAS_SkipMalformedEntity(&cursor, end);
+                break;
+            }
+
+            while (cursor < end && isspace((unsigned char)*cursor))
+            {
+                ++cursor;
+            }
+
+            char *value = NULL;
+            if (!AAS_ParseQuotedToken(&cursor, end, &value))
+            {
+                BotLib_Print(PRT_WARNING,
+                             "AAS_ParseEntityLump: expected quoted value for key '%s'\n",
+                             (key != NULL) ? key : "");
+                if (key != NULL)
+                {
+                    free(key);
+                }
+                if (value != NULL)
+                {
+                    free(value);
+                }
+                malformed = qtrue;
+                AAS_SkipMalformedEntity(&cursor, end);
+                break;
+            }
+
+            if (key != NULL && value != NULL)
+            {
+                AAS_ParseEntityKeyValue(&entity, key, value);
+            }
+
+            if (key != NULL)
+            {
+                free(key);
+            }
+            if (value != NULL)
+            {
+                free(value);
+            }
+        }
+
+        if (!malformed)
+        {
+            AAS_RegisterMoverEntity(&entity);
+        }
+    }
 }
 
 static void AAS_FixupAreas(aas_area_t *areas, int count)
@@ -519,6 +1118,7 @@ static void AAS_ClearWorld(void)
     }
 
     AAS_SoundSubsystem_ClearMapAssets();
+    BotMove_MoverCatalogueReset();
     memset(&aasworld, 0, sizeof(aasworld));
 
     TranslateEntity_SetCurrentTime(0.0f);
@@ -578,14 +1178,18 @@ int AAS_LoadMap(const char *mapname,
         return BLERR_CANNOTREADBSPHEADER;
     }
 
-    fclose(bspFile);
-
     bspHeader.ident = AAS_LittleLong(bspHeader.ident);
     bspHeader.version = AAS_LittleLong(bspHeader.version);
+    for (int index = 0; index < Q2_BSP_LUMP_MAX; ++index)
+    {
+        bspHeader.lumps[index].offset = AAS_LittleLong(bspHeader.lumps[index].offset);
+        bspHeader.lumps[index].length = AAS_LittleLong(bspHeader.lumps[index].length);
+    }
 
     if (bspHeader.ident != Q2_BSP_IDENT)
     {
         BotLib_Print(PRT_ERROR, "AAS_LoadMap: %s is not a Quake II BSP\n", bspPath);
+        fclose(bspFile);
         return BLERR_WRONGBSPFILEID;
     }
 
@@ -596,8 +1200,64 @@ int AAS_LoadMap(const char *mapname,
                      bspPath,
                      bspHeader.version,
                      Q2_BSP_VERSION);
+        fclose(bspFile);
         return BLERR_WRONGBSPFILEVERSION;
     }
+
+    const q2_lump_t *entitiesLump = &bspHeader.lumps[Q2_BSP_LUMP_ENTITIES];
+    if (entitiesLump->length < 0)
+    {
+        BotLib_Print(PRT_WARNING,
+                     "AAS_LoadMap: BSP %s has invalid entity lump length %d\n",
+                     bspPath,
+                     entitiesLump->length);
+    }
+    else if (entitiesLump->length > 0)
+    {
+        if (entitiesLump->offset < 0)
+        {
+            BotLib_Print(PRT_WARNING,
+                         "AAS_LoadMap: BSP %s has invalid entity lump offset %d\n",
+                         bspPath,
+                         entitiesLump->offset);
+        }
+        else if (fseek(bspFile, entitiesLump->offset, SEEK_SET) != 0)
+        {
+            BotLib_Print(PRT_WARNING,
+                         "AAS_LoadMap: failed to seek to entity lump in %s (%s)\n",
+                         bspPath,
+                         strerror(errno));
+        }
+        else
+        {
+            size_t lumpLength = (size_t)entitiesLump->length;
+            char *entityData = (char *)malloc(lumpLength + 1U);
+            if (entityData == NULL)
+            {
+                BotLib_Print(PRT_WARNING,
+                             "AAS_LoadMap: out of memory reading entity lump from %s\n",
+                             bspPath);
+            }
+            else
+            {
+                size_t readLength = fread(entityData, 1U, lumpLength, bspFile);
+                if (readLength != lumpLength)
+                {
+                    BotLib_Print(PRT_WARNING,
+                                 "AAS_LoadMap: failed to read entity lump from %s\n",
+                                 bspPath);
+                }
+                else
+                {
+                    entityData[lumpLength] = '\0';
+                    AAS_ParseEntityLump(entityData, lumpLength);
+                }
+                free(entityData);
+            }
+        }
+    }
+
+    fclose(bspFile);
 
     uint32_t bspChecksum = 0U;
     if (!AAS_ComputeFileChecksum(bspPath, &bspChecksum))
