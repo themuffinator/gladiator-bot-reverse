@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "../aas/aas_map.h"
-#include "../ai/ea/ea_main.h"
+#include "../ea/ea_local.h"
 #include "../ai/weapon/bot_weapon.h"
 #include "../common/l_struct.h"
 #include "../common/l_libvar.h"

@@ -10,5 +10,6 @@ target_include_directories(botlib_interface
 
 target_link_libraries(botlib_interface
     PUBLIC
+        botlib_ea
         q2bridge
 )
