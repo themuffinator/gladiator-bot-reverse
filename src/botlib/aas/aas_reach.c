@@ -1,9 +1,22 @@
 #include "aas_local.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../common/l_log.h"
+#include "../common/l_libvar.h"
+#include "../../q2bridge/bridge_config.h"
+
+typedef struct
+{
+    int frames_with_work;
+    int frames_skipped;
+    bool force_reachability_active;
+    bool force_clustering_active;
+} aas_reachability_frame_state_t;
+
+static aas_reachability_frame_state_t g_reach_frame_state;
 
 static void AAS_FreeReverseReachability(void)
 {
@@ -176,4 +189,57 @@ int AAS_PrepareReachability(void)
     free(reverseOffsets);
     free(reverseCounts);
     return BLERR_NOERROR;
+}
+
+void AAS_ReachabilityFrameResetDiagnostics(void)
+{
+    memset(&g_reach_frame_state, 0, sizeof(g_reach_frame_state));
+}
+
+static bool AAS_ReachabilityLibVarEnabled(libvar_t *var)
+{
+    if (var == NULL)
+    {
+        return false;
+    }
+
+    return var->value != 0.0f;
+}
+
+void AAS_ReachabilityFrameUpdate(void)
+{
+    bool force_reach = AAS_ReachabilityLibVarEnabled(Bridge_ForceReachability());
+    bool force_cluster = AAS_ReachabilityLibVarEnabled(Bridge_ForceClustering());
+
+    g_reach_frame_state.force_reachability_active = force_reach;
+    g_reach_frame_state.force_clustering_active = force_cluster;
+
+    if (force_reach || force_cluster)
+    {
+        g_reach_frame_state.frames_with_work += 1;
+    }
+    else
+    {
+        g_reach_frame_state.frames_skipped += 1;
+    }
+}
+
+int AAS_ReachabilityFrameWorkCounter(void)
+{
+    return g_reach_frame_state.frames_with_work;
+}
+
+int AAS_ReachabilityFrameSkipCounter(void)
+{
+    return g_reach_frame_state.frames_skipped;
+}
+
+bool AAS_ReachabilityForceReachabilityActive(void)
+{
+    return g_reach_frame_state.force_reachability_active;
+}
+
+bool AAS_ReachabilityForceClusteringActive(void)
+{
+    return g_reach_frame_state.force_clustering_active;
 }

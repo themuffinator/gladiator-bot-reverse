@@ -1102,6 +1102,8 @@ static void BotInterface_BeginFrame(float time)
     g_botInterfaceFrameNumber += 1U;
     Bridge_SetFrameTime(time);
     AAS_SoundSubsystem_SetFrameTime(time);
+    AAS_RouteFrameUpdate();
+    AAS_ReachabilityFrameUpdate();
     BotInterface_ResetFrameQueues();
 
     for (int client = 0; client < MAX_CLIENTS; ++client)

@@ -86,6 +86,10 @@ static void Botlib_CacheLibraryVariables(void)
     g_library_variables.max_projectileinfo = Botlib_ReadIntLibVarCached(Bridge_MaxProjectileInfo(), 32);
     g_library_variables.max_soundinfo = Botlib_ReadIntLibVarCached(Bridge_MaxSoundInfo(), 256);
     g_library_variables.max_aassounds = Botlib_ReadIntLibVarCached(Bridge_MaxAASSounds(), 256);
+    g_library_variables.forceclustering = Botlib_ReadIntLibVarCached(Bridge_ForceClustering(), 0);
+    g_library_variables.forcereachability = Botlib_ReadIntLibVarCached(Bridge_ForceReachability(), 0);
+    g_library_variables.forcewrite = Botlib_ReadIntLibVarCached(Bridge_ForceWrite(), 0);
+    g_library_variables.framereachability = Botlib_ReadIntLibVarCached(Bridge_FrameReachability(), 0);
 
     const libvar_t *weaponconfig = Bridge_WeaponConfig();
     const char *weaponconfig_string = (weaponconfig != NULL && weaponconfig->string != NULL && weaponconfig->string[0] != '\0')
