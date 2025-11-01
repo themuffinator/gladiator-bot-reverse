@@ -27,6 +27,7 @@
 #include "../ai/chat/ai_chat.h"
 #include "../ai/character/bot_character.h"
 #include "../ai/ai_dm.h"
+#include "../ai/move/mover_catalogue.h"
 #include "../ai/weight/bot_weight.h"
 #include "../ai/goal/ai_goal.h"
 #include "../ai/goal_move_orchestrator.h"
@@ -657,6 +658,7 @@ static void BotInterface_ResetMapCache(void)
     BotInterface_FreeAssetList(&g_botInterfaceMapCache.sounds);
     BotInterface_FreeAssetList(&g_botInterfaceMapCache.images);
     g_botInterfaceMapCache.map_name[0] = '\0';
+    BotMove_MoverCatalogueReset();
 }
 
 static bool BotInterface_RecordMapAssets(const char *mapname,

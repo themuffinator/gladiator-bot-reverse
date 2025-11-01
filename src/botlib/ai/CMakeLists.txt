@@ -8,6 +8,7 @@ set(BOTLIB_AI_SOURCES
     weight/ai_weight.c
     weight/bot_weight.c
     move/bot_move.c
+    move/mover_catalogue.c
     weapon/bot_weapon.c
     character/bot_character.c
     chat/ai_chat.c
