@@ -1,4 +1,5 @@
 set(BOTLIB_AI_SOURCES
+    ai_dm.c
     ai_character.c
     ai_weapon.c
     goal_move_orchestrator.c

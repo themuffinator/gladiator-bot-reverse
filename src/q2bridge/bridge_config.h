@@ -33,6 +33,9 @@ libvar_t *Bridge_WaterFriction(void);
 libvar_t *Bridge_WeaponConfig(void);
 libvar_t *Bridge_MaxWeaponInfo(void);
 libvar_t *Bridge_MaxProjectileInfo(void);
+libvar_t *Bridge_DMFlags(void);
+libvar_t *Bridge_UseHook(void);
+libvar_t *Bridge_RocketJump(void);
 
 #ifdef __cplusplus
 }

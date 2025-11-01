@@ -8,6 +8,7 @@
 #include "../ai/weapon/bot_weapon.h"
 #include "../ai/weight/bot_weight.h"
 #include "../ai/goal_move_orchestrator.h"
+#include "../ai/ai_dm.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,7 @@ struct bot_client_state_s {
     bot_chatstate_t *chat_state;
     ai_goal_state_t *goal_state;
     ai_move_state_t *move_state;
+    ai_dm_state_t *dm_state;
     int weapon_state;
     int current_weapon;
     int goal_handle;

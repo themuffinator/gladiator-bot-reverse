@@ -5,13 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <stdarg.h>
-#include <string.h>
+#include <float.h>
+#include <math.h>
 #include <ctype.h>
 
 #include "../../q2bridge/botlib.h"
 #include "../../q2bridge/bridge.h"
+#include "../../q2bridge/bridge_config.h"
 #include "../../q2bridge/update_translator.h"
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
@@ -20,6 +20,7 @@
 #include "../aas/aas_debug.h"
 #include "../ai/chat/ai_chat.h"
 #include "../ai/character/bot_character.h"
+#include "../ai/ai_dm.h"
 #include "../ai/weight/bot_weight.h"
 #include "../ai/goal/ai_goal.h"
 #include "../ai/goal_move_orchestrator.h"
@@ -88,6 +89,100 @@ static size_t g_botInterfacePointLightCount = 0;
 static float g_botInterfaceFrameTime = 0.0f;
 static unsigned int g_botInterfaceFrameNumber = 0;
 static bool g_botInterfaceDebugDrawEnabled = false;
+
+static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
+{
+    if (info == NULL)
+    {
+        return;
+    }
+
+    info->valid = false;
+    info->entity = -1;
+    VectorClear(info->origin);
+    info->distance = 0.0f;
+}
+
+static int BotAI_MaxTrackedClients(void)
+{
+    libvar_t *maxclients = Bridge_MaxClients();
+    if (maxclients == NULL)
+    {
+        return MAX_CLIENTS;
+    }
+
+    int value = (int)maxclients->value;
+    if (value < 0)
+    {
+        value = 0;
+    }
+    if (value > BOT_INTERFACE_MAX_ENTITIES)
+    {
+        value = BOT_INTERFACE_MAX_ENTITIES;
+    }
+    return value;
+}
+
+static void BotAI_FindEnemy(const bot_client_state_t *state, ai_dm_enemy_info_t *enemy)
+{
+    if (enemy == NULL)
+    {
+        return;
+    }
+
+    BotAI_InitEnemyInfo(enemy);
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    vec3_t self_origin = {0.0f, 0.0f, 0.0f};
+    VectorCopy(state->last_client_update.origin, self_origin);
+
+    float best_distance_sq = FLT_MAX;
+    int best_entity = -1;
+    vec3_t best_origin = {0.0f, 0.0f, 0.0f};
+
+    int max_clients = BotAI_MaxTrackedClients();
+    for (int ent = 0; ent < max_clients; ++ent)
+    {
+        if (ent == state->client_number)
+        {
+            continue;
+        }
+
+        if (ent < 0 || ent >= BOT_INTERFACE_MAX_ENTITIES)
+        {
+            continue;
+        }
+
+        if (!g_botInterfaceEntityCache[ent].valid)
+        {
+            continue;
+        }
+
+        const bot_updateentity_t *snapshot = &g_botInterfaceEntityCache[ent].state;
+        vec3_t delta;
+        VectorSubtract(snapshot->origin, self_origin, delta);
+        float distance_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+
+        if (distance_sq < best_distance_sq)
+        {
+            best_distance_sq = distance_sq;
+            best_entity = ent;
+            VectorCopy(snapshot->origin, best_origin);
+        }
+    }
+
+    if (best_entity >= 0 && best_distance_sq < FLT_MAX)
+    {
+        enemy->valid = true;
+        enemy->entity = best_entity;
+        VectorCopy(best_origin, enemy->origin);
+        enemy->distance = sqrtf(best_distance_sq);
+    }
+}
 
 static char *BotInterface_CopyString(const char *text);
 
@@ -1015,6 +1110,16 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 
     AI_MoveState_LinkAvoidList(state->move_state, AI_GoalState_GetAvoidList(state->goal_state));
 
+    state->dm_state = AI_DMState_Create(client);
+    if (state->dm_state == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate DM state for client %d\n",
+                            client);
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+
     Bridge_ClearClientSlot(client);
     state->active = true;
     return BLERR_NOERROR;
@@ -1354,6 +1459,13 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
         return status;
     }
 
+    ai_dm_enemy_info_t enemy_info;
+    BotAI_InitEnemyInfo(&enemy_info);
+    if (state->dm_state != NULL)
+    {
+        BotAI_FindEnemy(state, &enemy_info);
+    }
+
     input.thinktime = thinktime;
     VectorCopy(state->last_client_update.viewangles, input.viewangles);
 
@@ -1361,6 +1473,16 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
     if (status != BLERR_NOERROR)
     {
         return status;
+    }
+
+    if (state->dm_state != NULL)
+    {
+        AI_DMState_Update(state->dm_state,
+                          state,
+                          &selection,
+                          &enemy_info,
+                          &input,
+                          g_botInterfaceFrameTime);
     }
 
     bot_input_t final_input = {0};
