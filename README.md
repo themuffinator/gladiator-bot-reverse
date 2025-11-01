@@ -11,6 +11,22 @@ the original Area Awareness System (AAS) file format used by the mod. By
 maintaining format compatibility, the reconstructed botlib can be used as a
 drop-in replacement in environments that expect the original Gladiator assets.
 
+## Building
+
+The reconstructed bot library is published as a shared module named
+`gladiator`/`gladiator.dll`. The project uses CMake for configuration and build
+tool generation.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+# Optional: deploy the module for a game engine or mod install tree
+cmake --install build --prefix /path/to/gladiator/install
+```
+
+The install step places the module and an export file under the configured
+prefix so downstream engines can link or load the library directly.
+
 ## Credits
 
 - Mr Elusive for creating the Gladiator Bot and the Quake III Botlib.
