@@ -94,6 +94,12 @@ typedef struct aas_entity_s
 
     aas_link_t *areas;      /* offset 0x84 in original 32-bit build */
     bsp_link_t *leaves;     /* offset 0x88 in original 32-bit build */
+
+    unsigned int *areaOccupancyBits; /* mirrors bitfield built by AAS_AreaEdict */
+    size_t areaOccupancyWords;       /* number of 32-bit words allocated */
+    int areaOccupancyCount;          /* total linked areas for diagnostics */
+    qboolean outsideAllAreas;        /* qtrue if no valid areas were found */
+    float lastOutsideUpdate;         /* aasworld.time when outsideAllAreas became true */
 } aas_entity_t;
 
 typedef struct aas_world_s
@@ -120,6 +126,9 @@ typedef struct aas_world_s
 
     int maxEntities;
     aas_entity_t *entities; /* base pointer from data_100669a0 */
+
+    size_t areaEntityListCount;  /* number of heads in areaEntityLists */
+    aas_link_t **areaEntityLists; /* entities linked per area */
 } aas_world_t;
 
 extern aas_world_t aasworld;
