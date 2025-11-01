@@ -14,6 +14,7 @@ add_executable(ai_character_tests ${AI_TEST_SOURCES})
 target_link_libraries(ai_character_tests PRIVATE ${BOTLIB_PARITY_TEST_LIBRARIES})
 target_include_directories(ai_character_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai
     ${PROJECT_SOURCE_DIR}/dev_tools/assets
 )
 target_compile_definitions(ai_character_tests PRIVATE PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

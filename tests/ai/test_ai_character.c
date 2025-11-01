@@ -107,6 +107,21 @@ static void test_capture_dprint(const char *fmt, ...)
     (void)fmt;
 }
 
+static bool test_log_contains(const char *needle)
+{
+    if (needle == NULL || *needle == '\0') {
+        return false;
+    }
+
+    for (int i = 0; i < g_test_log.count; ++i) {
+        if (strstr(g_test_log.entries[i].text, needle) != NULL) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static int test_libvar_get(const char *var_name, char *value, size_t size)
 {
     (void)var_name;
@@ -406,6 +421,52 @@ static void test_babe_character_profile(void **state)
     AI_FreeCharacter(profile);
 }
 
+static void test_bot_character_exports(void **state)
+{
+    test_environment_t *env = (test_environment_t *)(*state);
+    assert_non_null(env);
+
+    char weapon_config_path[PATH_MAX];
+    asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
+
+    env->weapon_library = AI_LoadWeaponLibrary(weapon_config_path);
+    assert_non_null(env->weapon_library);
+
+    test_reset_log();
+    int handle = BotLoadCharacter("bots/babe_c.c", 1.0f);
+    assert_true(handle > 0);
+    assert_true(test_log_contains("loaded bot character"));
+
+    ai_character_profile_t *profile = BotCharacterFromHandle(handle);
+    assert_non_null(profile);
+
+    float aggression = Characteristic_Float(handle, CHARACTERISTIC_AGGRESSION);
+    assert_true(fabsf(aggression - 0.7f) < 0.0001f);
+
+    int chat_cpm = Characteristic_Integer(handle, CHARACTERISTIC_CHAT_CPM);
+    assert_int_equal(chat_cpm, 400);
+
+    char chat_file[64];
+    Characteristic_String(handle, CHARACTERISTIC_CHAT_FILE, chat_file, sizeof(chat_file));
+    assert_string_equal(chat_file, "bots/babe_t.c");
+
+    test_reset_log();
+    int cached_handle = BotLoadCharacter("bots/babe_c.c", 1.0f);
+    assert_int_equal(cached_handle, handle);
+    assert_true(test_log_contains("reusing cached character"));
+
+    BotFreeCharacter(handle);
+    assert_non_null(BotCharacterFromHandle(cached_handle));
+
+    BotFreeCharacter(cached_handle);
+    assert_null(BotCharacterFromHandle(handle));
+
+    test_reset_log();
+    int missing_handle = BotLoadCharacter("bots/does_not_exist.c", 1.0f);
+    assert_int_equal(missing_handle, 0);
+    assert_true(test_log_contains("couldn't load bot character"));
+}
+
 static void test_bot_setup_client_exposes_profile(void **state)
 {
     test_environment_t *env = (test_environment_t *)(*state);
@@ -435,6 +496,7 @@ static void test_bot_setup_client_exposes_profile(void **state)
     bot_client_state_t *state_slot = BotState_Get(0);
     assert_non_null(state_slot);
     assert_true(state_slot->active);
+    assert_true(state_slot->character_handle > 0);
 
     struct ai_character_profile_s *profile = (struct ai_character_profile_s *)state_slot->character;
     assert_non_null(profile);
@@ -457,6 +519,9 @@ int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_babe_character_profile,
+                                        character_profile_setup,
+                                        character_profile_teardown),
+        cmocka_unit_test_setup_teardown(test_bot_character_exports,
                                         character_profile_setup,
                                         character_profile_teardown),
         cmocka_unit_test_setup_teardown(test_bot_setup_client_exposes_profile,

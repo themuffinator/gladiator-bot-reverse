@@ -30,7 +30,10 @@ static void BotState_FreeResources(bot_client_state_t *state)
         AI_GoalBotlib_FreeState(state->goal_handle);
     }
 
-    if (state->character != NULL) {
+    if (state->character_handle > 0) {
+        BotFreeCharacter(state->character_handle);
+        state->character_handle = 0;
+    } else if (state->character != NULL) {
         AI_FreeCharacter(state->character);
     } else {
         if (state->chat_state != NULL) {
@@ -47,6 +50,7 @@ static void BotState_FreeResources(bot_client_state_t *state)
     }
 
     state->character = NULL;
+    state->character_handle = 0;
     state->chat_state = NULL;
     state->weapon_weights = NULL;
     state->item_weights = NULL;
@@ -63,13 +67,14 @@ static void BotState_FreeResources(bot_client_state_t *state)
     memset(&state->client_settings, 0, sizeof(state->client_settings));
 }
 
-void BotState_AttachCharacter(bot_client_state_t *state, ai_character_profile_t *profile)
+void BotState_AttachCharacter(bot_client_state_t *state, int character_handle)
 {
     if (state == NULL) {
         return;
     }
 
-    state->character = profile;
+    state->character_handle = character_handle;
+    state->character = BotCharacterFromHandle(character_handle);
     state->item_weights = NULL;
     state->weapon_weights = NULL;
     state->chat_state = NULL;
@@ -77,18 +82,18 @@ void BotState_AttachCharacter(bot_client_state_t *state, ai_character_profile_t 
     state->client_settings.netname[0] = '\0';
     state->client_settings.skin[0] = '\0';
 
-    if (profile == NULL) {
+    if (state->character == NULL) {
         return;
     }
 
-    state->item_weights = profile->item_weights;
-    state->weapon_weights = profile->weapon_weights;
-    state->chat_state = profile->chat_state;
+    state->item_weights = state->character->item_weights;
+    state->weapon_weights = state->character->weapon_weights;
+    state->chat_state = state->character->chat_state;
     state->current_weapon = 0;
 
-    const char *display_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_NAME);
+    const char *display_name = AI_CharacteristicAsString(state->character, BOT_CHARACTERISTIC_NAME);
     if (display_name == NULL || *display_name == '\0') {
-        display_name = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_ALT_NAME);
+        display_name = AI_CharacteristicAsString(state->character, BOT_CHARACTERISTIC_ALT_NAME);
     }
 
     const char *fallback_name = NULL;

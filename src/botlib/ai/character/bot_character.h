@@ -19,6 +19,19 @@ float AI_CharacteristicAsFloat(const ai_character_profile_t *profile, int index)
 int AI_CharacteristicAsInteger(const ai_character_profile_t *profile, int index);
 const char *AI_CharacteristicAsString(const ai_character_profile_t *profile, int index);
 
+int BotLoadCharacter(const char *character_file, float skill);
+int BotLoadCharacterSkill(const char *character_file, float skill);
+void BotFreeCharacter(int handle);
+void BotFreeCharacterStrings(ai_character_profile_t *profile);
+ai_character_profile_t *BotCharacterFromHandle(int handle);
+
+float Characteristic_Float(int handle, int index);
+float Characteristic_BFloat(int handle, int index, float minimum, float maximum);
+int Characteristic_Integer(int handle, int index);
+int Characteristic_BInteger(int handle, int index, int minimum, int maximum);
+void Characteristic_String(int handle, int index, char *buffer, int buffer_size);
+
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
