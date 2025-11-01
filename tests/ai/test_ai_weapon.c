@@ -16,6 +16,10 @@
 
 #include "inv.h"
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 #ifndef PROJECT_SOURCE_DIR
 #error "PROJECT_SOURCE_DIR must be defined so regression tests can resolve asset paths."
 #endif
@@ -85,11 +89,25 @@ static const botlib_import_table_t g_test_imports = {
     .BotLibVarSet = test_libvar_set,
 };
 
+static void configure_asset_libvars(void)
+{
+    char asset_root[PATH_MAX];
+    int written = snprintf(asset_root, sizeof(asset_root), "%s/dev_tools/assets", PROJECT_SOURCE_DIR);
+    assert_true(written > 0 && (size_t)written < sizeof(asset_root));
+
+    LibVarSet("gladiator_asset_dir", asset_root);
+    LibVarSet("weaponconfig", "weapons.c");
+    LibVarSet("itemconfig", "items.c");
+    LibVarSet("max_weaponinfo", "64");
+    LibVarSet("max_projectileinfo", "64");
+}
+
 static void setup_botlib_environment(void)
 {
     test_reset_log();
     BotInterface_SetImportTable(&g_test_imports);
     LibVar_Init();
+    configure_asset_libvars();
     assert_true(BotMemory_Init(TEST_BOTLIB_HEAP_SIZE));
 }
 
@@ -136,12 +154,9 @@ static void test_weapon_library_reports_expected_counts(void **state)
     asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
 
     setup_botlib_environment();
-    LibVarSet("weaponconfig", weapon_config_path);
-    LibVarSet("max_weaponinfo", "64");
-    LibVarSet("max_projectileinfo", "64");
-
-    ai_weapon_library_t *library = AI_LoadWeaponLibrary(weapon_config_path);
+    ai_weapon_library_t *library = AI_LoadWeaponLibrary(NULL);
     assert_non_null(library);
+    assert_string_equal(library->source_path, weapon_config_path);
 
     const bot_weapon_config_t *config = AI_GetWeaponConfig(library);
     assert_non_null(config);
@@ -162,18 +177,17 @@ static void test_weapon_weights_align_with_reference_values(void **state)
     asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
     asset_path_or_skip("dev_tools/assets/default/defaul_w.c", weight_config_path, sizeof(weight_config_path));
 
-    setup_botlib_environment();
-    LibVarSet("weaponconfig", weapon_config_path);
-    LibVarSet("max_weaponinfo", "64");
-    LibVarSet("max_projectileinfo", "64");
+    (void)weight_config_path;
 
-    ai_weapon_library_t *library = AI_LoadWeaponLibrary(weapon_config_path);
+    setup_botlib_environment();
+    ai_weapon_library_t *library = AI_LoadWeaponLibrary(NULL);
     assert_non_null(library);
+    assert_string_equal(library->source_path, weapon_config_path);
 
     const bot_weapon_config_t *weapon_config = AI_GetWeaponConfig(library);
     assert_non_null(weapon_config);
 
-    ai_weapon_weights_t *weights = AI_LoadWeaponWeights(weight_config_path);
+    ai_weapon_weights_t *weights = AI_LoadWeaponWeights("default/defaul_w.c");
     assert_non_null(weights);
 
     int blaster_index = weapon_index_by_name(weapon_config, "Blaster");
@@ -229,16 +243,15 @@ static void test_bot_choose_best_fight_weapon_matches_reference(void **state)
     asset_path_or_skip("dev_tools/assets/default/defaul_w.c", weight_config_path, sizeof(weight_config_path));
 
     setup_botlib_environment();
-    LibVarSet("weaponconfig", weapon_config_path);
-    LibVarSet("max_weaponinfo", "64");
-    LibVarSet("max_projectileinfo", "64");
-
-    ai_weapon_library_t *library = AI_LoadWeaponLibrary(weapon_config_path);
+    ai_weapon_library_t *library = AI_LoadWeaponLibrary(NULL);
     assert_non_null(library);
+    assert_string_equal(library->source_path, weapon_config_path);
+
+    (void)weight_config_path;
 
     int weapon_handle = BotAllocWeaponState();
     assert_true(weapon_handle > 0);
-    assert_int_equal(BotLoadWeaponWeights(weapon_handle, weight_config_path), BLERR_NOERROR);
+    assert_int_equal(BotLoadWeaponWeights(weapon_handle, "default/defaul_w.c"), BLERR_NOERROR);
 
     int inventory[MAX_ITEMS];
     memset(inventory, 0, sizeof(inventory));

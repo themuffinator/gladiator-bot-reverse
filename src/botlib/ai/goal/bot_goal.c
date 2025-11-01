@@ -7,6 +7,8 @@
 #include <string.h>
 
 #include "../../aas/aas_local.h"
+#include "../../common/l_assets.h"
+#include "../../common/l_libvar.h"
 #include "../../common/l_log.h"
 #include "../../common/l_memory.h"
 
@@ -144,60 +146,23 @@ void BotResetGoalState(int handle)
 
 static bool BotGoal_BuildWeightPath(const char *filename, char *buffer, size_t size)
 {
-    if (filename == NULL || filename[0] == '\0' || buffer == NULL || size == 0)
+    if (buffer == NULL || size == 0)
     {
         return false;
     }
 
-    FILE *file = fopen(filename, "r");
-    if (file != NULL)
+    const char *requested = filename;
+    if (requested == NULL || requested[0] == '\0')
     {
-        fclose(file);
-        snprintf(buffer, size, "%s", filename);
-        return true;
+        requested = LibVarString("itemconfig", "items.c");
     }
 
-    const char *asset_root_env = getenv("GLADIATOR_ASSET_DIR");
-    if (asset_root_env != NULL && asset_root_env[0] != '\0')
+    if (requested == NULL || requested[0] == '\0')
     {
-        snprintf(buffer, size, "%s/itemconfig/%s", asset_root_env, filename);
-        file = fopen(buffer, "r");
-        if (file != NULL)
-        {
-            fclose(file);
-            return true;
-        }
-
-        snprintf(buffer, size, "%s/%s", asset_root_env, filename);
-        file = fopen(buffer, "r");
-        if (file != NULL)
-        {
-            fclose(file);
-            return true;
-        }
+        return false;
     }
 
-    const char *candidates[] = {
-        "dev_tools/assets/itemconfig",
-        "../dev_tools/assets/itemconfig",
-        "../../dev_tools/assets/itemconfig",
-        "dev_tools/assets",
-        "../dev_tools/assets",
-        "../../dev_tools/assets",
-    };
-
-    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i)
-    {
-        snprintf(buffer, size, "%s/%s", candidates[i], filename);
-        file = fopen(buffer, "r");
-        if (file != NULL)
-        {
-            fclose(file);
-            return true;
-        }
-    }
-
-    return false;
+    return BotLib_ResolveAssetPath(requested, "itemconfig", buffer, size);
 }
 
 static bool BotGoal_EnsureWeightCapacity(bot_goalstate_t *gs)
