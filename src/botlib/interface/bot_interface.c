@@ -21,6 +21,7 @@
 #include "../ai/chat/ai_chat.h"
 #include "../ai/character/bot_character.h"
 #include "../ai/weight/bot_weight.h"
+#include "../ai/goal/ai_goal.h"
 #include "../ai/goal_move_orchestrator.h"
 #include "../precomp/l_precomp.h"
 #include "botlib_interface.h"
@@ -956,6 +957,20 @@ static int BotSetupClient(int client, bot_settings_t *settings)
         return BLERR_INVALIDIMPORT;
     }
 
+    state->goal_handle = AI_GoalBotlib_AllocState(client);
+    if (state->goal_handle <= 0)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate goal handle for client %d\n",
+                            client);
+        AI_GoalState_Destroy(state->goal_state);
+        state->goal_state = NULL;
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    AI_GoalBotlib_ResetState(state->goal_handle);
+
     state->move_state = AI_MoveState_Create();
     if (state->move_state == NULL)
     {
@@ -1276,6 +1291,17 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
     if (state->goal_state == NULL || state->move_state == NULL)
     {
         return BLERR_INVALIDIMPORT;
+    }
+
+    if (state->goal_handle > 0)
+    {
+        AI_GoalBotlib_SynchroniseAvoid(state->goal_handle, state->goal_state, g_botInterfaceFrameTime);
+        AI_GoalBotlib_Update(state->goal_handle,
+                             state->last_client_update.origin,
+                             state->last_client_update.inventory,
+                             0,
+                             g_botInterfaceFrameTime,
+                             3.0f);
     }
 
     ai_goal_selection_t selection = {0};
@@ -1684,6 +1710,23 @@ bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotAI = BotAI;
     exportTable.BotConsoleMessage = BotConsoleMessage;
     exportTable.Test = BotInterface_Test;
+    exportTable.BotAllocGoalState = AI_GoalBotlib_AllocState;
+    exportTable.BotFreeGoalState = AI_GoalBotlib_FreeState;
+    exportTable.BotResetGoalState = AI_GoalBotlib_ResetState;
+    exportTable.BotLoadItemWeights = AI_GoalBotlib_LoadItemWeights;
+    exportTable.BotFreeItemWeights = AI_GoalBotlib_FreeItemWeights;
+    exportTable.BotPushGoal = AI_GoalBotlib_PushGoal;
+    exportTable.BotPopGoal = AI_GoalBotlib_PopGoal;
+    exportTable.BotGetTopGoal = AI_GoalBotlib_GetTopGoal;
+    exportTable.BotGetSecondGoal = AI_GoalBotlib_GetSecondGoal;
+    exportTable.BotChooseLTGItem = AI_GoalBotlib_ChooseLTG;
+    exportTable.BotChooseNBGItem = AI_GoalBotlib_ChooseNBG;
+    exportTable.BotResetAvoidGoals = AI_GoalBotlib_ResetAvoidGoals;
+    exportTable.BotAddAvoidGoal = AI_GoalBotlib_AddAvoidGoal;
+    exportTable.BotUpdateGoalState = AI_GoalBotlib_Update;
+    exportTable.BotRegisterLevelItem = AI_GoalBotlib_RegisterLevelItem;
+    exportTable.BotUnregisterLevelItem = AI_GoalBotlib_UnregisterLevelItem;
+    exportTable.BotMarkLevelItemTaken = AI_GoalBotlib_MarkItemTaken;
 
     return &exportTable;
 }

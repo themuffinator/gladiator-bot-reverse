@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../ai/goal/ai_goal.h"
+
 static bot_client_state_t *g_bot_state_table[MAX_CLIENTS];
 
 static void BotState_FreeResources(bot_client_state_t *state)
@@ -17,6 +19,9 @@ static void BotState_FreeResources(bot_client_state_t *state)
 
     if (state->goal_state != NULL) {
         AI_GoalState_Destroy(state->goal_state);
+    }
+    if (state->goal_handle > 0) {
+        AI_GoalBotlib_FreeState(state->goal_handle);
     }
 
     if (state->character != NULL) {
@@ -42,6 +47,7 @@ static void BotState_FreeResources(bot_client_state_t *state)
 
     state->goal_state = NULL;
     state->move_state = NULL;
+    state->goal_handle = 0;
     memset(&state->last_client_update, 0, sizeof(state->last_client_update));
     state->client_update_valid = false;
     state->last_update_time = 0.0f;

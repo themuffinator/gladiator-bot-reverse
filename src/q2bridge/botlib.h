@@ -4,6 +4,12 @@
 #include "shared/bot_types.h"
 #include "../shared/q_shared.h"
 
+struct bot_goal_s;
+typedef struct bot_goal_s bot_goal_t;
+
+struct bot_levelitem_setup_s;
+typedef struct bot_levelitem_setup_s bot_levelitem_setup_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -200,6 +206,23 @@ typedef struct bot_export_s {
     int (*BotAI)(int client, float thinktime);
     int (*BotConsoleMessage)(int client, int type, char *message);
     int (*Test)(int parm0, char *parm1, vec3_t parm2, vec3_t parm3);
+    int (*BotAllocGoalState)(int client);
+    void (*BotFreeGoalState)(int handle);
+    void (*BotResetGoalState)(int handle);
+    int (*BotLoadItemWeights)(int handle, const char *filename);
+    void (*BotFreeItemWeights)(int handle);
+    int (*BotPushGoal)(int handle, const bot_goal_t *goal);
+    int (*BotPopGoal)(int handle);
+    int (*BotGetTopGoal)(int handle, bot_goal_t *goal);
+    int (*BotGetSecondGoal)(int handle, bot_goal_t *goal);
+    int (*BotChooseLTGItem)(int handle, vec3_t origin, int *inventory, int travelflags);
+    int (*BotChooseNBGItem)(int handle, vec3_t origin, int *inventory, int travelflags, bot_goal_t *ltg, float maxtime);
+    void (*BotResetAvoidGoals)(int handle);
+    void (*BotAddAvoidGoal)(int handle, int number, float avoidtime);
+    int (*BotUpdateGoalState)(int handle, vec3_t origin, int *inventory, int travelflags, float now, float nearby_time);
+    int (*BotRegisterLevelItem)(const bot_levelitem_setup_t *setup);
+    void (*BotUnregisterLevelItem)(int number);
+    void (*BotMarkLevelItemTaken)(int number, float respawn_delay);
 } bot_export_t;
 
 // Bot library imported functions
