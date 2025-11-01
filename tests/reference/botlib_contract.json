@@ -139,6 +139,43 @@
       ]
     },
     {
+      "address": "bridge::diagnostics",
+      "category": "bridge",
+      "messages": [
+        {
+          "address": "bridge::inactive_client",
+          "severity": 2,
+          "source": "unit_test",
+          "text": "tried to updated inactive bot client\n"
+        },
+        {
+          "address": "bridge::aas_not_loaded",
+          "severity": 1,
+          "source": "unit_test",
+          "text": "AAS_UpdateEntity: not loaded\n"
+        },
+        {
+          "address": "bridge::brush_relink",
+          "severity": 1,
+          "source": "unit_test",
+          "text": "[q2bridge] relinking brush model ent %d\n"
+        }
+      ],
+      "name": "BridgeDiagnostics",
+      "return_codes": [
+        {
+          "address": "bridge::inactive_client_code",
+          "source": "unit_test",
+          "value": 24
+        },
+        {
+          "address": "bridge::aas_not_loaded_code",
+          "source": "unit_test",
+          "value": 5
+        }
+      ]
+    },
+    {
       "address": "0x10037fe0",
       "category": "export",
       "messages": [],

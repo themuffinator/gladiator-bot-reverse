@@ -121,6 +121,16 @@ void QuantizeEulerDegrees(vec3_t angles);
 bool CopyIfChanged(const vec3_t src, vec3_t dst_out);
 
 /**
+ * \brief Configure whether the AAS world is available for entity translation.
+ */
+void TranslateEntity_SetWorldLoaded(qboolean loaded);
+
+/**
+ * \brief Update the current frame time used for entity delta calculations.
+ */
+void TranslateEntity_SetCurrentTime(float time);
+
+/**
  * \brief Translate BotUpdateClient payload into the local AASClientFrame.
  *
  * The function is responsible for:
