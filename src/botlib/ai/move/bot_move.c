@@ -742,6 +742,160 @@ static void BotMove_TravelFuncBob(bot_movestate_t *ms,
     result->flags |= MOVERESULT_ONTOPOF_FUNCBOB;
 }
 
+static const bot_mover_catalogue_entry_t *BotMove_FindMoverEntry(int entnum, int *outModelnum)
+{
+    if (aasworld.entities == NULL || aasworld.maxEntities <= 0)
+    {
+        return NULL;
+    }
+
+    if (entnum < 0 || entnum >= aasworld.maxEntities)
+    {
+        return NULL;
+    }
+
+    const aas_entity_t *entity = &aasworld.entities[entnum];
+    if (entity == NULL || !entity->inuse || entity->solid != SOLID_BSP)
+    {
+        return NULL;
+    }
+
+    int modelnum = AAS_ModelNumForEntity(entnum);
+    if (modelnum <= 0)
+    {
+        return NULL;
+    }
+
+    const bot_mover_catalogue_entry_t *entry = BotMove_MoverCatalogueFindByModel(modelnum);
+    if (entry == NULL)
+    {
+        return NULL;
+    }
+
+    if (outModelnum != NULL)
+    {
+        *outModelnum = modelnum;
+    }
+
+    return entry;
+}
+
+static void BotMove_HandleMoverLanding(bot_movestate_t *ms,
+                                       int dispatchedReachIndex,
+                                       const aas_reachability_t *dispatchedReach,
+                                       bot_moveresult_t *result,
+                                       int *ioReachIndex,
+                                       int *ioReachArea,
+                                       float *ioReachabilityTime)
+{
+    if (ms == NULL || result == NULL || dispatchedReach == NULL ||
+        ioReachIndex == NULL || ioReachArea == NULL || ioReachabilityTime == NULL)
+    {
+        return;
+    }
+
+    if (aasworld.entities == NULL || aasworld.areaEntityLists == NULL ||
+        aasworld.areaEntityListCount == 0U)
+    {
+        return;
+    }
+
+    if (ms->entitynum < 0 || ms->entitynum >= aasworld.maxEntities)
+    {
+        return;
+    }
+
+    const aas_entity_t *botEntity = &aasworld.entities[ms->entitynum];
+    if (botEntity == NULL || !botEntity->inuse)
+    {
+        return;
+    }
+
+    for (aas_link_t *areaLink = botEntity->areas; areaLink != NULL; areaLink = areaLink->next_area)
+    {
+        int area = areaLink->areanum;
+        if (area < 0)
+        {
+            continue;
+        }
+
+        size_t listIndex = (size_t)area;
+        if (listIndex >= aasworld.areaEntityListCount)
+        {
+            continue;
+        }
+
+        for (aas_link_t *entLink = aasworld.areaEntityLists[listIndex]; entLink != NULL; entLink = entLink->next_ent)
+        {
+            int entnum = entLink->entnum;
+            if (entnum == ms->entitynum)
+            {
+                continue;
+            }
+
+            int modelnum = 0;
+            const bot_mover_catalogue_entry_t *entry = BotMove_FindMoverEntry(entnum, &modelnum);
+            if (entry == NULL)
+            {
+                continue;
+            }
+
+            aas_reachability_t moverReach;
+            int reachnum = AAS_NextModelReachability(0, modelnum);
+            if (reachnum <= 0 || !BotMove_LoadReachability(reachnum, &moverReach))
+            {
+                bool assumeFuncBob = (entry->height > 0.0f);
+                result->blocked = 1;
+                result->blockentity = entnum;
+                if (assumeFuncBob)
+                {
+                    result->flags |= MOVERESULT_ONTOPOF_FUNCBOB;
+                    result->type = RESULTTYPE_WAITFORFUNCBOBBING;
+                }
+                else
+                {
+                    result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
+                    result->type = RESULTTYPE_ELEVATORUP;
+                }
+                result->flags |= MOVERESULT_ONTOPOFOBSTACLE;
+                return;
+            }
+
+            int traveltype = moverReach.traveltype & TRAVELTYPE_MASK;
+            if (traveltype != TRAVEL_ELEVATOR && traveltype != TRAVEL_FUNCBOB)
+            {
+                continue;
+            }
+
+            int moverModel = moverReach.facenum & 0x0000FFFF;
+            int dispatchedModel = dispatchedReach->facenum & 0x0000FFFF;
+            bool sameModel = (dispatchedReachIndex > 0) &&
+                             ((dispatchedReach->traveltype & TRAVELTYPE_MASK) == traveltype) &&
+                             (dispatchedModel == moverModel);
+
+            if (traveltype == TRAVEL_ELEVATOR)
+            {
+                result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
+                result->type = RESULTTYPE_ELEVATORUP;
+            }
+            else
+            {
+                result->flags |= MOVERESULT_ONTOPOF_FUNCBOB;
+                result->type = RESULTTYPE_WAITFORFUNCBOBBING;
+            }
+
+            if (!sameModel)
+            {
+                *ioReachIndex = reachnum;
+                *ioReachArea = moverReach.areanum;
+            }
+
+            *ioReachabilityTime = aasworld.time + 5.0f;
+            return;
+        }
+    }
+}
+
 static void BotMove_DispatchTravel(bot_movestate_t *ms,
                                    const aas_reachability_t *reach,
                                    bot_moveresult_t *result)
@@ -794,10 +948,6 @@ static void BotMove_DispatchTravel(bot_movestate_t *ms,
             result->traveltype = traveltype;
             return;
         }
-        case TRAVEL_ELEVATOR:
-            result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
-            BotMove_TravelGrapple(ms, reach, &temp);
-            break;
         case TRAVEL_ROCKETJUMP:
             BotMove_TravelJump(ms, reach, &temp, TRAVEL_ROCKETJUMP);
             break;
@@ -820,8 +970,6 @@ static void BotMove_DispatchTravel(bot_movestate_t *ms,
     }
 
     BotMove_CopyMoveResult(result, &temp);
-    ms->reachability_time = aasworld.time + BotMove_TravelTimeout(traveltype);
-    ms->reachareanum = reach->areanum;
 }
 
 int BotAllocMoveState(void)
@@ -999,9 +1147,30 @@ void BotMoveToGoal(bot_moveresult_t *result,
     }
 
     BotMove_DispatchTravel(ms, &reach, result);
+
+    int traveltype = reach.traveltype & TRAVELTYPE_MASK;
+    int finalReachIndex = reachIndex;
+    int finalReachArea = reach.areanum;
+    float finalReachabilityTime = aasworld.time + BotMove_TravelTimeout(traveltype);
+
+    BotMove_HandleMoverLanding(ms,
+                               reachIndex,
+                               &reach,
+                               result,
+                               &finalReachIndex,
+                               &finalReachArea,
+                               &finalReachabilityTime);
+
     result->flags |= resultFlags;
 
-    ms->lastreachnum = reachIndex;
+    if (result->blocked)
+    {
+        return;
+    }
+
+    ms->reachability_time = finalReachabilityTime;
+    ms->lastreachnum = finalReachIndex;
+    ms->reachareanum = finalReachArea;
     ms->lastgoalareanum = goal->areanum;
     ms->lastareanum = ms->areanum;
     VectorCopy(ms->origin, ms->lastorigin);

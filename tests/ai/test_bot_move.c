@@ -212,6 +212,117 @@ static int test_teardown(void **state)
     return 0;
 }
 
+static void test_bot_move_handles_elevator_landing(void **state)
+{
+    (void)state;
+
+    BotMove_MoverCatalogueReset();
+
+    aasworld.time = 2.0f;
+    aasworld.numAreas = 2;
+    aasworld.numAreaSettings = 3;
+    aasworld.areasettings = calloc(3, sizeof(aas_areasettings_t));
+    assert_non_null(aasworld.areasettings);
+    aasworld.areasettings[1].firstreachablearea = 1;
+    aasworld.areasettings[1].numreachableareas = 1;
+
+    aasworld.numReachability = 2;
+    aasworld.reachability = calloc(2, sizeof(aas_reachability_t));
+    assert_non_null(aasworld.reachability);
+    aasworld.reachability[1].areanum = 2;
+    aasworld.reachability[1].traveltype = TRAVEL_ELEVATOR;
+    aasworld.reachability[1].facenum = 5;
+
+    aasworld.travelflagfortype[TRAVEL_WALK] = TFL_WALK;
+    aasworld.travelflagfortype[TRAVEL_ELEVATOR] = TFL_ELEVATOR;
+
+    aasworld.areaEntityListCount = 3U;
+    aasworld.areaEntityLists = calloc(aasworld.areaEntityListCount, sizeof(aas_link_t *));
+    assert_non_null(aasworld.areaEntityLists);
+
+    aasworld.maxEntities = 3;
+    aasworld.entities = calloc((size_t)aasworld.maxEntities, sizeof(aas_entity_t));
+    assert_non_null(aasworld.entities);
+
+    aasworld.entities[1].inuse = qtrue;
+    aasworld.entities[1].number = 1;
+
+    aasworld.entities[2].inuse = qtrue;
+    aasworld.entities[2].number = 2;
+    aasworld.entities[2].solid = SOLID_BSP;
+    aasworld.entities[2].modelindex = 5;
+
+    aas_link_t *botLink = calloc(1, sizeof(aas_link_t));
+    aas_link_t *moverLink = calloc(1, sizeof(aas_link_t));
+    assert_non_null(botLink);
+    assert_non_null(moverLink);
+
+    botLink->entnum = 1;
+    botLink->areanum = 1;
+    moverLink->entnum = 2;
+    moverLink->areanum = 1;
+    moverLink->next_ent = botLink;
+    botLink->prev_ent = moverLink;
+
+    aasworld.areaEntityLists[1] = moverLink;
+    aasworld.entities[1].areas = botLink;
+    aasworld.entities[2].areas = moverLink;
+
+    bot_mover_catalogue_entry_t entry = {
+        .modelnum = 5,
+        .lip = 8.0f,
+        .height = 0.0f,
+        .speed = 200.0f,
+        .spawnflags = 0,
+        .doortype = 0,
+    };
+    assert_true(BotMove_MoverCatalogueInsert(&entry));
+
+    int handle = BotAllocMoveState();
+    assert_int_not_equal(handle, 0);
+    bot_movestate_t *ms = BotMoveStateFromHandle(handle);
+    assert_non_null(ms);
+    ms->entitynum = 1;
+    ms->areanum = 1;
+    VectorClear(ms->origin);
+
+    bot_goal_t goal = {0};
+    goal.areanum = 2;
+
+    bot_moveresult_t result;
+    BotClearMoveResult(&result);
+
+    BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+
+    assert_false(result.blocked);
+    assert_true(result.flags & MOVERESULT_ONTOPOF_ELEVATOR);
+    assert_int_equal(result.type, RESULTTYPE_ELEVATORUP);
+    assert_int_equal(ms->lastreachnum, 1);
+    assert_int_equal(ms->reachareanum, 2);
+    float timeoutDelta = ms->reachability_time - aasworld.time;
+    assert_true(timeoutDelta > 4.9f && timeoutDelta < 5.1f);
+
+    BotFreeMoveState(handle);
+    BotMove_MoverCatalogueReset();
+
+    free(botLink);
+    free(moverLink);
+    free(aasworld.areasettings);
+    free(aasworld.reachability);
+    free(aasworld.areaEntityLists);
+    free(aasworld.entities);
+
+    aasworld.areasettings = NULL;
+    aasworld.reachability = NULL;
+    aasworld.areaEntityLists = NULL;
+    aasworld.entities = NULL;
+    aasworld.numAreaSettings = 0;
+    aasworld.numReachability = 0;
+    aasworld.areaEntityListCount = 0U;
+    aasworld.maxEntities = 0;
+    aasworld.numAreas = 0;
+}
+
 static void test_bot_travel_grapple_hook_toggles(void **state)
 {
     (void)state;
@@ -256,6 +367,9 @@ static void test_bot_travel_grapple_hook_toggles(void **state)
 int main(void)
 {
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test_setup_teardown(test_bot_move_handles_elevator_landing,
+                                        test_setup,
+                                        test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_travel_grapple_hook_toggles,
                                         test_setup,
                                         test_teardown),
