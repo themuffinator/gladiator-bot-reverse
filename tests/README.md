@@ -92,6 +92,26 @@ that reachability records expose the travel times baked into the sample AAS
 file. If the files are missing the harness prints a skip reason so CI jobs that
 do not stage the optional assets continue to pass.
 
+### Bot interface parity mover fixtures
+
+The parity suite (`tests/parity/test_bot_interface.c`) includes
+`test_bot_bridge_tracks_mover_entity_updates`, which exercises the mover
+catalogue against a miniature Quake III map. The test expects the following
+assets to be present under the active asset root:
+
+- `${PROJECT_SOURCE_DIR}/dev_tools/assets/maps/test_mover.bsp`
+- `${PROJECT_SOURCE_DIR}/dev_tools/assets/maps/test_mover.aas`
+
+`asset_env_initialise` (from `tests/support/asset_env.c`) stages
+`${PROJECT_SOURCE_DIR}/dev_tools/assets` as `GLADIATOR_ASSET_DIR`, switches the
+working directory to that location, and records the path so fixtures can probe
+`maps/test_mover.*`. When either file is missing `ensure_map_fixture` prints a
+diagnostic such as `bot interface parity skipped: missing
+${PROJECT_SOURCE_DIR}/dev_tools/assets/maps/test_mover.aas`, and the test calls
+`cmocka_skip()` to report a skipped case rather than a failure. CI operators
+should install the BSP/AAS pair in the listed directory so the mover parity
+checks remain active.
+
 To streamline build-system integration, we anticipate driving these tests via
 `CTest` invoking a lightweight **GoogleTest** harness.  The harness will provide
 fixtures for seeding the mocked `bot_import_t` table, helpers for table diffing,
