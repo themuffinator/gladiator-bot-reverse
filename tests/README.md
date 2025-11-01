@@ -54,6 +54,31 @@ drives `BotSetupClient` also overrides `weaponconfig`, `max_weaponinfo`, and
 `max_projectileinfo` through the exported `BotLibVarSet` hook so the weapon
 library and weight tables resolve to the repository assets.
 
+## AAS regression tests
+
+The navigation harness under `tests/aas/` boots the botlib memory system and
+loads a miniature BSP/AAS pair to exercise `AAS_LoadMap` and
+`AAS_UpdateEntity`. To keep the tests deterministic:
+
+- Download `test_nav.bsp` and `test_nav.aas` separately (for example, from the
+  original Gladiator bot asset distribution) and place them under a directory
+  referenced by `GLADIATOR_AAS_TEST_ASSET_DIR`. When the environment variable is
+  unset the harness falls back to `${PROJECT_SOURCE_DIR}/dev_tools/assets`, so
+  copying the files into `dev_tools/assets/maps/` also satisfies the
+  requirement.
+- Set `GLADIATOR_ASSET_DIR` (or run from the harness root) so `AAS_LoadMap`
+  resolves paths relative to the asset directory. The tests automatically set
+  the variable to the chosen asset root when it is not already configured.
+- Provide a writable working directory: the fixture temporarily changes into
+  the asset root so the loader can open `maps/test_nav.*` using the same
+  relative paths as the game.
+
+With those prerequisites satisfied the harness will verify that `aasworld` is
+initialised correctly, that entity updates populate the expected area links, and
+that reachability records expose the travel times baked into the sample AAS
+file. If the files are missing the harness prints a skip reason so CI jobs that
+do not stage the optional assets continue to pass.
+
 To streamline build-system integration, we anticipate driving these tests via
 `CTest` invoking a lightweight **GoogleTest** harness.  The harness will provide
 fixtures for seeding the mocked `bot_import_t` table, helpers for table diffing,
