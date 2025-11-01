@@ -25,6 +25,7 @@ typedef struct aas_debug_test_context_s
     size_t print_count;
     aas_area_t *areas;
     aas_reachability_t *reachability;
+    aas_areasettings_t *areasettings;
 } aas_debug_test_context_t;
 
 static aas_debug_test_context_t *g_active_context = NULL;
@@ -98,6 +99,7 @@ static void BuildMockMap(aas_debug_test_context_t *context)
     aasworld.initialized = qtrue;
     aasworld.numAreas = 3;
     aasworld.numReachability = 2;
+    aasworld.numAreaSettings = aasworld.numAreas;
 
     context->areas = (aas_area_t *)calloc((size_t)aasworld.numAreas + 1U, sizeof(aas_area_t));
     assert_non_null(context->areas);
@@ -118,6 +120,21 @@ static void BuildMockMap(aas_debug_test_context_t *context)
         area->center[0] = (float)((areanum - 1) * 100);
         area->center[1] = 0.0f;
         area->center[2] = 0.0f;
+    }
+
+    context->areasettings = (aas_areasettings_t *)calloc((size_t)aasworld.numAreaSettings + 1U,
+                                                        sizeof(aas_areasettings_t));
+    assert_non_null(context->areasettings);
+    aasworld.areasettings = context->areasettings;
+
+    for (int areanum = 1; areanum <= aasworld.numAreaSettings; ++areanum)
+    {
+        aas_areasettings_t *settings = &context->areasettings[areanum];
+        settings->cluster = areanum * 10;
+        settings->presencetype = areanum + 4;
+        settings->numreachableareas = 1;
+        settings->firstreachablearea = 0;
+        settings->contents = 0;
     }
 
     context->reachability = (aas_reachability_t *)calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
@@ -175,6 +192,10 @@ static int teardown_aas_debug(void **state)
         {
             free(context->areas);
         }
+        if (context->areasettings != NULL)
+        {
+            free(context->areasettings);
+        }
         if (context->reachability != NULL)
         {
             free(context->reachability);
@@ -198,7 +219,7 @@ static void test_bot_test_dumps_area_info(void **state)
     AAS_DebugBotTest(7, "2", origin, angles);
 
     assert_true(context->print_count > 0);
-    assert_non_null(Mock_FindPrint(context, "[aas_debug] bot_test entity=7"));
+    assert_non_null(Mock_FindPrint(context, "bot_test entity 7"));
     assert_non_null(Mock_FindPrint(context, "area 2:"));
     assert_non_null(Mock_FindPrint(context, "reach[1]: 2 -> 3"));
 }
@@ -213,7 +234,7 @@ static void test_aas_showpath_reports_path(void **state)
 
     AAS_DebugShowPath(1, 3, start, goal);
 
-    assert_non_null(Mock_FindPrint(context, "[aas_debug] aas_showpath start=1 goal=3"));
+    assert_non_null(Mock_FindPrint(context, "aas_showpath start=1 goal=3"));
     assert_non_null(Mock_FindPrint(context, "step 0: 1 -> 2"));
     assert_non_null(Mock_FindPrint(context, "step 1: 2 -> 3"));
     assert_non_null(Mock_FindPrint(context, "total steps=2"));

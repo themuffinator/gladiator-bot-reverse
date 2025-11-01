@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "../aas/aas_map.h"
+#include "../aas/aas_debug.h"
 #include "../aas/aas_sound.h"
 #include "../ea/ea_local.h"
 #include "../ai/weapon/bot_weapon.h"
@@ -362,6 +363,8 @@ int BotSetupLibrary(void)
         return status;
     }
 
+    AAS_DebugRegisterConsoleCommands();
+
     g_library_initialised = true;
     return BLERR_NOERROR;
 }
@@ -371,6 +374,8 @@ int BotShutdownLibrary(void)
     if (!g_library_initialised) {
         return BLERR_LIBRARYNOTSETUP;
     }
+
+    AAS_DebugUnregisterConsoleCommands();
 
     Botlib_ShutdownSoundSubsystem();
     Botlib_ShutdownAISubsystem();

@@ -15,6 +15,10 @@ void AAS_DebugShowPath(int startArea, int goalArea, const vec3_t start, const ve
 
 void AAS_DebugShowAreas(const int *areas, size_t areaCount);
 
+void AAS_DebugRegisterConsoleCommands(void);
+
+void AAS_DebugUnregisterConsoleCommands(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

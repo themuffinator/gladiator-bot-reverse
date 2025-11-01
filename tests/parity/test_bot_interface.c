@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
 
 #include <cmocka.h>
 
@@ -23,6 +24,7 @@
 #include "botlib/common/l_utils.h"
 #include "botlib/aas/aas_sound.h"
 #include "botlib/aas/aas_local.h"
+#include "botlib/aas/aas_debug.h"
 #include "botlib_contract_loader.h"
 #include "../support/asset_env.h"
 #include "q2bridge/bridge_config.h"
@@ -48,6 +50,14 @@ typedef struct mock_bot_import_s
     bot_input_t inputs[64];
     int input_clients[64];
     size_t bot_input_count;
+    struct
+    {
+        char name[64];
+        void (*function)(void);
+    } commands[16];
+    size_t command_count;
+    char *command_args[16];
+    int command_argc;
 } mock_bot_import_t;
 
 typedef struct bot_interface_test_context_s
@@ -181,6 +191,173 @@ static void Mock_DebugLineShow(int line, vec3_t start, vec3_t end, int color)
     (void)color;
 }
 
+static void Mock_ClearCommandArgs(mock_bot_import_t *mock)
+{
+    if (mock == NULL)
+    {
+        return;
+    }
+
+    for (int index = 0; index < mock->command_argc; ++index)
+    {
+        free(mock->command_args[index]);
+        mock->command_args[index] = NULL;
+    }
+
+    mock->command_argc = 0;
+}
+
+static char *Mock_DuplicateString(const char *text)
+{
+    if (text == NULL)
+    {
+        return NULL;
+    }
+
+    size_t length = strlen(text);
+    char *copy = (char *)malloc(length + 1);
+    if (copy == NULL)
+    {
+        return NULL;
+    }
+
+    memcpy(copy, text, length);
+    copy[length] = '\0';
+    return copy;
+}
+
+static void Mock_SetCommandArgs(mock_bot_import_t *mock, const char *command, const char *args_line)
+{
+    if (mock == NULL)
+    {
+        return;
+    }
+
+    Mock_ClearCommandArgs(mock);
+
+    if (command != NULL)
+    {
+        mock->command_args[mock->command_argc++] = Mock_DuplicateString(command);
+    }
+
+    if (args_line == NULL)
+    {
+        return;
+    }
+
+    const char *cursor = args_line;
+    while (*cursor != '\0' && mock->command_argc < (int)ARRAY_LEN(mock->command_args))
+    {
+        while (*cursor != '\0' && isspace((unsigned char)*cursor))
+        {
+            ++cursor;
+        }
+
+        if (*cursor == '\0')
+        {
+            break;
+        }
+
+        const char *start = cursor;
+        while (*cursor != '\0' && !isspace((unsigned char)*cursor))
+        {
+            ++cursor;
+        }
+
+        size_t length = (size_t)(cursor - start);
+        char *token = (char *)malloc(length + 1);
+        if (token == NULL)
+        {
+            break;
+        }
+
+        memcpy(token, start, length);
+        token[length] = '\0';
+        mock->command_args[mock->command_argc++] = token;
+    }
+}
+
+static void Mock_AddCommand(const char *name, void (*function)(void))
+{
+    if (g_active_mock == NULL || name == NULL || function == NULL)
+    {
+        return;
+    }
+
+    if (g_active_mock->command_count >= ARRAY_LEN(g_active_mock->commands))
+    {
+        return;
+    }
+
+    size_t index = g_active_mock->command_count++;
+    strncpy(g_active_mock->commands[index].name, name, sizeof(g_active_mock->commands[index].name) - 1);
+    g_active_mock->commands[index].name[sizeof(g_active_mock->commands[index].name) - 1] = '\0';
+    g_active_mock->commands[index].function = function;
+}
+
+static void Mock_RemoveCommand(const char *name)
+{
+    if (g_active_mock == NULL || name == NULL)
+    {
+        return;
+    }
+
+    for (size_t index = 0; index < g_active_mock->command_count; ++index)
+    {
+        if (strcmp(g_active_mock->commands[index].name, name) == 0)
+        {
+            for (size_t move = index; move + 1 < g_active_mock->command_count; ++move)
+            {
+                g_active_mock->commands[move] = g_active_mock->commands[move + 1];
+            }
+            g_active_mock->command_count -= 1U;
+            break;
+        }
+    }
+}
+
+static int Mock_CmdArgc(void)
+{
+    if (g_active_mock == NULL)
+    {
+        return 0;
+    }
+
+    return g_active_mock->command_argc;
+}
+
+static const char *Mock_CmdArgv(int index)
+{
+    if (g_active_mock == NULL || index < 0 || index >= g_active_mock->command_argc)
+    {
+        return NULL;
+    }
+
+    return g_active_mock->command_args[index];
+}
+
+static void Mock_InvokeCommand(mock_bot_import_t *mock, const char *name, const char *args)
+{
+    if (mock == NULL || name == NULL)
+    {
+        return;
+    }
+
+    for (size_t index = 0; index < mock->command_count; ++index)
+    {
+        if (strcmp(mock->commands[index].name, name) == 0)
+        {
+            Mock_SetCommandArgs(mock, name, args);
+            if (mock->commands[index].function != NULL)
+            {
+                mock->commands[index].function();
+            }
+            Mock_ClearCommandArgs(mock);
+            return;
+        }
+    }
+}
+
 static void Mock_Reset(mock_bot_import_t *mock)
 {
     if (mock == NULL)
@@ -193,6 +370,65 @@ static void Mock_Reset(mock_bot_import_t *mock)
     memset(mock->input_clients, 0, sizeof(mock->input_clients));
     mock->print_count = 0;
     mock->bot_input_count = 0;
+    mock->command_count = 0;
+    Mock_ClearCommandArgs(mock);
+}
+
+static void Mock_ClearPrints(mock_bot_import_t *mock)
+{
+    if (mock == NULL)
+    {
+        return;
+    }
+
+    memset(mock->prints, 0, sizeof(mock->prints));
+    mock->print_count = 0;
+}
+
+static void Mock_CopyPrints(const mock_bot_import_t *mock,
+                            captured_print_t *dest,
+                            size_t dest_capacity,
+                            size_t *out_count)
+{
+    if (out_count == NULL)
+    {
+        return;
+    }
+
+    *out_count = 0;
+
+    if (mock == NULL || dest == NULL || dest_capacity == 0)
+    {
+        return;
+    }
+
+    size_t count = mock->print_count;
+    if (count > dest_capacity)
+    {
+        count = dest_capacity;
+    }
+
+    for (size_t index = 0; index < count; ++index)
+    {
+        dest[index] = mock->prints[index];
+    }
+
+    *out_count = count;
+}
+
+static void Mock_AssertPrintsMatch(const captured_print_t *expected,
+                                   size_t expected_count,
+                                   const mock_bot_import_t *actual)
+{
+    assert_non_null(expected);
+    assert_non_null(actual);
+
+    assert_int_equal(actual->print_count, expected_count);
+    for (size_t index = 0; index < expected_count; ++index)
+    {
+        assert_int_equal(actual->prints[index].type, expected[index].type);
+        assert_string_equal(actual->prints[index].message, expected[index].message);
+    }
 }
 
 static const char *Mock_FindPrint(const mock_bot_import_t *mock, const char *needle)
@@ -240,8 +476,103 @@ static void Mock_AssertPrintContains(const mock_bot_import_t *mock,
     assert_non_null(entry);
     if (expected_type >= 0)
     {
-        assert_int_equal(entry->type, expected_type);
+    assert_int_equal(entry->type, expected_type);
     }
+}
+
+static void test_console_commands_register(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    assert_int_equal(context->mock.command_count, 3);
+    assert_string_equal(context->mock.commands[0].name, "bot_test");
+    assert_non_null(context->mock.commands[0].function);
+    assert_string_equal(context->mock.commands[1].name, "aas_showpath");
+    assert_non_null(context->mock.commands[1].function);
+    assert_string_equal(context->mock.commands[2].name, "aas_showareas");
+    assert_non_null(context->mock.commands[2].function);
+
+    context->api->BotShutdownLibrary();
+
+    assert_int_equal(context->mock.command_count, 0);
+}
+
+static void test_console_commands_invoke(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    if (!ensure_map_fixture(&context->assets, "test1"))
+    {
+        cmocka_skip();
+    }
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(context->mock.command_count, 3);
+
+    char *sounds[] = {"player/step1.wav"};
+    status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 1, sounds, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(aasworld.loaded);
+    assert_true(aasworld.numAreas > 0);
+
+    vec3_t zero = {0.0f, 0.0f, 0.0f};
+
+    captured_print_t expected_bot_test[ARRAY_LEN(context->mock.prints)];
+    size_t expected_bot_test_count = 0U;
+
+    Mock_ClearPrints(&context->mock);
+    AAS_DebugBotTest(0, "1", zero, zero);
+    Mock_CopyPrints(&context->mock,
+                    expected_bot_test,
+                    ARRAY_LEN(expected_bot_test),
+                    &expected_bot_test_count);
+
+    Mock_ClearPrints(&context->mock);
+    Mock_InvokeCommand(&context->mock, "bot_test", "1");
+    Mock_AssertPrintsMatch(expected_bot_test, expected_bot_test_count, &context->mock);
+
+    captured_print_t expected_showpath[ARRAY_LEN(context->mock.prints)];
+    size_t expected_showpath_count = 0U;
+
+    Mock_ClearPrints(&context->mock);
+    AAS_DebugShowPath(1, 2, zero, zero);
+    Mock_CopyPrints(&context->mock,
+                    expected_showpath,
+                    ARRAY_LEN(expected_showpath),
+                    &expected_showpath_count);
+
+    Mock_ClearPrints(&context->mock);
+    Mock_InvokeCommand(&context->mock, "aas_showpath", "1 2");
+    Mock_AssertPrintsMatch(expected_showpath, expected_showpath_count, &context->mock);
+
+    int invalid_area = aasworld.numAreas + 5;
+    int area_list[] = {1, invalid_area};
+    captured_print_t expected_showareas[ARRAY_LEN(context->mock.prints)];
+    size_t expected_showareas_count = 0U;
+
+    Mock_ClearPrints(&context->mock);
+    AAS_DebugShowAreas(area_list, ARRAY_LEN(area_list));
+    Mock_CopyPrints(&context->mock,
+                    expected_showareas,
+                    ARRAY_LEN(expected_showareas),
+                    &expected_showareas_count);
+
+    char area_args[64];
+    snprintf(area_args, sizeof(area_args), "%d %d", area_list[0], area_list[1]);
+
+    Mock_ClearPrints(&context->mock);
+    Mock_InvokeCommand(&context->mock, "aas_showareas", area_args);
+    Mock_AssertPrintsMatch(expected_showareas, expected_showareas_count, &context->mock);
+
+    context->api->BotShutdownLibrary();
 }
 
 static int setup_bot_interface(void **state)
@@ -268,6 +599,10 @@ static int setup_bot_interface(void **state)
     context->mock.table.DebugLineCreate = Mock_DebugLineCreate;
     context->mock.table.DebugLineDelete = Mock_DebugLineDelete;
     context->mock.table.DebugLineShow = Mock_DebugLineShow;
+    context->mock.table.AddCommand = Mock_AddCommand;
+    context->mock.table.RemoveCommand = Mock_RemoveCommand;
+    context->mock.table.CmdArgc = Mock_CmdArgc;
+    context->mock.table.CmdArgv = Mock_CmdArgv;
 
     LibVar_Init();
     context->libvar_initialised = true;
@@ -1261,6 +1596,12 @@ static void test_bot_bridge_tracks_mover_entity_updates(void **state)
 int main(void)
 {
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test_setup_teardown(test_console_commands_register,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_console_commands_invoke,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_load_map_requires_library,
                                         setup_bot_interface,
                                         teardown_bot_interface),

@@ -247,6 +247,10 @@ typedef struct bot_import_s {
     int  (*DebugLineCreate)(void);
     void (*DebugLineDelete)(int line);
     void (*DebugLineShow)(int line, vec3_t start, vec3_t end, int color);
+    void (*AddCommand)(const char *name, void (*function)(void));
+    void (*RemoveCommand)(const char *name);
+    int (*CmdArgc)(void);
+    const char *(*CmdArgv)(int index);
 } bot_import_t;
 
 bot_export_t *GetBotAPI(bot_import_t *import);
