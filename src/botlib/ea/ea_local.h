@@ -23,6 +23,7 @@ void EA_LookAtPoint(int client, const vec3_t eye_position, const vec3_t target_p
 
 void EA_Move(int client, const vec3_t direction, float speed);
 void EA_ClearMovement(int client);
+void EA_SelectWeapon(int client, int weapon);
 
 void EA_Attack(int client);
 void EA_Use(int client);

@@ -31,6 +31,9 @@ typedef struct bridge_config_cache_s {
     libvar_t *soundconfig;
     libvar_t *max_soundinfo;
     libvar_t *max_aassounds;
+    libvar_t *dmflags;
+    libvar_t *usehook;
+    libvar_t *rocketjump;
 } bridge_config_cache_t;
 
 static bridge_config_cache_t g_bridge_config_cache;
@@ -107,6 +110,9 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.soundconfig, "soundconfig", "sounds.c");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_soundinfo, "max_soundinfo", "256");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_aassounds, "max_aassounds", "256");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.dmflags, "dmflags", "0");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.usehook, "usehook", "1");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.rocketjump, "rocketjump", "1");
 
     g_bridge_config_initialised = true;
     return true;
@@ -236,4 +242,17 @@ libvar_t *Bridge_MaxSoundInfo(void)
 libvar_t *Bridge_MaxAASSounds(void)
 {
     return g_bridge_config_cache.max_aassounds;
+libvar_t *Bridge_DMFlags(void)
+{
+    return g_bridge_config_cache.dmflags;
+}
+
+libvar_t *Bridge_UseHook(void)
+{
+    return g_bridge_config_cache.usehook;
+}
+
+libvar_t *Bridge_RocketJump(void)
+{
+    return g_bridge_config_cache.rocketjump;
 }

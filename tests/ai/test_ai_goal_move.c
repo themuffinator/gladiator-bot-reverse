@@ -239,6 +239,9 @@ static int goal_move_setup(void **state)
     LibVarSet("itemconfig", "items.c");
     LibVarSet("max_weaponinfo", "64");
     LibVarSet("max_projectileinfo", "64");
+    LibVarSet("dmflags", "0");
+    LibVarSet("usehook", "1");
+    LibVarSet("rocketjump", "1");
 
     assert_true(BotMemory_Init(TEST_BOTLIB_HEAP_SIZE));
     env->memory_initialised = true;
@@ -251,6 +254,9 @@ static int goal_move_setup(void **state)
     env->exports->BotLibVarSet("itemconfig", "items.c");
     env->exports->BotLibVarSet("max_weaponinfo", "64");
     env->exports->BotLibVarSet("max_projectileinfo", "64");
+    env->exports->BotLibVarSet("dmflags", "0");
+    env->exports->BotLibVarSet("usehook", "1");
+    env->exports->BotLibVarSet("rocketjump", "1");
 
     int status = env->exports->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
@@ -474,15 +480,28 @@ static void seed_goal_candidates(bot_client_state_t *slot)
     assert_true(AI_GoalState_AddCandidate(slot->goal_state, &blocked));
 }
 
-static void submit_client_update(bot_export_t *exports)
+static void submit_client_update(bot_export_t *exports, float time)
 {
     bot_updateclient_t update;
     memset(&update, 0, sizeof(update));
     VectorSet(update.origin, 16.0f, 8.0f, 0.0f);
     VectorSet(update.viewangles, 5.0f, 10.0f, -2.0f);
 
-    exports->BotStartFrame(1.0f);
+    for (int i = 0; i < MAX_ITEMS; ++i) {
+        update.inventory[i] = 1;
+    }
+
+    exports->BotStartFrame(time);
     int status = exports->BotUpdateClient(0, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+}
+
+static void submit_enemy_entity(bot_export_t *exports, int ent, const vec3_t origin)
+{
+    bot_updateentity_t enemy;
+    memset(&enemy, 0, sizeof(enemy));
+    VectorCopy(origin, enemy.origin);
+    int status = exports->BotUpdateEntity(ent, &enemy);
     assert_int_equal(status, BLERR_NOERROR);
 }
 
@@ -499,7 +518,7 @@ static void test_goal_refresh_and_movement_dispatch_order(void **state)
     prepare_goal_move_services(slot, &context, &log);
     seed_goal_candidates(slot);
 
-    submit_client_update(env->exports);
+    submit_client_update(env->exports, 1.0f);
     test_reset_bot_input_log();
 
     int status = env->exports->BotAI(0, 0.1f);
@@ -533,7 +552,7 @@ static void test_movement_error_propagates_without_submission(void **state)
     context.path_status = BLERR_INVALIDIMPORT;
     seed_goal_candidates(slot);
 
-    submit_client_update(env->exports);
+    submit_client_update(env->exports, 1.0f);
     test_reset_bot_input_log();
 
     int status = env->exports->BotAI(0, 0.2f);
@@ -578,6 +597,75 @@ static void test_bot_update_client_propagates_area_errors(void **state)
     assert_int_equal(status, BLERR_INVALIDIMPORT);
 }
 
+static void test_dm_enemy_attack_and_weapon_selection(void **state)
+{
+    test_environment_t *env = (test_environment_t *)(*state);
+    activate_test_client(env);
+
+    bot_client_state_t *slot = BotState_Get(0);
+    assert_non_null(slot);
+
+    goal_move_service_context_t context;
+    goal_move_log_t log = {0};
+    prepare_goal_move_services(slot, &context, &log);
+    seed_goal_candidates(slot);
+
+    submit_client_update(env->exports, 1.0f);
+    vec3_t enemy_origin;
+    VectorSet(enemy_origin, 196.0f, 32.0f, 0.0f);
+    submit_enemy_entity(env->exports, 1, enemy_origin);
+
+    test_reset_bot_input_log();
+
+    int status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    assert_int_equal(g_bot_input_log.count, 1);
+    assert_true((g_bot_input_log.last_command.actionflags & ACTION_ATTACK) != 0);
+    assert_true(g_bot_input_log.last_command.weapon > 0);
+}
+
+static void test_dm_rocketjump_respects_libvar(void **state)
+{
+    test_environment_t *env = (test_environment_t *)(*state);
+    activate_test_client(env);
+
+    bot_client_state_t *slot = BotState_Get(0);
+    assert_non_null(slot);
+
+    goal_move_service_context_t context;
+    goal_move_log_t log = {0};
+    prepare_goal_move_services(slot, &context, &log);
+    context.travel_time = 40.0f;
+    seed_goal_candidates(slot);
+
+    vec3_t elevated_enemy;
+    VectorSet(elevated_enemy, 320.0f, -24.0f, 192.0f);
+
+    submit_client_update(env->exports, 2.0f);
+    submit_enemy_entity(env->exports, 1, elevated_enemy);
+
+    test_reset_bot_input_log();
+
+    int status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true((g_bot_input_log.last_command.actionflags & ACTION_JUMP) != 0);
+
+    ai_avoid_list_t *avoid = AI_GoalState_GetAvoidList(slot->goal_state);
+    assert_true(AI_AvoidList_Contains(avoid, 1, 2.0f));
+
+    LibVarSet("rocketjump", "0");
+
+    submit_client_update(env->exports, 3.0f);
+    submit_enemy_entity(env->exports, 1, elevated_enemy);
+
+    test_reset_bot_input_log();
+
+    status = env->exports->BotAI(0, 0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true((g_bot_input_log.last_command.actionflags & ACTION_JUMP) == 0);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -591,6 +679,12 @@ int main(void)
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_bot_update_client_propagates_area_errors,
+                                        goal_move_setup,
+                                        goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_dm_enemy_attack_and_weapon_selection,
+                                        goal_move_setup,
+                                        goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_dm_rocketjump_respects_libvar,
                                         goal_move_setup,
                                         goal_move_teardown),
     };

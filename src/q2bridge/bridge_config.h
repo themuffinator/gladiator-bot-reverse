@@ -36,6 +36,9 @@ libvar_t *Bridge_MaxProjectileInfo(void);
 libvar_t *Bridge_SoundConfig(void);
 libvar_t *Bridge_MaxSoundInfo(void);
 libvar_t *Bridge_MaxAASSounds(void);
+libvar_t *Bridge_DMFlags(void);
+libvar_t *Bridge_UseHook(void);
+libvar_t *Bridge_RocketJump(void);
 
 #ifdef __cplusplus
 }
