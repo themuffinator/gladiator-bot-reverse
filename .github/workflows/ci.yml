@@ -5,8 +5,8 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
-    name: Build and run parity tests
+  build-and-test-linux:
+    name: Build and run parity tests (Linux)
     runs-on: ubuntu-latest
 
     steps:
@@ -15,6 +15,16 @@ jobs:
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y ninja-build
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            build/_deps
+          key: cmake-build-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'tests/**') }}
+          restore-keys: |
+            cmake-build-${{ runner.os }}-
 
       - name: Configure CMake
         run: |
@@ -45,7 +55,71 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: parity-test-artifacts
+          name: parity-test-artifacts-linux
+          path: |
+            build/Testing
+            build/**/*.log
+          if-no-files-found: ignore
+
+  build-and-test-windows:
+    name: Build and run parity tests (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ninja
+        shell: powershell
+        run: choco install ninja --no-progress --yes
+
+      - name: Set up MSVC developer command prompt
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            build/_deps
+          key: cmake-build-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'tests/**') }}
+          restore-keys: |
+            cmake-build-${{ runner.os }}-
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_TESTING=ON \
+            -DBOTLIB_PARITY_ENABLE_SOURCES=ON
+
+      - name: Build project
+        shell: bash
+        run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Run parity test suite
+        shell: bash
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Show CTest log on failure
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f build/Testing/Temporary/LastTest.log ]; then
+            echo "::group::CTest LastTest.log"
+            cat build/Testing/Temporary/LastTest.log
+            echo "::endgroup::"
+          else
+            echo "CTest log not found"
+          fi
+
+      - name: Upload CTest artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-test-artifacts-windows
           path: |
             build/Testing
             build/**/*.log
