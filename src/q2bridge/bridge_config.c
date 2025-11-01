@@ -28,6 +28,9 @@ typedef struct bridge_config_cache_s {
     libvar_t *weaponconfig;
     libvar_t *max_weaponinfo;
     libvar_t *max_projectileinfo;
+    libvar_t *soundconfig;
+    libvar_t *max_soundinfo;
+    libvar_t *max_aassounds;
 } bridge_config_cache_t;
 
 static bridge_config_cache_t g_bridge_config_cache;
@@ -101,6 +104,9 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.weaponconfig, "weaponconfig", BRIDGE_DEFAULT_WEAPONCONFIG);
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_weaponinfo, "max_weaponinfo", "32");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_projectileinfo, "max_projectileinfo", "32");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.soundconfig, "soundconfig", "sounds.c");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_soundinfo, "max_soundinfo", "256");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_aassounds, "max_aassounds", "256");
 
     g_bridge_config_initialised = true;
     return true;
@@ -215,4 +221,19 @@ libvar_t *Bridge_MaxWeaponInfo(void)
 libvar_t *Bridge_MaxProjectileInfo(void)
 {
     return g_bridge_config_cache.max_projectileinfo;
+}
+
+libvar_t *Bridge_SoundConfig(void)
+{
+    return g_bridge_config_cache.soundconfig;
+}
+
+libvar_t *Bridge_MaxSoundInfo(void)
+{
+    return g_bridge_config_cache.max_soundinfo;
+}
+
+libvar_t *Bridge_MaxAASSounds(void)
+{
+    return g_bridge_config_cache.max_aassounds;
 }

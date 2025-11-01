@@ -33,6 +33,9 @@ libvar_t *Bridge_WaterFriction(void);
 libvar_t *Bridge_WeaponConfig(void);
 libvar_t *Bridge_MaxWeaponInfo(void);
 libvar_t *Bridge_MaxProjectileInfo(void);
+libvar_t *Bridge_SoundConfig(void);
+libvar_t *Bridge_MaxSoundInfo(void);
+libvar_t *Bridge_MaxAASSounds(void);
 
 #ifdef __cplusplus
 }

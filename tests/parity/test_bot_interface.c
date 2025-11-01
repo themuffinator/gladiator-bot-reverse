@@ -17,6 +17,7 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_struct.h"
 #include "botlib/common/l_utils.h"
+#include "botlib/aas/aas_sound.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib_contract_loader.h"
 #include "../support/asset_env.h"
@@ -346,7 +347,18 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     assert_true(L_Struct_IsInitialised());
     assert_non_null(Bridge_MaxClients());
 
-    char *sounds[] = {"world/ambient.wav", "weapons/impact.wav"};
+    size_t info_count = AAS_SoundSubsystem_InfoCount();
+    assert_true(info_count > 0);
+
+    int step_index = AAS_SoundSubsystem_FindInfoIndex("player/step1.wav");
+    assert_true(step_index >= 0);
+    const aas_soundinfo_t *step_info = AAS_SoundSubsystem_Info((size_t)step_index);
+    assert_non_null(step_info);
+    assert_string_equal(step_info->name, "player/step1.wav");
+    assert_float_equal(step_info->volume, 80.0f, 0.01f);
+    assert_int_equal(step_info->type, 1);
+
+    char *sounds[] = {"player/step1.wav", "weapons/blastf1a.wav"};
     status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 2, sounds, 0, NULL);
     assert_int_equal(status, BLERR_NOERROR);
 
@@ -354,11 +366,24 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     status = context->api->BotAddSound(origin, 3, 1, 1, 0.5f, 0.7f, 0.0f);
     assert_int_equal(status, BLERR_NOERROR);
 
+    assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 1);
+    const aas_sound_event_t *event = AAS_SoundSubsystem_SoundEvent(0);
+    assert_non_null(event);
+    assert_int_equal(event->ent, 3);
+    assert_int_equal(event->soundindex, 1);
+    assert_float_equal(event->volume, 0.5f, 0.0001f);
+    const aas_soundinfo_t *event_info = AAS_SoundSubsystem_InfoForSoundIndex(event->soundindex);
+    assert_non_null(event_info);
+    assert_string_equal(event_info->name, "weapons/blastf1a.wav");
+    assert_int_equal(AAS_SoundSubsystem_SoundTypeForIndex(event->soundindex), event_info->type);
+
     status = context->api->BotAddSound(origin, 4, 2, 5, 0.3f, 1.0f, 0.1f);
     assert_int_equal(status, BLERR_INVALIDSOUNDINDEX);
+    assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 1);
 
     status = context->api->BotAddPointLight(origin, 5, 128.0f, 1.0f, 0.3f, 0.2f, 0.0f, 0.25f);
     assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal((int)AAS_SoundSubsystem_PointLightCount(), 1);
 
     context->api->Test(0, "sounds", origin, origin);
     assert_non_null(Mock_FindPrint(&context->mock, "sound[0]"));

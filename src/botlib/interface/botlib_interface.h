@@ -19,6 +19,7 @@ extern "C" {
 #define BLERR_INVALIDIMPORT 100
 
 #define BOTLIB_MAX_WEAPONCONFIG_PATH 260
+#define BOTLIB_MAX_SOUNDCONFIG_PATH 260
 
 /**
  * Import table shared by the Quake II game and the Gladiator bot library.
@@ -59,6 +60,9 @@ typedef struct botlib_library_variables_s {
     int max_weaponinfo;
     int max_projectileinfo;
     char weaponconfig[BOTLIB_MAX_WEAPONCONFIG_PATH];
+    int max_soundinfo;
+    int max_aassounds;
+    char soundconfig[BOTLIB_MAX_SOUNDCONFIG_PATH];
 } botlib_library_variables_t;
 
 /**

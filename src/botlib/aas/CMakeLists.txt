@@ -1,6 +1,7 @@
 add_library(botlib_aas STATIC
     aas_debug.c
     aas_map.c
+    aas_sound.c
     aas_reach.c
     aas_route.c
 )
