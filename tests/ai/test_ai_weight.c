@@ -45,7 +45,10 @@ static int weight_tests_setup(void **state)
     int written = snprintf(asset_root, sizeof(asset_root), "%s/dev_tools/assets", PROJECT_SOURCE_DIR);
     assert_true(written > 0 && written < (int)sizeof(asset_root));
 
-    LibVarSet("gladiator_asset_dir", asset_root);
+    LibVarSet("basedir", asset_root);
+    LibVarSet("gamedir", "");
+    LibVarSet("cddir", "");
+    LibVarSet("gladiator_asset_dir", "");
     LibVarSet("itemconfig", "items.c");
 
     return 0;

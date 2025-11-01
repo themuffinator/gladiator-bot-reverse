@@ -95,7 +95,10 @@ static void configure_asset_libvars(void)
     int written = snprintf(asset_root, sizeof(asset_root), "%s/dev_tools/assets", PROJECT_SOURCE_DIR);
     assert_true(written > 0 && (size_t)written < sizeof(asset_root));
 
-    LibVarSet("gladiator_asset_dir", asset_root);
+    LibVarSet("basedir", asset_root);
+    LibVarSet("gamedir", "");
+    LibVarSet("cddir", "");
+    LibVarSet("gladiator_asset_dir", "");
     LibVarSet("weaponconfig", "weapons.c");
     LibVarSet("itemconfig", "items.c");
     LibVarSet("max_weaponinfo", "64");
