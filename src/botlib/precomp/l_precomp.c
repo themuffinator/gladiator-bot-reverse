@@ -105,6 +105,7 @@ pc_source_t *LoadSourceFile(const char *filename);
 pc_source_t *LoadSourceMemory(char *ptr, int length, char *name);
 void FreeSource(pc_source_t *source);
 int PC_CheckTokenString(pc_source_t *source, char *string);
+void PC_SetIncludePath(pc_source_t *source, char *path);
 
 typedef struct pc_define_s {
     char *name;
@@ -238,6 +239,180 @@ static void PC_ReportDiagnostic(pc_source_t *source,
 
     PC_AppendDiagnostic(source, level, line, text);
 }
+
+static qboolean PC_FileExists(const char *path)
+{
+    FILE *file;
+
+    if (path == NULL || path[0] == '\0') {
+        return qfalse;
+    }
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        return qfalse;
+    }
+
+    fclose(file);
+    return qtrue;
+}
+
+static qboolean PC_PathIsAbsolute(const char *path)
+{
+    if (path == NULL || path[0] == '\0') {
+        return qfalse;
+    }
+    if (path[0] == '/' || path[0] == '\\') {
+        return qtrue;
+    }
+    if (strlen(path) >= 2 && path[1] == ':' && isalpha((unsigned char)path[0])) {
+        return qtrue;
+    }
+    if (strlen(path) >= 2 && path[0] == '\\' && path[1] == '\\') {
+        return qtrue;
+    }
+    return qfalse;
+}
+
+static void PC_NormalizeSlashes(char *path)
+{
+    if (path == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; path[i] != '\0'; ++i) {
+        if (path[i] == '\\') {
+            path[i] = '/';
+        }
+    }
+}
+
+static void PC_SplitPath(const char *path,
+                         char *directory,
+                         size_t directory_size,
+                         char *leaf,
+                         size_t leaf_size)
+{
+    const char *last_forward = NULL;
+    const char *last_back = NULL;
+    const char *last_sep = NULL;
+
+    if (directory != NULL && directory_size > 0) {
+        directory[0] = '\0';
+    }
+    if (leaf != NULL && leaf_size > 0) {
+        leaf[0] = '\0';
+    }
+    if (path == NULL || path[0] == '\0') {
+        return;
+    }
+
+    last_forward = strrchr(path, '/');
+    last_back = strrchr(path, '\\');
+    last_sep = (last_back != NULL && (last_forward == NULL || last_back > last_forward)) ? last_back : last_forward;
+
+    if (last_sep != NULL) {
+        if (directory != NULL && directory_size > 0) {
+            size_t copy_len = (size_t)(last_sep - path);
+            if (copy_len >= directory_size) {
+                copy_len = directory_size - 1;
+            }
+            memcpy(directory, path, copy_len);
+            directory[copy_len] = '\0';
+        }
+
+        if (leaf != NULL && leaf_size > 0) {
+            snprintf(leaf, leaf_size, "%s", last_sep + 1);
+        }
+    } else if (leaf != NULL && leaf_size > 0) {
+        snprintf(leaf, leaf_size, "%s", path);
+    }
+}
+
+static qboolean PC_BuildAssetRelativePath(const char *requested,
+                                          const char *asset_root,
+                                          char *relative,
+                                          size_t relative_size,
+                                          char *absolute,
+                                          size_t absolute_size)
+{
+    char normalized[BOTLIB_ASSET_MAX_PATH];
+    const char *segment = NULL;
+    int written = 0;
+
+    if (requested == NULL || asset_root == NULL || asset_root[0] == '\0') {
+        return qfalse;
+    }
+
+    written = snprintf(normalized, sizeof(normalized), "%s", requested);
+    if (written < 0 || (size_t)written >= sizeof(normalized)) {
+        return qfalse;
+    }
+
+    PC_NormalizeSlashes(normalized);
+    segment = normalized;
+
+    while (*segment != '\0') {
+        char candidate[BOTLIB_ASSET_MAX_PATH];
+        const char *slash = NULL;
+
+        while (*segment == '/') {
+            ++segment;
+        }
+        if (*segment == '\0') {
+            break;
+        }
+
+        written = snprintf(candidate, sizeof(candidate), "%s/%s", asset_root, segment);
+        if (written >= 0 && (size_t)written < sizeof(candidate) && PC_FileExists(candidate)) {
+            if (relative != NULL && relative_size > 0) {
+                snprintf(relative, relative_size, "%s", segment);
+            }
+            if (absolute != NULL && absolute_size > 0) {
+                snprintf(absolute, absolute_size, "%s", candidate);
+            }
+            return qtrue;
+        }
+
+        slash = strchr(segment, '/');
+        if (slash == NULL) {
+            break;
+        }
+        segment = slash + 1;
+    }
+
+    return qfalse;
+}
+
+static void PC_SetSourceIncludePath(pc_source_t *source, const char *absolute_path)
+{
+    char directory[MAX_PATH];
+    char *last_forward = NULL;
+    char *last_back = NULL;
+    char *last_sep = NULL;
+
+    if (source == NULL || absolute_path == NULL || absolute_path[0] == '\0') {
+        return;
+    }
+
+    strncpy(directory, absolute_path, sizeof(directory) - 1);
+    directory[sizeof(directory) - 1] = '\0';
+
+    last_forward = strrchr(directory, '/');
+    last_back = strrchr(directory, '\\');
+    last_sep = (last_back != NULL && (last_forward == NULL || last_back > last_forward)) ? last_back : last_forward;
+    if (last_sep == NULL) {
+        return;
+    }
+
+    *last_sep = '\0';
+    if (directory[0] == '\0') {
+        return;
+    }
+
+    PC_SetIncludePath(source, directory);
+}
+
 #ifndef PATHSEPERATOR_STR
 #if defined(_WIN32)
 #define PATHSEPERATOR_STR "\\"
@@ -3139,31 +3314,144 @@ void PC_ShutdownLexer(void)
         PC_RemoveAllGlobalDefines();
 }
 
-pc_source_t *PC_LoadSourceFile(const char *filename)
+static pc_source_t *load_source_from_memory_internal(const char *name,
+                                                     const char *buffer,
+                                                     size_t buffer_size)
 {
-        return LoadSourceFile(filename);
-}
+        char local_name[MAX_PATH];
 
-pc_source_t *PC_LoadSourceMemory(const char *name, const char *buffer, size_t buffer_size)
-{
         if (buffer == NULL || buffer_size == 0 || buffer_size > INT_MAX)
         {
                 return NULL;
         }
 
-        char local_name[MAX_PATH];
-        if (name != NULL)
+        if (name != NULL && name[0] != '\0')
         {
                 strncpy(local_name, name, sizeof(local_name) - 1);
-                local_name[sizeof(local_name) - 1] = '\0';
         }
         else
         {
                 strncpy(local_name, "<memory>", sizeof(local_name) - 1);
-                local_name[sizeof(local_name) - 1] = '\0';
+        }
+        local_name[sizeof(local_name) - 1] = '\0';
+
+        PS_SetBaseFolder("");
+        return LoadSourceMemory((char *)buffer, (int)buffer_size, local_name);
+}
+
+pc_source_t *PC_LoadSourceFile(const char *filename)
+{
+        char asset_root[BOTLIB_ASSET_MAX_PATH];
+        char relative[BOTLIB_ASSET_MAX_PATH];
+        char absolute[BOTLIB_ASSET_MAX_PATH];
+        char base_folder[BOTLIB_ASSET_MAX_PATH];
+        char directory[BOTLIB_ASSET_MAX_PATH];
+        char leaf[BOTLIB_ASSET_MAX_PATH];
+        pc_source_t *source;
+        const char *load_name;
+        qboolean have_asset_root;
+
+        if (filename == NULL || filename[0] == '\0')
+        {
+                return NULL;
         }
 
-        return LoadSourceMemory((char *)buffer, (int)buffer_size, local_name);
+        asset_root[0] = '\0';
+        relative[0] = '\0';
+        absolute[0] = '\0';
+        base_folder[0] = '\0';
+        directory[0] = '\0';
+        leaf[0] = '\0';
+        load_name = filename;
+
+        have_asset_root = BotLib_LocateAssetRoot(asset_root, sizeof(asset_root));
+
+        if (have_asset_root && !PC_PathIsAbsolute(filename) &&
+            PC_BuildAssetRelativePath(filename,
+                                      asset_root,
+                                      relative,
+                                      sizeof(relative),
+                                      absolute,
+                                      sizeof(absolute)))
+        {
+                snprintf(base_folder, sizeof(base_folder), "%s", asset_root);
+                load_name = relative;
+        }
+        else if (PC_FileExists(filename))
+        {
+                PC_SplitPath(filename, directory, sizeof(directory), leaf, sizeof(leaf));
+                if (directory[0] != '\0')
+                {
+                        snprintf(base_folder, sizeof(base_folder), "%s", directory);
+                        load_name = leaf;
+                }
+                else
+                {
+                        load_name = leaf;
+                }
+                snprintf(absolute, sizeof(absolute), "%s", filename);
+        }
+        else if (have_asset_root)
+        {
+                snprintf(base_folder, sizeof(base_folder), "%s", asset_root);
+                size_t root_len = strlen(asset_root);
+                size_t file_len = strlen(filename);
+                if (root_len + 1 + file_len < sizeof(absolute))
+                {
+                        memcpy(absolute, asset_root, root_len);
+                        absolute[root_len] = '/';
+                        memcpy(absolute + root_len + 1, filename, file_len);
+                        absolute[root_len + 1 + file_len] = '\0';
+                }
+                else
+                {
+                        absolute[0] = '\0';
+                }
+        }
+        else
+        {
+                load_name = filename;
+        }
+
+        if (base_folder[0] != '\0')
+        {
+                PS_SetBaseFolder(base_folder);
+        }
+        else
+        {
+                PS_SetBaseFolder("");
+        }
+
+        source = LoadSourceFile(load_name);
+        if (!source)
+        {
+                return NULL;
+        }
+
+        if (source->scriptstack != NULL && source->scriptstack->filename[0] != '\0')
+        {
+                strncpy(source->filename, source->scriptstack->filename, MAX_PATH - 1);
+                source->filename[MAX_PATH - 1] = '\0';
+                PC_SetSourceIncludePath(source, source->scriptstack->filename);
+        }
+        else if (absolute[0] != '\0')
+        {
+                strncpy(source->filename, absolute, MAX_PATH - 1);
+                source->filename[MAX_PATH - 1] = '\0';
+                PC_SetSourceIncludePath(source, absolute);
+        }
+        else
+        {
+                strncpy(source->filename, filename, MAX_PATH - 1);
+                source->filename[MAX_PATH - 1] = '\0';
+        }
+
+        return source;
+}
+
+pc_source_t *PC_LoadSourceMemory(const char *name, const char *buffer, size_t buffer_size)
+{
+        return load_source_from_memory_internal(name, buffer, buffer_size);
 }
 
 void PC_FreeSource(pc_source_t *source)
@@ -3217,8 +3505,8 @@ pc_source_t *LoadSourceFile(const char *filename)
 	source = (pc_source_t *) GetMemory(sizeof(pc_source_t));
 	memset(source, 0, sizeof(pc_source_t));
 
-	strncpy(source->filename, filename, MAX_PATH);
-	source->scriptstack = script;
+        strncpy(source->filename, script->filename, MAX_PATH);
+        source->scriptstack = script;
 	source->tokens = NULL;
 	source->defines = NULL;
 	source->indentstack = NULL;
@@ -3250,7 +3538,7 @@ pc_source_t *LoadSourceMemory(char *ptr, int length, char *name)
 	source = (pc_source_t *) GetMemory(sizeof(pc_source_t));
 	memset(source, 0, sizeof(pc_source_t));
 
-	strncpy(source->filename, name, MAX_PATH);
+        strncpy(source->filename, script->filename, MAX_PATH);
 	source->scriptstack = script;
 	source->tokens = NULL;
 	source->defines = NULL;

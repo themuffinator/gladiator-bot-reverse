@@ -212,12 +212,15 @@ static void test_pc_loads_fw_items_and_matches_hlil_tokens(void **state)
 
     PC_InitLexer();
 
-    pc_source_t *source = load_fixture_source(g_fw_items_source_path);
+    pc_source_t *source = PC_LoadSourceFile(g_fw_items_source_path);
     assert_non_null(source);
 
-    expect_tokens_match_fixture(source,
-                                g_fw_items_token_expectations,
-                                ARRAY_SIZE(g_fw_items_token_expectations));
+    for (size_t i = 0; i < ARRAY_SIZE(g_fw_items_token_expectations); ++i) {
+        pc_token_t token;
+        const int status = PC_ReadToken(source, &token);
+        assert_int_equal(1, status);
+        assert_token_matches(&g_fw_items_token_expectations[i], &token);
+    }
 
     assert_fixture_diagnostics(source,
                                g_fw_items_diagnostics,
@@ -233,12 +236,17 @@ static void test_pc_loads_synonyms_and_matches_hlil_tokens(void **state)
 
     PC_InitLexer();
 
-    pc_source_t *source = load_fixture_source(g_synonyms_source_path);
+    pc_source_t *source = PC_LoadSourceFile(g_synonyms_source_path);
     assert_non_null(source);
 
-    expect_tokens_match_fixture(source,
-                                g_synonyms_token_expectations,
-                                ARRAY_SIZE(g_synonyms_token_expectations));
+    for (size_t i = 0; i < ARRAY_SIZE(g_synonyms_token_expectations); ++i) {
+        pc_token_t token;
+        const int status = PC_ReadToken(source, &token);
+        assert_int_equal(1, status);
+        assert_token_matches(&g_synonyms_token_expectations[i], &token);
+    }
+
+    drain_remaining_tokens(source);
 
     assert_fixture_diagnostics(source,
                                g_synonyms_diagnostics,
@@ -254,13 +262,11 @@ static void test_pc_peek_and_unread_mirror_hlil_behaviour(void **state)
 
     PC_InitLexer();
 
-    pc_source_t *source = load_fixture_source(g_fw_items_source_path);
+    pc_source_t *source = PC_LoadSourceFile(g_fw_items_source_path);
     assert_non_null(source);
 
     pc_token_t peeked;
-    if (PC_PeekToken(source, &peeked) <= 0) {
-        fail_msg("PC_PeekToken failed for fw_items fixture");
-    }
+    assert_int_equal(1, PC_PeekToken(source, &peeked));
 
     assert_token_matches(0, &g_fw_items_token_expectations[0], &peeked);
 
