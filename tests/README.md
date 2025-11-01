@@ -54,6 +54,19 @@ drives `BotSetupClient` also overrides `weaponconfig`, `max_weaponinfo`, and
 `max_projectileinfo` through the exported `BotLibVarSet` hook so the weapon
 library and weight tables resolve to the repository assets.
 
+## AI goal/move orchestration tests
+
+The goal and movement orchestration suite under `tests/ai/test_ai_goal_move.c`
+shares the same asset expectations as the character regression tests. The
+fixtures reuse the bot setup pipeline to allocate goal and move state, so make
+sure `${PROJECT_SOURCE_DIR}/dev_tools/assets` contains the Gladiator bot
+profiles (`bots/babe_c.c`) and chat scripts. The harness automatically bridges
+`syn.c`, `match.c`, and `rchat.c` into `dev_tools/assets/bots/`, seeds the
+`GLADIATOR_ASSET_DIR` environment variable, and initialises the botlib memory
+heap before running each scenario. When executing the tests manually, ensure the
+asset directory is writable so the temporary chat copies can be created and
+deleted.
+
 ## AAS regression tests
 
 The navigation harness under `tests/aas/` boots the botlib memory system and

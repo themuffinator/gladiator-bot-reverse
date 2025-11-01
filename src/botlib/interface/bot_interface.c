@@ -21,6 +21,7 @@
 #include "../ai/chat/ai_chat.h"
 #include "../ai/character/bot_character.h"
 #include "../ai/weight/bot_weight.h"
+#include "../ai/goal_move_orchestrator.h"
 #include "../precomp/l_precomp.h"
 #include "botlib_interface.h"
 #include "bot_interface.h"
@@ -945,6 +946,30 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 
     BotState_AttachCharacter(state, profile);
 
+    state->goal_state = AI_GoalState_Create();
+    if (state->goal_state == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate goal state for client %d\n",
+                            client);
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    state->move_state = AI_MoveState_Create();
+    if (state->move_state == NULL)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate move state for client %d\n",
+                            client);
+        AI_GoalState_Destroy(state->goal_state);
+        state->goal_state = NULL;
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    AI_MoveState_LinkAvoidList(state->move_state, AI_GoalState_GetAvoidList(state->goal_state));
+
     Bridge_ClearClientSlot(client);
     state->active = true;
     return BLERR_NOERROR;
@@ -1128,6 +1153,15 @@ static int BotUpdateClient(int client, bot_updateclient_t *buc)
         memcpy(&state->last_client_update, buc, sizeof(*buc));
         state->client_update_valid = true;
         state->last_update_time = g_botInterfaceFrameTime;
+
+        if (state->goal_state != NULL)
+        {
+            status = AI_GoalState_RecordClientUpdate(state->goal_state, buc);
+            if (status != BLERR_NOERROR)
+            {
+                return status;
+            }
+        }
     }
 
     return BLERR_NOERROR;
@@ -1239,11 +1273,33 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
         return BLERR_AIUPDATEINACTIVECLIENT;
     }
 
+    if (state->goal_state == NULL || state->move_state == NULL)
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    ai_goal_selection_t selection = {0};
+    int status = AI_GoalOrchestrator_Refresh(state->goal_state, g_botInterfaceFrameTime, &selection);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
     bot_input_t input = {0};
+    status = AI_MoveOrchestrator_Dispatch(state->move_state, &selection, &input);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
+
     input.thinktime = thinktime;
     VectorCopy(state->last_client_update.viewangles, input.viewangles);
 
-    Q2_BotInput(state->client_number, &input);
+    status = AI_MoveOrchestrator_Submit(state->move_state, state->client_number, &input);
+    if (status != BLERR_NOERROR)
+    {
+        return status;
+    }
     state->client_update_valid = false;
     return BLERR_NOERROR;
 }

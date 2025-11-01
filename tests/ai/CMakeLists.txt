@@ -4,6 +4,7 @@ endif()
 
 set(AI_TEST_SOURCES
     test_ai_character.c
+    test_ai_goal_move.c
     test_ai_weight.c
     test_ai_weapon.c
 )
