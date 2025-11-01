@@ -622,3 +622,54 @@ bool AAS_RouteFrameForceWriteActive(void)
 {
     return g_route_frame_state.forcewrite_active;
 }
+
+int AAS_NextModelReachability(int startIndex, int modelnum)
+{
+    if (aasworld.reachability == NULL || aasworld.numReachability <= 0)
+    {
+        return 0;
+    }
+
+    int index = (startIndex <= 0) ? 1 : startIndex + 1;
+    if (index < 1)
+    {
+        index = 1;
+    }
+
+    for (int reachIndex = index; reachIndex < aasworld.numReachability; ++reachIndex)
+    {
+        const aas_reachability_t *reach = &aasworld.reachability[reachIndex];
+        int traveltype = reach->traveltype & TRAVELTYPE_MASK;
+        if (traveltype == TRAVEL_ELEVATOR || traveltype == TRAVEL_FUNCBOB)
+        {
+            int reachModel = reach->facenum & 0x0000FFFF;
+            if (reachModel == modelnum)
+            {
+                return reachIndex;
+            }
+        }
+    }
+
+    return 0;
+}
+
+int AAS_ModelNumForEntity(int entnum)
+{
+    if (aasworld.entities == NULL || aasworld.maxEntities <= 0)
+    {
+        return 0;
+    }
+
+    if (entnum < 0 || entnum >= aasworld.maxEntities)
+    {
+        return 0;
+    }
+
+    const aas_entity_t *entity = &aasworld.entities[entnum];
+    if (entity == NULL || !entity->inuse)
+    {
+        return 0;
+    }
+
+    return (entity->modelindex > 0) ? entity->modelindex : 0;
+}
