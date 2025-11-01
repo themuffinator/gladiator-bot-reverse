@@ -31,6 +31,7 @@
 #include "../ai/goal/ai_goal.h"
 #include "../ai/goal_move_orchestrator.h"
 #include "../ai/move/mover_catalogue.h"
+#include "bot_interface_assets.h"
 #include "../ea/ea_local.h"
 #include "../precomp/l_precomp.h"
 #include "botlib_interface.h"
@@ -41,12 +42,6 @@
 static bot_import_t *g_botImport = NULL;
 static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;
 static botlib_import_table_t g_botInterfaceImportTable;
-
-typedef struct botinterface_asset_list_s
-{
-    char **entries;
-    size_t count;
-} botinterface_asset_list_t;
 
 typedef struct botinterface_map_cache_s
 {
@@ -1739,6 +1734,14 @@ static int BotLoadMap(char *mapname,
     {
         BotInterface_Printf(PRT_WARNING,
                              "[bot_interface] BotLoadMap: failed to record asset lists for %s\n",
+                             mapname);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    if (!BotMove_MoverCatalogueFinalize(&g_botInterfaceMapCache.models))
+    {
+        BotInterface_Printf(PRT_WARNING,
+                             "[bot_interface] BotLoadMap: failed to finalize mover catalogue for %s\n",
                              mapname);
         return BLERR_INVALIDIMPORT;
     }

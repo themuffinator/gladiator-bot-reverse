@@ -259,6 +259,9 @@ int AAS_ReachabilityFrameSkipCounter(void);
 bool AAS_ReachabilityForceReachabilityActive(void);
 bool AAS_ReachabilityForceClusteringActive(void);
 
+int AAS_NextModelReachability(int startIndex, int modelnum);
+int AAS_ModelNumForEntity(int entnum);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
