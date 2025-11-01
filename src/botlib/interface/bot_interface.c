@@ -1286,6 +1286,46 @@ static void BotInterface_DPrintWrapper(const char *fmt, ...)
     g_botImport->Print(PRT_MESSAGE, "%s", buffer);
 }
 
+static void BotInterface_AddCommandWrapper(const char *name, void (*function)(void))
+{
+    if (g_botImport == NULL || g_botImport->AddCommand == NULL || name == NULL || function == NULL)
+    {
+        return;
+    }
+
+    g_botImport->AddCommand(name, function);
+}
+
+static void BotInterface_RemoveCommandWrapper(const char *name)
+{
+    if (g_botImport == NULL || g_botImport->RemoveCommand == NULL || name == NULL)
+    {
+        return;
+    }
+
+    g_botImport->RemoveCommand(name);
+}
+
+static int BotInterface_CmdArgcWrapper(void)
+{
+    if (g_botImport == NULL || g_botImport->CmdArgc == NULL)
+    {
+        return 0;
+    }
+
+    return g_botImport->CmdArgc();
+}
+
+static const char *BotInterface_CmdArgvWrapper(int index)
+{
+    if (g_botImport == NULL || g_botImport->CmdArgv == NULL)
+    {
+        return NULL;
+    }
+
+    return g_botImport->CmdArgv(index);
+}
+
 static int BotInterface_BotLibVarGetWrapper(const char *var_name, char *value, size_t size)
 {
     if (value == NULL || size == 0)
@@ -1351,6 +1391,10 @@ static void BotInterface_BuildImportTable(bot_import_t *import_table)
     g_botInterfaceImportTable.DPrint = BotInterface_DPrintWrapper;
     g_botInterfaceImportTable.BotLibVarGet = BotInterface_BotLibVarGetWrapper;
     g_botInterfaceImportTable.BotLibVarSet = BotInterface_BotLibVarSetWrapper;
+    g_botInterfaceImportTable.AddCommand = BotInterface_AddCommandWrapper;
+    g_botInterfaceImportTable.RemoveCommand = BotInterface_RemoveCommandWrapper;
+    g_botInterfaceImportTable.CmdArgc = BotInterface_CmdArgcWrapper;
+    g_botInterfaceImportTable.CmdArgv = BotInterface_CmdArgvWrapper;
 }
 
 typedef struct botlib_import_cache_entry_s {
@@ -1487,6 +1531,10 @@ static void BotInterface_InitialiseImportTable(bot_import_t *imports)
     g_botlibImportTable.Print = BotInterface_PrintShim;
     g_botlibImportTable.BotLibVarGet = BotInterface_BotLibVarGetShim;
     g_botlibImportTable.BotLibVarSet = NULL;
+    g_botlibImportTable.AddCommand = NULL;
+    g_botlibImportTable.RemoveCommand = NULL;
+    g_botlibImportTable.CmdArgc = NULL;
+    g_botlibImportTable.CmdArgv = NULL;
 
     BotInterface_SetImportTable(&g_botlibImportTable);
 }

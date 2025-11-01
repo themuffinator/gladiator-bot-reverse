@@ -1,5 +1,6 @@
 add_library(botlib_aas STATIC
     aas_debug.c
+    aas_debug_commands.c
     aas_map.c
     aas_sound.c
     aas_reach.c
@@ -8,6 +9,8 @@ add_library(botlib_aas STATIC
 
 target_include_directories(botlib_aas
     PUBLIC
+        ${PROJECT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../ai
         ${CMAKE_CURRENT_SOURCE_DIR}/../../shared
 )

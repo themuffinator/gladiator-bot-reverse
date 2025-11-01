@@ -10,6 +10,29 @@
 
 #define AAS_DEBUG_MAX_PATH_DEPTH 128
 
+/*
+ * The original Gladiator binaries mirror Quake III's AAS area contents
+ * constants.  Import the subset that drives the diagnostic strings so
+ * the debug helpers can reproduce the historical wording when reporting
+ * area characteristics.【F:dev_tools/Quake-III-Arena-master/code/bspc/aasfile.h†L67-L89】
+ */
+enum
+{
+    AAS_CONTENTS_WATER = 1,
+    AAS_CONTENTS_LAVA = 2,
+    AAS_CONTENTS_SLIME = 4,
+    AAS_CONTENTS_CLUSTERPORTAL = 8,
+    AAS_CONTENTS_TELEPORTAL = 16,
+    AAS_CONTENTS_ROUTEPORTAL = 32,
+    AAS_CONTENTS_TELEPORTER = 64,
+    AAS_CONTENTS_JUMPPAD = 128,
+    AAS_CONTENTS_DONOTENTER = 256,
+    AAS_CONTENTS_VIEWPORTAL = 512,
+    AAS_CONTENTS_MOVER = 1024,
+    AAS_CONTENTS_NOTTEAM1 = 2048,
+    AAS_CONTENTS_NOTTEAM2 = 4096,
+};
+
 static bool AAS_DebugWorldLoaded(const char *command)
 {
     if (aasworld.loaded && aasworld.areas != NULL && aasworld.numAreas > 0)
@@ -111,7 +134,7 @@ static void AAS_DebugDescribeArea(const aas_area_t *area)
     }
 
     BotLib_Print(PRT_MESSAGE,
-                 "  area %d: faces=%d firstface=%d center=(%.2f %.2f %.2f) mins=(%.2f %.2f %.2f) maxs=(%.2f %.2f %.2f)\n",
+                 "area %d: faces=%d firstface=%d center=(%.2f %.2f %.2f) mins=(%.2f %.2f %.2f) maxs=(%.2f %.2f %.2f)\n",
                  area->areanum,
                  area->numfaces,
                  area->firstface,
@@ -124,6 +147,91 @@ static void AAS_DebugDescribeArea(const aas_area_t *area)
                  area->maxs[0],
                  area->maxs[1],
                  area->maxs[2]);
+
+    if (aasworld.areasettings != NULL &&
+        area->areanum > 0 &&
+        area->areanum <= aasworld.numAreaSettings)
+    {
+        const aas_areasettings_t *settings = &aasworld.areasettings[area->areanum];
+        BotLib_Print(PRT_MESSAGE,
+                     "  cluster=%d presencetype=%d reachable=%d firstreachable=%d\n",
+                     settings->cluster,
+                     settings->presencetype,
+                     settings->numreachableareas,
+                     settings->firstreachablearea);
+
+        BotLib_Print(PRT_MESSAGE, "  area contents: ");
+        int contents = settings->contents;
+        bool emitted = false;
+
+        if (contents & AAS_CONTENTS_WATER)
+        {
+            BotLib_Print(PRT_MESSAGE, "water &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_LAVA)
+        {
+            BotLib_Print(PRT_MESSAGE, "lava &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_SLIME)
+        {
+            BotLib_Print(PRT_MESSAGE, "slime &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_JUMPPAD)
+        {
+            BotLib_Print(PRT_MESSAGE, "jump pad &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_CLUSTERPORTAL)
+        {
+            BotLib_Print(PRT_MESSAGE, "cluster portal &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_VIEWPORTAL)
+        {
+            BotLib_Print(PRT_MESSAGE, "view portal &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_DONOTENTER)
+        {
+            BotLib_Print(PRT_MESSAGE, "do not enter &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_MOVER)
+        {
+            BotLib_Print(PRT_MESSAGE, "mover &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_TELEPORTER)
+        {
+            BotLib_Print(PRT_MESSAGE, "teleporter &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_ROUTEPORTAL)
+        {
+            BotLib_Print(PRT_MESSAGE, "route portal &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_NOTTEAM1)
+        {
+            BotLib_Print(PRT_MESSAGE, "notteam1 &");
+            emitted = true;
+        }
+        if (contents & AAS_CONTENTS_NOTTEAM2)
+        {
+            BotLib_Print(PRT_MESSAGE, "notteam2 &");
+            emitted = true;
+        }
+
+        if (!emitted)
+        {
+            BotLib_Print(PRT_MESSAGE, "empty");
+        }
+
+        BotLib_Print(PRT_MESSAGE, "\n");
+    }
 }
 
 static int AAS_DebugFindAreaFromPoint(const vec3_t point)
@@ -334,7 +442,7 @@ void AAS_DebugBotTest(int entnum, const char *arguments, const vec3_t origin, co
     }
 
     BotLib_Print(PRT_MESSAGE,
-                 "[aas_debug] bot_test entity=%d origin=(%.2f %.2f %.2f) angles=(%.2f %.2f %.2f)\n",
+                 "bot_test entity %d origin=(%.2f %.2f %.2f) angles=(%.2f %.2f %.2f)\n",
                  entnum,
                  origin[0],
                  origin[1],
@@ -355,7 +463,7 @@ void AAS_DebugBotTest(int entnum, const char *arguments, const vec3_t origin, co
         if (!AAS_DebugValidArea(requestedArea))
         {
             BotLib_Print(PRT_WARNING,
-                         "[aas_debug] bot_test: origin is outside all areas\n");
+                         "bot_test: origin is outside all areas\n");
             return;
         }
     }
@@ -364,7 +472,7 @@ void AAS_DebugBotTest(int entnum, const char *arguments, const vec3_t origin, co
     if (area == NULL)
     {
         BotLib_Print(PRT_WARNING,
-                     "[aas_debug] bot_test: area %d is invalid\n",
+                     "bot_test: area %d is invalid\n",
                      requestedArea);
         return;
     }
@@ -391,14 +499,14 @@ void AAS_DebugShowPath(int startArea, int goalArea, const vec3_t start, const ve
     }
 
     BotLib_Print(PRT_MESSAGE,
-                 "[aas_debug] aas_showpath start=%d goal=%d\n",
+                 "aas_showpath start=%d goal=%d\n",
                  startArea,
                  goalArea);
 
     if (!AAS_DebugValidArea(startArea) || !AAS_DebugValidArea(goalArea))
     {
         BotLib_Print(PRT_WARNING,
-                     "[aas_debug] aas_showpath: invalid start (%d) or goal (%d) area\n",
+                     "aas_showpath: invalid start (%d) or goal (%d) area\n",
                      startArea,
                      goalArea);
         return;
@@ -469,7 +577,7 @@ void AAS_DebugShowAreas(const int *areas, size_t areaCount)
     if (areas == NULL || areaCount == 0U)
     {
         BotLib_Print(PRT_MESSAGE,
-                     "[aas_debug] aas_showareas: dumping all %d areas\n",
+                     "aas_showareas: dumping all %d areas\n",
                      aasworld.numAreas);
         for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
         {
@@ -481,7 +589,7 @@ void AAS_DebugShowAreas(const int *areas, size_t areaCount)
     }
 
     BotLib_Print(PRT_MESSAGE,
-                 "[aas_debug] aas_showareas: listing %zu areas\n",
+                 "aas_showareas: listing %zu areas\n",
                  areaCount);
 
     for (size_t index = 0; index < areaCount; ++index)

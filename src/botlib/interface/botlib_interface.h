@@ -32,6 +32,10 @@ typedef struct botlib_import_table_s {
     void (*DPrint)(const char *fmt, ...);
     int (*BotLibVarGet)(const char *var_name, char *value, size_t size);
     int (*BotLibVarSet)(const char *var_name, const char *value);
+    void (*AddCommand)(const char *name, void (*function)(void));
+    void (*RemoveCommand)(const char *name);
+    int (*CmdArgc)(void);
+    const char *(*CmdArgv)(int index);
 } botlib_import_table_t;
 
 /**
