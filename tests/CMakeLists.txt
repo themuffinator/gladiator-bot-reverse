@@ -7,6 +7,8 @@ endif()
 set(BOTLIB_PARITY_FRAMEWORK "none" CACHE STRING "Unit test framework for botlib parity checks")
 mark_as_advanced(BOTLIB_PARITY_FRAMEWORK)
 
+find_package(Python3 COMPONENTS Interpreter)
+
 if(BOTLIB_PARITY_FRAMEWORK STREQUAL "cmocka")
     include(FetchContent)
     FetchContent_Declare(
@@ -33,3 +35,19 @@ add_subdirectory(ai)
 add_subdirectory(ea)
 add_subdirectory(aas)
 add_subdirectory(common)
+
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME headless_quake2_parity
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/headless/run_headless_parity.py
+    )
+    set_tests_properties(
+        headless_quake2_parity
+        PROPERTIES
+            ENVIRONMENT "GLADIATOR_Q2_MODULE_PATH=$<TARGET_FILE:gladiator>"
+            LABELS "LongRunning"
+            SKIP_RETURN_CODE 125
+    )
+else()
+    message(STATUS "Python 3 interpreter not found; skipping headless Quake II parity harness registration")
+endif()

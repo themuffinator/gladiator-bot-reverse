@@ -3,6 +3,16 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      quake2_dedicated_url:
+        description: "URL to a Quake II dedicated server archive (zip/tar)"
+        required: false
+      quake2_timeout:
+        description: "Harness timeout in seconds"
+        required: false
+  schedule:
+    - cron: "0 7 * * *"
 
 jobs:
   build-and-test-linux:
@@ -124,3 +134,97 @@ jobs:
             build/Testing
             build/**/*.log
           if-no-files-found: ignore
+
+  headless-quake2-parity:
+    name: Headless Quake II parity check (Linux)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      QUAKE2_DEDICATED_URL: ${{ github.event.inputs.quake2_dedicated_url || secrets.QUAKE2_DEDICATED_URL }}
+      QUAKE2_PARITY_TIMEOUT: ${{ github.event.inputs.quake2_timeout || '180' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y ninja-build unzip
+
+      - name: Stage Quake II dedicated server
+        id: stage-quake2
+        run: |
+          if [ -z "${QUAKE2_DEDICATED_URL}" ]; then
+            echo "Headless Quake II parity is not configured (QUAKE2_DEDICATED_URL missing)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p quake2-dedicated/unpacked
+          archive_path="quake2-dedicated/asset"
+          curl -L "${QUAKE2_DEDICATED_URL}" -o "$archive_path"
+
+          if [[ "${QUAKE2_DEDICATED_URL}" == *.zip ]]; then
+            unzip -q "$archive_path" -d quake2-dedicated/unpacked
+          else
+            if ! tar -xf "$archive_path" -C quake2-dedicated/unpacked --strip-components=1 2>/dev/null; then
+              tar -xf "$archive_path" -C quake2-dedicated/unpacked
+            fi
+          fi
+
+          rm -f "$archive_path"
+
+          baseq2_dir=$(find quake2-dedicated/unpacked -maxdepth 4 -type d -name baseq2 -print -quit)
+          if [ -z "$baseq2_dir" ]; then
+            echo "Failed to locate baseq2 directory in downloaded archive." >&2
+            exit 1
+          fi
+
+          install_root=$(dirname "$baseq2_dir")
+
+          dedicated_bin=$(find "$install_root" -maxdepth 4 -type f \( -name q2ded -o -name quake2 -o -name quake2.exe \) | head -n1)
+          if [ -z "$dedicated_bin" ]; then
+            echo "Failed to locate Quake II dedicated server binary." >&2
+            exit 1
+          fi
+
+          chmod +x "$dedicated_bin" || true
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "basedir=$install_root" >> "$GITHUB_OUTPUT"
+          echo "dedicated=$dedicated_bin" >> "$GITHUB_OUTPUT"
+
+      - name: Configure CMake
+        if: steps.stage-quake2.outputs.skip != 'true'
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_TESTING=ON \
+            -DBOTLIB_PARITY_ENABLE_SOURCES=ON
+
+      - name: Build project
+        if: steps.stage-quake2.outputs.skip != 'true'
+        run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Run headless parity harness
+        if: steps.stage-quake2.outputs.skip != 'true'
+        env:
+          GLADIATOR_Q2_DEDICATED_SERVER: ${{ steps.stage-quake2.outputs.dedicated }}
+          GLADIATOR_Q2_BASEDIR: ${{ steps.stage-quake2.outputs.basedir }}
+          GLADIATOR_Q2_CAPTURE_DIR: ${{ github.workspace }}/headless-parity-artifacts
+          GLADIATOR_Q2_TIMEOUT: ${{ env.QUAKE2_PARITY_TIMEOUT }}
+        run: ctest --test-dir build -R headless_quake2_parity --output-on-failure
+
+      - name: Upload headless parity artifacts
+        if: steps.stage-quake2.outputs.skip != 'true' && failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-quake2-artifacts
+          path: |
+            headless-parity-artifacts
+            build/Testing
+          if-no-files-found: ignore
+
+      - name: Headless parity skipped
+        if: steps.stage-quake2.outputs.skip == 'true'
+        run: echo "Headless Quake II parity check skipped because the dedicated server asset was not configured."

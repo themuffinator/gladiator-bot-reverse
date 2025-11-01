@@ -27,6 +27,13 @@ cmake --install build --prefix /path/to/gladiator/install
 The install step places the module and an export file under the configured
 prefix so downstream engines can link or load the library directly.
 
+## Testing
+
+Optional parity validation can be driven through CTest.  See the
+[Headless Quake II parity check](docs/testing/headless_quake2_parity_check.md)
+guide for environment setup, CI integration notes, and instructions on running
+the long-running harness locally.
+
 ### Exported symbols
 
 Projects that embed or extend the reconstructed botlib should include
