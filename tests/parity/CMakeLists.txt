@@ -7,6 +7,7 @@ option(BOTLIB_PARITY_ENABLE_SOURCES "Build botlib parity test sources" OFF)
 set(PARITY_TEST_SOURCES
     test_bot_interface.c
     test_precompiler_lexer.c
+    test_aas_debug.c
 )
 
 if(BOTLIB_PARITY_ENABLE_SOURCES)
