@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +47,111 @@ static uint32_t AAS_LittleUnsigned(uint32_t value)
 #else
     return (uint32_t)AAS_LittleLong((int32_t)value);
 #endif
+}
+
+static uint16_t AAS_LittleShort(uint16_t value)
+{
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+    return value;
+#else
+    return (uint16_t)((value >> 8) | (value << 8));
+#endif
+}
+
+static float AAS_LittleFloat(float value)
+{
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+    return value;
+#else
+    union
+    {
+        float f;
+        uint32_t u;
+    } swapper;
+    swapper.f = value;
+    swapper.u = AAS_LittleUnsigned(swapper.u);
+    return swapper.f;
+#endif
+}
+
+static void AAS_FixupAreas(aas_area_t *areas, int count)
+{
+    if (areas == NULL || count <= 0)
+    {
+        return;
+    }
+
+    for (int index = 0; index < count; ++index)
+    {
+        aas_area_t *area = &areas[index];
+        area->areanum = AAS_LittleLong(area->areanum);
+        area->numfaces = AAS_LittleLong(area->numfaces);
+        area->firstface = AAS_LittleLong(area->firstface);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            area->mins[axis] = AAS_LittleFloat(area->mins[axis]);
+            area->maxs[axis] = AAS_LittleFloat(area->maxs[axis]);
+            area->center[axis] = AAS_LittleFloat(area->center[axis]);
+        }
+    }
+}
+
+static void AAS_FixupAreaSettings(aas_areasettings_t *settings, int count)
+{
+    if (settings == NULL || count <= 0)
+    {
+        return;
+    }
+
+    for (int index = 0; index < count; ++index)
+    {
+        aas_areasettings_t *entry = &settings[index];
+        entry->contents = AAS_LittleLong(entry->contents);
+        entry->areaflags = AAS_LittleLong(entry->areaflags);
+        entry->presencetype = AAS_LittleLong(entry->presencetype);
+        entry->cluster = AAS_LittleLong(entry->cluster);
+        entry->clusterareanum = AAS_LittleLong(entry->clusterareanum);
+        entry->numreachableareas = AAS_LittleLong(entry->numreachableareas);
+        entry->firstreachablearea = AAS_LittleLong(entry->firstreachablearea);
+    }
+}
+
+static void AAS_FixupReachability(aas_reachability_t *reachability, int count)
+{
+    if (reachability == NULL || count <= 0)
+    {
+        return;
+    }
+
+    for (int index = 0; index < count; ++index)
+    {
+        aas_reachability_t *reach = &reachability[index];
+        reach->areanum = AAS_LittleLong(reach->areanum);
+        reach->facenum = AAS_LittleLong(reach->facenum);
+        reach->edgenum = AAS_LittleLong(reach->edgenum);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            reach->start[axis] = AAS_LittleFloat(reach->start[axis]);
+            reach->end[axis] = AAS_LittleFloat(reach->end[axis]);
+        }
+        reach->traveltype = AAS_LittleLong(reach->traveltype);
+        reach->traveltime = AAS_LittleShort(reach->traveltime);
+    }
+}
+
+static void AAS_FixupNodes(aas_node_t *nodes, int count)
+{
+    if (nodes == NULL || count <= 0)
+    {
+        return;
+    }
+
+    for (int index = 0; index < count; ++index)
+    {
+        nodes[index].planenum = AAS_LittleLong(nodes[index].planenum);
+        nodes[index].children[0] = AAS_LittleLong(nodes[index].children[0]);
+        nodes[index].children[1] = AAS_LittleLong(nodes[index].children[1]);
+    }
 }
 
 static uint32_t AAS_CRC32Update(uint32_t crc, const void *data, size_t length)
@@ -335,6 +441,9 @@ static size_t AAS_AreaBitWordCount(void)
 
 static void AAS_ClearWorld(void)
 {
+    AAS_FreeAllRoutingCaches();
+    AAS_ClearReachabilityData();
+
     if (aasworld.entities != NULL)
     {
         for (int i = 0; i < aasworld.maxEntities; ++i)
@@ -364,6 +473,12 @@ static void AAS_ClearWorld(void)
     {
         free(aasworld.areas);
         aasworld.areas = NULL;
+    }
+
+    if (aasworld.areasettings != NULL)
+    {
+        free(aasworld.areasettings);
+        aasworld.areasettings = NULL;
     }
 
     if (aasworld.reachability != NULL)
@@ -531,6 +646,23 @@ int AAS_LoadMap(const char *mapname,
         return result;
     }
 
+    aas_areasettings_t *areasettings = NULL;
+    int numAreaSettings = 0;
+    result = AAS_ReadLump(aasFile,
+                          &aasHeader.lumps[Q2_AAS_LUMP_AREASETTINGS],
+                          sizeof(aas_areasettings_t),
+                          (void **)&areasettings,
+                          &numAreaSettings,
+                          aasFileSize,
+                          BLERR_CANNOTSEEKTOAASFILE,
+                          BLERR_CANNOTREADAASLUMP);
+    if (result != BLERR_NOERROR)
+    {
+        free(areas);
+        fclose(aasFile);
+        return result;
+    }
+
     aas_reachability_t *reachability = NULL;
     int numReachability = 0;
     result = AAS_ReadLump(aasFile,
@@ -544,6 +676,7 @@ int AAS_LoadMap(const char *mapname,
     if (result != BLERR_NOERROR)
     {
         free(areas);
+        free(areasettings);
         fclose(aasFile);
         return result;
     }
@@ -561,6 +694,7 @@ int AAS_LoadMap(const char *mapname,
     if (result != BLERR_NOERROR)
     {
         free(areas);
+        free(areasettings);
         free(reachability);
         fclose(aasFile);
         return result;
@@ -568,11 +702,17 @@ int AAS_LoadMap(const char *mapname,
 
     fclose(aasFile);
 
+    AAS_FixupAreas(areas, numAreas);
+    AAS_FixupAreaSettings(areasettings, numAreaSettings);
+    AAS_FixupReachability(reachability, numReachability);
+    AAS_FixupNodes(nodes, numNodes);
+
     uint32_t aasChecksum = 0U;
     if (!AAS_ComputeFileChecksum(aasPath, &aasChecksum))
     {
         BotLib_Print(PRT_ERROR, "AAS_LoadMap: failed to compute checksum for %s\n", aasPath);
         free(areas);
+        free(areasettings);
         free(reachability);
         free(nodes);
         return BLERR_CANNOTREADAASHEADER;
@@ -587,6 +727,8 @@ int AAS_LoadMap(const char *mapname,
     aasworld.areas = areas;
     aasworld.numReachability = numReachability;
     aasworld.reachability = reachability;
+    aasworld.numAreaSettings = numAreaSettings;
+    aasworld.areasettings = areasettings;
     aasworld.numNodes = numNodes;
     aasworld.nodes = nodes;
     aasworld.maxEntities = 0;
@@ -598,11 +740,22 @@ int AAS_LoadMap(const char *mapname,
     aasworld.initialized = qtrue;
     aasworld.entitiesValid = qfalse;
     aasworld.maxEntities = 0;
+    AAS_InitTravelFlagFromType();
+    int reachStatus = AAS_PrepareReachability();
+    if (reachStatus != BLERR_NOERROR)
+    {
+        AAS_ClearWorld();
+        return reachStatus;
+    }
+
     int areaStatus = AAS_EnsureAreaListArray();
     if (areaStatus != BLERR_NOERROR)
     {
+        AAS_ClearWorld();
         return areaStatus;
     }
+
+    AAS_InvalidateRouteCache();
     return BLERR_NOERROR;
 }
 
@@ -964,6 +1117,8 @@ int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
     }
 
     /* Preserve the historical fields before copying the new state. */
+    vec3_t oldOrigin;
+    VectorCopy(entity->origin, oldOrigin);
     VectorCopy(entity->origin, entity->previousOrigin);
     VectorCopy(state->angles, entity->angles);
 
@@ -999,6 +1154,17 @@ int AAS_UpdateEntity(int ent, bot_updateentity_t *state)
     if (linkStatus != BLERR_NOERROR)
     {
         return linkStatus;
+    }
+
+    if (entity->solid == SOLID_BSP)
+    {
+        float dx = fabsf(entity->origin[0] - oldOrigin[0]);
+        float dy = fabsf(entity->origin[1] - oldOrigin[1]);
+        float dz = fabsf(entity->origin[2] - oldOrigin[2]);
+        if (dx > 0.125f || dy > 0.125f || dz > 0.125f)
+        {
+            AAS_InvalidateRouteCache();
+        }
     }
 
     aasworld.entitiesValid = qtrue;

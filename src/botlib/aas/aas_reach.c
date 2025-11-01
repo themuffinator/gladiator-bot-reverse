@@ -1,48 +1,179 @@
-/*
- * Gladiator Bot AAS reachability (placeholder)
- *
- * This module will encapsulate the reachability graph construction, matching
- * the HLIL fragments that enumerate edges, assign travel times, and hook into
- * the routing cache codepath defined in aas_route.c. The structure should be
- * comparable to Quake III Arena's be_aas_reach.c, giving us a known-good
- * baseline when stitching behaviours together.
- *
- * Planned data structures:
- *  - `aas_reachability_t` records mirroring the original binary layout. Fields
- *    include start/end area numbers, travel type, travel time, and auxiliary
- *    vectors.
- *  - Builder work queues for deferred processing uncovered in the HLIL output
- *    (e.g., pending elevator links or crouch optimisations).
- *  - Reachability index tables stored inside `aasworld` to support fast lookups
- *    during routing.
- *
- * Public API surface (to be implemented):
- *  - `void AAS_InitReachability(void);`
- *      Initializes global tables and resets temporary state. Requires the AAS
- *      file loader to have populated world geometry beforehand.
- *  - `bool AAS_BuildReachabilityGraph(void);`
- *      Runs the lift-and-translate pass informed by HLIL comments, producing
- *      `aas_reachability_t` entries and seeding travel times.
- *  - `void AAS_LinkReachability(void);`
- *      Finalizes adjacency lists and registers travel type metadata with the
- *      routing subsystem.
- *  - `void AAS_ClearReachability(void);`
- *      Releases reachability buffers, invoked both on shutdown and on map
- *      reloads triggered by botlib imports.
- *
- * Integration notes:
- *  - Depends on the shared memory allocator (`l_memory`) for both transient and
- *    persistent buffers.
- *  - Must consult libvars controlling optional features (e.g., rocket jump
- *    reachabilities) before generating edges to match runtime expectations.
- *  - Logging via `l_log` will help validate graph completeness against the
- *    HLIL traces.
- *
- * Future commits will populate the scaffolding with the reconstructed logic.
- */
+#include "aas_local.h"
 
-#include "../common/l_memory.h"
+#include <stdlib.h>
+#include <string.h>
+
 #include "../common/l_log.h"
-#include "../common/l_libvar.h"
 
-/* TODO: add the real implementations once the reverse engineering work is ready. */
+static void AAS_FreeReverseReachability(void)
+{
+    if (aasworld.reversedReachability != NULL)
+    {
+        int areaCount = (aasworld.numAreas > 0) ? aasworld.numAreas : 0;
+        for (int area = 0; area <= areaCount; ++area)
+        {
+            free(aasworld.reversedReachability[area].reachIndexes);
+            aasworld.reversedReachability[area].reachIndexes = NULL;
+            aasworld.reversedReachability[area].count = 0;
+        }
+        free(aasworld.reversedReachability);
+        aasworld.reversedReachability = NULL;
+    }
+}
+
+void AAS_ClearReachabilityData(void)
+{
+    AAS_FreeReverseReachability();
+    free(aasworld.reachabilityFromArea);
+    aasworld.reachabilityFromArea = NULL;
+}
+
+int AAS_PrepareReachability(void)
+{
+    AAS_ClearReachabilityData();
+
+    if (aasworld.reachability == NULL || aasworld.numReachability <= 0)
+    {
+        return BLERR_NOERROR;
+    }
+
+    if (aasworld.areasettings == NULL || aasworld.numAreaSettings <= 0)
+    {
+        BotLib_Print(PRT_ERROR, "AAS_PrepareReachability: missing area settings\n");
+        return BLERR_INVALIDIMPORT;
+    }
+
+    int numAreas = aasworld.numAreas;
+    if (numAreas < 0)
+    {
+        numAreas = 0;
+    }
+
+    int numReach = aasworld.numReachability;
+    aasworld.reachabilityFromArea = (int *)calloc((size_t)numReach, sizeof(int));
+    if (aasworld.reachabilityFromArea == NULL)
+    {
+        return BLERR_INVALIDIMPORT;
+    }
+
+    aasworld.reversedReachability =
+        (aas_reversedreachability_t *)calloc((size_t)numAreas + 1U, sizeof(aas_reversedreachability_t));
+    if (aasworld.reversedReachability == NULL)
+    {
+        AAS_ClearReachabilityData();
+        return BLERR_INVALIDIMPORT;
+    }
+
+    int *reverseCounts = (int *)calloc((size_t)numAreas + 1U, sizeof(int));
+    if (reverseCounts == NULL)
+    {
+        AAS_ClearReachabilityData();
+        return BLERR_INVALIDIMPORT;
+    }
+
+    for (int area = 1; area <= numAreas && area < aasworld.numAreaSettings; ++area)
+    {
+        const aas_areasettings_t *settings = &aasworld.areasettings[area];
+        if (settings->numreachableareas <= 0)
+        {
+            continue;
+        }
+
+        int first = settings->firstreachablearea;
+        int count = settings->numreachableareas;
+        if (first < 0 || count < 0)
+        {
+            BotLib_Print(PRT_WARNING,
+                         "AAS_PrepareReachability: area %d has negative reachability metadata\n",
+                         area);
+            continue;
+        }
+
+        if (first + count > numReach)
+        {
+            BotLib_Print(PRT_ERROR,
+                         "AAS_PrepareReachability: area %d references reachabilities beyond file bounds\n",
+                         area);
+            free(reverseCounts);
+            AAS_ClearReachabilityData();
+            return BLERR_INVALIDIMPORT;
+        }
+
+        for (int offset = 0; offset < count; ++offset)
+        {
+            int reachIndex = first + offset;
+            aasworld.reachabilityFromArea[reachIndex] = area;
+
+            int destination = aasworld.reachability[reachIndex].areanum;
+            if (destination < 0 || destination > numAreas)
+            {
+                continue;
+            }
+
+            reverseCounts[destination] += 1;
+        }
+    }
+
+    for (int area = 0; area <= numAreas; ++area)
+    {
+        int count = reverseCounts[area];
+        if (count <= 0)
+        {
+            continue;
+        }
+
+        aasworld.reversedReachability[area].reachIndexes = (int *)malloc((size_t)count * sizeof(int));
+        if (aasworld.reversedReachability[area].reachIndexes == NULL)
+        {
+            free(reverseCounts);
+            AAS_ClearReachabilityData();
+            return BLERR_INVALIDIMPORT;
+        }
+        aasworld.reversedReachability[area].count = count;
+    }
+
+    int *reverseOffsets = (int *)calloc((size_t)numAreas + 1U, sizeof(int));
+    if (reverseOffsets == NULL)
+    {
+        free(reverseCounts);
+        AAS_ClearReachabilityData();
+        return BLERR_INVALIDIMPORT;
+    }
+
+    for (int area = 1; area <= numAreas && area < aasworld.numAreaSettings; ++area)
+    {
+        const aas_areasettings_t *settings = &aasworld.areasettings[area];
+        if (settings->numreachableareas <= 0)
+        {
+            continue;
+        }
+
+        int first = settings->firstreachablearea;
+        int count = settings->numreachableareas;
+        if (first < 0)
+        {
+            continue;
+        }
+
+        for (int offset = 0; offset < count; ++offset)
+        {
+            int reachIndex = first + offset;
+            int destination = aasworld.reachability[reachIndex].areanum;
+            if (destination < 0 || destination > numAreas)
+            {
+                continue;
+            }
+
+            int insert = reverseOffsets[destination];
+            if (insert < aasworld.reversedReachability[destination].count)
+            {
+                aasworld.reversedReachability[destination].reachIndexes[insert] = reachIndex;
+                reverseOffsets[destination] = insert + 1;
+            }
+        }
+    }
+
+    free(reverseOffsets);
+    free(reverseCounts);
+    return BLERR_NOERROR;
+}

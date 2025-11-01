@@ -123,6 +123,15 @@ typedef struct cplane_s
     byte    pad[2];
 } cplane_t;
 
+/* solidity types used by entity_state_t::solid */
+typedef enum
+{
+    SOLID_NOT = 0,     /* no interaction */
+    SOLID_TRIGGER,     /* only touch when inside */
+    SOLID_BBOX,        /* touch on edge */
+    SOLID_BSP          /* bsp clip, touch on edge */
+} solid_t;
+
 /* entity_state_t->effects */
 #define EF_ROTATE               0x00000001      /* rotate (bonus items) */
 #define EF_GIB                  0x00000002      /* leave a trail */
