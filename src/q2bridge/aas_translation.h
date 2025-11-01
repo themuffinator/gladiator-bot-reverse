@@ -99,6 +99,7 @@ typedef struct AASEntityFrame_s {
     bool angles_dirty;      ///< true when angles changed this frame.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10409】
     bool bounds_dirty;      ///< true when mins/maxs changed (solid == 2 branch).【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10390-L10421】
     bool origin_dirty;      ///< true when origin changed.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10421-L10433】
+    bool is_mover;          ///< true when the entity's model is tracked as a mover in the catalogue.
 } AASEntityFrame;
 
 /**

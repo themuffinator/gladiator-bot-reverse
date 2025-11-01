@@ -13,6 +13,7 @@
 #include "q2bridge/aas_translation.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/update_translator.h"
+#include "botlib/ai/move/mover_catalogue.h"
 #include "botlib_contract_loader.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
@@ -307,6 +308,7 @@ static void test_translate_entity_dirty_flags_and_relink_logging(void **state)
     assert_true(frame.origin_dirty);
     assert_true(frame.bounds_dirty);
     assert_true(frame.angles_dirty);
+    assert_false(frame.is_mover);
     assert_vec3_equal(frame.origin, update.origin, 0.0001f);
     assert_vec3_equal(frame.old_origin, update.old_origin, 0.0001f);
     vec3_t zero = {0.0f, 0.0f, 0.0f};
@@ -359,6 +361,29 @@ static void test_translate_entity_dirty_flags_and_relink_logging(void **state)
     assert_vec3_equal(frame.previous_origin, update.origin, 0.0001f);
     assert_float_equal(frame.frame_delta, 1.5f, 0.0001f);
     assert_int_equal(context->print_count, 0U);
+
+    BotMove_MoverCatalogueReset();
+    bot_mover_catalogue_entry_t mover_entry = {0};
+    mover_entry.modelnum = update.modelindex;
+    assert_true(BotMove_MoverCatalogueInsert(&mover_entry));
+    char model_name[] = "*2";
+    char *model_entries[] = {model_name};
+    botinterface_asset_list_t assets = {
+        .entries = model_entries,
+        .count = ARRAY_LEN(model_entries),
+    };
+    assert_true(BotMove_MoverCatalogueFinalize(&assets));
+
+    context->print_count = 0U;
+    TranslateEntity_SetCurrentTime(4.0f);
+    status = TranslateEntityUpdate(5, &follow_up, &frame);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(frame.is_mover);
+    assert_int_equal(context->print_count, 1U);
+    assert_string_equal(context->prints[0].message, brush_message->text);
+    assert_int_equal(context->prints[0].severity, brush_message->severity);
+
+    BotMove_MoverCatalogueReset();
 }
 
 static void test_translate_entity_aas_not_loaded_logs(void **state)
