@@ -331,6 +331,9 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 
     Mock_Reset(&context->mock);
 
+    LibVarSet("max_soundinfo", "64");
+    LibVarSet("max_aassounds", "4");
+
     assert_string_equal(context->api->BotVersion(), "BotLib v0.96");
 
     int status = context->api->BotSetupLibrary();
@@ -411,10 +414,131 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     assert_false(light_summary->expired);
 
     context->api->Test(0, "sounds", origin, origin);
-    assert_non_null(Mock_FindPrint(&context->mock, "sound[0]"));
+    assert_non_null(Mock_FindPrint(&context->mock, "Test sounds: 1 queued"));
+    assert_non_null(Mock_FindPrint(&context->mock, "sound[0]: ent=3"));
 
     context->api->Test(0, "pointlights", origin, origin);
-    assert_non_null(Mock_FindPrint(&context->mock, "pointlights"));
+    assert_non_null(Mock_FindPrint(&context->mock, "Test pointlights: 1 queued"));
+    assert_non_null(Mock_FindPrint(&context->mock, "light[0]: ent=5"));
+
+    bot_settings_t settings;
+    memset(&settings, 0, sizeof(settings));
+    snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+
+    status = context->api->BotSetupClient(1, &settings);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_client_state_t *self_state = BotState_Get(1);
+    assert_non_null(self_state);
+    self_state->team = 1;
+
+    bot_goal_t chase_goal;
+    memset(&chase_goal, 0, sizeof(chase_goal));
+    chase_goal.number = 0;
+    chase_goal.areanum = 1;
+    VectorSet(chase_goal.origin, 256.0f, 0.0f, 24.0f);
+    status = context->api->BotPushGoal(self_state->goal_handle, &chase_goal);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_client_state_t *enemy_state = BotState_Create(2);
+    assert_non_null(enemy_state);
+    enemy_state->active = true;
+    enemy_state->team = 2;
+
+    bot_updateclient_t self_update;
+    memset(&self_update, 0, sizeof(self_update));
+    VectorSet(self_update.origin, 0.0f, 0.0f, 24.0f);
+    VectorSet(self_update.viewangles, 0.0f, 0.0f, 0.0f);
+    self_update.stats[STAT_HEALTH] = 100;
+    self_update.pm_flags = PMF_ON_GROUND;
+    for (int i = 0; i < MAX_ITEMS; ++i)
+    {
+        self_update.inventory[i] = 1;
+    }
+
+    bot_updateclient_t enemy_update;
+    memset(&enemy_update, 0, sizeof(enemy_update));
+    VectorSet(enemy_update.origin, 256.0f, 0.0f, 24.0f);
+    VectorSet(enemy_update.viewangles, 0.0f, 180.0f, 0.0f);
+    enemy_update.stats[STAT_HEALTH] = 100;
+    enemy_state->last_client_update = enemy_update;
+    enemy_state->client_update_valid = true;
+
+    bot_updateentity_t enemy_entity;
+    memset(&enemy_entity, 0, sizeof(enemy_entity));
+    VectorCopy(enemy_update.origin, enemy_entity.origin);
+    VectorCopy(enemy_update.origin, enemy_entity.old_origin);
+
+    status = context->api->BotStartFrame(0.2f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateClient(1, &self_update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateEntity(2, &enemy_entity);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    assert_true(context->mock.bot_input_count > 0);
+    const bot_input_t *final_input = &context->mock.inputs[context->mock.bot_input_count - 1];
+    assert_float_equal(final_input->thinktime, 0.05f, 0.0001f);
+    assert_true(final_input->dir[0] > 0.99f);
+    assert_float_equal(final_input->dir[1], 0.0f, 0.0001f);
+    assert_float_equal(final_input->dir[2], 0.0f, 0.0001f);
+    assert_true(final_input->speed >= 256.0f);
+    assert_true(final_input->speed <= 400.0f);
+    assert_int_equal(final_input->actionflags, 0);
+
+    assert_int_equal(self_state->combat.current_enemy, 2);
+    assert_true(self_state->combat.enemy_visible);
+    assert_int_equal(self_state->active_goal_number, chase_goal.number);
+
+    context->api->BotShutdownClient(1);
+    BotState_Destroy(2);
+
+    Mock_Reset(&context->mock);
+
+    context->api->BotShutdownLibrary();
+
+    LibVarSet("max_soundinfo", "1");
+    LibVarSet("max_aassounds", "2");
+
+    status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_non_null(Mock_FindPrint(&context->mock, "AAS_Sound: discarding soundinfo"));
+
+    Mock_Reset(&context->mock);
+
+    status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 2, sounds, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal((int)AAS_SoundSubsystem_InfoCount(), 1);
+
+    context->api->BotShutdownLibrary();
+
+    Mock_Reset(&context->mock);
+
+    LibVarSet("max_soundinfo", "0");
+    LibVarSet("max_aassounds", "0");
+
+    status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_non_null(Mock_FindPrint(&context->mock, "AAS_Sound: max_soundinfo disabled"));
+
+    Mock_Reset(&context->mock);
+
+    status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 2, sounds, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAddSound(origin, 6, 2, 0, 1.0f, 1.0f, 0.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_non_null(Mock_FindPrint(&context->mock, "BotAddSound: sound queue capacity exceeded"));
+
+    status = context->api->BotAddPointLight(origin, 7, 64.0f, 0.1f, 0.2f, 0.3f, 0.0f, 0.5f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_non_null(Mock_FindPrint(&context->mock, "BotAddPointLight: point light queue capacity exceeded"));
 
     context->api->BotShutdownLibrary();
 
