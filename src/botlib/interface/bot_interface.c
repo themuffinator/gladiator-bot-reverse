@@ -2396,7 +2396,7 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
     if (parm1 == NULL || *parm1 == '\0')
     {
         BotInterface_Printf(PRT_MESSAGE,
-                             "[bot_interface] Test commands: dump_chat, sounds, pointlights, debug_draw, bot_test, aas_showpath, aas_showareas\n");
+                             "[bot_interface] Test commands: dump_chat, sounds, pointlights, debug_draw, bot_test, aas_showpath, aas_showareas, teleport_mover\n");
         return BLERR_INVALIDIMPORT;
     }
 
@@ -2502,6 +2502,134 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
         }
 
         free(messages);
+        return BLERR_NOERROR;
+    }
+
+    if (BotInterface_StringCompareIgnoreCase(command, "teleport_mover") == 0)
+    {
+        if (arguments == NULL || *arguments == '\0')
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] Test teleport_mover: expected <client> <target>\n");
+            return BLERR_INVALIDIMPORT;
+        }
+
+        char *cursor = arguments;
+        char *endptr = NULL;
+        long client_value = strtol(cursor, &endptr, 10);
+        if (endptr == cursor)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] Test teleport_mover: invalid client argument '%s'\n",
+                                 arguments);
+            return BLERR_INVALIDIMPORT;
+        }
+
+        while (*endptr != '\0' && isspace((unsigned char)*endptr))
+        {
+            ++endptr;
+        }
+
+        if (*endptr == '\0')
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] Test teleport_mover: expected mover entity after client\n");
+            return BLERR_INVALIDIMPORT;
+        }
+
+        cursor = endptr;
+        long mover_value = strtol(cursor, &endptr, 10);
+        if (endptr == cursor)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] Test teleport_mover: invalid mover argument '%s'\n",
+                                 cursor);
+            return BLERR_INVALIDIMPORT;
+        }
+
+        int client = (int)client_value;
+        int mover_ent = (int)mover_value;
+
+        if (client < 0 || client >= MAX_CLIENTS)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] Test teleport_mover: client %d out of range\n",
+                                 client);
+            return BLERR_INVALIDCLIENTNUMBER;
+        }
+
+        bot_client_state_t *state = BotState_Get(client);
+        if (state == NULL || !state->active)
+        {
+            BotInterface_Printf(PRT_WARNING,
+                                 "[bot_interface] Test teleport_mover: client %d not active\n",
+                                 client);
+            return BLERR_AICLIENTNOTSETUP;
+        }
+
+        if (!state->client_update_valid)
+        {
+            BotInterface_Printf(PRT_WARNING,
+                                 "[bot_interface] Test teleport_mover: client %d has no snapshot\n",
+                                 client);
+            return BLERR_AIUPDATEINACTIVECLIENT;
+        }
+
+        if (mover_ent < 0 || mover_ent >= BOT_INTERFACE_MAX_ENTITIES)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] Test teleport_mover: mover %d out of range\n",
+                                 mover_ent);
+            return BLERR_INVALIDENTITYNUMBER;
+        }
+
+        if (!g_botInterfaceEntityCache[mover_ent].valid)
+        {
+            BotInterface_Printf(PRT_WARNING,
+                                 "[bot_interface] Test teleport_mover: mover entity %d has no snapshot\n",
+                                 mover_ent);
+            return BLERR_INVALIDENTITYNUMBER;
+        }
+
+        const bot_updateentity_t *snapshot = &g_botInterfaceEntityCache[mover_ent].state;
+        const bot_mover_catalogue_entry_t *entry = BotMove_MoverCatalogueFindByModel(snapshot->modelindex);
+        if (entry == NULL)
+        {
+            BotInterface_Printf(PRT_WARNING,
+                                 "[bot_interface] Test teleport_mover: entity %d (modelindex %d) is not a mover\n",
+                                 mover_ent,
+                                 snapshot->modelindex);
+            return BLERR_INVALIDIMPORT;
+        }
+
+        bot_updateclient_t update = state->last_client_update;
+        VectorCopy(snapshot->origin, update.origin);
+        VectorClear(update.velocity);
+        update.pm_flags |= PMF_TIME_TELEPORT;
+        if (update.pm_time <= 0)
+        {
+            update.pm_time = 1;
+        }
+        VectorCopy(snapshot->angles, update.viewangles);
+
+        int status = BotUpdateClient(client, &update);
+        if (status != BLERR_NOERROR)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] Test teleport_mover: failed to update client %d (%d)\n",
+                                 client,
+                                 status);
+            return status;
+        }
+
+        BotInterface_Printf(PRT_MESSAGE,
+                             "[bot_interface] Test teleport_mover: moved client %d to mover %d origin (%.1f %.1f %.1f)\n",
+                             client,
+                             mover_ent,
+                             snapshot->origin[0],
+                             snapshot->origin[1],
+                             snapshot->origin[2]);
+
         return BLERR_NOERROR;
     }
 
