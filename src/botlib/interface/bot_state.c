@@ -11,6 +11,14 @@ static void BotState_FreeResources(bot_client_state_t *state)
         return;
     }
 
+    if (state->move_state != NULL) {
+        AI_MoveState_Destroy(state->move_state);
+    }
+
+    if (state->goal_state != NULL) {
+        AI_GoalState_Destroy(state->goal_state);
+    }
+
     if (state->character != NULL) {
         AI_FreeCharacter(state->character);
     } else {

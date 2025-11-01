@@ -7,6 +7,7 @@
 #include "../ai/chat/ai_chat.h"
 #include "../ai/weapon/bot_weapon.h"
 #include "../ai/weight/bot_weight.h"
+#include "../ai/goal_move_orchestrator.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,8 +38,8 @@ struct bot_client_state_s {
     bot_weight_config_t *item_weights;
     ai_weapon_weights_t *weapon_weights;
     bot_chatstate_t *chat_state;
-    void *goal_state;
-    void *move_state;
+    ai_goal_state_t *goal_state;
+    ai_move_state_t *move_state;
     bot_updateclient_t last_client_update;
     bool client_update_valid;
     float last_update_time;
