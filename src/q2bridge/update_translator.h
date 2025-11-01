@@ -41,6 +41,11 @@ int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update);
 void Bridge_ResetCachedUpdates(void);
 
 /**
+ * @brief Synchronise cached limits after map lifecycle changes.
+ */
+void Bridge_HandleMapStateChange(void);
+
+/**
  * @brief Clear any cached client update for the requested slot.
  */
 void Bridge_ClearClientSlot(int client);

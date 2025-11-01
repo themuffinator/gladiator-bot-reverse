@@ -13,6 +13,7 @@
 #include "q2bridge/aas_translation.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/update_translator.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib/ai/move/mover_catalogue.h"
 #include "botlib_contract_loader.h"
 
@@ -261,6 +262,27 @@ static void test_bridge_update_client_inactive_logs_contract_message(void **stat
     assert_non_null(code);
 }
 
+static void test_bridge_update_client_rejects_out_of_range_slot(void **state)
+{
+    translator_test_context_t *context = (translator_test_context_t *)(*state);
+    context->print_count = 0U;
+
+    LibVarSet("maxclients", "2");
+    Bridge_ResetCachedUpdates();
+
+    bot_updateclient_t update;
+    memset(&update, 0, sizeof(update));
+
+    int status = Bridge_UpdateClient(2, &update);
+    assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+    assert_true(context->print_count > 0U);
+    assert_string_equal(context->prints[0].message, "BotUpdateClient: invalid client number 2, [0, 1]\n");
+    assert_int_equal(context->prints[0].severity, PRT_ERROR);
+
+    LibVarSet("maxclients", "4");
+    Bridge_ResetCachedUpdates();
+}
+
 static void test_translate_entity_dirty_flags_and_relink_logging(void **state)
 {
     translator_test_context_t *context = (translator_test_context_t *)(*state);
@@ -446,6 +468,9 @@ int main(void)
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_update_client_inactive_logs_contract_message,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_update_client_rejects_out_of_range_slot,
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_translate_entity_dirty_flags_and_relink_logging,
