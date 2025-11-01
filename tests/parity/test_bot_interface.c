@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include <cmocka.h>
 
@@ -13,6 +14,8 @@
 #include "botlib/ai/chat/ai_chat.h"
 #include "botlib/ea/ea_local.h"
 #include "botlib/ai/move/mover_catalogue.h"
+#include "botlib/ai/goal_move_orchestrator.h"
+#include "botlib/ai/goal/bot_goal.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_libvar.h"
@@ -208,6 +211,37 @@ static const char *Mock_FindPrint(const mock_bot_import_t *mock, const char *nee
     }
 
     return NULL;
+}
+
+static const captured_print_t *Mock_FindPrintEntry(const mock_bot_import_t *mock,
+                                                   const char *needle)
+{
+    if (mock == NULL || needle == NULL)
+    {
+        return NULL;
+    }
+
+    for (size_t index = 0; index < mock->print_count; ++index)
+    {
+        if (strstr(mock->prints[index].message, needle) != NULL)
+        {
+            return &mock->prints[index];
+        }
+    }
+
+    return NULL;
+}
+
+static void Mock_AssertPrintContains(const mock_bot_import_t *mock,
+                                     const char *needle,
+                                     int expected_type)
+{
+    const captured_print_t *entry = Mock_FindPrintEntry(mock, needle);
+    assert_non_null(entry);
+    if (expected_type >= 0)
+    {
+        assert_int_equal(entry->type, expected_type);
+    }
 }
 
 static int setup_bot_interface(void **state)
@@ -738,6 +772,230 @@ static void test_bot_update_entity_populates_aas(void **state)
     context->api->BotShutdownLibrary();
 }
 
+typedef struct bot_mover_fixture_s
+{
+    aas_area_t *areas;
+    aas_areasettings_t *area_settings;
+    aas_reachability_t *reachability;
+    aas_entity_t *entities;
+} bot_mover_fixture_t;
+
+static void bot_mover_fixture_init(bot_mover_fixture_t *fixture)
+{
+    memset(&aasworld, 0, sizeof(aasworld));
+    aasworld.loaded = qtrue;
+    aasworld.initialized = qtrue;
+    aasworld.time = 0.0f;
+    aasworld.numAreas = 3;
+    aasworld.numAreaSettings = 4;
+    aasworld.numReachability = 3;
+    aasworld.maxEntities = 8;
+
+    fixture->areas = (aas_area_t *)calloc((size_t)(aasworld.numAreas + 1), sizeof(aas_area_t));
+    fixture->area_settings =
+        (aas_areasettings_t *)calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
+    fixture->reachability =
+        (aas_reachability_t *)calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
+    fixture->entities = (aas_entity_t *)calloc((size_t)aasworld.maxEntities, sizeof(aas_entity_t));
+
+    assert_non_null(fixture->areas);
+    assert_non_null(fixture->area_settings);
+    assert_non_null(fixture->reachability);
+    assert_non_null(fixture->entities);
+
+    aasworld.areas = fixture->areas;
+    aasworld.areasettings = fixture->area_settings;
+    aasworld.reachability = fixture->reachability;
+    aasworld.entities = fixture->entities;
+    TranslateEntity_SetWorldLoaded(qtrue);
+
+    VectorSet(aasworld.areas[1].mins, -64.0f, -64.0f, 0.0f);
+    VectorSet(aasworld.areas[1].maxs, 64.0f, 64.0f, 64.0f);
+    VectorSet(aasworld.areas[2].mins, -64.0f, -64.0f, 0.0f);
+    VectorSet(aasworld.areas[2].maxs, 192.0f, 64.0f, 64.0f);
+    VectorSet(aasworld.areas[3].mins, 192.0f, -64.0f, 0.0f);
+    VectorSet(aasworld.areas[3].maxs, 320.0f, 64.0f, 64.0f);
+
+    fixture->area_settings[1].firstreachablearea = 1;
+    fixture->area_settings[1].numreachableareas = 1;
+    fixture->area_settings[2].firstreachablearea = 2;
+    fixture->area_settings[2].numreachableareas = 1;
+
+    fixture->reachability[1].areanum = 2;
+    fixture->reachability[1].traveltype = TRAVEL_WALK;
+    VectorClear(fixture->reachability[1].start);
+    VectorSet(fixture->reachability[1].end, 128.0f, 0.0f, 32.0f);
+    fixture->reachability[1].facenum = 0; /* ensure no mover reach is registered */
+
+    fixture->reachability[2].areanum = 3;
+    fixture->reachability[2].traveltype = TRAVEL_WALK;
+    VectorSet(fixture->reachability[2].start, 128.0f, 0.0f, 32.0f);
+    VectorSet(fixture->reachability[2].end, 256.0f, 0.0f, 32.0f);
+
+    memset(aasworld.travelflagfortype, 0, sizeof(aasworld.travelflagfortype));
+    aasworld.travelflagfortype[TRAVEL_WALK] = TFL_WALK;
+}
+
+static void bot_mover_fixture_shutdown(bot_mover_fixture_t *fixture)
+{
+    if (fixture == NULL)
+    {
+        return;
+    }
+
+    free(fixture->areas);
+    free(fixture->area_settings);
+    free(fixture->reachability);
+    free(fixture->entities);
+    memset(fixture, 0, sizeof(*fixture));
+
+    AAS_Shutdown();
+    BotMove_MoverCatalogueReset();
+}
+
+static void test_bot_interface_mover_parity(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_mover_fixture_t fixture;
+    memset(&fixture, 0, sizeof(fixture));
+    bot_mover_fixture_init(&fixture);
+
+    LibVarSet("bot_developer", "1");
+
+    BotMove_MoverCatalogueReset();
+    bot_mover_catalogue_entry_t mover_entry = {
+        .modelnum = 8,
+        .lip = 0.0f,
+        .height = 0.0f,
+        .speed = 0.0f,
+        .spawnflags = 0,
+        .doortype = 0,
+        .kind = BOT_MOVER_KIND_FUNC_PLAT,
+    };
+    assert_true(BotMove_MoverCatalogueInsert(&mover_entry));
+
+    char model_name[] = "*8";
+    char *model_entries[] = {model_name};
+    botinterface_asset_list_t asset_models = {
+        .entries = model_entries,
+        .count = ARRAY_LEN(model_entries),
+    };
+    assert_true(BotMove_MoverCatalogueFinalize(&asset_models));
+
+    bot_updateentity_t mover_update;
+    memset(&mover_update, 0, sizeof(mover_update));
+    VectorSet(mover_update.origin, 64.0f, 0.0f, 16.0f);
+    VectorSet(mover_update.old_origin, 64.0f, 0.0f, 16.0f);
+    VectorSet(mover_update.mins, -32.0f, -32.0f, -16.0f);
+    VectorSet(mover_update.maxs, 32.0f, 32.0f, 16.0f);
+    mover_update.solid = SOLID_BSP;
+    mover_update.modelindex = mover_entry.modelnum;
+
+    status = context->api->BotUpdateEntity(3, &mover_update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    Mock_AssertPrintContains(&context->mock, "relinking brush model", PRT_MESSAGE);
+    Mock_Reset(&context->mock);
+
+    bot_settings_t settings;
+    memset(&settings, 0, sizeof(settings));
+    snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    settings.skill = 1;
+
+    status = context->api->BotSetupClient(1, &settings);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_client_state_t *client_state = BotState_Get(1);
+    assert_non_null(client_state);
+
+    bot_goal_t mover_goal;
+    memset(&mover_goal, 0, sizeof(mover_goal));
+    mover_goal.number = 42;
+    mover_goal.areanum = 3;
+    VectorSet(mover_goal.origin, 256.0f, 0.0f, 32.0f);
+
+    status = context->api->BotPushGoal(client_state->goal_handle, &mover_goal);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotStartFrame(0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateclient_t update;
+    memset(&update, 0, sizeof(update));
+    VectorSet(update.origin, 64.0f, 0.0f, 32.0f);
+    update.pm_flags = PMF_ON_GROUND;
+    update.viewangles[1] = 90.0f;
+    update.stats[STAT_HEALTH] = 100;
+    for (int i = 0; i < MAX_ITEMS; ++i)
+    {
+        update.inventory[i] = 1;
+    }
+
+    status = context->api->BotUpdateClient(1, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_INVALIDIMPORT);
+
+    Mock_AssertPrintContains(&context->mock, "without reachability", PRT_MESSAGE);
+
+    BotDumpAvoidGoals(client_state->goal_handle);
+    Mock_AssertPrintContains(&context->mock, "BotDumpAvoidGoals", PRT_MESSAGE);
+
+    ai_avoid_list_t *avoid = AI_GoalState_GetAvoidList(client_state->goal_state);
+    assert_non_null(avoid);
+    assert_true(AI_AvoidList_Contains(avoid, mover_goal.number, 0.1f));
+
+    Mock_Reset(&context->mock);
+
+    fixture.reachability[1].traveltype = TRAVEL_ELEVATOR;
+    fixture.reachability[1].facenum = mover_entry.modelnum;
+
+    status = context->api->BotStartFrame(0.2f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateClient(1, &update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    assert_true(context->mock.bot_input_count > 0U);
+    const bot_input_t *final_input =
+        &context->mock.inputs[context->mock.bot_input_count - 1U];
+    assert_float_equal(final_input->thinktime, 0.05f, 0.0001f);
+
+    vec3_t goal_delta;
+    VectorSubtract(mover_goal.origin, update.origin, goal_delta);
+    float expected_speed = sqrtf(goal_delta[0] * goal_delta[0] +
+                                 goal_delta[1] * goal_delta[1] +
+                                 goal_delta[2] * goal_delta[2]);
+    assert_true(expected_speed > 0.0f);
+
+    vec3_t expected_dir = {goal_delta[0] / expected_speed,
+                           goal_delta[1] / expected_speed,
+                           goal_delta[2] / expected_speed};
+
+    assert_float_equal(final_input->speed, expected_speed, 0.0001f);
+    assert_float_equal(final_input->dir[0], expected_dir[0], 0.0001f);
+    assert_float_equal(final_input->dir[1], expected_dir[1], 0.0001f);
+    assert_float_equal(final_input->dir[2], expected_dir[2], 0.0001f);
+    assert_int_equal(final_input->actionflags, 0);
+
+    context->api->BotShutdownClient(1);
+    context->api->BotShutdownLibrary();
+
+    bot_mover_fixture_shutdown(&fixture);
+    LibVarSet("bot_developer", "0");
+}
+
 static bool ensure_map_fixture(const asset_env_t *assets, const char *stem)
 {
     if (assets == NULL || stem == NULL)
@@ -1019,6 +1277,9 @@ int main(void)
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_interface_mover_parity,
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,
