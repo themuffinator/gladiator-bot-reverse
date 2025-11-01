@@ -567,11 +567,13 @@ static void AAS_RegisterMoverEntity(const aas_parsed_entity_t *entity)
 
     bot_mover_catalogue_entry_t entry = {
         .modelnum = modelnum,
+        .modelindex = -1,
         .lip = lip,
         .height = height,
         .speed = speed,
         .spawnflags = spawnflags,
         .doortype = doorType,
+        .ready = false,
     };
 
     if (!BotMove_MoverCatalogueInsert(&entry))
