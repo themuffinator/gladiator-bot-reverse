@@ -1,5 +1,6 @@
 #include "bot_weight.h"
 
+#include "../common/l_assets.h"
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
 #include "../precomp/l_precomp.h"
@@ -498,10 +499,17 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
         return NULL;
     }
 
-    pc_source_t *source = PC_LoadSourceFile(filename);
+    char resolved_path[BOTLIB_ASSET_MAX_PATH];
+    if (!BotLib_ResolveAssetPath(filename, NULL, resolved_path, sizeof(resolved_path))) {
+        BotWeight_PopGlobalDefines(&define_scope);
+        BotLib_Print(PRT_ERROR, "couldn't load %s\n", filename != NULL ? filename : "<null>");
+        return NULL;
+    }
+
+    pc_source_t *source = PC_LoadSourceFile(resolved_path);
     BotWeight_PopGlobalDefines(&define_scope);
     if (source == NULL) {
-        BotLib_Print(PRT_ERROR, "couldn't load %s\n", filename);
+        BotLib_Print(PRT_ERROR, "couldn't load %s\n", resolved_path);
         return NULL;
     }
 
@@ -519,7 +527,7 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
         return NULL;
     }
 
-    strncpy(config->source_file, filename, sizeof(config->source_file) - 1);
+    strncpy(config->source_file, resolved_path, sizeof(config->source_file) - 1);
     config->source_file[sizeof(config->source_file) - 1] = '\0';
 
     bool parsed = BotWeight_ParseWeights(source, config);

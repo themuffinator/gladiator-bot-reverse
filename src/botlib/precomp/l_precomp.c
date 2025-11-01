@@ -43,6 +43,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <strings.h>
 #include <time.h>
 
+#include "../common/l_assets.h"
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
 #include "l_precomp.h"
@@ -275,7 +276,15 @@ static bool directory_from_path(const char *path, char *buffer, size_t buffer_si
 
 static bool asset_root_from_path(const char *path, char *buffer, size_t buffer_size)
 {
-    if (!path || !buffer || buffer_size == 0) {
+    if (buffer == NULL || buffer_size == 0) {
+        return false;
+    }
+
+    if (BotLib_LocateAssetRoot(buffer, buffer_size)) {
+        return true;
+    }
+
+    if (path == NULL) {
         return false;
     }
 

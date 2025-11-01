@@ -1,5 +1,6 @@
 #include "weapon/bot_weapon.h"
 
+#include "../common/l_assets.h"
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
@@ -11,7 +12,6 @@
 #include <string.h>
 
 #define AI_WEAPON_DEFAULT_CONFIG "weapons.c"
-#define AI_WEAPON_ASSET_PREFIX "dev_tools/assets/"
 
 static const bot_weapon_config_t *g_active_weapon_config = NULL;
 
@@ -500,47 +500,31 @@ static pc_source_t *AI_Weapon_OpenSource(const char *requested,
         requested = AI_WEAPON_DEFAULT_CONFIG;
     }
 
-    pc_source_t *source = PC_LoadSourceFile(requested);
+    char candidate[AI_WEAPON_MAX_PATH];
+    if (!BotLib_ResolveAssetPath(requested, NULL, candidate, sizeof(candidate)))
+    {
+        if (resolved_path != NULL && resolved_size > 0)
+        {
+            strncpy(resolved_path, candidate, resolved_size - 1);
+            resolved_path[resolved_size - 1] = '\0';
+        }
+        return NULL;
+    }
+
+    pc_source_t *source = PC_LoadSourceFile(candidate);
     if (source != NULL)
     {
         if (resolved_path != NULL && resolved_size > 0)
         {
-            strncpy(resolved_path, requested, resolved_size - 1);
+            strncpy(resolved_path, candidate, resolved_size - 1);
             resolved_path[resolved_size - 1] = '\0';
         }
         return source;
     }
 
-    bool has_directory = strchr(requested, '/') != NULL || strchr(requested, '\\') != NULL;
-    if (!has_directory)
+    if (resolved_path != NULL && resolved_size > 0)
     {
-        char fallback[AI_WEAPON_MAX_PATH];
-        int written = snprintf(fallback, sizeof(fallback), AI_WEAPON_ASSET_PREFIX "%s", requested);
-        if (written < 0 || (size_t)written >= sizeof(fallback))
-        {
-            fallback[sizeof(fallback) - 1] = '\0';
-        }
-
-        source = PC_LoadSourceFile(fallback);
-        if (source != NULL)
-        {
-            if (resolved_path != NULL && resolved_size > 0)
-            {
-                strncpy(resolved_path, fallback, resolved_size - 1);
-                resolved_path[resolved_size - 1] = '\0';
-            }
-            return source;
-        }
-
-        if (resolved_path != NULL && resolved_size > 0)
-        {
-            strncpy(resolved_path, fallback, resolved_size - 1);
-            resolved_path[resolved_size - 1] = '\0';
-        }
-    }
-    else if (resolved_path != NULL && resolved_size > 0)
-    {
-        strncpy(resolved_path, requested, resolved_size - 1);
+        strncpy(resolved_path, candidate, resolved_size - 1);
         resolved_path[resolved_size - 1] = '\0';
     }
 
@@ -768,7 +752,16 @@ const bot_weapon_config_t *AI_GetWeaponConfig(const ai_weapon_library_t *library
 
 ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 {
-    bot_weight_config_t *config = ReadWeightConfig(filename);
+    char resolved_path[AI_WEAPON_MAX_PATH];
+    if (!BotLib_ResolveAssetPath(filename, NULL, resolved_path, sizeof(resolved_path)))
+    {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_weapon] failed to locate weapon weights %s\n",
+                     filename != NULL ? filename : "<null>");
+        return NULL;
+    }
+
+    bot_weight_config_t *config = ReadWeightConfig(resolved_path);
     if (config == NULL)
     {
         return NULL;

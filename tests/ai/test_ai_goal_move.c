@@ -234,11 +234,23 @@ static int goal_move_setup(void **state)
     LibVar_Init();
     env->libvar_initialised = true;
 
+    LibVarSet("gladiator_asset_dir", env->assets.asset_root);
+    LibVarSet("weaponconfig", "weapons.c");
+    LibVarSet("itemconfig", "items.c");
+    LibVarSet("max_weaponinfo", "64");
+    LibVarSet("max_projectileinfo", "64");
+
     assert_true(BotMemory_Init(TEST_BOTLIB_HEAP_SIZE));
     env->memory_initialised = true;
 
     env->exports = GetBotAPI(&g_test_bot_import);
     assert_non_null(env->exports);
+
+    env->exports->BotLibVarSet("gladiator_asset_dir", env->assets.asset_root);
+    env->exports->BotLibVarSet("weaponconfig", "weapons.c");
+    env->exports->BotLibVarSet("itemconfig", "items.c");
+    env->exports->BotLibVarSet("max_weaponinfo", "64");
+    env->exports->BotLibVarSet("max_projectileinfo", "64");
 
     int status = env->exports->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);

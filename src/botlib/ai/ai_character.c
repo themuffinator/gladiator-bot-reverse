@@ -1,6 +1,7 @@
 #include "character/bot_character.h"
 
 #include "chat/ai_chat.h"
+#include "../common/l_assets.h"
 #include "../common/l_log.h"
 #include "../common/l_memory.h"
 #include "weapon/bot_weapon.h"
@@ -485,40 +486,7 @@ static bool ai_parse_character_file(const char *full_path,
 
 static bool ai_locate_asset_root(char *buffer, size_t size)
 {
-    if (!buffer || size == 0) {
-        return false;
-    }
-
-    const char *env = getenv("GLADIATOR_ASSET_DIR");
-    if (env && *env) {
-        char probe[512];
-        snprintf(probe, sizeof(probe), "%s/chars.h", env);
-        FILE *file = fopen(probe, "r");
-        if (file) {
-            fclose(file);
-            snprintf(buffer, size, "%s", env);
-            return true;
-        }
-    }
-
-    const char *candidates[] = {
-        "dev_tools/assets",
-        "../dev_tools/assets",
-        "../../dev_tools/assets",
-    };
-
-    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
-        char probe[512];
-        snprintf(probe, sizeof(probe), "%s/chars.h", candidates[i]);
-        FILE *file = fopen(probe, "r");
-        if (file) {
-            fclose(file);
-            snprintf(buffer, size, "%s", candidates[i]);
-            return true;
-        }
-    }
-
-    return false;
+    return BotLib_LocateAssetRoot(buffer, size);
 }
 
 static ai_character_definition_t *ai_parse_definition(const char *filename)
@@ -536,13 +504,11 @@ static ai_character_definition_t *ai_parse_definition(const char *filename)
     }
 
     char full_path[512];
-
-    FILE *file = fopen(filename, "r");
-    if (file) {
-        fclose(file);
-        snprintf(full_path, sizeof(full_path), "%s", filename);
-    } else {
-        snprintf(full_path, sizeof(full_path), "%s/%s", base_dir, filename);
+    if (!BotLib_ResolveAssetPath(filename, "bots", full_path, sizeof(full_path))) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] unable to resolve character %s.\n",
+                     filename != NULL ? filename : "<null>");
+        return NULL;
     }
 
     ai_character_definition_t *definition = (ai_character_definition_t *)GetClearedMemory(sizeof(*definition));
@@ -591,7 +557,15 @@ static bool ai_profile_load_item_weights(ai_character_profile_t *profile,
         return false;
     }
 
-    profile->item_weights = ReadWeightConfig(item_weights_file);
+    char resolved_path[512];
+    if (!BotLib_ResolveAssetPath(item_weights_file, "bots", resolved_path, sizeof(resolved_path))) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to locate item weights %s for %s.\n",
+                     item_weights_file, character_name);
+        return false;
+    }
+
+    profile->item_weights = ReadWeightConfig(resolved_path);
     if (!profile->item_weights) {
         BotLib_Print(PRT_ERROR,
                      "[ai_character] failed to load item weights %s for %s.\n",
@@ -615,7 +589,15 @@ static bool ai_profile_load_weapon_weights(ai_character_profile_t *profile,
         return false;
     }
 
-    profile->weapon_weights = AI_LoadWeaponWeights(weapon_weights_file);
+    char resolved_path[512];
+    if (!BotLib_ResolveAssetPath(weapon_weights_file, "bots", resolved_path, sizeof(resolved_path))) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to locate weapon weights %s for %s.\n",
+                     weapon_weights_file, character_name);
+        return false;
+    }
+
+    profile->weapon_weights = AI_LoadWeaponWeights(resolved_path);
     if (!profile->weapon_weights) {
         BotLib_Print(PRT_ERROR,
                      "[ai_character] failed to load weapon weights %s for %s.\n",
@@ -648,10 +630,20 @@ static bool ai_profile_load_chat(ai_character_profile_t *profile,
         return false;
     }
 
-    if (!BotLoadChatFile(profile->chat_state, chat_file, chat_name)) {
+    char resolved_path[512];
+    if (!BotLib_ResolveAssetPath(chat_file, "bots", resolved_path, sizeof(resolved_path))) {
+        BotLib_Print(PRT_ERROR,
+                     "[ai_character] failed to locate chat file %s for %s.\n",
+                     chat_file, character_name);
+        BotFreeChatState(profile->chat_state);
+        profile->chat_state = NULL;
+        return false;
+    }
+
+    if (!BotLoadChatFile(profile->chat_state, resolved_path, chat_name)) {
         BotLib_Print(PRT_ERROR,
                      "[ai_character] failed to load chat file %s (%s) for %s.\n",
-                     chat_file, chat_name, character_name);
+                     resolved_path, chat_name, character_name);
         BotFreeChatState(profile->chat_state);
         profile->chat_state = NULL;
         return false;

@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "botlib/ai/weight/bot_weight.h"
+#include "botlib/common/l_libvar.h"
 #include "inv.h"
 
 #ifndef PROJECT_SOURCE_DIR
@@ -20,12 +21,42 @@ static bot_weight_config_t *load_weight_config_or_skip(const char *relative_path
     int written = snprintf(absolute_path, sizeof(absolute_path), "%s/%s", PROJECT_SOURCE_DIR, relative_path);
     assert_true(written > 0 && written < (int)sizeof(absolute_path));
 
-    bot_weight_config_t *config = ReadWeightConfig(absolute_path);
+    FILE *file = fopen(absolute_path, "rb");
+    if (file == NULL) {
+        cmocka_skip();
+    }
+    fclose(file);
+
+    bot_weight_config_t *config = ReadWeightConfig(relative_path);
     if (config == NULL) {
         cmocka_skip();
     }
 
     return config;
+}
+
+static int weight_tests_setup(void **state)
+{
+    (void)state;
+
+    LibVar_Init();
+
+    char asset_root[512];
+    int written = snprintf(asset_root, sizeof(asset_root), "%s/dev_tools/assets", PROJECT_SOURCE_DIR);
+    assert_true(written > 0 && written < (int)sizeof(asset_root));
+
+    LibVarSet("gladiator_asset_dir", asset_root);
+    LibVarSet("itemconfig", "items.c");
+
+    return 0;
+}
+
+static int weight_tests_teardown(void **state)
+{
+    (void)state;
+
+    LibVar_Shutdown();
+    return 0;
 }
 
 static int find_weight_index(const bot_weight_config_t *config, const char *name)
@@ -92,6 +123,6 @@ int main(void)
         cmocka_unit_test(test_default_item_quad_weight_matches_reference),
     };
 
-    return cmocka_run_group_tests(tests, NULL, NULL);
+    return cmocka_run_group_tests(tests, weight_tests_setup, weight_tests_teardown);
 }
 

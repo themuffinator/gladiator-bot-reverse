@@ -1,4 +1,5 @@
 add_library(botlib_common STATIC
+    l_assets.c
     l_crc.c
     l_libvar.c
     l_log.c

@@ -241,6 +241,12 @@ static int character_profile_setup(void **state)
     LibVar_Init();
     env->libvar_initialised = true;
 
+    LibVarSet("gladiator_asset_dir", env->assets.asset_root);
+    LibVarSet("weaponconfig", "weapons.c");
+    LibVarSet("itemconfig", "items.c");
+    LibVarSet("max_weaponinfo", "64");
+    LibVarSet("max_projectileinfo", "64");
+
     assert_true(BotMemory_Init(TEST_BOTLIB_HEAP_SIZE));
     env->memory_initialised = true;
 
@@ -377,9 +383,11 @@ static void test_babe_character_profile(void **state)
 
     char weapon_config_path[PATH_MAX];
     asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
+    (void)weapon_config_path;
 
-    env->weapon_library = AI_LoadWeaponLibrary(weapon_config_path);
+    env->weapon_library = AI_LoadWeaponLibrary(NULL);
     assert_non_null(env->weapon_library);
+    assert_string_equal(env->weapon_library->source_path, weapon_config_path);
 
     ai_character_profile_t *profile = AI_LoadCharacter("bots/babe_c.c", 1.0f);
     assert_non_null(profile);
@@ -429,8 +437,9 @@ static void test_bot_character_exports(void **state)
     char weapon_config_path[PATH_MAX];
     asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
 
-    env->weapon_library = AI_LoadWeaponLibrary(weapon_config_path);
+    env->weapon_library = AI_LoadWeaponLibrary(NULL);
     assert_non_null(env->weapon_library);
+    assert_string_equal(env->weapon_library->source_path, weapon_config_path);
 
     test_reset_log();
     int handle = BotLoadCharacter("bots/babe_c.c", 1.0f);
@@ -476,7 +485,9 @@ static void test_bot_setup_client_exposes_profile(void **state)
     char weapon_config_path[PATH_MAX];
     asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
 
-    env->exports->BotLibVarSet("weaponconfig", weapon_config_path);
+    env->exports->BotLibVarSet("gladiator_asset_dir", env->assets.asset_root);
+    env->exports->BotLibVarSet("weaponconfig", "weapons.c");
+    env->exports->BotLibVarSet("itemconfig", "items.c");
     env->exports->BotLibVarSet("max_weaponinfo", "64");
     env->exports->BotLibVarSet("max_projectileinfo", "64");
 
