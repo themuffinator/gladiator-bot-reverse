@@ -38,6 +38,8 @@ libvar_t *Bridge_MaxSoundInfo(void);
 libvar_t *Bridge_MaxAASSounds(void);
 libvar_t *Bridge_DMFlags(void);
 libvar_t *Bridge_UseHook(void);
+libvar_t *Bridge_LaserHook(void);
+const char *Bridge_GrappleModelPath(void);
 libvar_t *Bridge_RocketJump(void);
 libvar_t *Bridge_ForceClustering(void);
 libvar_t *Bridge_ForceReachability(void);

@@ -8,8 +8,200 @@
 #include "../../aas/aas_local.h"
 #include "../../common/l_log.h"
 #include "../../common/l_memory.h"
+#include "../../ea/ea_local.h"
+#include "../../../q2bridge/bridge.h"
+#include "../../../q2bridge/bridge_config.h"
 
 static bot_movestate_t *g_botMoveStates[MAX_CLIENTS + 1];
+
+static const char *BotMove_DefaultGrappleModel(void)
+{
+    return "models/weapons/grapple/hook/tris.md2";
+}
+
+static const char *BotMove_GrappleModelPath(void)
+{
+    const char *path = Bridge_GrappleModelPath();
+    if (path == NULL || path[0] == '\0')
+    {
+        return BotMove_DefaultGrappleModel();
+    }
+
+    return path;
+}
+
+static bool BotMove_UseHookEnabled(void)
+{
+    libvar_t *usehook = Bridge_UseHook();
+    return usehook != NULL && usehook->value != 0.0f;
+}
+
+static bool BotMove_LaserHookEnabled(void)
+{
+    libvar_t *laserhook = Bridge_LaserHook();
+    return laserhook != NULL && laserhook->value != 0.0f;
+}
+
+static void BotMove_PrecacheGrappleModel(bot_movestate_t *ms)
+{
+    (void)ms;
+
+    static bool s_grapple_precached = false;
+    if (s_grapple_precached)
+    {
+        return;
+    }
+
+    const char *path = BotMove_GrappleModelPath();
+    if (path == NULL || path[0] == '\0')
+    {
+        return;
+    }
+
+    int client = (ms != NULL) ? ms->client : 0;
+    Q2_BotClientCommand(client, "%s %s", "precache", path);
+    s_grapple_precached = true;
+}
+
+static void BotMove_DisengageGrapple(bot_movestate_t *ms)
+{
+    if (ms == NULL)
+    {
+        return;
+    }
+
+    EA_Command(ms->client, "%s", "hookoff");
+
+    ms->moveflags &= ~(MFL_ACTIVEGRAPPLE | MFL_GRAPPLEPULL);
+    ms->grapplevisible_time = 0.0f;
+    ms->lastgrappledist = 0.0f;
+    ms->reachability_time = 0.0f;
+}
+
+bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const aas_reachability_t *reach)
+{
+    bot_moveresult_t result;
+    BotClearMoveResult(&result);
+    result.traveltype = TRAVEL_GRAPPLEHOOK;
+
+    if (ms == NULL || reach == NULL)
+    {
+        result.failure = 1;
+        return result;
+    }
+
+    bool use_hook = BotMove_UseHookEnabled();
+    bool laser_hook = BotMove_LaserHookEnabled();
+
+    if (!use_hook || !laser_hook)
+    {
+        result.failure = 1;
+        return result;
+    }
+
+    BotMove_PrecacheGrappleModel(ms);
+
+    vec3_t view_origin;
+    VectorAdd(ms->origin, ms->viewoffset, view_origin);
+
+    vec3_t to_goal;
+    VectorSubtract(reach->end, view_origin, to_goal);
+
+    vec3_t ideal_viewangles;
+    Vector2Angles(to_goal, ideal_viewangles);
+    VectorCopy(ideal_viewangles, result.ideal_viewangles);
+    result.flags |= MOVERESULT_MOVEMENTVIEW;
+
+    if (ms->moveflags & MFL_ACTIVEGRAPPLE)
+    {
+        vec3_t pull_dir;
+        VectorSubtract(reach->end, ms->origin, pull_dir);
+        pull_dir[2] = 0.0f;
+        float pull_dist = VectorNormalizeInline(pull_dir);
+
+        bool slack_release = false;
+        if (pull_dist < 48.0f)
+        {
+            if (ms->lastgrappledist - pull_dist < 1.0f)
+            {
+                slack_release = true;
+            }
+        }
+        else
+        {
+            if (pull_dist > ms->lastgrappledist - 2.0f)
+            {
+                if (aasworld.time - ms->grapplevisible_time > 0.4f)
+                {
+                    slack_release = true;
+                }
+            }
+            else
+            {
+                ms->grapplevisible_time = aasworld.time;
+            }
+        }
+
+        if (slack_release)
+        {
+            BotMove_DisengageGrapple(ms);
+            result.flags |= MOVERESULT_MOVEMENTWEAPON;
+            return result;
+        }
+
+        EA_Attack(ms->client);
+        ms->moveflags |= MFL_GRAPPLEPULL;
+        result.flags |= MOVERESULT_MOVEMENTWEAPON;
+        ms->lastgrappledist = pull_dist;
+        ms->reachability_time = aasworld.time + BotMove_TravelTimeout(TRAVEL_GRAPPLEHOOK);
+        result.weapon = 0;
+        return result;
+    }
+
+    vec3_t approach_dir;
+    VectorSubtract(reach->start, ms->origin, approach_dir);
+    if (!(ms->moveflags & MFL_SWIMMING))
+    {
+        approach_dir[2] = 0.0f;
+    }
+
+    float start_dist = VectorNormalizeInline(approach_dir);
+    float yaw_diff = fabsf(AngleDiff(ideal_viewangles[YAW], ms->viewangles[YAW]));
+    float pitch_diff = fabsf(AngleDiff(ideal_viewangles[PITCH], ms->viewangles[PITCH]));
+
+    ms->grapplevisible_time = aasworld.time;
+
+    if (start_dist < 5.0f && yaw_diff < 2.0f && pitch_diff < 2.0f)
+    {
+        EA_Command(ms->client, "%s", "hookon");
+        EA_Attack(ms->client);
+        ms->moveflags |= (MFL_ACTIVEGRAPPLE | MFL_GRAPPLEPULL);
+        vec3_t grapple_delta;
+        VectorSubtract(reach->end, ms->origin, grapple_delta);
+        grapple_delta[2] = 0.0f;
+        ms->lastgrappledist = VectorLength(grapple_delta);
+        result.flags |= MOVERESULT_MOVEMENTWEAPON;
+        ms->reachability_time = aasworld.time + BotMove_TravelTimeout(TRAVEL_GRAPPLEHOOK);
+        result.weapon = 0;
+        return result;
+    }
+
+    float speed = 400.0f;
+    if (start_dist < 70.0f)
+    {
+        speed = 300.0f - (300.0f - 4.0f * start_dist);
+    }
+
+    EA_Move(ms->client, approach_dir, speed);
+    VectorCopy(approach_dir, result.movedir);
+    if (ms->moveflags & MFL_SWIMMING)
+    {
+        result.flags |= MOVERESULT_SWIMVIEW;
+    }
+
+    ms->reachability_time = aasworld.time + BotMove_TravelTimeout(TRAVEL_GRAPPLEHOOK);
+    return result;
+}
 
 static float VectorLengthSquared(const vec3_t v)
 {
@@ -596,6 +788,14 @@ static void BotMove_DispatchTravel(bot_movestate_t *ms,
             BotMove_TravelElevator(ms, reach, &temp);
             break;
         case TRAVEL_GRAPPLEHOOK:
+        {
+            bot_moveresult_t grapple = BotTravel_Grapple(ms, reach);
+            *result = grapple;
+            result->traveltype = traveltype;
+            return;
+        }
+        case TRAVEL_ELEVATOR:
+            result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
             BotMove_TravelGrapple(ms, reach, &temp);
             break;
         case TRAVEL_ROCKETJUMP:

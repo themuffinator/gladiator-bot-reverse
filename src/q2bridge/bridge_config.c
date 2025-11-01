@@ -33,6 +33,8 @@ typedef struct bridge_config_cache_s {
     libvar_t *max_aassounds;
     libvar_t *dmflags;
     libvar_t *usehook;
+    libvar_t *laserhook;
+    libvar_t *grapple_model;
     libvar_t *rocketjump;
     libvar_t *forceclustering;
     libvar_t *forcereachability;
@@ -116,6 +118,10 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_aassounds, "max_aassounds", "256");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.dmflags, "dmflags", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.usehook, "usehook", "1");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.laserhook, "laserhook", "0");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.grapple_model,
+                             "grapplemodel",
+                             "models/weapons/grapple/hook/tris.md2");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.rocketjump, "rocketjump", "1");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.forceclustering, "forceclustering", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.forcereachability, "forcereachability", "0");
@@ -260,6 +266,23 @@ libvar_t *Bridge_DMFlags(void)
 libvar_t *Bridge_UseHook(void)
 {
     return g_bridge_config_cache.usehook;
+}
+
+libvar_t *Bridge_LaserHook(void)
+{
+    return g_bridge_config_cache.laserhook;
+}
+
+const char *Bridge_GrappleModelPath(void)
+{
+    if (g_bridge_config_cache.grapple_model != NULL &&
+        g_bridge_config_cache.grapple_model->string != NULL &&
+        g_bridge_config_cache.grapple_model->string[0] != '\0')
+    {
+        return g_bridge_config_cache.grapple_model->string;
+    }
+
+    return "models/weapons/grapple/hook/tris.md2";
 }
 
 libvar_t *Bridge_RocketJump(void)

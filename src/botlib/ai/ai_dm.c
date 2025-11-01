@@ -349,8 +349,23 @@ void AI_DMState_Update(ai_dm_state_t *state,
         return;
     }
 
+    bool movement_controls_weapon =
+        client_state->has_move_result &&
+        (client_state->last_move_result.flags & MOVERESULT_MOVEMENTWEAPON);
+
     int desired_weapon = client_state->current_weapon;
-    if (desired_weapon > 0 && desired_weapon != state->last_selected_weapon)
+    if (movement_controls_weapon)
+    {
+        desired_weapon = client_state->last_move_result.weapon;
+    }
+
+    bool allow_weapon_selection = (!movement_controls_weapon || desired_weapon > 0);
+    if (movement_controls_weapon && desired_weapon <= 0)
+    {
+        state->last_selected_weapon = -1;
+    }
+
+    if (allow_weapon_selection && desired_weapon > 0 && desired_weapon != state->last_selected_weapon)
     {
         EA_SelectWeapon(client, desired_weapon);
         state->last_selected_weapon = desired_weapon;
