@@ -1,30 +1,81 @@
-/*
- * Gladiator goal selection design skeleton.
- *
- * Frame loop responsibilities:
- *   1. Maintain the goal stack (`bot_goalstate_t`) exactly like Quake III does:
- *      update `goalstacktop`, copy `bot_goal_t` records, and persist
- *      `lastreachabilityarea` after each reachability-aware query. The HLIL
- *      confirms that movement helpers exit early when the active reachability
- *      matches the goal, so the stack discipline must remain intact. 【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_goal.c†L1241-L1444】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L40791-L40806】
- *   2. Recompute long-term (`BotChooseLTGItem`) and nearby (`BotChooseNBGItem`)
- *      objectives using fuzzy weights plus AAS travel times. Gladiator’s binary
- *      feeds the same inventory/goal inputs into its movement helper, implying
- *      we need drop/respawn handling, roam goal weighting, and travel-time caps
- *      identical to the Quake reference. 【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_goal.c†L1284-L1519】【F:docs/ai_movement_state_machines.md†L34-L60】
- *   3. Keep the avoid-goal and avoid-reach lists in sync with movement. The
- *      HLIL writes offsets `0x1d`–`0x1f` immediately after repathing, so the
- *      goal module must expose the same bookkeeping APIs (`BotAddToAvoidGoals`,
- *      `BotResetAvoidGoals`) to prevent desynchronisation. 【F:dev_tools/gladiator.dll.bndb_hlil.txt†L40810-L40820】
- *
- * Data requirements:
- *   - Item configuration (`itemconfig`, `levelitems`) identical to the Quake
- *     data structures so fuzzy weights can be evaluated without shims.
- *   - Map annotations (camp spots, locations) loaded through the same parser
- *     pipeline as `be_ai_goal.c`.
- *
- * External dependencies:
- *   - AAS helpers for area resolution and travel time (`BotReachabilityArea`,
- *     `AAS_AreaTravelTimeToGoalArea`).
- *   - Weight config loader reused from the `weight` module.
- */
+#include "ai_goal.h"
+
+#include <string.h>
+
+#include "../../q2bridge/botlib.h"
+
+typedef struct ai_goal_module_state_s
+{
+    bool initialised;
+} ai_goal_module_state_t;
+
+static ai_goal_module_state_t g_ai_goal_module = {false};
+
+bool AI_Goal_Init(void)
+{
+    if (g_ai_goal_module.initialised)
+    {
+        return true;
+    }
+
+    g_ai_goal_module.initialised = true;
+    return true;
+}
+
+void AI_Goal_Shutdown(void)
+{
+    if (!g_ai_goal_module.initialised)
+    {
+        return;
+    }
+
+    BotGoal_Shutdown();
+    memset(&g_ai_goal_module, 0, sizeof(g_ai_goal_module));
+}
+
+void AI_Goal_BeginFrame(float time)
+{
+    (void)time;
+
+    if (!g_ai_goal_module.initialised)
+    {
+        return;
+    }
+
+    /*
+     * Placeholder for future per-frame maintenance. When the goal module is
+     * fully reconstructed this hook will synchronise avoid-goal timers with the
+     * current AAS time and purge expired stack entries.
+     */
+}
+
+int AI_Goal_AllocState(int client)
+{
+    if (!g_ai_goal_module.initialised && !AI_Goal_Init())
+    {
+        return 0;
+    }
+
+    return BotAllocGoalState(client);
+}
+
+void AI_Goal_FreeState(int handle)
+{
+    BotFreeGoalState(handle);
+}
+
+int AI_Goal_LoadItemWeights(int goalstate, const char *filename)
+{
+    if (!g_ai_goal_module.initialised && !AI_Goal_Init())
+    {
+        return BLERR_CANNOTLOADITEMWEIGHTS;
+    }
+
+    return BotLoadItemWeights(goalstate, filename);
+}
+
+void AI_Goal_SetClient(int goalstate, int client)
+{
+    BotGoal_SetClient(goalstate, client);
+}
+

@@ -1,5 +1,9 @@
 #include "bot_state.h"
 
+#include <stdint.h>
+
+#include "../ai/goal/ai_goal.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,7 +36,12 @@ static void BotState_FreeResources(bot_client_state_t *state)
     state->weapon_weights = NULL;
     state->item_weights = NULL;
 
-    state->goal_state = NULL;
+    if (state->goal_state != NULL)
+    {
+        int goal_handle = (int)(intptr_t)state->goal_state;
+        AI_Goal_FreeState(goal_handle);
+        state->goal_state = NULL;
+    }
     state->move_state = NULL;
     memset(&state->last_client_update, 0, sizeof(state->last_client_update));
     state->client_update_valid = false;

@@ -2,6 +2,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include "../aas/aas_local.h"
 #include "../aas/aas_debug.h"
 #include "../ai/chat/ai_chat.h"
+#include "../ai/goal/ai_goal.h"
 #include "../ai/character/bot_character.h"
 #include "../ai/weight/bot_weight.h"
 #include "../precomp/l_precomp.h"
@@ -244,6 +246,7 @@ static void BotInterface_BeginFrame(float time)
     g_botInterfaceFrameTime = time;
     g_botInterfaceFrameNumber += 1U;
     BotInterface_ResetFrameQueues();
+    AI_Goal_BeginFrame(time);
 }
 
 static void BotInterface_EnqueueSound(const vec3_t origin,
@@ -945,6 +948,31 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 
     BotState_AttachCharacter(state, profile);
 
+    int goal_handle = AI_Goal_AllocState(client);
+    if (goal_handle == 0)
+    {
+        BotInterface_Printf(PRT_ERROR,
+                            "[bot_interface] BotSetupClient: failed to allocate goal state for client %d\n",
+                            client);
+        BotState_Destroy(client);
+        return BLERR_INVALIDIMPORT;
+    }
+
+    state->goal_state = (void *)(intptr_t)goal_handle;
+
+    const char *item_weights = AI_CharacteristicAsString(profile, BOT_CHARACTERISTIC_ITEMWEIGHTS);
+    if (item_weights != NULL && *item_weights != '\0')
+    {
+        int weight_status = AI_Goal_LoadItemWeights(goal_handle, item_weights);
+        if (weight_status != BLERR_NOERROR)
+        {
+            BotInterface_Printf(PRT_WARNING,
+                                 "[bot_interface] BotSetupClient: failed to load item weights '%s' for client %d\n",
+                                 item_weights,
+                                 client);
+        }
+    }
+
     Bridge_ClearClientSlot(client);
     state->active = true;
     return BLERR_NOERROR;
@@ -968,6 +996,13 @@ static int BotShutdownClient(int client)
     {
         BotInterface_Printf(PRT_WARNING, "[bot_interface] BotShutdownClient: client %d not active\n", client);
         return BLERR_AICLIENTALREADYSHUTDOWN;
+    }
+
+    if (state->goal_state != NULL)
+    {
+        int goal_handle = (int)(intptr_t)state->goal_state;
+        AI_Goal_FreeState(goal_handle);
+        state->goal_state = NULL;
     }
 
     BotState_Destroy(client);
@@ -1013,6 +1048,12 @@ static int BotMoveClient(int oldclnum, int newclnum)
     }
 
     BotState_Move(oldclnum, newclnum);
+    bot_client_state_t *migrated = BotState_Get(newclnum);
+    if (migrated != NULL && migrated->goal_state != NULL)
+    {
+        int goal_handle = (int)(intptr_t)migrated->goal_state;
+        AI_Goal_SetClient(goal_handle, newclnum);
+    }
     int status = Bridge_MoveClientSlot(oldclnum, newclnum);
     if (status != BLERR_NOERROR)
     {
@@ -1021,6 +1062,12 @@ static int BotMoveClient(int oldclnum, int newclnum)
                             oldclnum,
                             newclnum);
         BotState_Move(newclnum, oldclnum);
+        bot_client_state_t *rollback = BotState_Get(oldclnum);
+        if (rollback != NULL && rollback->goal_state != NULL)
+        {
+            int goal_handle = (int)(intptr_t)rollback->goal_state;
+            AI_Goal_SetClient(goal_handle, oldclnum);
+        }
         return status;
     }
 

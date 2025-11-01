@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../ai/goal/ai_goal.h"
 #include "../ai/weapon/bot_weapon.h"
 #include "../common/l_libvar.h"
 #include "../common/l_log.h"
@@ -123,6 +124,12 @@ static bool Botlib_SetupAISubsystem(void)
         return false;
     }
 
+    if (!AI_Goal_Init()) {
+        AI_UnloadWeaponLibrary(g_weapon_library);
+        g_weapon_library = NULL;
+        return false;
+    }
+
     g_subsystem_state.ai_initialised = true;
     return true;
 }
@@ -152,6 +159,8 @@ static void Botlib_ShutdownAISubsystem(void)
     if (!g_subsystem_state.ai_initialised) {
         return;
     }
+
+    AI_Goal_Shutdown();
 
     if (g_weapon_library != NULL) {
         AI_UnloadWeaponLibrary(g_weapon_library);
