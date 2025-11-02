@@ -3,12 +3,19 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "bsp_formats.hpp"
+#include "tree.hpp"
+
+namespace bspc::map
+{
+struct ParseResult;
+} // namespace bspc::map
 
 namespace bspc
 {
@@ -89,6 +96,8 @@ struct ParsedWorld
         bool has_bounds = false;
         Vec3 mins{};
         Vec3 maxs{};
+        std::size_t source_entity = kInvalidIndex;
+        std::size_t source_brush = kInvalidIndex;
     };
 
     struct Texture
@@ -166,6 +175,7 @@ struct ParsedWorld
     std::vector<Entity> entities;
     std::optional<MapMetadata> map_info;
     std::optional<BspMetadata> bsp_info;
+    std::shared_ptr<const map::ParseResult> map_geometry;
 };
 
 struct BspBuildArtifacts
@@ -175,8 +185,11 @@ struct BspBuildArtifacts
     std::string leak_text;
     std::size_t portal_slice_count = 0;
     std::size_t flood_fill_regions = 0;
+    std::unique_ptr<legacy::Tree> tree;
+    std::vector<std::unique_ptr<legacy::MapBrush>> map_brushes;
 
     void Reset() noexcept;
+    ~BspBuildArtifacts() noexcept;
 };
 
 bool LoadWorldState(const InputFile &input, ParsedWorld &out_world, std::string &error);

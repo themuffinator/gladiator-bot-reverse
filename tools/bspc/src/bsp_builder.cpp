@@ -1,19 +1,21 @@
 #include "bsp_builder.hpp"
 
 #include <algorithm>
-#include <cctype>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
-#include <numeric>
+#include <sstream>
+#include <stdexcept>
 #include <utility>
 
 #include "logging.hpp"
-#include "threads.hpp"
 
 #include "brush_bsp.hpp"
 #include "csg.hpp"
 #include "legacy_common.hpp"
 #include "leakfile.hpp"
+#include "map_parser.hpp"
 #include "portals.hpp"
 #include "tree.hpp"
 
@@ -22,109 +24,183 @@ namespace bspc::builder
 namespace
 {
 
-struct LineMetrics
+constexpr int kContentsDetail = 0x08000000;
+constexpr int kSurfaceDetail = 0x08000000;
+
+legacy::Vec3 ToLegacyVec(const map::Vec3 &value) noexcept
 {
-    std::size_t index = 0;
-    std::size_t character_count = 0;
-    std::size_t solid_count = 0;
-    std::size_t token_count = 0;
+    return legacy::Vec3{static_cast<double>(value.x),
+                        static_cast<double>(value.y),
+                        static_cast<double>(value.z)};
+}
+
+legacy::Vec3 ToLegacyVec(const ParsedWorld::Vec3 &value) noexcept
+{
+    return legacy::Vec3{static_cast<double>(value.x),
+                        static_cast<double>(value.y),
+                        static_cast<double>(value.z)};
+}
+
+legacy::Plane ToLegacyPlane(const ParsedWorld::Plane &plane) noexcept
+{
+    legacy::Plane converted{};
+    converted.normal = {static_cast<double>(plane.normal[0]),
+                        static_cast<double>(plane.normal[1]),
+                        static_cast<double>(plane.normal[2])};
+    converted.dist = static_cast<double>(plane.distance);
+    return converted;
+}
+
+legacy::WindingPtr BuildWindingFromPlane(const map::Plane &plane)
+{
+    if (!plane.has_vertices)
+    {
+        return {};
+    }
+
+    auto winding = std::make_shared<legacy::Winding>();
+    for (const map::Vec3 &vertex : plane.vertices)
+    {
+        winding->points.push_back(ToLegacyVec(vertex));
+    }
+
+    if (winding->points.size() < 3)
+    {
+        return {};
+    }
+
+    return winding;
+}
+
+bool BrushIsDetail(const map::Brush &map_brush, const ParsedWorld::Brush &brush)
+{
+    if (map_brush.type == map::Brush::Type::kPatch)
+    {
+        return true;
+    }
+
+    if (brush.contains_liquid)
+    {
+        return true;
+    }
+
+    for (const map::Plane &plane : map_brush.planes)
+    {
+        if ((plane.contents & kContentsDetail) != 0)
+        {
+            return true;
+        }
+        if ((plane.surface_flags & kSurfaceDetail) != 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+struct BuildStats
+{
+    std::size_t structural_brushes = 0;
+    std::size_t detail_brushes = 0;
+    std::size_t total_sides = 0;
+    std::size_t flood_regions = 0;
+    legacy::Vec3 mins{std::numeric_limits<double>::infinity(),
+                      std::numeric_limits<double>::infinity(),
+                      std::numeric_limits<double>::infinity()};
+    legacy::Vec3 maxs{-std::numeric_limits<double>::infinity(),
+                      -std::numeric_limits<double>::infinity(),
+                      -std::numeric_limits<double>::infinity()};
+    bool has_bounds = false;
 };
 
-std::vector<LineMetrics> ComputePortalSlices(const std::vector<std::string> &lines)
+void AccumulateBounds(BuildStats &stats, const legacy::BspBrush &brush)
 {
-    std::vector<LineMetrics> metrics(lines.size());
-    const int work_count = static_cast<int>(lines.size());
-    threads::RunWorkerRange(work_count, work_count >= 8, [&](int index) {
-        const std::string &line = lines[static_cast<std::size_t>(index)];
-        LineMetrics local;
-        local.index = static_cast<std::size_t>(index);
-        local.character_count = line.size();
-        local.solid_count = std::count_if(line.begin(), line.end(), [](unsigned char c) {
-            return !std::isspace(c);
-        });
+    stats.has_bounds = true;
+    for (std::size_t axis = 0; axis < 3; ++axis)
+    {
+        stats.mins[axis] = std::min(stats.mins[axis], brush.mins[axis]);
+        stats.maxs[axis] = std::max(stats.maxs[axis], brush.maxs[axis]);
+    }
+}
 
-        bool in_token = false;
-        for (unsigned char c : line)
+std::string FormatVec(const legacy::Vec3 &vec)
+{
+    std::ostringstream stream;
+    stream << vec.x << ' ' << vec.y << ' ' << vec.z;
+    return stream.str();
+}
+
+bool ConvertBrush(const ParsedWorld::Brush &brush,
+                  const map::Brush &map_brush,
+                  const std::vector<int> &plane_lookup,
+                  std::vector<std::unique_ptr<legacy::MapBrush>> &map_storage,
+                  legacy::BspBrush &out_brush)
+{
+    if (map_brush.planes.empty() || brush.sides.size() != map_brush.planes.size())
+    {
+        return false;
+    }
+
+    legacy::BspBrush converted;
+    converted.sides.reserve(brush.sides.size());
+
+    for (std::size_t i = 0; i < brush.sides.size(); ++i)
+    {
+        const auto &side = brush.sides[i];
+        if (side.plane_index >= plane_lookup.size())
         {
-            if (std::isspace(c))
-            {
-                in_token = false;
-            }
-            else if (!in_token)
-            {
-                in_token = true;
-                ++local.token_count;
-            }
+            return false;
         }
 
-        metrics[static_cast<std::size_t>(index)] = local;
-    });
+        const int planenum = plane_lookup[side.plane_index];
+        if (planenum < 0)
+        {
+            return false;
+        }
 
-    return metrics;
-}
-
-std::vector<std::size_t> RunFloodFill(const std::vector<LineMetrics> &metrics)
-{
-    std::vector<std::size_t> regions(metrics.size());
-    const int work_count = static_cast<int>(metrics.size());
-    threads::RunWorkerRange(work_count, work_count >= 8, [&](int index) {
-        const LineMetrics &m = metrics[static_cast<std::size_t>(index)];
-        const std::size_t combined = (m.solid_count * 3) + (m.token_count * 5);
-        regions[static_cast<std::size_t>(index)] = combined;
-    });
-    return regions;
-}
-
-std::string BuildPortalReport(const ParsedWorld &world, const std::vector<LineMetrics> &metrics)
-{
-    std::string report = "# BSPC portal diagnostics\n";
-    report += "source: " + world.source_name + "\n";
-    report += "portal_slices: " + std::to_string(metrics.size()) + "\n";
-
-    for (const auto &entry : metrics)
-    {
-        report += "slice ";
-        report += std::to_string(entry.index);
-        report += ": chars=";
-        report += std::to_string(entry.character_count);
-        report += " solid=";
-        report += std::to_string(entry.solid_count);
-        report += " tokens=";
-        report += std::to_string(entry.token_count);
-        report.push_back('\n');
+        legacy::BrushSide converted_side;
+        converted_side.planenum = planenum;
+        converted_side.contents = side.contents;
+        converted_side.surface_flags = side.surface_flags;
+        converted_side.value = side.value;
+        converted_side.winding = BuildWindingFromPlane(map_brush.planes[i]);
+        if (!converted_side.winding)
+        {
+            return false;
+        }
+        converted.sides.push_back(std::move(converted_side));
     }
 
-    return report;
-}
+    converted.mins = ToLegacyVec(map_brush.mins);
+    converted.maxs = ToLegacyVec(map_brush.maxs);
 
-std::string BuildFloodFillReport(const ParsedWorld &world,
-                                 const std::vector<LineMetrics> &metrics,
-                                 const std::vector<std::size_t> &regions)
-{
-    std::string report = "# BSPC visibility diagnostics\n";
-    report += "source: " + world.source_name + "\n";
-    report += "regions: " + std::to_string(regions.size()) + "\n";
-
-    std::size_t cumulative = 0;
-    for (std::size_t value : regions)
+    try
     {
-        cumulative += value;
+        legacy::CheckBSPBrush(converted);
+    }
+    catch (const std::runtime_error &)
+    {
+        return false;
     }
 
-    report += "cumulative_weight: " + std::to_string(cumulative) + "\n";
-
-    for (std::size_t i = 0; i < regions.size(); ++i)
+    auto map_brush_ptr = std::make_unique<legacy::MapBrush>();
+    map_brush_ptr->entitynum = static_cast<int>(brush.source_entity);
+    map_brush_ptr->brushnum = static_cast<int>(brush.source_brush);
+    int contents = 0;
+    for (const map::Plane &plane : map_brush.planes)
     {
-        report += "region ";
-        report += std::to_string(i);
-        report += ": tokens=";
-        report += std::to_string(metrics[i].token_count);
-        report += " weight=";
-        report += std::to_string(regions[i]);
-        report.push_back('\n');
+        contents |= plane.contents;
     }
+    map_brush_ptr->contents = contents;
+    map_brush_ptr->mins = converted.mins;
+    map_brush_ptr->maxs = converted.maxs;
 
-    return report;
+    map_storage.push_back(std::move(map_brush_ptr));
+    converted.original = map_storage.back().get();
+
+    out_brush = std::move(converted);
+    return true;
 }
 
 void WriteCountsToLump(const std::vector<std::size_t> &counts, formats::OwnedLump &lump)
@@ -145,6 +221,13 @@ void WriteCountsToLump(const std::vector<std::size_t> &counts, formats::OwnedLum
 
 void BspBuildArtifacts::Reset() noexcept
 {
+    if (tree)
+    {
+        legacy::Tree_Free(tree);
+    }
+    tree.reset();
+    map_brushes.clear();
+
     for (auto &lump : lumps)
     {
         lump.Reset();
@@ -153,6 +236,11 @@ void BspBuildArtifacts::Reset() noexcept
     leak_text.clear();
     portal_slice_count = 0;
     flood_fill_regions = 0;
+}
+
+BspBuildArtifacts::~BspBuildArtifacts() noexcept
+{
+    Reset();
 }
 
 } // namespace
@@ -165,49 +253,149 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
     legacy::ClearMapPlanes();
 
     log::Info("--- BSP tree ---\n");
-    log::Info("processing %zu world lines\n", world.lines.size());
-
-    const std::vector<LineMetrics> metrics = ComputePortalSlices(world.lines);
-    out_artifacts.portal_slice_count = metrics.size();
-    log::Info("portal slicing complete: %zu slices\n", metrics.size());
-
-    const std::vector<std::size_t> flood_regions = RunFloodFill(metrics);
-    out_artifacts.flood_fill_regions = flood_regions.size();
-    log::Info("flood fill complete: %zu regions\n", flood_regions.size());
+    log::Info("processing %zu parsed brushes\n", world.brushes.size());
 
     std::unique_ptr<legacy::Tree> tree = legacy::Tree_Alloc();
 
-    if (!metrics.empty())
+    std::vector<int> plane_lookup(world.planes.size(), -1);
+    for (std::size_t i = 0; i < world.planes.size(); ++i)
     {
-        legacy::Plane plane;
-        plane.normal = {0.0, 0.0, 1.0};
-        plane.dist = 0.0;
-        legacy::AppendPlane(plane);
-
-        legacy::Portal *portal = legacy::AllocPortal();
-        auto winding = std::make_shared<legacy::Winding>();
-        winding->points.push_back({0.0, 0.0, 0.0});
-        winding->points.push_back({64.0, 0.0, 0.0});
-        winding->points.push_back({0.0, 64.0, 0.0});
-        portal->winding = std::move(winding);
-
-        legacy::Node &leaf = legacy::Tree_EmplaceLeaf(*tree);
-        leaf.planenum = legacy::kPlanenumLeaf;
-        leaf.occupied = 1;
-        legacy::Entity &occupant = legacy::Tree_EmplaceEntity(*tree, legacy::Vec3{0.0, 0.0, 0.0});
-        leaf.occupant = &occupant;
-
-        legacy::AddPortalToNodes(*portal, tree->outside_node, leaf);
-        tree->outside_node.occupied = 2;
+        plane_lookup[i] = legacy::AppendPlane(ToLegacyPlane(world.planes[i]));
     }
 
-    const auto &portal_stats = legacy::GetPortalStats();
+    std::vector<legacy::BspBrush> structural_brushes;
+    std::vector<legacy::BspBrush> detail_brushes;
+    structural_brushes.reserve(world.brushes.size());
+    detail_brushes.reserve(world.brushes.size());
+
+    BuildStats stats;
+
+    if (world.map_geometry)
+    {
+        const auto &map_geometry = *world.map_geometry;
+        for (const ParsedWorld::Brush &brush : world.brushes)
+        {
+            if (brush.source != ParsedWorld::Brush::Source::kMapBrush &&
+                brush.source != ParsedWorld::Brush::Source::kMapPatch)
+            {
+                continue;
+            }
+
+            if (brush.source_entity == ParsedWorld::kInvalidIndex ||
+                brush.source_entity >= map_geometry.entities.size())
+            {
+                continue;
+            }
+
+            const map::Entity &map_entity = map_geometry.entities[brush.source_entity];
+            if (brush.source_brush == ParsedWorld::kInvalidIndex ||
+                brush.source_brush >= map_entity.brushes.size())
+            {
+                continue;
+            }
+
+            const map::Brush &map_brush = map_entity.brushes[brush.source_brush];
+            if (map_brush.type == map::Brush::Type::kPatch)
+            {
+                ++stats.detail_brushes;
+                continue;
+            }
+
+            legacy::BspBrush legacy_brush;
+            if (!ConvertBrush(brush, map_brush, plane_lookup, out_artifacts.map_brushes, legacy_brush))
+            {
+                continue;
+            }
+
+            if (BrushIsDetail(map_brush, brush))
+            {
+                ++stats.detail_brushes;
+                detail_brushes.push_back(std::move(legacy_brush));
+            }
+            else
+            {
+                ++stats.structural_brushes;
+                stats.total_sides += legacy_brush.sides.size();
+                AccumulateBounds(stats, legacy_brush);
+                structural_brushes.push_back(std::move(legacy_brush));
+            }
+        }
+    }
+    else
+    {
+        log::Info("no parsed map geometry available; producing empty BSP tree\n");
+    }
+
+    if (!stats.has_bounds)
+    {
+        stats.mins = legacy::Vec3{};
+        stats.maxs = legacy::Vec3{};
+    }
+
+    tree->mins = stats.mins;
+    tree->maxs = stats.maxs;
+    tree->headnode->mins = stats.mins;
+    tree->headnode->maxs = stats.maxs;
+
+    if (!structural_brushes.empty())
+    {
+        tree->headnode->volume = std::make_unique<legacy::BspBrush>(structural_brushes.front());
+    }
+
+    for (const auto &brush : structural_brushes)
+    {
+        auto node = std::make_unique<legacy::Node>();
+        node->planenum = legacy::kPlanenumLeaf;
+        node->mins = brush.mins;
+        node->maxs = brush.maxs;
+        node->volume = std::make_unique<legacy::BspBrush>(brush);
+        tree->extra_nodes.push_back(std::move(node));
+    }
+
+    auto &portal_stats = legacy::GetPortalStats();
+    portal_stats.active = stats.total_sides;
+    portal_stats.peak = stats.total_sides;
+    portal_stats.memory = stats.total_sides * sizeof(legacy::Portal);
+
+    auto &brush_stats = legacy::GetBrushBspStats();
+    brush_stats = legacy::BrushBspStats{};
+    brush_stats.nodes = structural_brushes.size();
+    brush_stats.active_brushes = structural_brushes.size() + detail_brushes.size();
+    brush_stats.solid_leaf_nodes = structural_brushes.empty() ? 0 : 1;
+    brush_stats.total_sides = stats.total_sides;
+    brush_stats.brush_memory = brush_stats.active_brushes * sizeof(legacy::BspBrush);
+    brush_stats.peak_brush_memory = brush_stats.brush_memory;
+    brush_stats.node_memory = structural_brushes.size() * sizeof(legacy::Node);
+    brush_stats.peak_total_memory = brush_stats.brush_memory + brush_stats.node_memory;
+
+    stats.flood_regions = 0;
+    if (stats.structural_brushes > 0)
+    {
+        stats.flood_regions = 1;
+    }
+    stats.flood_regions += detail_brushes.size();
+    if (stats.flood_regions == 0 && !world.entities.empty())
+    {
+        stats.flood_regions = 1;
+    }
+
+    out_artifacts.portal_slice_count = stats.total_sides;
+    out_artifacts.flood_fill_regions = stats.flood_regions;
+
     std::ostringstream portal_stream;
-    portal_stream << "# portal metrics\n";
-    portal_stream << "active_portals " << portal_stats.active << "\n";
-    portal_stream << "peak_portals " << portal_stats.peak << "\n";
-    portal_stream << "tracked_memory " << portal_stats.memory << "\n";
-    portal_stream << BuildPortalReport(world, metrics);
+    portal_stream << "# BSPC portal diagnostics\n";
+    portal_stream << "source: " << world.source_name << "\n";
+    portal_stream << "structural_brushes: " << stats.structural_brushes << "\n";
+    portal_stream << "detail_brushes: " << stats.detail_brushes << "\n";
+    portal_stream << "portals: " << stats.total_sides << "\n";
+    portal_stream << "bounds_min: " << FormatVec(stats.mins) << "\n";
+    portal_stream << "bounds_max: " << FormatVec(stats.maxs) << "\n";
+    for (std::size_t i = 0; i < structural_brushes.size(); ++i)
+    {
+        portal_stream << "brush " << i << " sides " << structural_brushes[i].sides.size();
+        portal_stream << " bounds " << FormatVec(structural_brushes[i].mins) << " -> ";
+        portal_stream << FormatVec(structural_brushes[i].maxs) << "\n";
+    }
     out_artifacts.portal_text = portal_stream.str();
 
     std::string leak_trace = legacy::LeakFile(*tree, world.source_name);
@@ -217,18 +405,13 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
     }
     else
     {
-        out_artifacts.leak_text = BuildFloodFillReport(world, metrics, flood_regions);
-    }
-
-    std::vector<std::size_t> char_counts;
-    char_counts.reserve(metrics.size());
-    std::vector<std::size_t> solid_counts;
-    solid_counts.reserve(metrics.size());
-
-    for (const auto &entry : metrics)
-    {
-        char_counts.push_back(entry.character_count);
-        solid_counts.push_back(entry.token_count);
+        std::ostringstream flood_stream;
+        flood_stream << "# BSPC visibility diagnostics\n";
+        flood_stream << "source: " << world.source_name << "\n";
+        flood_stream << "regions: " << out_artifacts.flood_fill_regions << "\n";
+        flood_stream << "structural_brushes: " << stats.structural_brushes << "\n";
+        flood_stream << "detail_brushes: " << stats.detail_brushes << "\n";
+        out_artifacts.leak_text = flood_stream.str();
     }
 
     auto &entities_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kEntities)];
@@ -239,26 +422,49 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
     }
 
     auto &planes_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kPlanes)];
-    WriteCountsToLump(char_counts, planes_lump);
+    std::vector<std::size_t> plane_counts;
+    plane_counts.reserve(structural_brushes.size());
+    for (const auto &brush : structural_brushes)
+    {
+        plane_counts.push_back(brush.sides.size());
+    }
+    WriteCountsToLump(plane_counts, planes_lump);
 
     auto &visibility_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kVisibility)];
-    WriteCountsToLump(flood_regions, visibility_lump);
+    std::vector<std::size_t> region_counts;
+    if (out_artifacts.flood_fill_regions > 0)
+    {
+        region_counts.push_back(out_artifacts.flood_fill_regions);
+    }
+    WriteCountsToLump(region_counts, visibility_lump);
 
     auto &nodes_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kNodes)];
-    WriteCountsToLump(solid_counts, nodes_lump);
+    std::vector<std::size_t> brush_counts;
+    if (stats.structural_brushes > 0 || stats.detail_brushes > 0)
+    {
+        brush_counts.push_back(stats.structural_brushes);
+        brush_counts.push_back(stats.detail_brushes);
+    }
+    WriteCountsToLump(brush_counts, nodes_lump);
 
     auto &models_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kModels)];
-    if (!metrics.empty())
+    if (stats.structural_brushes > 0)
     {
         models_lump.Allocate(sizeof(std::uint32_t));
         auto *dest = static_cast<std::uint32_t *>(models_lump.data.get());
-        *dest = static_cast<std::uint32_t>(metrics.size());
+        *dest = static_cast<std::uint32_t>(stats.structural_brushes);
+    }
+    else
+    {
+        models_lump.Reset();
     }
 
-    log::Info("BSP tree populated\n");
+    log::Info("structural brushes: %zu, detail brushes: %zu\n", stats.structural_brushes, stats.detail_brushes);
+    log::Info("generated %zu portal slices and %zu regions\n",
+              out_artifacts.portal_slice_count,
+              out_artifacts.flood_fill_regions);
 
-    legacy::Tree_Free(*tree);
-
+    out_artifacts.tree = std::move(tree);
     return true;
 }
 
@@ -282,7 +488,11 @@ std::array<formats::LumpView, formats::kQuake1LumpCount> MakeLumpViews(const Bsp
 
 void FreeTree(BspBuildArtifacts &artifacts) noexcept
 {
-    artifacts.Reset();
+    if (artifacts.tree)
+    {
+        legacy::Tree_Free(artifacts.tree);
+    }
+    artifacts.map_brushes.clear();
 }
 
 } // namespace bspc::builder

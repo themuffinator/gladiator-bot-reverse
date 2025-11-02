@@ -1,6 +1,7 @@
 #include "world_parsers.hpp"
 
 #include <cmath>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -75,24 +76,27 @@ bool PopulateWorldFromMapText(std::string_view source_name,
         return false;
     }
 
+    auto map_geometry = std::make_shared<map::ParseResult>(std::move(parsed));
+    const map::ParseResult &parsed_ref = *map_geometry;
+
     world = ParsedWorld{};
     world.format = ParsedWorld::Format::kMap;
     world.source_name = std::string(source_name);
     world.entities_text = EnsureEntitiesText(std::string(map_text));
     world.lines = SplitLines(map_text);
     world.map_info = ParsedWorld::MapMetadata{};
-    world.map_info->entity_count = parsed.summary.entities;
-    world.map_info->brush_count = parsed.summary.brushes;
-    world.map_info->plane_count = parsed.summary.planes;
-    world.map_info->unique_materials = parsed.summary.unique_materials;
-    world.map_info->brush_merge_enabled = parsed.preprocess.brush_merge_enabled;
-    world.map_info->csg_enabled = parsed.preprocess.csg_enabled;
-    world.map_info->liquids_filtered = parsed.preprocess.liquids_filtered;
-    world.map_info->breath_first = parsed.preprocess.breath_first;
+    world.map_info->entity_count = parsed_ref.summary.entities;
+    world.map_info->brush_count = parsed_ref.summary.brushes;
+    world.map_info->plane_count = parsed_ref.summary.planes;
+    world.map_info->unique_materials = parsed_ref.summary.unique_materials;
+    world.map_info->brush_merge_enabled = parsed_ref.preprocess.brush_merge_enabled;
+    world.map_info->csg_enabled = parsed_ref.preprocess.csg_enabled;
+    world.map_info->liquids_filtered = parsed_ref.preprocess.liquids_filtered;
+    world.map_info->breath_first = parsed_ref.preprocess.breath_first;
     world.bsp_info.reset();
 
     std::unordered_map<std::string, std::size_t> texture_lookup;
-    texture_lookup.reserve(parsed.summary.unique_materials + 1);
+    texture_lookup.reserve(parsed_ref.summary.unique_materials + 1);
 
     auto acquire_texture = [&](std::string_view name) -> std::size_t {
         if (name.empty())
@@ -113,8 +117,9 @@ bool PopulateWorldFromMapText(std::string_view source_name,
         return index;
     };
 
-    for (const map::Entity &entity : parsed.entities)
+    for (std::size_t entity_index = 0; entity_index < parsed_ref.entities.size(); ++entity_index)
     {
+        const map::Entity &entity = parsed_ref.entities[entity_index];
         ParsedWorld::Entity converted_entity;
         converted_entity.properties.reserve(entity.properties.size());
         for (const map::KeyValue &kv : entity.properties)
@@ -122,8 +127,9 @@ bool PopulateWorldFromMapText(std::string_view source_name,
             converted_entity.properties.push_back({kv.key, kv.value});
         }
 
-        for (const map::Brush &brush : entity.brushes)
+        for (std::size_t brush_index = 0; brush_index < entity.brushes.size(); ++brush_index)
         {
+            const map::Brush &brush = entity.brushes[brush_index];
             ParsedWorld::Brush converted_brush;
             if (brush.type == map::Brush::Type::kPatch)
             {
@@ -138,6 +144,8 @@ bool PopulateWorldFromMapText(std::string_view source_name,
             converted_brush.has_bounds = brush.has_bounds;
             converted_brush.mins = ConvertVec(brush.mins);
             converted_brush.maxs = ConvertVec(brush.maxs);
+            converted_brush.source_entity = entity_index;
+            converted_brush.source_brush = brush_index;
 
             if (brush.type == map::Brush::Type::kPatch && brush.patch.has_value())
             {
@@ -184,6 +192,8 @@ bool PopulateWorldFromMapText(std::string_view source_name,
 
         world.entities.push_back(std::move(converted_entity));
     }
+
+    world.map_geometry = std::move(map_geometry);
 
     return true;
 }
