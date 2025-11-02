@@ -3,15 +3,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <numeric>
-#include <optional>
-#include <sstream>
 #include <utility>
 
-#include "filesystem_helper.h"
 #include "logging.hpp"
 #include "threads.hpp"
 
@@ -26,181 +21,6 @@ namespace bspc::builder
 {
 namespace
 {
-
-std::uint32_t ReadU32LE(const char *data)
-{
-    const unsigned char b0 = static_cast<unsigned char>(data[0]);
-    const unsigned char b1 = static_cast<unsigned char>(data[1]);
-    const unsigned char b2 = static_cast<unsigned char>(data[2]);
-    const unsigned char b3 = static_cast<unsigned char>(data[3]);
-    return static_cast<std::uint32_t>(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24));
-}
-
-struct ArchiveLookup
-{
-    std::uint32_t offset = 0;
-    std::uint32_t length = 0;
-    bool found = false;
-};
-
-ArchiveLookup FindArchiveEntry(std::ifstream &stream,
-                               bool is_quake,
-                               std::uint32_t directory_offset,
-                               std::uint32_t directory_length,
-                               std::string_view normalized_name)
-{
-    const std::size_t entry_size = is_quake ? 64 : 128;
-    const std::size_t name_length = is_quake ? 56 : 120;
-
-    if (directory_length == 0 || directory_length % entry_size != 0)
-    {
-        return {};
-    }
-
-    std::vector<char> buffer(directory_length);
-    stream.seekg(directory_offset, std::ios::beg);
-    stream.read(buffer.data(), static_cast<std::streamsize>(directory_length));
-    if (stream.gcount() != static_cast<std::streamsize>(directory_length))
-    {
-        return {};
-    }
-
-    const std::size_t count = directory_length / entry_size;
-    for (std::size_t i = 0; i < count; ++i)
-    {
-        const char *entry_data = buffer.data() + (i * entry_size);
-        std::string name(entry_data, entry_data + name_length);
-        const auto null_pos = name.find('\0');
-        if (null_pos != std::string::npos)
-        {
-            name.resize(null_pos);
-        }
-
-        std::string normalized = NormalizeSeparators(name);
-        while (!normalized.empty() && (normalized.front() == '/' || normalized.front() == '\\'))
-        {
-            normalized.erase(normalized.begin());
-        }
-        if (normalized == normalized_name)
-        {
-            ArchiveLookup result;
-            result.offset = ReadU32LE(entry_data + name_length);
-            result.length = ReadU32LE(entry_data + name_length + 4);
-            result.found = true;
-            return result;
-        }
-    }
-
-    return {};
-}
-
-std::optional<std::string> ReadFileFromArchive(const InputFile &input, std::string &error)
-{
-    std::ifstream stream(input.archive_path, std::ios::binary);
-    if (!stream)
-    {
-        error = "failed to open archive " + input.archive_path.generic_string();
-        return std::nullopt;
-    }
-
-    char header[12];
-    stream.read(header, sizeof(header));
-    if (stream.gcount() != static_cast<std::streamsize>(sizeof(header)))
-    {
-        error = "archive header truncated";
-        return std::nullopt;
-    }
-
-    const bool is_quake = std::string_view(header, 4) == "PACK";
-    const bool is_sin = std::string_view(header, 4) == "SPAK";
-    if (!is_quake && !is_sin)
-    {
-        error = "unsupported archive format";
-        return std::nullopt;
-    }
-
-    const std::uint32_t directory_offset = ReadU32LE(header + 4);
-    const std::uint32_t directory_length = ReadU32LE(header + 8);
-
-    const std::string normalized_entry = NormalizeSeparators(input.archive_entry);
-    const ArchiveLookup lookup = FindArchiveEntry(stream, is_quake, directory_offset, directory_length, normalized_entry);
-    if (!lookup.found)
-    {
-        error = "archive entry not found: " + normalized_entry;
-        return std::nullopt;
-    }
-
-    if (lookup.length == 0)
-    {
-        return std::string();
-    }
-
-    std::string data;
-    data.resize(static_cast<std::size_t>(lookup.length));
-    stream.seekg(lookup.offset, std::ios::beg);
-    stream.read(data.data(), static_cast<std::streamsize>(lookup.length));
-    if (stream.gcount() != static_cast<std::streamsize>(lookup.length))
-    {
-        error = "failed to read archive entry payload";
-        return std::nullopt;
-    }
-
-    return data;
-}
-
-std::optional<std::string> ReadWorldFile(const InputFile &input, std::string &error)
-{
-    if (input.from_archive)
-    {
-        return ReadFileFromArchive(input, error);
-    }
-
-    std::ifstream stream(input.path, std::ios::binary);
-    if (!stream)
-    {
-        error = "failed to open " + input.path.generic_string();
-        return std::nullopt;
-    }
-
-    std::stringstream buffer;
-    buffer << stream.rdbuf();
-    if (!stream.good() && !stream.eof())
-    {
-        error = "failed to read " + input.path.generic_string();
-        return std::nullopt;
-    }
-
-    return buffer.str();
-}
-
-std::vector<std::string> SplitLines(std::string_view text)
-{
-    std::vector<std::string> lines;
-    std::string current;
-    for (char ch : text)
-    {
-        if (ch == '\n')
-        {
-            if (!current.empty() && current.back() == '\r')
-            {
-                current.pop_back();
-            }
-            lines.push_back(current);
-            current.clear();
-        }
-        else
-        {
-            current.push_back(ch);
-        }
-    }
-
-    if (!current.empty())
-    {
-        lines.push_back(std::move(current));
-    }
-
-    return lines;
-}
 
 struct LineMetrics
 {
@@ -323,29 +143,6 @@ void WriteCountsToLump(const std::vector<std::size_t> &counts, formats::OwnedLum
     }
 }
 
-std::string EnsureEntitiesText(std::string entities_text)
-{
-    if (entities_text.empty())
-    {
-        entities_text = "{\n\"classname\" \"worldspawn\"\n}\n";
-        return entities_text;
-    }
-
-    bool has_worldspawn = entities_text.find("worldspawn") != std::string::npos;
-    if (!has_worldspawn)
-    {
-        entities_text.append("\n{\n\"classname\" \"worldspawn\"\n}\n");
-    }
-
-    if (!entities_text.empty() && entities_text.back() != '\n')
-    {
-        entities_text.push_back('\n');
-    }
-    return entities_text;
-}
-
-} // namespace
-
 void BspBuildArtifacts::Reset() noexcept
 {
     for (auto &lump : lumps)
@@ -358,19 +155,7 @@ void BspBuildArtifacts::Reset() noexcept
     flood_fill_regions = 0;
 }
 
-bool LoadWorldState(const InputFile &input, ParsedWorld &out_world, std::string &error)
-{
-    const auto data = ReadWorldFile(input, error);
-    if (!data)
-    {
-        return false;
-    }
-
-    out_world.source_name = input.original;
-    out_world.entities_text = EnsureEntitiesText(*data);
-    out_world.lines = SplitLines(*data);
-    return true;
-}
+} // namespace
 
 bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
 {
