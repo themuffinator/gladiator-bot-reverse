@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "brush_processing.hpp"
 #include "filesystem_helper.h"
 #include "logging.hpp"
 
@@ -16,6 +17,18 @@ namespace bspc
 {
 namespace
 {
+
+geometry::BrushWorkspace &BrushWorkspaceInstance()
+{
+    static geometry::BrushWorkspace workspace;
+    return workspace;
+}
+
+void PrepareBrushWorkspace(const Options &options)
+{
+    auto &workspace = BrushWorkspaceInstance();
+    workspace.Reset(options.nocsg, options.nobrushmerge);
+}
 
 constexpr std::string_view kUsage =
     "Usage:   bspc [-<switch> [-<switch> ...]]\n"
@@ -213,6 +226,8 @@ void PrintConversion(const char *format, const std::string &source, const std::s
 
 void ProcessMapInput(const Options &options, const char *format)
 {
+    PrepareBrushWorkspace(options);
+
     if (options.files.empty())
     {
         PrintNoFilesFound();
@@ -232,6 +247,8 @@ void ProcessMapInput(const Options &options, const char *format)
 
 void ProcessMapToAas(const Options &options)
 {
+    PrepareBrushWorkspace(options);
+
     if (options.files.empty())
     {
         PrintNoFilesFound();
@@ -251,6 +268,8 @@ void ProcessMapToAas(const Options &options)
 
 void ProcessBspInput(const Options &options, const char *format, std::string_view extension)
 {
+    PrepareBrushWorkspace(options);
+
     if (options.files.empty())
     {
         PrintNoFilesFound();
