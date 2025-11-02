@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "q2bridge/bridge.h"
+#include "q2bridge/update_translator.h"
 #include "botlib/aas/aas_map.h"
 #include "botlib/ai/move/mover_catalogue.h"
 
@@ -15,6 +16,7 @@ static float g_aas_current_time = 0.0f;
 void TranslateEntity_SetWorldLoaded(qboolean loaded)
 {
     g_aas_loaded = loaded;
+    Bridge_HandleMapStateChange();
 }
 
 void TranslateEntity_SetCurrentTime(float time)

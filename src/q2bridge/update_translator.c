@@ -11,6 +11,8 @@
 
 #include "botlib/common/l_libvar.h"
 
+#include "botlib/common/l_libvar.h"
+
 #define BRIDGE_DEFAULT_MAX_ENTITIES 1024
 #define Q2_ABSOLUTE_MAX_ENTITIES 2048
 
@@ -39,6 +41,58 @@ static int g_bridge_entity_capacity = 0;
 static int g_bridge_max_client_index = MAX_CLIENTS - 1;
 static int g_bridge_max_entity_index = -1;
 static float g_bridge_frame_time = 0.0f;
+
+static const char *Bridge_GetMaxClientsVarName(const libvar_t *var)
+{
+    if (var != NULL && var->name != NULL && var->name[0] != '\0')
+    {
+        return var->name;
+    }
+
+    return "maxclients";
+}
+
+static void Bridge_UpdateMaxClientIndex(qboolean force_refresh)
+{
+    const int fallback_clients = MAX_CLIENTS;
+    int max_clients = fallback_clients;
+
+    libvar_t *maxclients = Bridge_MaxClients();
+    if (maxclients != NULL)
+    {
+        const char *var_name = Bridge_GetMaxClientsVarName(maxclients);
+
+        if (force_refresh || maxclients->modified)
+        {
+            max_clients = (int)LibVarValue(var_name, "0");
+            LibVarSetNotModified(var_name);
+        }
+        else
+        {
+            max_clients = (int)maxclients->value;
+        }
+
+        if (max_clients <= 0)
+        {
+            max_clients = fallback_clients;
+        }
+    }
+    else
+    {
+        int fetched = (int)LibVarValue(Bridge_GetMaxClientsVarName(NULL), "0");
+        if (fetched > 0)
+        {
+            max_clients = fetched;
+        }
+    }
+
+    if (max_clients > fallback_clients)
+    {
+        max_clients = fallback_clients;
+    }
+
+    g_bridge_max_client_index = max_clients - 1;
+}
 
 static int Bridge_ReadConfiguredMaxEntities(void)
 {
@@ -200,6 +254,8 @@ static qboolean Bridge_CheckLibraryReady(const char *caller)
 
 static qboolean Bridge_CheckClientNumber(int client, const char *caller)
 {
+    Bridge_UpdateMaxClientIndex(qfalse);
+
     if (client < 0 || client > g_bridge_max_client_index)
     {
         Bridge_LogMessage(PRT_ERROR,
@@ -351,6 +407,8 @@ void Bridge_ResetCachedUpdates(void)
     memset(g_bridge_clients, 0, sizeof(g_bridge_clients));
     Bridge_ResetEntityTable();
     g_bridge_frame_time = 0.0f;
+
+    Bridge_UpdateMaxClientIndex(qtrue);
 }
 
 void Bridge_ClearClientSlot(int client)
@@ -399,6 +457,8 @@ void Bridge_SetFrameTime(float time)
 
 void Bridge_SetClientActive(int client, qboolean active)
 {
+    Bridge_UpdateMaxClientIndex(qfalse);
+
     if (!Bridge_CheckClientNumber(client, "Bridge_SetClientActive"))
     {
         return;
@@ -410,6 +470,11 @@ void Bridge_SetClientActive(int client, qboolean active)
         g_bridge_clients[client].frame_valid = qfalse;
         memset(&g_bridge_clients[client].frame, 0, sizeof(g_bridge_clients[client].frame));
     }
+}
+
+void Bridge_HandleMapStateChange(void)
+{
+    Bridge_UpdateMaxClientIndex(qtrue);
 }
 
 qboolean Bridge_ReadClientFrame(int client, AASClientFrame *frame_out)
