@@ -209,10 +209,10 @@ void RunBspCompilation(const Options &options, const InputFile &input, const std
 
     if (WriteBspFile(destination, artifacts))
     {
-        log::Info("BSP build wrote %s (%zu portal slices, %zu regions)\n",
+        log::Info("BSP build wrote %s (%zu clusters, %zu portals)\n",
                   destination.generic_string().c_str(),
-                  artifacts.portal_slice_count,
-                  artifacts.flood_fill_regions);
+                  artifacts.portal_cluster_count,
+                  artifacts.portal_count);
     }
 
     WriteTextFile(ReplaceExtension(destination, ".prt"), artifacts.portal_text);

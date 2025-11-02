@@ -140,7 +140,7 @@ void TestLeakFile()
 
     std::string leak = legacy::LeakFile(*tree, "unit_test.map");
     assert(!leak.empty());
-    assert(leak.find("10 20 30") != std::string::npos);
+    assert(leak.find("10.000000 20.000000 30.000000") != std::string::npos);
 
     legacy::Tree_Free(*tree);
     assert(legacy::GetPortalStats().active == 0);
