@@ -1,0 +1,5 @@
+// Minimal Quake II MAP placeholder used for bspc integration checks
+{
+"classname" "worldspawn"
+"message" "Simple BSPC test room"
+}
