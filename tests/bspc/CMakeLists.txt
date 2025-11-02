@@ -42,3 +42,32 @@ target_include_directories(bspc_legacy_tests PRIVATE
 target_compile_features(bspc_legacy_tests PRIVATE cxx_std_17)
 
 add_test(NAME bspc_legacy COMMAND bspc_legacy_tests)
+
+add_executable(bspc_world_loader_tests
+    test_load_world_state.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/world_loader.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/world_parser_utils.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/world_map_parser.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/world_bsp_parser.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/map_parser.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/bsp_serializers.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/filesystem_helper.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/logging.cpp
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src/memory.cpp
+)
+
+target_include_directories(bspc_world_loader_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/tools/bspc/src
+)
+
+target_link_libraries(bspc_world_loader_tests PRIVATE ${BOTLIB_PARITY_TEST_LIBRARIES})
+
+target_compile_features(bspc_world_loader_tests PRIVATE cxx_std_17)
+
+target_compile_definitions(bspc_world_loader_tests PRIVATE PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(bspc_world_loader_tests PRIVATE pthread)
+endif()
+
+add_test(NAME bspc_world_loader COMMAND bspc_world_loader_tests)
