@@ -651,5 +651,17 @@ void FreeTree(BspBuildArtifacts &artifacts) noexcept
     artifacts.Reset();
 }
 
+void BspBuildArtifacts::Reset() noexcept
+{
+    for (auto &lump : lumps)
+    {
+        lump.Reset();
+    }
+    portal_text.clear();
+    leak_text.clear();
+    portal_slice_count = 0;
+    flood_fill_regions = 0;
+}
+
 } // namespace bspc::builder
 

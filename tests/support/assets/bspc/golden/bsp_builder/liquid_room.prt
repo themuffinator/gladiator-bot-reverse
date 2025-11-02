@@ -1,0 +1,19 @@
+# portal metrics
+active_portals 1
+peak_portals 1
+tracked_memory 128
+# BSPC portal diagnostics
+source: tests/support/assets/bspc/liquid_room.map
+portal_slices: 12
+slice 0: chars=28 solid=24 tokens=5
+slice 1: chars=1 solid=1 tokens=1
+slice 2: chars=24 solid=23 tokens=2
+slice 3: chars=1 solid=1 tokens=1
+slice 4: chars=71 solid=51 tokens=21
+slice 5: chars=74 solid=54 tokens=21
+slice 6: chars=73 solid=53 tokens=21
+slice 7: chars=70 solid=50 tokens=21
+slice 8: chars=70 solid=50 tokens=21
+slice 9: chars=73 solid=53 tokens=21
+slice 10: chars=1 solid=1 tokens=1
+slice 11: chars=1 solid=1 tokens=1
