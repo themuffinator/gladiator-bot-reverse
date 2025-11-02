@@ -1,21 +1,27 @@
 #include "bsp_builder.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <numeric>
 #include <sstream>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
+#include <vector>
+#include <limits>
 
 #include "logging.hpp"
-#include "threads.hpp"
 
 #include "brush_bsp.hpp"
-#include "csg.hpp"
 #include "legacy_common.hpp"
 #include "leakfile.hpp"
 #include "portals.hpp"
+#include "prtfile.hpp"
 #include "tree.hpp"
 
 namespace bspc::builder
@@ -23,125 +29,321 @@ namespace bspc::builder
 namespace
 {
 
-struct LineMetrics
+std::size_t CountLeakPoints(std::string_view leak_text) noexcept
 {
-    std::size_t index = 0;
-    std::size_t character_count = 0;
-    std::size_t solid_count = 0;
-    std::size_t token_count = 0;
+    if (leak_text.empty())
+    {
+        return 0;
+    }
+
+    return report;
+}
+
+struct Quake1PlaneDisk
+{
+    float normal[3] = {0.0f, 0.0f, 0.0f};
+    float distance = 0.0f;
+    std::int32_t type = 0;
 };
 
-std::vector<LineMetrics> ComputePortalSlices(const std::vector<std::string> &lines)
+struct Quake1NodeDisk
 {
-    std::vector<LineMetrics> metrics(lines.size());
-    const int work_count = static_cast<int>(lines.size());
-    threads::RunWorkerRange(work_count, work_count >= 8, [&](int index) {
-        const std::string &line = lines[static_cast<std::size_t>(index)];
-        LineMetrics local;
-        local.index = static_cast<std::size_t>(index);
-        local.character_count = line.size();
-        local.solid_count = std::count_if(line.begin(), line.end(), [](unsigned char c) {
-            return !std::isspace(c);
-        });
+    std::int32_t planenum = 0;
+    std::int16_t children[2] = {0, 0};
+    std::int16_t mins[3] = {0, 0, 0};
+    std::int16_t maxs[3] = {0, 0, 0};
+    std::uint16_t first_face = 0;
+    std::uint16_t face_count = 0;
+};
 
-        bool in_token = false;
-        for (unsigned char c : line)
-        {
-            if (std::isspace(c))
-            {
-                in_token = false;
-            }
-            else if (!in_token)
-            {
-                in_token = true;
-                ++local.token_count;
-            }
-        }
-
-        metrics[static_cast<std::size_t>(index)] = local;
-    });
-
-    return metrics;
-}
-
-std::vector<std::size_t> RunFloodFill(const std::vector<LineMetrics> &metrics)
+struct Quake1LeafDisk
 {
-    std::vector<std::size_t> regions(metrics.size());
-    const int work_count = static_cast<int>(metrics.size());
-    threads::RunWorkerRange(work_count, work_count >= 8, [&](int index) {
-        const LineMetrics &m = metrics[static_cast<std::size_t>(index)];
-        const std::size_t combined = (m.solid_count * 3) + (m.token_count * 5);
-        regions[static_cast<std::size_t>(index)] = combined;
-    });
-    return regions;
-}
+    std::int32_t contents = 0;
+    std::int16_t mins[3] = {0, 0, 0};
+    std::int16_t maxs[3] = {0, 0, 0};
+    std::uint16_t first_mark_surface = 0;
+    std::uint16_t mark_surface_count = 0;
+    std::uint16_t visibility = 0;
+    std::uint8_t ambient_level[4] = {0, 0, 0, 0};
+};
 
-std::string BuildPortalReport(const ParsedWorld &world, const std::vector<LineMetrics> &metrics)
+struct Quake1ModelDisk
 {
-    std::string report = "# BSPC portal diagnostics\n";
-    report += "source: " + world.source_name + "\n";
-    report += "portal_slices: " + std::to_string(metrics.size()) + "\n";
+    float mins[3] = {0.0f, 0.0f, 0.0f};
+    float maxs[3] = {0.0f, 0.0f, 0.0f};
+    float origin[3] = {0.0f, 0.0f, 0.0f};
+    std::int32_t headnode[4] = {-1, -1, -1, -1};
+    std::int32_t first_face = 0;
+    std::int32_t face_count = 0;
+};
 
-    for (const auto &entry : metrics)
-    {
-        report += "slice ";
-        report += std::to_string(entry.index);
-        report += ": chars=";
-        report += std::to_string(entry.character_count);
-        report += " solid=";
-        report += std::to_string(entry.solid_count);
-        report += " tokens=";
-        report += std::to_string(entry.token_count);
-        report.push_back('\n');
-    }
-
-    return report;
-}
-
-std::string BuildFloodFillReport(const ParsedWorld &world,
-                                 const std::vector<LineMetrics> &metrics,
-                                 const std::vector<std::size_t> &regions)
+template <typename T>
+void WriteVectorToLump(const std::vector<T> &source, formats::OwnedLump &lump)
 {
-    std::string report = "# BSPC visibility diagnostics\n";
-    report += "source: " + world.source_name + "\n";
-    report += "regions: " + std::to_string(regions.size()) + "\n";
-
-    std::size_t cumulative = 0;
-    for (std::size_t value : regions)
-    {
-        cumulative += value;
-    }
-
-    report += "cumulative_weight: " + std::to_string(cumulative) + "\n";
-
-    for (std::size_t i = 0; i < regions.size(); ++i)
-    {
-        report += "region ";
-        report += std::to_string(i);
-        report += ": tokens=";
-        report += std::to_string(metrics[i].token_count);
-        report += " weight=";
-        report += std::to_string(regions[i]);
-        report.push_back('\n');
-    }
-
-    return report;
-}
-
-void WriteCountsToLump(const std::vector<std::size_t> &counts, formats::OwnedLump &lump)
-{
-    if (counts.empty())
+    if (source.empty())
     {
         lump.Reset();
         return;
     }
 
-    lump.Allocate(counts.size() * sizeof(std::uint32_t), false);
-    auto *dest = static_cast<std::uint32_t *>(lump.data.get());
-    for (std::size_t i = 0; i < counts.size(); ++i)
+    const std::size_t size_bytes = source.size() * sizeof(T);
+    lump.Allocate(size_bytes, false);
+    std::memcpy(lump.data.get(), source.data(), size_bytes);
+}
+
+void WriteTextLump(std::string_view text, formats::OwnedLump &lump)
+{
+    if (text.empty())
     {
-        dest[i] = static_cast<std::uint32_t>(counts[i] & 0xFFFFFFFFu);
+        lump.Reset();
+        return;
     }
+
+    lump.Allocate(text.size(), false);
+    std::memcpy(lump.data.get(), text.data(), text.size());
+}
+
+std::int16_t ClampToShort(double value) noexcept
+{
+    constexpr double kMinShort = static_cast<double>(std::numeric_limits<std::int16_t>::min());
+    constexpr double kMaxShort = static_cast<double>(std::numeric_limits<std::int16_t>::max());
+    const double clamped = std::clamp(value, kMinShort, kMaxShort);
+    return static_cast<std::int16_t>(std::lround(clamped));
+}
+
+struct TreeCollection
+{
+    std::vector<const legacy::Node *> nodes;
+    std::vector<const legacy::Node *> leaves;
+    std::unordered_map<const legacy::Node *, std::size_t> node_indices;
+    std::unordered_map<const legacy::Node *, std::size_t> leaf_indices;
+};
+
+void RegisterLeaf(const legacy::Node &node, TreeCollection &collection)
+{
+    const auto [it, inserted] = collection.leaf_indices.emplace(&node, collection.leaves.size());
+    if (inserted)
+    {
+        collection.leaves.push_back(&node);
+    }
+}
+
+void CollectTreeRecursive(const legacy::Node &node, TreeCollection &collection)
+{
+    if (node.planenum == legacy::kPlanenumLeaf)
+    {
+        RegisterLeaf(node, collection);
+        return;
+    }
+
+    const auto [it, inserted] = collection.node_indices.emplace(&node, collection.nodes.size());
+    if (inserted)
+    {
+        collection.nodes.push_back(&node);
+    }
+
+    for (const legacy::Node *child : node.children)
+    {
+        if (child)
+        {
+            CollectTreeRecursive(*child, collection);
+        }
+    }
+}
+
+TreeCollection CollectTree(const legacy::Tree &tree)
+{
+    TreeCollection collection;
+    RegisterLeaf(tree.outside_node, collection);
+
+    if (tree.headnode)
+    {
+        CollectTreeRecursive(*tree.headnode, collection);
+    }
+
+    return collection;
+}
+
+struct TreeEmission
+{
+    std::vector<Quake1NodeDisk> nodes;
+    std::vector<Quake1LeafDisk> leaves;
+};
+
+TreeEmission EmitTreeLumps(const TreeCollection &collection)
+{
+    TreeEmission emission;
+    emission.nodes.resize(collection.nodes.size());
+    emission.leaves.resize(collection.leaves.size());
+
+    for (std::size_t index = 0; index < collection.nodes.size(); ++index)
+    {
+        const legacy::Node *node = collection.nodes[index];
+        Quake1NodeDisk disk;
+        disk.planenum = std::max(0, node->planenum);
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            disk.mins[axis] = ClampToShort(node->mins[axis]);
+            disk.maxs[axis] = ClampToShort(node->maxs[axis]);
+        }
+
+        for (std::size_t child_index = 0; child_index < 2; ++child_index)
+        {
+            const legacy::Node *child = node->children[child_index];
+            if (!child)
+            {
+                disk.children[child_index] = -1;
+                continue;
+            }
+
+            const auto node_it = collection.node_indices.find(child);
+            if (node_it != collection.node_indices.end())
+            {
+                disk.children[child_index] = static_cast<std::int16_t>(node_it->second);
+                continue;
+            }
+
+            const auto leaf_it = collection.leaf_indices.find(child);
+            if (leaf_it != collection.leaf_indices.end())
+            {
+                const auto leaf_index = static_cast<std::int32_t>(leaf_it->second);
+                disk.children[child_index] = static_cast<std::int16_t>(-leaf_index - 1);
+            }
+            else
+            {
+                disk.children[child_index] = -1;
+            }
+        }
+
+        emission.nodes[index] = disk;
+    }
+
+    for (std::size_t index = 0; index < collection.leaves.size(); ++index)
+    {
+        const legacy::Node *leaf = collection.leaves[index];
+        Quake1LeafDisk disk;
+        if (leaf)
+        {
+            disk.contents = leaf->contents;
+            for (std::size_t axis = 0; axis < 3; ++axis)
+            {
+                disk.mins[axis] = ClampToShort(leaf->mins[axis]);
+                disk.maxs[axis] = ClampToShort(leaf->maxs[axis]);
+            }
+        }
+        disk.visibility = 0xFFFFu;
+        emission.leaves[index] = disk;
+    }
+
+    return emission;
+}
+
+void ValidateCount(std::size_t actual, std::size_t expected, std::string_view label)
+{
+#ifndef NDEBUG
+    assert(actual == expected && "BSP lump count mismatch");
+#else
+    if (actual != expected)
+    {
+        log::Warning("%.*s count mismatch: expected %zu, got %zu\n",
+                     static_cast<int>(label.size()),
+                     label.data(),
+                     expected,
+                     actual);
+    }
+#endif
+}
+
+void WriteQuake1BspLumps(const ParsedWorld &world,
+                         const legacy::Tree &tree,
+                         BspBuildArtifacts &artifacts)
+{
+    auto &entities_lump = artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kEntities)];
+    WriteTextLump(world.entities_text, entities_lump);
+
+    const auto &planes = legacy::MapPlanes();
+    std::vector<Quake1PlaneDisk> plane_data;
+    plane_data.reserve(planes.size());
+    for (const legacy::Plane &plane : planes)
+    {
+        Quake1PlaneDisk disk;
+        disk.normal[0] = static_cast<float>(plane.normal.x);
+        disk.normal[1] = static_cast<float>(plane.normal.y);
+        disk.normal[2] = static_cast<float>(plane.normal.z);
+        disk.distance = static_cast<float>(plane.dist);
+        disk.type = plane.type;
+        plane_data.push_back(disk);
+    }
+    auto &planes_lump = artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kPlanes)];
+    WriteVectorToLump(plane_data, planes_lump);
+
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kTextures)].Reset();
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kVertices)].Reset();
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kVisibility)].Reset();
+
+    const TreeCollection collection = CollectTree(tree);
+    const TreeEmission emission = EmitTreeLumps(collection);
+
+    auto &nodes_lump = artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kNodes)];
+    WriteVectorToLump(emission.nodes, nodes_lump);
+
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kTexInfo)].Reset();
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kFaces)].Reset();
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kLighting)].Reset();
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kClipNodes)].Reset();
+
+    auto &leaves_lump = artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kLeaves)];
+    WriteVectorToLump(emission.leaves, leaves_lump);
+
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kMarkSurfaces)].Reset();
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kEdges)].Reset();
+    artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kSurfEdges)].Reset();
+
+    std::vector<Quake1ModelDisk> models;
+    if (tree.headnode)
+    {
+        Quake1ModelDisk model;
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            model.mins[axis] = static_cast<float>(tree.headnode->mins[axis]);
+            model.maxs[axis] = static_cast<float>(tree.headnode->maxs[axis]);
+        }
+        const auto node_it = collection.node_indices.find(tree.headnode.get());
+        if (node_it != collection.node_indices.end())
+        {
+            model.headnode[0] = static_cast<std::int32_t>(node_it->second);
+        }
+        else
+        {
+            const auto leaf_it = collection.leaf_indices.find(tree.headnode.get());
+            if (leaf_it != collection.leaf_indices.end())
+            {
+                model.headnode[0] = -static_cast<std::int32_t>(leaf_it->second) - 1;
+            }
+        }
+        models.push_back(model);
+    }
+
+    auto &models_lump = artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kModels)];
+    WriteVectorToLump(models, models_lump);
+
+    ValidateCount(plane_data.size(), planes.size(), "planes");
+    ValidateCount(emission.nodes.size(), collection.nodes.size(), "nodes");
+    ValidateCount(emission.leaves.size(), collection.leaves.size(), "leaves");
+    ValidateCount(models.size(), tree.headnode ? std::size_t{1} : std::size_t{0}, "models");
+}
+
+void BspBuildArtifacts::Reset() noexcept
+{
+    for (auto &lump : lumps)
+    {
+        lump.Reset();
+    }
+    portal_text.clear();
+    leak_text.clear();
+    portal_cluster_count = 0;
+    portal_count = 0;
+    leak_point_count = 0;
 }
 
 } // namespace
@@ -156,17 +358,9 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
     log::Info("--- BSP tree ---\n");
     log::Info("processing %zu world lines\n", world.lines.size());
 
-    const std::vector<LineMetrics> metrics = ComputePortalSlices(world.lines);
-    out_artifacts.portal_slice_count = metrics.size();
-    log::Info("portal slicing complete: %zu slices\n", metrics.size());
-
-    const std::vector<std::size_t> flood_regions = RunFloodFill(metrics);
-    out_artifacts.flood_fill_regions = flood_regions.size();
-    log::Info("flood fill complete: %zu regions\n", flood_regions.size());
-
     std::unique_ptr<legacy::Tree> tree = legacy::Tree_Alloc();
 
-    if (!metrics.empty())
+    if (!world.lines.empty())
     {
         legacy::Plane plane;
         plane.normal = {0.0, 0.0, 1.0};
@@ -179,70 +373,25 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
         winding->points.push_back({64.0, 0.0, 0.0});
         winding->points.push_back({0.0, 64.0, 0.0});
         portal->winding = std::move(winding);
+        portal->plane = plane;
+        portal->onnode = tree->headnode.get();
 
-        legacy::Node &leaf = legacy::Tree_EmplaceLeaf(*tree);
+        legacy::Node &leaf = *tree->headnode;
         leaf.planenum = legacy::kPlanenumLeaf;
         leaf.occupied = 1;
         legacy::Entity &occupant = legacy::Tree_EmplaceEntity(*tree, legacy::Vec3{0.0, 0.0, 0.0});
         leaf.occupant = &occupant;
 
-        legacy::AddPortalToNodes(*portal, tree->outside_node, leaf);
+        legacy::AddPortalToNodes(*portal, leaf, tree->outside_node);
         tree->outside_node.occupied = 2;
     }
 
     const auto &portal_stats = legacy::GetPortalStats();
-    std::ostringstream portal_stream;
-    portal_stream << "# portal metrics\n";
-    portal_stream << "active_portals " << portal_stats.active << "\n";
-    portal_stream << "peak_portals " << portal_stats.peak << "\n";
-    portal_stream << "tracked_memory " << portal_stats.memory << "\n";
-    portal_stream << BuildPortalReport(world, metrics);
-    out_artifacts.portal_text = portal_stream.str();
+    log::Info("portal allocator peak: %d active (%d bytes)\n",
+              portal_stats.peak,
+              portal_stats.memory);
 
-    std::string leak_trace = legacy::LeakFile(*tree, world.source_name);
-    if (!leak_trace.empty())
-    {
-        out_artifacts.leak_text = std::move(leak_trace);
-    }
-    else
-    {
-        out_artifacts.leak_text = BuildFloodFillReport(world, metrics, flood_regions);
-    }
-
-    std::vector<std::size_t> char_counts;
-    char_counts.reserve(metrics.size());
-    std::vector<std::size_t> solid_counts;
-    solid_counts.reserve(metrics.size());
-
-    for (const auto &entry : metrics)
-    {
-        char_counts.push_back(entry.character_count);
-        solid_counts.push_back(entry.token_count);
-    }
-
-    auto &entities_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kEntities)];
-    if (!world.entities_text.empty())
-    {
-        entities_lump.Allocate(world.entities_text.size(), false);
-        std::memcpy(entities_lump.data.get(), world.entities_text.data(), world.entities_text.size());
-    }
-
-    auto &planes_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kPlanes)];
-    WriteCountsToLump(char_counts, planes_lump);
-
-    auto &visibility_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kVisibility)];
-    WriteCountsToLump(flood_regions, visibility_lump);
-
-    auto &nodes_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kNodes)];
-    WriteCountsToLump(solid_counts, nodes_lump);
-
-    auto &models_lump = out_artifacts.lumps[static_cast<std::size_t>(formats::Quake1Lump::kModels)];
-    if (!metrics.empty())
-    {
-        models_lump.Allocate(sizeof(std::uint32_t));
-        auto *dest = static_cast<std::uint32_t *>(models_lump.data.get());
-        *dest = static_cast<std::uint32_t>(metrics.size());
-    }
+    WriteQuake1BspLumps(world, *tree, out_artifacts);
 
     log::Info("BSP tree populated\n");
 
