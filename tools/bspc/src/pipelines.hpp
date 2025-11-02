@@ -11,6 +11,7 @@ namespace pipelines
 {
 
 void RunMapToBsp(const Options &options, const InputFile &input, const std::string &destination_path);
+void RunBspToMap(const Options &options, const InputFile &input, const std::string &destination_path);
 void RunBspToBsp(const Options &options, const InputFile &input, const std::string &destination_path);
 void RunMapToAas(const Options &options, const InputFile &input, const std::string &destination_path);
 void RunBspToAas(const Options &options, const InputFile &input, const std::string &destination_path);

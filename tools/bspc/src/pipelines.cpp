@@ -10,6 +10,7 @@
 
 #include "bsp_builder.hpp"
 #include "bsp_formats.hpp"
+#include "bsp_to_map.hpp"
 #include "logging.hpp"
 #include "map_parser.hpp"
 #include "memory.h"
@@ -82,6 +83,19 @@ void RemoveLegacyCompanions(const std::filesystem::path &bsp_destination)
 {
     RemoveFileIfExists(ReplaceExtension(bsp_destination, ".prt"));
     RemoveFileIfExists(ReplaceExtension(bsp_destination, ".lin"));
+}
+
+void RemoveInputCompanions(const InputFile &input)
+{
+    for (const auto &companion : input.companions)
+    {
+        if (companion.from_archive)
+        {
+            continue;
+        }
+
+        RemoveFileIfExists(companion.path);
+    }
 }
 
 bool WriteTextFile(const std::filesystem::path &path, std::string_view contents)
@@ -242,6 +256,21 @@ void RunMapToBsp(const Options &options, const InputFile &input, const std::stri
     const std::filesystem::path bsp_destination(destination_path);
     ScopedTimer timer;
     RunBspCompilation(options, input, bsp_destination);
+    timer.Finish();
+}
+
+void RunBspToMap(const Options &, const InputFile &input, const std::string &destination_path)
+{
+    const std::filesystem::path map_destination(destination_path);
+    ScopedTimer timer;
+    RemoveInputCompanions(input);
+
+    std::string error;
+    if (!bsp_to_map::ConvertBspToMap(input, map_destination, error))
+    {
+        log::Warning("failed to convert BSP %s (%s)", input.original.c_str(), error.c_str());
+        TouchEmptyFile(map_destination);
+    }
     timer.Finish();
 }
 

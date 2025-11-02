@@ -13,12 +13,13 @@ import argparse
 import base64
 import binascii
 import difflib
+import hashlib
 import json
 import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -29,9 +30,11 @@ RE_TIMING = re.compile(r"\b\d+\s+seconds\selapsed\b")
 class ModeConfig:
     flag: str
     input_path: Path
-    expected_files: Mapping[Path, Path]
+    expected_files: Mapping[Path, Path] = field(default_factory=dict)
     optional_files: Mapping[Path, Path] | None = None
     requires_timing: bool = True
+    ignore_whitespace: frozenset[Path] = frozenset()
+    expected_hashes: Mapping[Path, str] | None = None
 
 
 def normalize_text(text: str, repo_root: Path | None = None) -> str:
@@ -91,12 +94,17 @@ def read_golden_bytes(path: Path) -> bytes:
     return data
 
 
+def normalize_whitespace(text: str) -> str:
+    return " ".join(text.split())
+
+
 def compare_artifact(
     relative_path: Path,
     actual_path: Path,
     golden_path: Path,
     output_dir: Path,
     repo_root: Path,
+    ignore_whitespace: bool = False,
 ) -> tuple[bool, str | None]:
     expected_bytes = read_golden_bytes(golden_path)
     actual_bytes = actual_path.read_bytes()
@@ -108,6 +116,9 @@ def compare_artifact(
     if expected_text is not None and actual_text is not None:
         normalized_expected = normalize_text(expected_text, repo_root)
         normalized_actual = normalize_text(actual_text, repo_root)
+        if ignore_whitespace:
+            if normalize_whitespace(normalized_expected) == normalize_whitespace(normalized_actual):
+                return True, None
         if normalized_expected == normalized_actual:
             return True, None
 
@@ -169,7 +180,7 @@ def run_mode(
 
     missing: list[str] = []
     mismatched: list[str] = []
-    validated: list[str] = []
+    validated: set[str] = set()
     for relative_path, golden_relative in mode.expected_files.items():
         file_path = output_dir / relative_path
         golden_path = golden_root / golden_relative
@@ -178,11 +189,41 @@ def run_mode(
         if not file_path.exists():
             missing.append(relative_path.as_posix())
             continue
-        matches, message = compare_artifact(relative_path, file_path, golden_path, output_dir, repo_root)
+        ignore_ws = relative_path in mode.ignore_whitespace
+        matches, message = compare_artifact(
+            relative_path,
+            file_path,
+            golden_path,
+            output_dir,
+            repo_root,
+            ignore_whitespace=ignore_ws,
+        )
         if matches:
-            validated.append(relative_path.as_posix())
+            validated.add(relative_path.as_posix())
         else:
             mismatched.append(message or relative_path.as_posix())
+    for relative_path, expected_digest in (mode.expected_hashes or {}).items():
+        file_path = output_dir / relative_path
+        if not file_path.exists():
+            missing.append(relative_path.as_posix())
+            continue
+        data = file_path.read_bytes()
+        text = decode_text(data)
+        if text is None:
+            mismatched.append(
+                f"{relative_path.as_posix()} is not valid UTF-8 text for digest comparison"
+            )
+            continue
+        normalized = normalize_text(text, repo_root)
+        if relative_path in mode.ignore_whitespace:
+            normalized = normalize_whitespace(normalized)
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if digest != expected_digest:
+            mismatched.append(
+                f"{relative_path.as_posix()} digest mismatch: expected {expected_digest}, got {digest}"
+            )
+            continue
+        validated.add(relative_path.as_posix())
     if missing or mismatched:
         raise OutputMismatch(
             "Output validation failed for {flag}: missing={missing}, mismatched={mismatched}".format(
@@ -199,7 +240,15 @@ def run_mode(
         golden_path = golden_root / golden_relative
         if not golden_path.exists():
             raise FileNotFoundError(f"Golden asset missing: {golden_path}")
-        matches, message = compare_artifact(relative_path, file_path, golden_path, output_dir, repo_root)
+        ignore_ws = relative_path in mode.ignore_whitespace
+        matches, message = compare_artifact(
+            relative_path,
+            file_path,
+            golden_path,
+            output_dir,
+            repo_root,
+            ignore_whitespace=ignore_ws,
+        )
         if matches:
             optional_present.append(relative_path.as_posix())
         else:
@@ -296,8 +345,11 @@ def main(argv: list[str]) -> int:
         ModeConfig(
             flag="bsp2map",
             input_path=bsp_asset,
-            expected_files={},
+            expected_hashes={
+                Path("2box4.map"): "2692f0d364e16981fa899f6f3e8b308651647a7f0a801542d98308d15ca7e226",
+            },
             requires_timing=False,
+            ignore_whitespace=frozenset({Path("2box4.map")}),
         ),
         ModeConfig(
             flag="bsp2bsp",
