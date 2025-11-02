@@ -7,8 +7,10 @@
 #include <system_error>
 
 #include "logging.hpp"
+#include "map_parser.hpp"
 #include "memory.h"
 #include "options.hpp"
+#include "filesystem_helper.h"
 
 namespace bspc::pipelines
 {
@@ -128,8 +130,20 @@ void EmitAasPlaceholder(const InputFile &input, const std::filesystem::path &des
 //  3. emit the .prt/.lin diagnostics and report the elapsed time
 // We mirror that structure here with placeholder operations to keep the
 // reconstructed tool modular.
-void RunBspCompilation(const InputFile &input, const std::filesystem::path &destination)
+void RunBspCompilation(const Options &options, const InputFile &input, const std::filesystem::path &destination)
 {
+    if (EqualsIgnoreCase(input.path.extension().generic_string(), ".map"))
+    {
+        auto parsed_map = map::ParseMapFromFile(input, options);
+        if (parsed_map)
+        {
+            log::Info("parsed %zu entities, %zu brushes, %zu materials\n",
+                      parsed_map->summary.entities,
+                      parsed_map->summary.brushes,
+                      parsed_map->summary.unique_materials);
+        }
+    }
+
     RemoveLegacyCompanions(destination);
     EmitBspPlaceholder(input, destination);
     EmitCompanionPlaceholders(destination);
@@ -147,30 +161,30 @@ void RunAasCompilation(const InputFile &input, const std::filesystem::path &dest
 
 } // namespace
 
-void RunMapToBsp(const Options & /*options*/, const InputFile &input, const std::string &destination_path)
+void RunMapToBsp(const Options &options, const InputFile &input, const std::string &destination_path)
 {
     const std::filesystem::path bsp_destination(destination_path);
     ScopedTimer timer;
-    RunBspCompilation(input, bsp_destination);
+    RunBspCompilation(options, input, bsp_destination);
     timer.Finish();
 }
 
-void RunBspToBsp(const Options & /*options*/, const InputFile &input, const std::string &destination_path)
+void RunBspToBsp(const Options &options, const InputFile &input, const std::string &destination_path)
 {
     const std::filesystem::path bsp_destination(destination_path);
     ScopedTimer timer;
-    RunBspCompilation(input, bsp_destination);
+    RunBspCompilation(options, input, bsp_destination);
     timer.Finish();
 }
 
-void RunMapToAas(const Options & /*options*/, const InputFile &input, const std::string &destination_path)
+void RunMapToAas(const Options &options, const InputFile &input, const std::string &destination_path)
 {
     const std::filesystem::path aas_destination(destination_path);
     std::filesystem::path bsp_destination = aas_destination;
     bsp_destination.replace_extension(".bsp");
 
     ScopedTimer timer;
-    RunBspCompilation(input, bsp_destination);
+    RunBspCompilation(options, input, bsp_destination);
     RunAasCompilation(input, aas_destination);
     timer.Finish();
 }
