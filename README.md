@@ -76,5 +76,5 @@ use the macro before upgrading.
 
 ## Credits
 
-- Mr Elusive for creating the Gladiator Bot and the Quake III Botlib.
+- Mr Elusive for creating the [Gladiator Bot for Quake II](https://mrelusive.com/oldprojects/gladiator/gladiator.html) and the [Quake III Arena bot library](https://github.com/id-Software/Quake-III-Arena/tree/master/code/botlib).
 - id Software for Quake II and Quake III Arena.
