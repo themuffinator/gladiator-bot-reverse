@@ -2,3 +2,12 @@
 // sub_4016b0  → TmpAasArena_Shutdown: release pools and clear counters.
 // sub_410570  → GetClearedMemory: malloc + memset + fatal OOM.
 // sub_4105b0  → GetMemory: malloc with fatal OOM.
+// sub_4141f0  → ThreadLock: EnterCriticalSection, assert threading enabled, guard against recursion.
+// sub_414260  → ThreadUnlock: verify held critical section before leaving and clear recursion sentinel.
+// sub_414280  → ThreadSetupLock: log multi-threading banner, InitializeCriticalSection, flip threaded flag.
+// sub_4142f0  → ThreadShutdownLock: DeleteCriticalSection and drop threaded flag.
+// sub_414340  → ThreadSetupSemaphore: CreateSemaphore("bspc") for worker wake-ups.
+// sub_414370  → ThreadSemaphoreShutdown: Close handle when tearing down workers.
+// sub_4143a0  → ThreadSemaphoreWait: WaitForSingleObject on worker semaphore.
+// sub_4143e0  → ThreadSemaphoreIncrease: ReleaseSemaphore by requested count.
+// sub_414410  → RunThreadsOn: initialise dispatch counters, CreateThread loop, wait for workers, tear down critical section.
