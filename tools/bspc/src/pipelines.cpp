@@ -8,6 +8,7 @@
 #include <system_error>
 #include <vector>
 
+#include "aas_compiler.hpp"
 #include "bsp_builder.hpp"
 #include "bsp_formats.hpp"
 #include "bsp_to_map.hpp"
@@ -130,12 +131,6 @@ void TouchEmptyFile(const std::filesystem::path &path)
     {
         log::Warning("failed to write %s", path.generic_string().c_str());
     }
-}
-
-void EmitAasPlaceholder(const InputFile &input, const std::filesystem::path &destination)
-{
-    const std::string text = "placeholder AAS generated from " + input.original + "\n";
-    WriteTextFile(destination, text);
 }
 
 // sub_4081e0 (map2bsp/bsp2bsp) in the legacy binary invoked the following high level
@@ -261,12 +256,53 @@ void RunBspCompilation(const Options &options, const InputFile &input, const std
 
 // sub_408370 (map2aas/bsp2aas) performed the BSP load followed by temporary AAS
 // arena initialisation, reachability generation, file write, and shutdown. The
-// reconstruction currently stubs those steps but preserves the sequencing hooks.
-void RunAasCompilation(const InputFile &input, const std::filesystem::path &destination)
+// reconstructed tool now mirrors that structure, delegating the heavy lifting to
+// the AAS compilation helpers that populate the lump buffers before serialising
+// the final file.
+bool RunAasCompilation(const InputFile &input, const std::filesystem::path &destination)
 {
+    builder::ParsedWorld world;
+    std::string error;
+    if (!builder::LoadWorldState(input, world, error))
+    {
+        log::Warning("failed to load world %s (%s)", input.original.c_str(), error.c_str());
+        TouchEmptyFile(destination);
+        return false;
+    }
+
     memory::InitTmpAasArena();
-    EmitAasPlaceholder(input, destination);
-    memory::ShutdownTmpAasArena();
+    struct ArenaScope
+    {
+        ~ArenaScope()
+        {
+            memory::ShutdownTmpAasArena();
+        }
+    } arena_scope;
+
+    aas::CompilationResult result;
+    if (!aas::BuildPlaceholderAas(world, result, error))
+    {
+        log::Warning("failed to compile AAS for %s (%s)", input.original.c_str(), error.c_str());
+        TouchEmptyFile(destination);
+        return false;
+    }
+
+    std::vector<std::byte> output;
+    const auto lumps = aas::MakeLumpViews(result);
+    if (!formats::SerializeAas(result.header, lumps, output, error))
+    {
+        log::Warning("failed to serialize AAS: %s", error.c_str());
+        TouchEmptyFile(destination);
+        return false;
+    }
+
+    if (!WriteBinaryFile(destination, output))
+    {
+        return false;
+    }
+
+    log::Info("AAS build wrote %s\n", destination.generic_string().c_str());
+    return true;
 }
 
 } // namespace
@@ -310,7 +346,10 @@ void RunMapToAas(const Options &options, const InputFile &input, const std::stri
 
     ScopedTimer timer;
     RunBspCompilation(options, input, bsp_destination);
-    RunAasCompilation(input, aas_destination);
+    if (!RunAasCompilation(input, aas_destination))
+    {
+        log::Warning("map2aas failed for %s\n", input.original.c_str());
+    }
     timer.Finish();
 }
 
@@ -318,7 +357,10 @@ void RunBspToAas(const Options &options, const InputFile &input, const std::stri
 {
     const std::filesystem::path aas_destination(destination_path);
     ScopedTimer timer;
-    RunAasCompilation(input, aas_destination);
+    if (!RunAasCompilation(input, aas_destination))
+    {
+        log::Warning("bsp2aas failed for %s\n", input.original.c_str());
+    }
     timer.Finish();
 }
 
