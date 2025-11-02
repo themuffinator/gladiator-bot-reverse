@@ -1,0 +1,12 @@
+// Brush with liquid texture
+{
+"classname" "worldspawn"
+{
+( -64 -64 0 ) ( 64 -64 0 ) ( -64 64 0 ) textures/common/water 0 0 0 1 1
+( -64 -64 64 ) ( -64 64 64 ) ( 64 -64 64 ) textures/common/water 0 0 0 1 1
+( -64 -64 0 ) ( -64 -64 64 ) ( -64 64 0 ) textures/common/water 0 0 0 1 1
+( 64 -64 0 ) ( 64 64 0 ) ( 64 -64 64 ) textures/common/water 0 0 0 1 1
+( -64 64 0 ) ( -64 64 64 ) ( 64 64 0 ) textures/common/water 0 0 0 1 1
+( -64 -64 0 ) ( -64 -64 64 ) ( 64 -64 0 ) textures/common/water 0 0 0 1 1
+}
+}
