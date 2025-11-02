@@ -36,7 +36,15 @@ std::size_t CountLeakPoints(std::string_view leak_text) noexcept
         return 0;
     }
 
-    return report;
+    std::size_t points = 0;
+    for (char ch : leak_text)
+    {
+        if (ch == '(')
+        {
+            ++points;
+        }
+    }
+    return points;
 }
 
 struct Quake1PlaneDisk
@@ -538,6 +546,8 @@ void WriteQuake2BspLumps(const ParsedWorld &world,
     ValidateCount(models.size(), tree.headnode ? std::size_t{1} : std::size_t{0}, "models");
 }
 
+} // namespace
+
 void BspBuildArtifacts::Reset() noexcept
 {
     for (auto &lump : quake1_lumps)
@@ -554,8 +564,6 @@ void BspBuildArtifacts::Reset() noexcept
     portal_count = 0;
     leak_point_count = 0;
 }
-
-} // namespace
 
 bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
 {
