@@ -183,10 +183,9 @@ struct BspBuildArtifacts
     std::array<formats::OwnedLump, formats::kQuake1LumpCount> lumps{};
     std::string portal_text;
     std::string leak_text;
-    std::size_t portal_slice_count = 0;
-    std::size_t flood_fill_regions = 0;
-    std::unique_ptr<legacy::Tree> tree;
-    std::vector<std::unique_ptr<legacy::MapBrush>> map_brushes;
+    std::size_t portal_cluster_count = 0;
+    std::size_t portal_count = 0;
+    std::size_t leak_point_count = 0;
 
     void Reset() noexcept;
     ~BspBuildArtifacts() noexcept;
