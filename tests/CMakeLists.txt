@@ -36,6 +36,7 @@ add_subdirectory(ea)
 add_subdirectory(aas)
 add_subdirectory(common)
 add_subdirectory(tools)
+add_subdirectory(bspc)
 
 if(Python3_Interpreter_FOUND)
     add_test(
