@@ -1,11 +1,15 @@
 #include "pipelines.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
+#include "bsp_builder.hpp"
+#include "bsp_formats.hpp"
 #include "logging.hpp"
 #include "map_parser.hpp"
 #include "memory.h"
@@ -80,13 +84,13 @@ void RemoveLegacyCompanions(const std::filesystem::path &bsp_destination)
     RemoveFileIfExists(ReplaceExtension(bsp_destination, ".lin"));
 }
 
-void WriteTextFile(const std::filesystem::path &path, std::string_view contents)
+bool WriteTextFile(const std::filesystem::path &path, std::string_view contents)
 {
     std::ofstream stream(path, std::ios::binary);
     if (!stream)
     {
         log::Warning("failed to write %s", path.generic_string().c_str());
-        return;
+        return false;
     }
 
     stream.write(contents.data(), static_cast<std::streamsize>(contents.size()));
@@ -94,6 +98,15 @@ void WriteTextFile(const std::filesystem::path &path, std::string_view contents)
     {
         stream.put('\n');
     }
+
+    if (!stream.good())
+    {
+        log::Warning("failed to write %s", path.generic_string().c_str());
+        return false;
+    }
+
+    log::Info("wrote %s\n", path.generic_string().c_str());
+    return true;
 }
 
 void TouchEmptyFile(const std::filesystem::path &path)
@@ -103,18 +116,6 @@ void TouchEmptyFile(const std::filesystem::path &path)
     {
         log::Warning("failed to write %s", path.generic_string().c_str());
     }
-}
-
-void EmitCompanionPlaceholders(const std::filesystem::path &bsp_destination)
-{
-    TouchEmptyFile(ReplaceExtension(bsp_destination, ".prt"));
-    TouchEmptyFile(ReplaceExtension(bsp_destination, ".lin"));
-}
-
-void EmitBspPlaceholder(const InputFile &input, const std::filesystem::path &destination)
-{
-    const std::string text = "placeholder BSP generated from " + input.original + "\n";
-    WriteTextFile(destination, text);
 }
 
 void EmitAasPlaceholder(const InputFile &input, const std::filesystem::path &destination)
@@ -130,6 +131,45 @@ void EmitAasPlaceholder(const InputFile &input, const std::filesystem::path &des
 //  3. emit the .prt/.lin diagnostics and report the elapsed time
 // We mirror that structure here with placeholder operations to keep the
 // reconstructed tool modular.
+bool WriteBinaryFile(const std::filesystem::path &path, const std::vector<std::byte> &data)
+{
+    std::ofstream stream(path, std::ios::binary);
+    if (!stream)
+    {
+        log::Warning("failed to write %s", path.generic_string().c_str());
+        return false;
+    }
+
+    if (!data.empty())
+    {
+        stream.write(reinterpret_cast<const char *>(data.data()),
+                     static_cast<std::streamsize>(data.size()));
+    }
+
+    if (!stream.good())
+    {
+        log::Warning("failed to write %s", path.generic_string().c_str());
+        return false;
+    }
+
+    log::Info("wrote %s\n", path.generic_string().c_str());
+    return true;
+}
+
+bool WriteBspFile(const std::filesystem::path &destination, const builder::BspBuildArtifacts &artifacts)
+{
+    const auto views = builder::MakeLumpViews(artifacts);
+    std::vector<std::byte> output;
+    std::string error;
+    if (!formats::SerializeQuake1Bsp(views, output, error))
+    {
+        log::Warning("failed to serialize BSP: %s", error.c_str());
+        return false;
+    }
+
+    return WriteBinaryFile(destination, output);
+}
+
 void RunBspCompilation(const Options &options, const InputFile &input, const std::filesystem::path &destination)
 {
     if (EqualsIgnoreCase(input.path.extension().generic_string(), ".map"))
@@ -145,8 +185,44 @@ void RunBspCompilation(const Options &options, const InputFile &input, const std
     }
 
     RemoveLegacyCompanions(destination);
-    EmitBspPlaceholder(input, destination);
-    EmitCompanionPlaceholders(destination);
+
+    builder::ParsedWorld world;
+    std::string error;
+    if (!builder::LoadWorldState(input, world, error))
+    {
+        log::Warning("failed to load world %s (%s)", input.original.c_str(), error.c_str());
+        TouchEmptyFile(destination);
+        TouchEmptyFile(ReplaceExtension(destination, ".prt"));
+        TouchEmptyFile(ReplaceExtension(destination, ".lin"));
+        return;
+    }
+
+    builder::BspBuildArtifacts artifacts;
+    if (!builder::BuildBspTree(world, artifacts))
+    {
+        log::Warning("failed to build BSP tree for %s", input.original.c_str());
+        TouchEmptyFile(destination);
+        TouchEmptyFile(ReplaceExtension(destination, ".prt"));
+        TouchEmptyFile(ReplaceExtension(destination, ".lin"));
+        return;
+    }
+
+    if (WriteBspFile(destination, artifacts))
+    {
+        log::Info("BSP build wrote %s (%zu portal slices, %zu regions)\n",
+                  destination.generic_string().c_str(),
+                  artifacts.portal_slice_count,
+                  artifacts.flood_fill_regions);
+    }
+
+    WriteTextFile(ReplaceExtension(destination, ".prt"), artifacts.portal_text);
+    WriteTextFile(ReplaceExtension(destination, ".lin"), artifacts.leak_text);
+
+    if (options.freetree)
+    {
+        builder::FreeTree(artifacts);
+        log::Info("freed BSP tree\n");
+    }
 }
 
 // sub_408370 (map2aas/bsp2aas) performed the BSP load followed by temporary AAS
@@ -189,7 +265,7 @@ void RunMapToAas(const Options &options, const InputFile &input, const std::stri
     timer.Finish();
 }
 
-void RunBspToAas(const Options & /*options*/, const InputFile &input, const std::string &destination_path)
+void RunBspToAas(const Options &options, const InputFile &input, const std::string &destination_path)
 {
     const std::filesystem::path aas_destination(destination_path);
     ScopedTimer timer;
