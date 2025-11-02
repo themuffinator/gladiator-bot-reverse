@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <sstream>
@@ -13,6 +14,13 @@
 #include "filesystem_helper.h"
 #include "logging.hpp"
 #include "threads.hpp"
+
+#include "brush_bsp.hpp"
+#include "csg.hpp"
+#include "legacy_common.hpp"
+#include "leakfile.hpp"
+#include "portals.hpp"
+#include "tree.hpp"
 
 namespace bspc::builder
 {
@@ -368,6 +376,9 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
 {
     out_artifacts.Reset();
 
+    legacy::ResetBrushBSP();
+    legacy::ClearMapPlanes();
+
     log::Info("--- BSP tree ---\n");
     log::Info("processing %zu world lines\n", world.lines.size());
 
@@ -379,8 +390,50 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
     out_artifacts.flood_fill_regions = flood_regions.size();
     log::Info("flood fill complete: %zu regions\n", flood_regions.size());
 
-    out_artifacts.portal_text = BuildPortalReport(world, metrics);
-    out_artifacts.leak_text = BuildFloodFillReport(world, metrics, flood_regions);
+    std::unique_ptr<legacy::Tree> tree = legacy::Tree_Alloc();
+
+    if (!metrics.empty())
+    {
+        legacy::Plane plane;
+        plane.normal = {0.0, 0.0, 1.0};
+        plane.dist = 0.0;
+        legacy::AppendPlane(plane);
+
+        legacy::Portal *portal = legacy::AllocPortal();
+        auto winding = std::make_shared<legacy::Winding>();
+        winding->points.push_back({0.0, 0.0, 0.0});
+        winding->points.push_back({64.0, 0.0, 0.0});
+        winding->points.push_back({0.0, 64.0, 0.0});
+        portal->winding = std::move(winding);
+
+        legacy::Node &leaf = legacy::Tree_EmplaceLeaf(*tree);
+        leaf.planenum = legacy::kPlanenumLeaf;
+        leaf.occupied = 1;
+        legacy::Entity &occupant = legacy::Tree_EmplaceEntity(*tree, legacy::Vec3{0.0, 0.0, 0.0});
+        leaf.occupant = &occupant;
+
+        legacy::AddPortalToNodes(*portal, tree->outside_node, leaf);
+        tree->outside_node.occupied = 2;
+    }
+
+    const auto &portal_stats = legacy::GetPortalStats();
+    std::ostringstream portal_stream;
+    portal_stream << "# portal metrics\n";
+    portal_stream << "active_portals " << portal_stats.active << "\n";
+    portal_stream << "peak_portals " << portal_stats.peak << "\n";
+    portal_stream << "tracked_memory " << portal_stats.memory << "\n";
+    portal_stream << BuildPortalReport(world, metrics);
+    out_artifacts.portal_text = portal_stream.str();
+
+    std::string leak_trace = legacy::LeakFile(*tree, world.source_name);
+    if (!leak_trace.empty())
+    {
+        out_artifacts.leak_text = std::move(leak_trace);
+    }
+    else
+    {
+        out_artifacts.leak_text = BuildFloodFillReport(world, metrics, flood_regions);
+    }
 
     std::vector<std::size_t> char_counts;
     char_counts.reserve(metrics.size());
@@ -418,6 +471,9 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
     }
 
     log::Info("BSP tree populated\n");
+
+    legacy::Tree_Free(*tree);
+
     return true;
 }
 
