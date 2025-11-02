@@ -7,6 +7,7 @@
 #include <fstream>
 #include <functional>
 #include <set>
+#include <system_error>
 
 namespace bspc
 {
@@ -57,6 +58,29 @@ std::string NormalizeSeparators(std::string path)
 {
     std::replace(path.begin(), path.end(), '\\', '/');
     return path;
+}
+
+std::string NormalizeNewlines(std::string text)
+{
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        const char ch = text[i];
+        if (ch == '\r')
+        {
+            if (i + 1 < text.size() && text[i + 1] == '\n')
+            {
+                ++i;
+            }
+            normalized.push_back('\n');
+        }
+        else
+        {
+            normalized.push_back(ch);
+        }
+    }
+    return normalized;
 }
 
 bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs)
@@ -147,6 +171,104 @@ bool WildcardMatch(std::string_view pattern, std::string_view text)
     return WildcardMatchImpl(pattern, text, 0, 0);
 }
 
+namespace
+{
+
+std::byte ToByte(char ch)
+{
+    return static_cast<std::byte>(static_cast<unsigned char>(ch));
+}
+
+char FromByte(std::byte value)
+{
+    return static_cast<char>(std::to_integer<unsigned char>(value));
+}
+
+} // namespace
+
+bool ReadFile(const InputFile &input, std::vector<std::byte> &out, bool normalize_text_newlines)
+{
+    out.clear();
+
+    if (input.from_archive)
+    {
+        std::ifstream stream(input.archive_path, std::ios::binary);
+        if (!stream)
+        {
+            return false;
+        }
+
+        if (input.archive_length == 0)
+        {
+            return true;
+        }
+
+        stream.seekg(static_cast<std::streamoff>(input.archive_offset), std::ios::beg);
+        if (!stream)
+        {
+            return false;
+        }
+
+        out.resize(input.archive_length);
+        stream.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(input.archive_length));
+        if (stream.gcount() != static_cast<std::streamsize>(input.archive_length))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        std::ifstream stream(input.path, std::ios::binary);
+        if (!stream)
+        {
+            return false;
+        }
+
+        stream.seekg(0, std::ios::end);
+        const std::streampos end = stream.tellg();
+        if (end < 0)
+        {
+            return false;
+        }
+
+        const std::size_t size = static_cast<std::size_t>(end);
+        out.resize(size);
+        stream.seekg(0, std::ios::beg);
+        if (!stream)
+        {
+            return false;
+        }
+
+        if (size > 0)
+        {
+            stream.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(size));
+            if (stream.gcount() != static_cast<std::streamsize>(size))
+            {
+                return false;
+            }
+        }
+    }
+
+    if (normalize_text_newlines && !out.empty())
+    {
+        std::string text(out.size(), '\0');
+        for (std::size_t i = 0; i < out.size(); ++i)
+        {
+            text[i] = FromByte(out[i]);
+        }
+
+        text = NormalizeNewlines(std::move(text));
+        std::vector<std::byte> normalized(text.size());
+        for (std::size_t i = 0; i < text.size(); ++i)
+        {
+            normalized[i] = ToByte(text[i]);
+        }
+        out.swap(normalized);
+    }
+
+    return true;
+}
+
 bool FileSystemResolver::ExtensionMatches(const std::filesystem::path &path,
                                           std::string_view required_extension)
 {
@@ -162,16 +284,97 @@ bool FileSystemResolver::ExtensionMatches(const std::filesystem::path &path,
     return EqualsIgnoreCase(path.extension().string(), expected);
 }
 
-std::vector<std::filesystem::path> FileSystemResolver::BuildCompanions(const std::filesystem::path &path)
+std::optional<InputFile> FileSystemResolver::ResolveCompanion(const InputFile &input, std::string_view extension) const
 {
-    std::vector<std::filesystem::path> companions;
-    std::filesystem::path prt = path;
-    prt.replace_extension(".prt");
-    companions.push_back(prt);
+    if (extension.empty())
+    {
+        return std::nullopt;
+    }
 
-    std::filesystem::path lin = path;
-    lin.replace_extension(".lin");
-    companions.push_back(lin);
+    std::string ext_string;
+    ext_string.reserve(extension.size() + 1);
+    ext_string.push_back('.');
+    ext_string.append(extension.begin(), extension.end());
+
+    if (!input.from_archive)
+    {
+        std::filesystem::path candidate = input.path;
+        candidate.replace_extension(ext_string);
+
+        std::error_code exists_ec;
+        if (!std::filesystem::exists(candidate, exists_ec) || exists_ec)
+        {
+            return std::nullopt;
+        }
+
+        InputFile result;
+        result.original = NormalizeSeparators(candidate.generic_string());
+        result.path = std::move(candidate);
+        return result;
+    }
+
+    const auto directory = ReadArchiveDirectory(input.archive_path);
+    if (!directory)
+    {
+        return std::nullopt;
+    }
+
+    std::filesystem::path entry_path = std::filesystem::path(input.archive_entry);
+    entry_path.replace_extension(ext_string);
+    std::string normalized = NormalizeSeparators(entry_path.generic_string());
+    while (!normalized.empty() && (normalized.front() == '/' || normalized.front() == '\\'))
+    {
+        normalized.erase(normalized.begin());
+    }
+
+    for (const auto &candidate : directory->entries)
+    {
+        if (!EqualsIgnoreCase(candidate.normalized_name, normalized))
+        {
+            continue;
+        }
+
+        InputFile result;
+        std::filesystem::path pseudo = input.archive_path;
+        pseudo /= normalized;
+        result.original = pseudo.generic_string();
+        result.path = std::move(pseudo);
+        result.from_archive = true;
+        result.archive_path = input.archive_path;
+        result.archive_entry = normalized;
+        result.archive_offset = candidate.offset;
+        result.archive_length = candidate.length;
+        return result;
+    }
+
+    return std::nullopt;
+}
+
+std::vector<InputFile> FileSystemResolver::ResolveCompanions(const InputFile &input) const
+{
+    std::vector<InputFile> companions;
+    const std::string_view extensions[] = {"prt", "lin"};
+    for (const auto &ext : extensions)
+    {
+        if (auto companion = ResolveCompanion(input, ext))
+        {
+            bool duplicate = false;
+            for (const auto &existing : companions)
+            {
+                if (EqualsIgnoreCase(existing.original, companion->original))
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (!duplicate)
+            {
+                companions.push_back(std::move(*companion));
+            }
+        }
+    }
+
     return companions;
 }
 
@@ -418,9 +621,11 @@ std::vector<InputFile> FileSystemResolver::ExpandArchivePattern(const std::strin
             file.from_archive = true;
             file.archive_path = archive_path;
             file.archive_entry = normalized_entry;
+            file.archive_offset = entry.offset;
+            file.archive_length = entry.length;
             if (queue_companions)
             {
-                file.companions = BuildCompanions(file.path);
+                file.companions = ResolveCompanions(file);
             }
 
             results.push_back(std::move(file));
@@ -464,7 +669,7 @@ std::vector<InputFile> FileSystemResolver::ResolvePattern(const std::string &pat
             file.path = std::move(path);
             if (queue_companions)
             {
-                file.companions = BuildCompanions(file.path);
+                file.companions = ResolveCompanions(file);
             }
             results.push_back(std::move(file));
         }
@@ -491,7 +696,7 @@ std::vector<InputFile> FileSystemResolver::ResolvePattern(const std::string &pat
         file.path = candidate;
         if (queue_companions)
         {
-            file.companions = BuildCompanions(file.path);
+            file.companions = ResolveCompanions(file);
         }
         results.push_back(std::move(file));
     }
