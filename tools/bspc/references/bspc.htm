@@ -1,0 +1,288 @@
+<!doctype html public "-//w3c//dtd html 4.0 transitional//en">
+<html>
+<head>
+   <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+   <meta name="Template" content="C:\PROGRAM FILES\MICROSOFTOFFICE\OFFICE\html.dot">
+   <meta name="Author" content="Mr Elusive">
+   <meta name="GENERATOR" content="Mozilla/4.51 [en] (Win95; I) [Netscape]">
+   <title>Gladiator Bot</title>
+</head>
+<body text="#FFFFFF" bgcolor="#0C004F" link="#FFFF99" vlink="#FFFF99" alink="#FFFF99">
+
+<center><b><font face="Arial,Helvetica"><font color="#3366FF"><font size=+4>BSPC
+</font>version
+1.2</font></font></b>
+<p><font face="Arial,Helvetica"><font color="#3366FF">by <a href="mailto:MrElusive@demigod.demon.nl">Mr
+Elusive</a></font></font>
+<p><font face="Arial,Helvetica"><font color="#3366FF">1999-05-20</font></font></center>
+
+<p><br>
+<br>
+<p><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>Contents</font></font></font>
+<br>&nbsp;
+<br>&nbsp;
+<table BORDER=0 CELLSPACING=0 CELLPADDING=0 >
+<tr>
+<td WIDTH="50%"><font face="Arial,Helvetica"><a href="#description">Description</a></font></td>
+</tr>
+
+<tr>
+<td><font face="Arial,Helvetica"><a href="#system requirements">System
+requirements</a></font></td>
+</tr>
+
+<tr>
+<td><font face="Arial,Helvetica"><a href="#usage">Usage</a></font></td>
+</tr>
+
+<tr>
+<td><font face="Arial,Helvetica"><a href="#troubleshooting">Troubleshooting</a></font></td>
+</tr>
+
+<tr>
+<td><font face="Arial,Helvetica"><font color="#FFFF99"><a href="#legal">Legal
+stuff</a></font></font></td>
+</tr>
+
+<tr>
+<td><font face="Arial,Helvetica"><font color="#FFFF99"><a href="#availability">Availability</a></font></font></td>
+</tr>
+
+<tr>
+<td><font face="Arial,Helvetica"><a href="#credits">Credits</a></font></td>
+</tr>
+
+<tr>
+<td><font face="Arial,Helvetica"><font color="#FFFFFF"><a href="#version">Version
+changes</a></font></font></td>
+</tr>
+</table>
+
+<p><a NAME="description"></a><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>Description</font></font></font>
+<p><font face="Arial,Helvetica">BSPC is a tool designed to do the following:</font>
+<ul>
+<li>
+<font face="Arial,Helvetica">Convert .BSP or .MAP files to .AAS files that
+the Gladiator bot needs to play a map.</font></li>
+
+<li>
+<font face="Arial,Helvetica">Convert .BSP files to .MAP files. Handy if
+you lost your original .MAP file.</font></li>
+</ul>
+<font face="Arial,Helvetica">Note that it can read to be converted .BSP
+files directly out of .PAK or .SIN files.</font>
+<p><font face="Arial,Helvetica">BSPC can be used with all BSPs (game maps,
+mission pack maps, custom maps etc.) of the following games:</font>
+<ul>
+<li>
+<font face="Arial,Helvetica">Quake 1</font></li>
+
+<li>
+<font face="Arial,Helvetica">Quake 2</font></li>
+
+<li>
+<font face="Arial,Helvetica">Heretic 2</font></li>
+
+<li>
+<font face="Arial,Helvetica">Sin</font></li>
+
+<li>
+<font face="Arial,Helvetica">Half-Life</font></li>
+</ul>
+<a NAME="system requirements"></a><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>System
+requirements</font></font></font>
+<p><font face="Arial,Helvetica">A PC running Quake2.</font>
+<br>&nbsp;
+<p><a NAME="usage"></a><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>Usage</font></font></font>
+<p>bspc [-&lt;switch> [-&lt;switch> ...]]
+<p>Example 1: bspc -bsp2aas znt2dm?.bsp -output e:\quake2\gladiator
+<br>Example 2: bspc -bsp2aas pak1.pak\maps/q2dm*.bsp -output e:\quake2\gladiator
+<p>Switches:
+<br>&nbsp;
+<table CELLSPACING=0 CELLPADDING=0 >
+<tr>
+<td>map2bsp &lt;[pakfilefilter/]filefilter></td>
+
+<td WIDTH="20"></td>
+
+<td>= convert MAP to BSP</td>
+</tr>
+
+<tr>
+<td>map2aas &lt;[pakfilefilter/]filefilter></td>
+
+<td></td>
+
+<td>= convert MAP to AAS</td>
+</tr>
+
+<tr>
+<td>bsp2map &lt;[pakfilefilter/]filefilter></td>
+
+<td></td>
+
+<td>= convert BSP to MAP</td>
+</tr>
+
+<tr>
+<td>bsp2bsp &lt;[pakfilefilter/]filefilter></td>
+
+<td></td>
+
+<td>= convert BSP to BSP</td>
+</tr>
+
+<tr>
+<td>bsp2aas &lt;[pakfilefilter/]filefilter></td>
+
+<td></td>
+
+<td>= convert BSP to AAS</td>
+</tr>
+
+<tr>
+<td>output &lt;output path></td>
+
+<td></td>
+
+<td>= set output path</td>
+</tr>
+
+<tr>
+<td>noverbose</td>
+
+<td></td>
+
+<td>= disable verbose output</td>
+</tr>
+
+<tr>
+<td>threads</td>
+
+<td></td>
+
+<td>= number of threads to use</td>
+</tr>
+
+<tr>
+<td>breath</td>
+
+<td></td>
+
+<td>= breath first bsp building</td>
+</tr>
+
+<tr>
+<td>nobrushmerge</td>
+
+<td></td>
+
+<td>= don't merge brushes</td>
+</tr>
+
+<tr>
+<td>noliquids</td>
+
+<td></td>
+
+<td>= don't write liquids to map</td>
+</tr>
+
+<tr>
+<td>freetree</td>
+
+<td></td>
+
+<td>= free the bsp tree</td>
+</tr>
+
+<tr>
+<td>nocsg</td>
+
+<td></td>
+
+<td>= disables brush chopping</td>
+</tr>
+</table>
+
+<p>.PAK or .SIN files are accessed as if they are normal folders. For instance
+use "e:\quake2\gladiator\pak1.pak\maps/q2dm1.bsp" to access the map q2dm1.bsp
+from the pak1.pak file.
+<p>Multiple files may be listed after the map2bsp, map2aas, bsp2map, bsp2bsp
+or bsp2aas switches.
+<br>&nbsp;
+<p><a NAME="troubleshooting"></a><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>Troubleshooting</font></font></font>
+<p><font face="Arial,Helvetica">Please include the '<font color="#FFFFCC">bspc.log</font>'
+file in bug reports.</font>
+<br>&nbsp;
+<p><a NAME="legal"></a><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>Legal
+stuff</font></font></font>
+<p><font face="Arial,Helvetica"><font color="#FFFFFF">By using this product
+you agree to exempt, without reservation, the authors and owners of this
+product or components thereof from any responsibility for liability, damage
+caused, or loss, directly or indirectly, including but not limited to,
+any interruptions of service, loss of business, or any other consequential
+damages resulting from the use of or operation of this product or components
+thereof. No warranties are made, expressed or implied, regarding the usage,
+functionality, or implied operability of this product. All elements are
+available solely on an "as-is" basis. Usage is subject to the user's own
+risk.</font></font>
+<p><font face="Arial,Helvetica">This product may be distributed as long
+as all the files in this archive remain intact and unmodified and are distributed
+together and there is no charge for the distribution. Any commercial use
+of BSPC without prior written consent by the author is prohibited.</font>
+<p><font face="Arial,Helvetica">id Software, Valve and Ritual entertainment
+do not distribute, nor support this product.</font>
+<p><font face="Arial,Helvetica">BSPC is designed to decompile material
+in which you own the copyright or have obtained permission to decompile
+from the copyright owner. Unless you own the copyright or have permission
+to decompile from the copyright owner, you may be violating copyright law
+and be subject to payment of damages and other remedies. If you are uncertain
+about your rights, contact your legal advisor.</font>
+<br><font face="Arial,Helvetica">Most game companies and/or map authors
+probably won't mind using a program like this to decompile their maps and
+look at how they're constructed, but distributing their maps or using the
+entire or parts of their maps in other maps is certainly not allowed. Legally,
+you have no right to decompile maps in which you don't own the copyright.</font>
+<br><font face="Arial,Helvetica">To quote the Quake2 license agreement:</font>
+<br><font face="Arial,Helvetica">"You, either directly or in- directly,
+shall not do the following: reverse engineer, disassemble, decompile, modify
+or alter the Software. The term "Software" includes all elements of the
+Software such as data files, images appearing in the Software and screen
+displays."</font>
+<br>&nbsp;
+<p><a NAME="availability"></a><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>Availability</font></font></font>
+<p><font face="Arial,Helvetica">You can find the latest version at <a href="http://www.botepidemic.com/gladiator">http://www.botepidemic.com/gladiator</a>.</font>
+<br>&nbsp;
+<p><a NAME="credits"></a><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>Credits</font></font></font>
+<p><font face="Arial,Helvetica">id Software</font>
+<br><font face="Arial,Helvetica">B.D.Squatt</font>
+<br><font face="Arial,Helvetica">Mr Freeze</font>
+<p><font face="Arial,Helvetica">Thanks to the beta testers:</font>
+<p><font face="Arial,Helvetica">Adrian [Pinky] Finol</font>
+<br><font face="Arial,Helvetica">Allan [Strider] Kivlin</font>
+<br><font face="Arial,Helvetica">Dominic [Cube] Rutter</font>
+<br><font face="Arial,Helvetica">Matt [Genocyde] Freitas</font>
+<br><font face="Arial,Helvetica">Timm Stokke</font>
+<br>&nbsp;
+<p><a NAME="version"></a><font face="Arial,Helvetica"><font color="#3366FF"><font size=+1>Version
+changes</font></font></font>
+<br>&nbsp;
+<p><font face="Arial,Helvetica">BSPC version 1.2</font>
+<ul>
+<li>
+<font face="Arial,Helvetica">changed command-line to deal with .pak files
+more easily</font></li>
+
+<li>
+<font face="Arial,Helvetica">fixed multi-threading</font></li>
+
+<li>
+<font face="Arial,Helvetica">fixed beta string and updated .AAS file version</font></li>
+
+<li>
+<font face="Arial,Helvetica">fixed creating path to store converted files</font></li>
+</ul>
+
+</body>
+</html>
