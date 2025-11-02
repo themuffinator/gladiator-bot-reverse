@@ -450,6 +450,7 @@ bool PopulateWorldFromBspBinary(std::string_view source_name,
     world.format = ParsedWorld::Format::kBsp;
     world.source_name = std::string(source_name);
     world.map_info.reset();
+    world.bsp_type = ParsedWorld::BspType::kQuake1;
 
     const auto &entities_lump = view.lumps[static_cast<std::size_t>(formats::Quake1Lump::kEntities)];
     if (entities_lump.size > 0 && entities_lump.data != nullptr)

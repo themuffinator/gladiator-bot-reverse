@@ -19,16 +19,25 @@ struct Options;
 namespace bspc::builder
 {
 
-struct ParsedWorld
-{
-    static constexpr std::size_t kInvalidIndex = static_cast<std::size_t>(-1);
-
-    enum class Format
+    struct ParsedWorld
     {
-        kUnknown,
-        kMap,
-        kBsp,
-    };
+        static constexpr std::size_t kInvalidIndex = static_cast<std::size_t>(-1);
+
+        enum class Format
+        {
+            kUnknown,
+            kMap,
+            kBsp,
+        };
+
+        enum class BspType
+        {
+            kUnknown,
+            kQuake1,
+            kQuake2,
+            kHalfLife,
+            kSin,
+        };
 
     struct Vec3
     {
@@ -162,20 +171,22 @@ struct ParsedWorld
     std::vector<Texture> textures;
     std::vector<Plane> planes;
     std::vector<Surface> surfaces;
-    std::vector<Brush> brushes;
-    std::vector<Entity> entities;
-    std::optional<MapMetadata> map_info;
-    std::optional<BspMetadata> bsp_info;
-};
+        std::vector<Brush> brushes;
+        std::vector<Entity> entities;
+        std::optional<MapMetadata> map_info;
+        std::optional<BspMetadata> bsp_info;
+        BspType bsp_type = BspType::kUnknown;
+    };
 
-struct BspBuildArtifacts
-{
-    std::array<formats::OwnedLump, formats::kQuake1LumpCount> lumps{};
-    std::string portal_text;
-    std::string leak_text;
-    std::size_t portal_cluster_count = 0;
-    std::size_t portal_count = 0;
-    std::size_t leak_point_count = 0;
+    struct BspBuildArtifacts
+    {
+        std::array<formats::OwnedLump, formats::kQuake1LumpCount> quake1_lumps{};
+        std::array<formats::OwnedLump, formats::kQuake2LumpCount> quake2_lumps{};
+        std::string portal_text;
+        std::string leak_text;
+        std::size_t portal_cluster_count = 0;
+        std::size_t portal_count = 0;
+        std::size_t leak_point_count = 0;
 
     void Reset() noexcept;
 };
@@ -184,7 +195,9 @@ bool LoadWorldState(const InputFile &input, ParsedWorld &out_world, std::string 
 
 bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts);
 
-std::array<formats::LumpView, formats::kQuake1LumpCount> MakeLumpViews(const BspBuildArtifacts &artifacts) noexcept;
+std::array<formats::LumpView, formats::kQuake1LumpCount> MakeQuake1LumpViews(const BspBuildArtifacts &artifacts) noexcept;
+
+std::array<formats::LumpView, formats::kQuake2LumpCount> MakeQuake2LumpViews(const BspBuildArtifacts &artifacts) noexcept;
 
 void FreeTree(BspBuildArtifacts &artifacts) noexcept;
 

@@ -175,6 +175,35 @@ bool DeserializeQuake1Bsp(ConstByteSpan file_data, Quake1BspView &out, std::stri
     return PopulateViews(file_data, out.header.lumps, out.lumps, "Quake 1", error);
 }
 
+bool DeserializeQuake2Bsp(ConstByteSpan file_data, Quake2BspView &out, std::string &error)
+{
+    if (file_data.size < sizeof(Quake2BspHeader))
+    {
+        error = "Quake 2 BSP is smaller than the header";
+        return false;
+    }
+
+    if (file_data.data == nullptr)
+    {
+        error = "Quake 2 BSP buffer is null";
+        return false;
+    }
+
+    std::memcpy(&out.header, file_data.data, sizeof(Quake2BspHeader));
+    if (out.header.ident != kQuake2BspIdent)
+    {
+        error = "Quake 2 BSP ident mismatch";
+        return false;
+    }
+    if (out.header.version != kQuake2BspVersion)
+    {
+        error = "Unsupported Quake 2 BSP version: " + std::to_string(out.header.version);
+        return false;
+    }
+
+    return PopulateViews(file_data, out.header.lumps, out.lumps, "Quake 2", error);
+}
+
 bool DeserializeAas(ConstByteSpan file_data, AasView &out, std::string &error)
 {
     if (file_data.size < sizeof(AasHeader))
@@ -234,6 +263,23 @@ bool SerializeQuake1Bsp(const std::array<LumpView, kQuake1LumpCount> &lumps,
     }
 
     std::memcpy(output.data(), &header, sizeof(Quake1BspHeader));
+    return true;
+}
+
+bool SerializeQuake2Bsp(const std::array<LumpView, kQuake2LumpCount> &lumps,
+                        std::vector<std::byte> &output,
+                        std::string &error)
+{
+    Quake2BspHeader header{};
+    header.ident = kQuake2BspIdent;
+    header.version = kQuake2BspVersion;
+
+    if (!SerializeDirectory(lumps, sizeof(Quake2BspHeader), output, header.lumps, "Quake 2", error))
+    {
+        return false;
+    }
+
+    std::memcpy(output.data(), &header, sizeof(Quake2BspHeader));
     return true;
 }
 

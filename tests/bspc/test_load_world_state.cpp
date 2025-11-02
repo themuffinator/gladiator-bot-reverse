@@ -260,12 +260,85 @@ void TestLoadBsp()
     assert(world.textures.front().name == "STONE");
 }
 
+void TestQuake2Serialization()
+{
+    std::array<std::vector<std::byte>, bspc::formats::kQuake2LumpCount> storage;
+    std::array<bspc::formats::LumpView, bspc::formats::kQuake2LumpCount> lumps{};
+
+    auto set_lump = [&](bspc::formats::Quake2Lump lump_id, std::vector<std::byte> data) {
+        const std::size_t index = static_cast<std::size_t>(lump_id);
+        storage[index] = std::move(data);
+        lumps[index].data = storage[index].data();
+        lumps[index].size = storage[index].size();
+    };
+
+    const std::string entities = "{\n\"classname\" \"worldspawn\"\n}\n";
+    std::vector<std::byte> entity_bytes(entities.size());
+    if (!entity_bytes.empty())
+    {
+        std::memcpy(entity_bytes.data(), entities.data(), entities.size());
+    }
+    set_lump(bspc::formats::Quake2Lump::kEntities, std::move(entity_bytes));
+
+    bspc::formats::Quake2Plane plane{};
+    plane.normal[2] = 1.0f;
+    std::vector<std::byte> plane_bytes(sizeof(plane));
+    std::memcpy(plane_bytes.data(), &plane, sizeof(plane));
+    set_lump(bspc::formats::Quake2Lump::kPlanes, std::move(plane_bytes));
+
+    bspc::formats::Quake2Node node{};
+    node.planenum = 0;
+    node.children[0] = -1;
+    node.children[1] = -1;
+    std::vector<std::byte> node_bytes(sizeof(node));
+    std::memcpy(node_bytes.data(), &node, sizeof(node));
+    set_lump(bspc::formats::Quake2Lump::kNodes, std::move(node_bytes));
+
+    bspc::formats::Quake2Leaf leaf{};
+    leaf.contents = 1;
+    leaf.cluster = -1;
+    leaf.area = -1;
+    std::vector<std::byte> leaf_bytes(sizeof(leaf));
+    std::memcpy(leaf_bytes.data(), &leaf, sizeof(leaf));
+    set_lump(bspc::formats::Quake2Lump::kLeaves, std::move(leaf_bytes));
+
+    bspc::formats::Quake2Model model{};
+    model.headnode = 0;
+    std::vector<std::byte> model_bytes(sizeof(model));
+    std::memcpy(model_bytes.data(), &model, sizeof(model));
+    set_lump(bspc::formats::Quake2Lump::kModels, std::move(model_bytes));
+
+    std::vector<std::byte> bsp_data;
+    std::string error;
+    const bool serialized = bspc::formats::SerializeQuake2Bsp(lumps, bsp_data, error);
+    assert(serialized);
+    assert(error.empty());
+
+    bspc::formats::ConstByteSpan span;
+    span.data = reinterpret_cast<const std::byte *>(bsp_data.data());
+    span.size = bsp_data.size();
+
+    bspc::formats::Quake2BspView view{};
+    const bool parsed = bspc::formats::DeserializeQuake2Bsp(span, view, error);
+    assert(parsed);
+    assert(error.empty());
+    assert(view.header.ident == bspc::formats::kQuake2BspIdent);
+    assert(view.header.version == bspc::formats::kQuake2BspVersion);
+
+    std::vector<std::byte> round_trip;
+    const bool reserialized = bspc::formats::SerializeQuake2Bsp(view.lumps, round_trip, error);
+    assert(reserialized);
+    assert(error.empty());
+    assert(round_trip == bsp_data);
+}
+
 } // namespace
 
 int main()
 {
     TestLoadMap();
     TestLoadBsp();
+    TestQuake2Serialization();
     return 0;
 }
 
