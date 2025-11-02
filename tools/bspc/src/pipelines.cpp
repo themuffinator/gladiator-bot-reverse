@@ -156,12 +156,32 @@ bool WriteBinaryFile(const std::filesystem::path &path, const std::vector<std::b
     return true;
 }
 
-bool WriteBspFile(const std::filesystem::path &destination, const builder::BspBuildArtifacts &artifacts)
+bool WriteBspFile(const std::filesystem::path &destination,
+                  const builder::ParsedWorld &world,
+                  const builder::BspBuildArtifacts &artifacts)
 {
-    const auto views = builder::MakeLumpViews(artifacts);
     std::vector<std::byte> output;
     std::string error;
-    if (!formats::SerializeQuake1Bsp(views, output, error))
+    bool serialized = false;
+
+    switch (world.bsp_type)
+    {
+    case builder::ParsedWorld::BspType::kQuake2:
+    {
+        const auto views = builder::MakeQuake2LumpViews(artifacts);
+        serialized = formats::SerializeQuake2Bsp(views, output, error);
+        break;
+    }
+    case builder::ParsedWorld::BspType::kQuake1:
+    default:
+    {
+        const auto views = builder::MakeQuake1LumpViews(artifacts);
+        serialized = formats::SerializeQuake1Bsp(views, output, error);
+        break;
+    }
+    }
+
+    if (!serialized)
     {
         log::Warning("failed to serialize BSP: %s", error.c_str());
         return false;
@@ -207,7 +227,7 @@ void RunBspCompilation(const Options &options, const InputFile &input, const std
         return;
     }
 
-    if (WriteBspFile(destination, artifacts))
+    if (WriteBspFile(destination, world, artifacts))
     {
         log::Info("BSP build wrote %s (%zu clusters, %zu portals)\n",
                   destination.generic_string().c_str(),

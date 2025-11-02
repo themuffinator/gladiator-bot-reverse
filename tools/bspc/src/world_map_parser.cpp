@@ -185,6 +185,7 @@ bool PopulateWorldFromMapText(std::string_view source_name,
         world.entities.push_back(std::move(converted_entity));
     }
 
+    world.bsp_type = ParsedWorld::BspType::kQuake2;
     return true;
 }
 
