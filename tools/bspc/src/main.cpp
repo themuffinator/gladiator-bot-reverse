@@ -12,6 +12,7 @@
 #include "logging.hpp"
 #include "options.hpp"
 #include "pipelines.hpp"
+#include "threads.hpp"
 
 namespace bspc
 {
@@ -228,6 +229,9 @@ int Main(int argc, char **argv)
 {
     Options options;
 
+    threads::Configure(options.threads);
+    options.threads = threads::WorkerCount();
+
     log::Initialize();
     log::Info("BSPC version 1.2, May 20 1999 13:46:31 by Mr Elusive\n");
 
@@ -250,6 +254,8 @@ int Main(int argc, char **argv)
             }
             const char *value = argv[++index];
             options.threads = std::atoi(value);
+            threads::Configure(options.threads);
+            options.threads = threads::WorkerCount();
             log::Info("threads = %d\n", options.threads);
         }
         else if (EqualsIgnoreCase(argument, "-noverbose"))
