@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -12,6 +11,8 @@
 #include "brush_processing.hpp"
 #include "filesystem_helper.h"
 #include "logging.hpp"
+#include "options.hpp"
+#include "pipelines.hpp"
 
 namespace bspc
 {
@@ -48,38 +49,6 @@ constexpr std::string_view kUsage =
     "   noliquids                           = don't write liquids to map\n"
     "   freetree                            = free the bsp tree\n"
     "   nocsg                               = disables brush chopping\n\n";
-
-enum class Pipeline
-{
-    kNone = 0,
-    kMapToBsp = 1,
-    kMapToAas = 2,
-    kBspToMap = 3,
-    kBspToBsp = 4,
-    kBspToAas = 5,
-};
-
-enum class FileType
-{
-    kUnknown,
-    kMap,
-    kBsp,
-};
-
-struct Options
-{
-    bool verbose = true;
-    bool breath_first = false;
-    bool nobrushmerge = false;
-    bool noliquids = false;
-    bool freetree = false;
-    bool nocsg = false;
-    int threads = 1;
-    std::string output_path;
-    Pipeline pipeline = Pipeline::kNone;
-    std::vector<InputFile> files;
-    bool parse_ok = true;
-};
 
 FileType DetectFileType(const std::filesystem::path &path)
 {
@@ -224,7 +193,8 @@ void PrintConversion(const char *format, const std::string &source, const std::s
     log::Info(format, source.c_str(), destination.c_str());
 }
 
-void ProcessMapInput(const Options &options, const char *format)
+template <typename Callback>
+void ProcessMapInput(const Options &options, const char *format, std::string_view extension, Callback &&callback)
 {
     PrepareBrushWorkspace(options);
 
@@ -236,12 +206,13 @@ void ProcessMapInput(const Options &options, const char *format)
 
     for (const auto &file : options.files)
     {
-        const std::string dest = ComputeDestination(options, file, ".bsp");
+        const std::string dest = ComputeDestination(options, file, extension);
         PrintConversion(format, file.original, dest);
         if (DetectFileType(file.path) != FileType::kMap)
         {
             log::Warning("%s is probably not a MAP file", file.original.c_str());
         }
+        std::forward<Callback>(callback)(options, file, dest);
     }
 }
 
@@ -266,7 +237,8 @@ void ProcessMapToAas(const Options &options)
     }
 }
 
-void ProcessBspInput(const Options &options, const char *format, std::string_view extension)
+template <typename Callback>
+void ProcessBspInput(const Options &options, const char *format, std::string_view extension, Callback &&callback)
 {
     PrepareBrushWorkspace(options);
 
@@ -284,6 +256,7 @@ void ProcessBspInput(const Options &options, const char *format, std::string_vie
         {
             log::Warning("%s is probably not a BSP file", file.original.c_str());
         }
+        std::forward<Callback>(callback)(options, file, dest);
     }
 }
 
@@ -442,19 +415,20 @@ int Main(int argc, char **argv)
     switch (options.pipeline)
     {
     case Pipeline::kMapToBsp:
-        ProcessMapInput(options, "map2bsp: %s to %s\n");
+        ProcessMapInput(options, "map2bsp: %s to %s\n", ".bsp", pipelines::RunMapToBsp);
         break;
     case Pipeline::kMapToAas:
-        ProcessMapToAas(options);
+        ProcessMapInput(options, "map2aas: %s to %s\n", ".aas", pipelines::RunMapToAas);
         break;
     case Pipeline::kBspToMap:
-        ProcessBspInput(options, "bsp2map: %s to %s\n", ".map");
+        ProcessBspInput(options, "bsp2map: %s to %s\n", ".map",
+                       [](const Options &, const InputFile &, const std::string &) {});
         break;
     case Pipeline::kBspToBsp:
-        ProcessBspInput(options, "bsp2bsp: %s to %s\n", ".bsp");
+        ProcessBspInput(options, "bsp2bsp: %s to %s\n", ".bsp", pipelines::RunBspToBsp);
         break;
     case Pipeline::kBspToAas:
-        ProcessBspInput(options, "bsp2aas: %s to %s\n", ".aas");
+        ProcessBspInput(options, "bsp2aas: %s to %s\n", ".aas", pipelines::RunBspToAas);
         break;
     default:
         break;
