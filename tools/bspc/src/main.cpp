@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "brush_processing.hpp"
 #include "filesystem_helper.h"
 #include "logging.hpp"
 #include "options.hpp"
@@ -18,6 +19,18 @@ namespace bspc
 {
 namespace
 {
+
+geometry::BrushWorkspace &BrushWorkspaceInstance()
+{
+    static geometry::BrushWorkspace workspace;
+    return workspace;
+}
+
+void PrepareBrushWorkspace(const Options &options)
+{
+    auto &workspace = BrushWorkspaceInstance();
+    workspace.Reset(options.nocsg, options.nobrushmerge);
+}
 
 constexpr std::string_view kUsage =
     "Usage:   bspc [-<switch> [-<switch> ...]]\n"
@@ -184,6 +197,8 @@ void PrintConversion(const char *format, const std::string &source, const std::s
 template <typename Callback>
 void ProcessMapInput(const Options &options, const char *format, std::string_view extension, Callback &&callback)
 {
+    PrepareBrushWorkspace(options);
+
     if (options.files.empty())
     {
         PrintNoFilesFound();
@@ -202,9 +217,32 @@ void ProcessMapInput(const Options &options, const char *format, std::string_vie
     }
 }
 
+void ProcessMapToAas(const Options &options)
+{
+    PrepareBrushWorkspace(options);
+
+    if (options.files.empty())
+    {
+        PrintNoFilesFound();
+        return;
+    }
+
+    for (const auto &file : options.files)
+    {
+        const std::string dest = ComputeDestination(options, file, ".aas");
+        PrintConversion("map2aas: %s to %s\n", file.original, dest);
+        if (DetectFileType(file.path) != FileType::kMap)
+        {
+            log::Warning("%s is probably not a MAP file", file.original.c_str());
+        }
+    }
+}
+
 template <typename Callback>
 void ProcessBspInput(const Options &options, const char *format, std::string_view extension, Callback &&callback)
 {
+    PrepareBrushWorkspace(options);
+
     if (options.files.empty())
     {
         PrintNoFilesFound();
