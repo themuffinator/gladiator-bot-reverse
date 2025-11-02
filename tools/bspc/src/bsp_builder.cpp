@@ -5,6 +5,7 @@
 #include <cstring>
 #include <memory>
 #include <numeric>
+#include <sstream>
 #include <utility>
 
 #include "logging.hpp"
@@ -143,18 +144,6 @@ void WriteCountsToLump(const std::vector<std::size_t> &counts, formats::OwnedLum
     }
 }
 
-void BspBuildArtifacts::Reset() noexcept
-{
-    for (auto &lump : lumps)
-    {
-        lump.Reset();
-    }
-    portal_text.clear();
-    leak_text.clear();
-    portal_slice_count = 0;
-    flood_fill_regions = 0;
-}
-
 } // namespace
 
 bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
@@ -283,6 +272,18 @@ std::array<formats::LumpView, formats::kQuake1LumpCount> MakeLumpViews(const Bsp
 void FreeTree(BspBuildArtifacts &artifacts) noexcept
 {
     artifacts.Reset();
+}
+
+void BspBuildArtifacts::Reset() noexcept
+{
+    for (auto &lump : lumps)
+    {
+        lump.Reset();
+    }
+    portal_text.clear();
+    leak_text.clear();
+    portal_slice_count = 0;
+    flood_fill_regions = 0;
 }
 
 } // namespace bspc::builder

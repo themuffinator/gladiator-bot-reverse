@@ -1,0 +1,27 @@
+# portal metrics
+active_portals 1
+peak_portals 1
+tracked_memory 128
+# BSPC portal diagnostics
+source: tests/support/assets/bspc/csg_room.map
+portal_slices: 20
+slice 0: chars=42 solid=36 tokens=7
+slice 1: chars=1 solid=1 tokens=1
+slice 2: chars=24 solid=23 tokens=2
+slice 3: chars=1 solid=1 tokens=1
+slice 4: chars=77 solid=57 tokens=21
+slice 5: chars=83 solid=63 tokens=21
+slice 6: chars=80 solid=60 tokens=21
+slice 7: chars=77 solid=57 tokens=21
+slice 8: chars=77 solid=57 tokens=21
+slice 9: chars=80 solid=60 tokens=21
+slice 10: chars=1 solid=1 tokens=1
+slice 11: chars=1 solid=1 tokens=1
+slice 12: chars=74 solid=54 tokens=21
+slice 13: chars=77 solid=57 tokens=21
+slice 14: chars=76 solid=56 tokens=21
+slice 15: chars=73 solid=53 tokens=21
+slice 16: chars=73 solid=53 tokens=21
+slice 17: chars=76 solid=56 tokens=21
+slice 18: chars=1 solid=1 tokens=1
+slice 19: chars=1 solid=1 tokens=1
