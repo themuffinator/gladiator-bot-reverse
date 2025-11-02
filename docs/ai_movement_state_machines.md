@@ -16,6 +16,7 @@ The Gladiator HLIL exposes the same high-level movement flow that Quake III Aren
 ## Grapple / Hook State Machine
 * Quake III caches cvars such as `laserhook`, loads the grapple model on demand, and toggles the `hookon` / `hookoff` commands based on reachability distance inside `BotTravel_Grapple`. 【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_move.c†L2534-L2737】
 * Gladiator mirrors that flow: `sub_100338a0` grabs the `laserhook` libvar and precaches `models/weapons/grapple/hook/tris.md2` the first time it detects an enabled hook. 【F:dev_tools/gladiator.dll.bndb_hlil.txt†L40193-L40257】
+* The bridge leaves grapples disabled unless the `usehook` libvar is explicitly defined, so parity builds must opt in before any hook-specific paths become active.
 * The grapple handler sets bit `0x40` in the move flags when `hookon` is issued, caches the reel distance in offsets `0x1a`/`0x1b`, and forcibly toggles `hookoff` when the slack exceeds one unit or the bot drifts more than 48 units from the last recorded distance—behaviour that aligns with Quake’s tension checks. 【F:dev_tools/gladiator.dll.bndb_hlil.txt†L40385-L40460】
 * Timeouts use `j_sub_1000e120()` (the HLIL wrapper for `AAS_Time()`) to gate reactivation, matching the Quake guard that waits before firing the hook again. 【F:dev_tools/gladiator.dll.bndb_hlil.txt†L40393-L40445】
 

@@ -117,7 +117,7 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_soundinfo, "max_soundinfo", "256");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_aassounds, "max_aassounds", "256");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.dmflags, "dmflags", "0");
-    BridgeConfig_CacheLibVar(&g_bridge_config_cache.usehook, "usehook", "1");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.usehook, "usehook", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.laserhook, "laserhook", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.grapple_model,
                              "grapplemodel",
