@@ -1,6 +1,7 @@
 add_executable(bspc
     src/main.cpp
     src/bsp_builder.cpp
+    src/bsp_to_map.cpp
     src/bsp_serializers.cpp
     src/brush_bsp.cpp
     src/csg.cpp

@@ -389,8 +389,7 @@ int Main(int argc, char **argv)
         ProcessMapInput(options, "map2aas: %s to %s\n", ".aas", pipelines::RunMapToAas);
         break;
     case Pipeline::kBspToMap:
-        ProcessBspInput(options, "bsp2map: %s to %s\n", ".map",
-                       [](const Options &, const InputFile &, const std::string &) {});
+        ProcessBspInput(options, "bsp2map: %s to %s\n", ".map", pipelines::RunBspToMap);
         break;
     case Pipeline::kBspToBsp:
         ProcessBspInput(options, "bsp2bsp: %s to %s\n", ".bsp", pipelines::RunBspToBsp);
