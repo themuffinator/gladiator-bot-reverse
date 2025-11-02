@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include "filesystem_helper.h"
+
 namespace bspc
 {
 namespace
@@ -51,12 +53,6 @@ enum class FileType
     kBsp,
 };
 
-struct InputFile
-{
-    std::string original;
-    std::filesystem::path path;
-};
-
 struct Options
 {
     bool verbose = true;
@@ -71,31 +67,6 @@ struct Options
     std::vector<InputFile> files;
     bool parse_ok = true;
 };
-
-std::string NormalizeSeparators(std::string path)
-{
-    std::replace(path.begin(), path.end(), '\\', '/');
-    return path;
-}
-
-bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs)
-{
-    if (lhs.size() != rhs.size())
-    {
-        return false;
-    }
-
-    for (size_t i = 0; i < lhs.size(); ++i)
-    {
-        unsigned char a = static_cast<unsigned char>(lhs[i]);
-        unsigned char b = static_cast<unsigned char>(rhs[i]);
-        if (std::tolower(a) != std::tolower(b))
-        {
-            return false;
-        }
-    }
-    return true;
-}
 
 FileType DetectFileType(const std::filesystem::path &path)
 {
@@ -118,112 +89,6 @@ FileType DetectFileType(const std::filesystem::path &path)
         return FileType::kBsp;
     }
     return FileType::kUnknown;
-}
-
-bool HasWildcards(std::string_view text)
-{
-    return text.find_first_of("*?") != std::string_view::npos;
-}
-
-bool WildcardMatchImpl(std::string_view pattern, std::string_view text, size_t pi, size_t ti)
-{
-    while (pi < pattern.size())
-    {
-        char pc = static_cast<char>(std::tolower(static_cast<unsigned char>(pattern[pi])));
-        if (pc == '*')
-        {
-            while (pi < pattern.size() && pattern[pi] == '*')
-            {
-                ++pi;
-            }
-            if (pi == pattern.size())
-            {
-                return true;
-            }
-            while (ti < text.size())
-            {
-                if (WildcardMatchImpl(pattern, text, pi, ti))
-                {
-                    return true;
-                }
-                ++ti;
-            }
-            return false;
-        }
-        if (ti >= text.size())
-        {
-            return false;
-        }
-        char tc = static_cast<char>(std::tolower(static_cast<unsigned char>(text[ti])));
-        if (pc == '?')
-        {
-            ++pi;
-            ++ti;
-            continue;
-        }
-        if (pc != tc)
-        {
-            return false;
-        }
-        ++pi;
-        ++ti;
-    }
-    return ti == text.size();
-}
-
-bool WildcardMatch(std::string_view pattern, std::string_view text)
-{
-    return WildcardMatchImpl(pattern, text, 0, 0);
-}
-
-std::vector<InputFile> ExpandPattern(const std::string &pattern)
-{
-    std::vector<InputFile> files;
-    const std::string normalized = NormalizeSeparators(pattern);
-    if (!HasWildcards(normalized))
-    {
-        InputFile file{pattern, std::filesystem::path(normalized)};
-        files.push_back(file);
-        return files;
-    }
-
-    const auto separator_pos = normalized.find_last_of('/');
-    std::filesystem::path directory;
-    std::string mask;
-    if (separator_pos == std::string::npos)
-    {
-        directory = std::filesystem::path(".");
-        mask = normalized;
-    }
-    else
-    {
-        directory = std::filesystem::path(normalized.substr(0, separator_pos));
-        mask = normalized.substr(separator_pos + 1);
-        if (directory.empty())
-        {
-            directory = std::filesystem::path(".");
-        }
-    }
-
-    std::error_code ec;
-    std::filesystem::directory_iterator it(directory, ec);
-    if (ec)
-    {
-        return files;
-    }
-
-    for (const auto &entry : it)
-    {
-        const std::string candidate = entry.path().filename().string();
-        if (WildcardMatch(mask, candidate))
-        {
-            std::filesystem::path expanded = directory / candidate;
-            InputFile file{expanded.generic_string(), expanded};
-            files.push_back(std::move(file));
-        }
-    }
-
-    return files;
 }
 
 std::string EnsureExtension(const std::string &pattern, std::string_view desired_ext)
@@ -253,13 +118,15 @@ std::string EnsureExtension(const std::string &pattern, std::string_view desired
 std::vector<InputFile> CollectArgumentFiles(int argc, char **argv, size_t &index, std::string_view extension)
 {
     std::vector<InputFile> files;
+    FileSystemResolver resolver;
+    const bool queue_companions = EqualsIgnoreCase(extension, "map") || EqualsIgnoreCase(extension, "bsp");
     while (index + 1 < static_cast<size_t>(argc) && argv[index + 1][0] != '-')
     {
         std::string normalized = EnsureExtension(argv[index + 1], extension);
-        auto expanded = ExpandPattern(normalized);
-        if (!expanded.empty())
+        auto resolved = resolver.ResolvePattern(normalized, extension, queue_companions);
+        if (!resolved.empty())
         {
-            files.insert(files.end(), expanded.begin(), expanded.end());
+            files.insert(files.end(), resolved.begin(), resolved.end());
         }
         ++index;
     }
@@ -273,9 +140,13 @@ std::string ComputeDestination(const Options &options, const InputFile &input, s
     {
         base = std::filesystem::path(options.output_path);
     }
-    else
+    else if (!input.from_archive)
     {
         base = input.path.parent_path();
+    }
+    else
+    {
+        base = std::filesystem::path(".");
     }
 
     if (!base.empty())
