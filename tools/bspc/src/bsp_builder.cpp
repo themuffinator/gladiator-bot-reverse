@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <sstream>
@@ -20,6 +21,7 @@
 #include "brush_bsp.hpp"
 #include "legacy_common.hpp"
 #include "leakfile.hpp"
+#include "map_parser.hpp"
 #include "portals.hpp"
 #include "prtfile.hpp"
 #include "tree.hpp"
@@ -217,6 +219,9 @@ TreeEmission EmitTreeLumps(const TreeCollection &collection)
 
         emission.nodes[index] = disk;
     }
+    map_brush_ptr->contents = contents;
+    map_brush_ptr->mins = converted.mins;
+    map_brush_ptr->maxs = converted.maxs;
 
     for (std::size_t index = 0; index < collection.leaves.size(); ++index)
     {
@@ -335,6 +340,13 @@ void WriteQuake1BspLumps(const ParsedWorld &world,
 
 void BspBuildArtifacts::Reset() noexcept
 {
+    if (tree)
+    {
+        legacy::Tree_Free(tree);
+    }
+    tree.reset();
+    map_brushes.clear();
+
     for (auto &lump : lumps)
     {
         lump.Reset();
@@ -344,6 +356,11 @@ void BspBuildArtifacts::Reset() noexcept
     portal_cluster_count = 0;
     portal_count = 0;
     leak_point_count = 0;
+}
+
+BspBuildArtifacts::~BspBuildArtifacts() noexcept
+{
+    Reset();
 }
 
 } // namespace
@@ -356,16 +373,28 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
     legacy::ClearMapPlanes();
 
     log::Info("--- BSP tree ---\n");
-    log::Info("processing %zu world lines\n", world.lines.size());
+    log::Info("processing %zu parsed brushes\n", world.brushes.size());
+
+    std::unique_ptr<legacy::Tree> tree = legacy::Tree_Alloc();
 
     std::unique_ptr<legacy::Tree> tree = legacy::Tree_Alloc();
 
     if (!world.lines.empty())
     {
-        legacy::Plane plane;
-        plane.normal = {0.0, 0.0, 1.0};
-        plane.dist = 0.0;
-        legacy::AppendPlane(plane);
+        const auto &map_geometry = *world.map_geometry;
+        for (const ParsedWorld::Brush &brush : world.brushes)
+        {
+            if (brush.source != ParsedWorld::Brush::Source::kMapBrush &&
+                brush.source != ParsedWorld::Brush::Source::kMapPatch)
+            {
+                continue;
+            }
+
+            if (brush.source_entity == ParsedWorld::kInvalidIndex ||
+                brush.source_entity >= map_geometry.entities.size())
+            {
+                continue;
+            }
 
         legacy::Portal *portal = legacy::AllocPortal();
         auto winding = std::make_shared<legacy::Winding>();
@@ -385,6 +414,66 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
         legacy::AddPortalToNodes(*portal, leaf, tree->outside_node);
         tree->outside_node.occupied = 2;
     }
+    else
+    {
+        log::Info("no parsed map geometry available; producing empty BSP tree\n");
+    }
+
+    if (!stats.has_bounds)
+    {
+        stats.mins = legacy::Vec3{};
+        stats.maxs = legacy::Vec3{};
+    }
+
+    tree->mins = stats.mins;
+    tree->maxs = stats.maxs;
+    tree->headnode->mins = stats.mins;
+    tree->headnode->maxs = stats.maxs;
+
+    if (!structural_brushes.empty())
+    {
+        tree->headnode->volume = std::make_unique<legacy::BspBrush>(structural_brushes.front());
+    }
+
+    for (const auto &brush : structural_brushes)
+    {
+        auto node = std::make_unique<legacy::Node>();
+        node->planenum = legacy::kPlanenumLeaf;
+        node->mins = brush.mins;
+        node->maxs = brush.maxs;
+        node->volume = std::make_unique<legacy::BspBrush>(brush);
+        tree->extra_nodes.push_back(std::move(node));
+    }
+
+    auto &portal_stats = legacy::GetPortalStats();
+    portal_stats.active = stats.total_sides;
+    portal_stats.peak = stats.total_sides;
+    portal_stats.memory = stats.total_sides * sizeof(legacy::Portal);
+
+    auto &brush_stats = legacy::GetBrushBspStats();
+    brush_stats = legacy::BrushBspStats{};
+    brush_stats.nodes = structural_brushes.size();
+    brush_stats.active_brushes = structural_brushes.size() + detail_brushes.size();
+    brush_stats.solid_leaf_nodes = structural_brushes.empty() ? 0 : 1;
+    brush_stats.total_sides = stats.total_sides;
+    brush_stats.brush_memory = brush_stats.active_brushes * sizeof(legacy::BspBrush);
+    brush_stats.peak_brush_memory = brush_stats.brush_memory;
+    brush_stats.node_memory = structural_brushes.size() * sizeof(legacy::Node);
+    brush_stats.peak_total_memory = brush_stats.brush_memory + brush_stats.node_memory;
+
+    stats.flood_regions = 0;
+    if (stats.structural_brushes > 0)
+    {
+        stats.flood_regions = 1;
+    }
+    stats.flood_regions += detail_brushes.size();
+    if (stats.flood_regions == 0 && !world.entities.empty())
+    {
+        stats.flood_regions = 1;
+    }
+
+    out_artifacts.portal_slice_count = stats.total_sides;
+    out_artifacts.flood_fill_regions = stats.flood_regions;
 
     const auto &portal_stats = legacy::GetPortalStats();
     log::Info("portal allocator peak: %d active (%d bytes)\n",
@@ -393,10 +482,12 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
 
     WriteQuake1BspLumps(world, *tree, out_artifacts);
 
-    log::Info("BSP tree populated\n");
+    log::Info("structural brushes: %zu, detail brushes: %zu\n", stats.structural_brushes, stats.detail_brushes);
+    log::Info("generated %zu portal slices and %zu regions\n",
+              out_artifacts.portal_slice_count,
+              out_artifacts.flood_fill_regions);
 
-    legacy::Tree_Free(*tree);
-
+    out_artifacts.tree = std::move(tree);
     return true;
 }
 
@@ -420,7 +511,11 @@ std::array<formats::LumpView, formats::kQuake1LumpCount> MakeLumpViews(const Bsp
 
 void FreeTree(BspBuildArtifacts &artifacts) noexcept
 {
-    artifacts.Reset();
+    if (artifacts.tree)
+    {
+        legacy::Tree_Free(artifacts.tree);
+    }
+    artifacts.map_brushes.clear();
 }
 
 } // namespace bspc::builder

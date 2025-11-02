@@ -69,6 +69,10 @@ void TestLoadMap()
     assert(brush.sides.size() == 6);
     assert(brush.patch.has_value() == false);
     assert(world.textures.front().name == "textures/common/caulk");
+    assert(world.map_geometry);
+    assert(world.map_geometry->entities.size() == 1);
+    assert(world.brushes.front().source_entity == 0);
+    assert(world.brushes.front().source_brush == 0);
 }
 
 struct Quake1PlaneDisk
@@ -238,6 +242,7 @@ void TestLoadBsp()
         std::cerr << "LoadWorldState failed: " << error << std::endl;
     }
     assert(loaded);
+    assert(!world.map_geometry);
     assert(world.format == bspc::builder::ParsedWorld::Format::kBsp);
     assert(world.entities.size() >= 2);
     assert(world.brushes.size() == 1);
