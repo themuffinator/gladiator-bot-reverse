@@ -1,5 +1,6 @@
 #include "leakfile.hpp"
 
+#include <iomanip>
 #include <sstream>
 #include <vector>
 
@@ -23,13 +24,11 @@ Vec3 PortalCenter(const Portal &portal)
 
 std::string LeakFile(const Tree &tree, std::string_view source_name)
 {
+    (void)source_name;
     if (!tree.outside_node.occupied)
     {
         return {};
     }
-
-    std::ostringstream stream;
-    stream << "# leak path for " << source_name << "\n";
 
     const Node *node = &tree.outside_node;
     std::vector<Vec3> points;
@@ -70,6 +69,13 @@ std::string LeakFile(const Tree &tree, std::string_view source_name)
         points.push_back(node->occupant->origin);
     }
 
+    if (points.empty())
+    {
+        return {};
+    }
+
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(6);
     for (const Vec3 &point : points)
     {
         stream << point.x << ' ' << point.y << ' ' << point.z << '\n';

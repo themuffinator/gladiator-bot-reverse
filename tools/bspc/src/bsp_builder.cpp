@@ -16,13 +16,12 @@
 #include <limits>
 
 #include "logging.hpp"
-#include "threads.hpp"
 
 #include "brush_bsp.hpp"
-#include "csg.hpp"
 #include "legacy_common.hpp"
 #include "leakfile.hpp"
 #include "portals.hpp"
+#include "prtfile.hpp"
 #include "tree.hpp"
 
 namespace bspc::builder
@@ -30,106 +29,11 @@ namespace bspc::builder
 namespace
 {
 
-struct LineMetrics
+std::size_t CountLeakPoints(std::string_view leak_text) noexcept
 {
-    std::size_t index = 0;
-    std::size_t character_count = 0;
-    std::size_t solid_count = 0;
-    std::size_t token_count = 0;
-};
-
-std::vector<LineMetrics> ComputePortalSlices(const std::vector<std::string> &lines)
-{
-    std::vector<LineMetrics> metrics(lines.size());
-    const int work_count = static_cast<int>(lines.size());
-    threads::RunWorkerRange(work_count, work_count >= 8, [&](int index) {
-        const std::string &line = lines[static_cast<std::size_t>(index)];
-        LineMetrics local;
-        local.index = static_cast<std::size_t>(index);
-        local.character_count = line.size();
-        local.solid_count = std::count_if(line.begin(), line.end(), [](unsigned char c) {
-            return !std::isspace(c);
-        });
-
-        bool in_token = false;
-        for (unsigned char c : line)
-        {
-            if (std::isspace(c))
-            {
-                in_token = false;
-            }
-            else if (!in_token)
-            {
-                in_token = true;
-                ++local.token_count;
-            }
-        }
-
-        metrics[static_cast<std::size_t>(index)] = local;
-    });
-
-    return metrics;
-}
-
-std::vector<std::size_t> RunFloodFill(const std::vector<LineMetrics> &metrics)
-{
-    std::vector<std::size_t> regions(metrics.size());
-    const int work_count = static_cast<int>(metrics.size());
-    threads::RunWorkerRange(work_count, work_count >= 8, [&](int index) {
-        const LineMetrics &m = metrics[static_cast<std::size_t>(index)];
-        const std::size_t combined = (m.solid_count * 3) + (m.token_count * 5);
-        regions[static_cast<std::size_t>(index)] = combined;
-    });
-    return regions;
-}
-
-std::string BuildPortalReport(const ParsedWorld &world, const std::vector<LineMetrics> &metrics)
-{
-    std::string report = "# BSPC portal diagnostics\n";
-    report += "source: " + world.source_name + "\n";
-    report += "portal_slices: " + std::to_string(metrics.size()) + "\n";
-
-    for (const auto &entry : metrics)
+    if (leak_text.empty())
     {
-        report += "slice ";
-        report += std::to_string(entry.index);
-        report += ": chars=";
-        report += std::to_string(entry.character_count);
-        report += " solid=";
-        report += std::to_string(entry.solid_count);
-        report += " tokens=";
-        report += std::to_string(entry.token_count);
-        report.push_back('\n');
-    }
-
-    return report;
-}
-
-std::string BuildFloodFillReport(const ParsedWorld &world,
-                                 const std::vector<LineMetrics> &metrics,
-                                 const std::vector<std::size_t> &regions)
-{
-    std::string report = "# BSPC visibility diagnostics\n";
-    report += "source: " + world.source_name + "\n";
-    report += "regions: " + std::to_string(regions.size()) + "\n";
-
-    std::size_t cumulative = 0;
-    for (std::size_t value : regions)
-    {
-        cumulative += value;
-    }
-
-    report += "cumulative_weight: " + std::to_string(cumulative) + "\n";
-
-    for (std::size_t i = 0; i < regions.size(); ++i)
-    {
-        report += "region ";
-        report += std::to_string(i);
-        report += ": tokens=";
-        report += std::to_string(metrics[i].token_count);
-        report += " weight=";
-        report += std::to_string(regions[i]);
-        report.push_back('\n');
+        return 0;
     }
 
     return report;
@@ -437,8 +341,9 @@ void BspBuildArtifacts::Reset() noexcept
     }
     portal_text.clear();
     leak_text.clear();
-    portal_slice_count = 0;
-    flood_fill_regions = 0;
+    portal_cluster_count = 0;
+    portal_count = 0;
+    leak_point_count = 0;
 }
 
 } // namespace
@@ -453,17 +358,9 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
     log::Info("--- BSP tree ---\n");
     log::Info("processing %zu world lines\n", world.lines.size());
 
-    const std::vector<LineMetrics> metrics = ComputePortalSlices(world.lines);
-    out_artifacts.portal_slice_count = metrics.size();
-    log::Info("portal slicing complete: %zu slices\n", metrics.size());
-
-    const std::vector<std::size_t> flood_regions = RunFloodFill(metrics);
-    out_artifacts.flood_fill_regions = flood_regions.size();
-    log::Info("flood fill complete: %zu regions\n", flood_regions.size());
-
     std::unique_ptr<legacy::Tree> tree = legacy::Tree_Alloc();
 
-    if (!metrics.empty())
+    if (!world.lines.empty())
     {
         legacy::Plane plane;
         plane.normal = {0.0, 0.0, 1.0};
@@ -476,35 +373,23 @@ bool BuildBspTree(const ParsedWorld &world, BspBuildArtifacts &out_artifacts)
         winding->points.push_back({64.0, 0.0, 0.0});
         winding->points.push_back({0.0, 64.0, 0.0});
         portal->winding = std::move(winding);
+        portal->plane = plane;
+        portal->onnode = tree->headnode.get();
 
-        legacy::Node &leaf = legacy::Tree_EmplaceLeaf(*tree);
+        legacy::Node &leaf = *tree->headnode;
         leaf.planenum = legacy::kPlanenumLeaf;
         leaf.occupied = 1;
         legacy::Entity &occupant = legacy::Tree_EmplaceEntity(*tree, legacy::Vec3{0.0, 0.0, 0.0});
         leaf.occupant = &occupant;
 
-        legacy::AddPortalToNodes(*portal, tree->outside_node, leaf);
+        legacy::AddPortalToNodes(*portal, leaf, tree->outside_node);
         tree->outside_node.occupied = 2;
     }
 
     const auto &portal_stats = legacy::GetPortalStats();
-    std::ostringstream portal_stream;
-    portal_stream << "# portal metrics\n";
-    portal_stream << "active_portals " << portal_stats.active << "\n";
-    portal_stream << "peak_portals " << portal_stats.peak << "\n";
-    portal_stream << "tracked_memory " << portal_stats.memory << "\n";
-    portal_stream << BuildPortalReport(world, metrics);
-    out_artifacts.portal_text = portal_stream.str();
-
-    std::string leak_trace = legacy::LeakFile(*tree, world.source_name);
-    if (!leak_trace.empty())
-    {
-        out_artifacts.leak_text = std::move(leak_trace);
-    }
-    else
-    {
-        out_artifacts.leak_text = BuildFloodFillReport(world, metrics, flood_regions);
-    }
+    log::Info("portal allocator peak: %d active (%d bytes)\n",
+              portal_stats.peak,
+              portal_stats.memory);
 
     WriteQuake1BspLumps(world, *tree, out_artifacts);
 
