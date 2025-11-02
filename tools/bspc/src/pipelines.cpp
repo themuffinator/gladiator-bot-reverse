@@ -11,8 +11,10 @@
 #include "bsp_builder.hpp"
 #include "bsp_formats.hpp"
 #include "logging.hpp"
+#include "map_parser.hpp"
 #include "memory.h"
 #include "options.hpp"
+#include "filesystem_helper.h"
 
 namespace bspc::pipelines
 {
@@ -170,6 +172,18 @@ bool WriteBspFile(const std::filesystem::path &destination, const builder::BspBu
 
 void RunBspCompilation(const Options &options, const InputFile &input, const std::filesystem::path &destination)
 {
+    if (EqualsIgnoreCase(input.path.extension().generic_string(), ".map"))
+    {
+        auto parsed_map = map::ParseMapFromFile(input, options);
+        if (parsed_map)
+        {
+            log::Info("parsed %zu entities, %zu brushes, %zu materials\n",
+                      parsed_map->summary.entities,
+                      parsed_map->summary.brushes,
+                      parsed_map->summary.unique_materials);
+        }
+    }
+
     RemoveLegacyCompanions(destination);
 
     builder::ParsedWorld world;
