@@ -930,6 +930,95 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     assert_null(Bridge_MaxClients());
 }
 
+static void test_bot_usehook_defaults_disabled(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    libvar_t *usehook = Bridge_UseHook();
+    assert_non_null(usehook);
+    assert_float_equal(usehook->value, 0.0f, 0.0001f);
+    assert_string_equal(usehook->string, "0");
+
+    char *sounds[] = {"player/step1.wav"};
+    status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 1, sounds, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_settings_t settings;
+    memset(&settings, 0, sizeof(settings));
+    snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+
+    status = context->api->BotSetupClient(1, &settings);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_client_state_t *self_state = BotState_Get(1);
+    assert_non_null(self_state);
+    self_state->team = 1;
+
+    bot_goal_t chase_goal;
+    memset(&chase_goal, 0, sizeof(chase_goal));
+    chase_goal.number = 0;
+    chase_goal.areanum = 1;
+    VectorSet(chase_goal.origin, 1024.0f, 0.0f, 24.0f);
+    status = context->api->BotPushGoal(self_state->goal_handle, &chase_goal);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_client_state_t *enemy_state = BotState_Create(2);
+    assert_non_null(enemy_state);
+    enemy_state->active = true;
+    enemy_state->team = 2;
+
+    bot_updateclient_t self_update;
+    memset(&self_update, 0, sizeof(self_update));
+    VectorSet(self_update.origin, 0.0f, 0.0f, 24.0f);
+    VectorSet(self_update.viewangles, 0.0f, 0.0f, 0.0f);
+    self_update.stats[STAT_HEALTH] = 100;
+    self_update.pm_flags = PMF_ON_GROUND;
+    for (int i = 0; i < MAX_ITEMS; ++i)
+    {
+        self_update.inventory[i] = 1;
+    }
+
+    bot_updateclient_t enemy_update;
+    memset(&enemy_update, 0, sizeof(enemy_update));
+    VectorSet(enemy_update.origin, 1024.0f, 0.0f, 24.0f);
+    VectorSet(enemy_update.viewangles, 0.0f, 180.0f, 0.0f);
+    enemy_update.stats[STAT_HEALTH] = 100;
+    enemy_state->last_client_update = enemy_update;
+    enemy_state->client_update_valid = true;
+
+    bot_updateentity_t enemy_entity;
+    memset(&enemy_entity, 0, sizeof(enemy_entity));
+    VectorCopy(enemy_update.origin, enemy_entity.origin);
+    VectorCopy(enemy_update.origin, enemy_entity.old_origin);
+
+    status = context->api->BotStartFrame(0.2f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateClient(1, &self_update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateEntity(2, &enemy_entity);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotAI(1, 0.05f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    assert_true(context->mock.bot_input_count > 0);
+    const bot_input_t *final_input = &context->mock.inputs[context->mock.bot_input_count - 1];
+    assert_float_equal(final_input->speed, 200.0f, 0.0001f);
+
+    context->api->BotShutdownClient(1);
+    BotState_Destroy(2);
+
+    context->api->BotShutdownLibrary();
+}
+
 static void test_bot_console_message_and_ai_pipeline(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
@@ -1606,6 +1695,9 @@ int main(void)
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_usehook_defaults_disabled,
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_console_message_and_ai_pipeline,
