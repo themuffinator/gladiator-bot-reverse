@@ -48,6 +48,8 @@ install(
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gladiator
 )
 
+add_subdirectory(tools/bspc)
+
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)
