@@ -13,6 +13,7 @@
 #include "filesystem_helper.h"
 #include "logging.hpp"
 #include "threads.hpp"
+#include "world_parsers.hpp"
 
 namespace bspc::builder
 {
@@ -86,7 +87,7 @@ ArchiveLookup FindArchiveEntry(std::ifstream &stream,
     return {};
 }
 
-std::optional<std::string> ReadFileFromArchive(const InputFile &input, std::string &error)
+std::optional<std::vector<std::byte>> ReadFileFromArchive(const InputFile &input, std::string &error)
 {
     std::ifstream stream(input.archive_path, std::ios::binary);
     if (!stream)
@@ -122,15 +123,10 @@ std::optional<std::string> ReadFileFromArchive(const InputFile &input, std::stri
         return std::nullopt;
     }
 
-    if (lookup.length == 0)
-    {
-        return std::string();
-    }
-
-    std::string data;
+    std::vector<std::byte> data;
     data.resize(static_cast<std::size_t>(lookup.length));
     stream.seekg(lookup.offset, std::ios::beg);
-    stream.read(data.data(), static_cast<std::streamsize>(lookup.length));
+    stream.read(reinterpret_cast<char *>(data.data()), static_cast<std::streamsize>(lookup.length));
     if (stream.gcount() != static_cast<std::streamsize>(lookup.length))
     {
         error = "failed to read archive entry payload";
@@ -140,7 +136,7 @@ std::optional<std::string> ReadFileFromArchive(const InputFile &input, std::stri
     return data;
 }
 
-std::optional<std::string> ReadWorldFile(const InputFile &input, std::string &error)
+std::optional<std::vector<std::byte>> ReadWorldFile(const InputFile &input, std::string &error)
 {
     if (input.from_archive)
     {
@@ -154,15 +150,28 @@ std::optional<std::string> ReadWorldFile(const InputFile &input, std::string &er
         return std::nullopt;
     }
 
-    std::stringstream buffer;
-    buffer << stream.rdbuf();
-    if (!stream.good() && !stream.eof())
+    stream.seekg(0, std::ios::end);
+    const std::streamsize length = stream.tellg();
+    if (length < 0)
     {
-        error = "failed to read " + input.path.generic_string();
+        error = "failed to determine size of " + input.path.generic_string();
         return std::nullopt;
     }
+    stream.seekg(0, std::ios::beg);
 
-    return buffer.str();
+    std::vector<std::byte> data;
+    data.resize(static_cast<std::size_t>(length));
+    if (length > 0)
+    {
+        stream.read(reinterpret_cast<char *>(data.data()), length);
+        if (stream.gcount() != length)
+        {
+            error = "failed to read " + input.path.generic_string();
+            return std::nullopt;
+        }
+    }
+
+    return data;
 }
 
 std::vector<std::string> SplitLines(std::string_view text)
@@ -359,8 +368,40 @@ bool LoadWorldState(const InputFile &input, ParsedWorld &out_world, std::string 
     }
 
     out_world.source_name = input.original;
-    out_world.entities_text = EnsureEntitiesText(*data);
-    out_world.lines = SplitLines(*data);
+
+    const WorldInputFormat detected_format = DetectWorldFormat(*data);
+    switch (detected_format)
+    {
+    case WorldInputFormat::kMapText:
+    {
+        std::string map_text(reinterpret_cast<const char *>(data->data()), data->size());
+        out_world.entities_text = EnsureEntitiesText(map_text);
+        if (!PopulateWorldFromMap(map_text, out_world, error))
+        {
+            return false;
+        }
+        out_world.lines = SplitLines(map_text);
+        break;
+    }
+    case WorldInputFormat::kBinaryBsp:
+    {
+        if (!PopulateWorldFromBsp(*data, out_world, error))
+        {
+            return false;
+        }
+        if (out_world.entities_text.empty())
+        {
+            out_world.entities_text = "{\n\"classname\" \"worldspawn\"\n}\n";
+        }
+        out_world.lines = SplitLines(out_world.entities_text);
+        break;
+    }
+    case WorldInputFormat::kUnknown:
+    default:
+        error = "unrecognized world data format";
+        return false;
+    }
+
     return true;
 }
 
