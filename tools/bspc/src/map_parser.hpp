@@ -22,16 +22,55 @@ struct Vec3
 struct Plane
 {
     Vec3 vertices[3]{};
+    Vec3 normal{0.0f, 0.0f, 0.0f};
+    float distance = 0.0f;
+    bool has_vertices = false;
+    bool has_normal = false;
     std::string texture;
     float shift[2]{0.0f, 0.0f};
     float rotation = 0.0f;
     float scale[2]{1.0f, 1.0f};
+    float matrix[2][3]{{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
+    bool has_matrix = false;
+    int contents = 0;
+    int surface_flags = 0;
+    int value = 0;
+};
+
+struct PatchPoint
+{
+    Vec3 position{};
+    float st[2]{0.0f, 0.0f};
+};
+
+struct Patch
+{
+    std::string texture;
+    int width = 0;
+    int height = 0;
+    int contents = 0;
+    int surface_flags = 0;
+    int value = 0;
+    int type = 0;
+    std::vector<PatchPoint> points;
 };
 
 struct Brush
 {
+    enum class Type
+    {
+        kSolid,
+        kPatch,
+    };
+
+    Type type = Type::kSolid;
     std::vector<Plane> planes;
+    std::optional<Patch> patch;
     bool contains_liquid = false;
+    bool is_brush_primitive = false;
+    Vec3 mins{0.0f, 0.0f, 0.0f};
+    Vec3 maxs{0.0f, 0.0f, 0.0f};
+    bool has_bounds = false;
 };
 
 struct KeyValue
