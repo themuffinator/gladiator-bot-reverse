@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -9,6 +8,8 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#include "logging.hpp"
 
 namespace bspc
 {
@@ -317,27 +318,27 @@ std::string ComputeDestination(const Options &options, const InputFile &input, s
 
 void PrintUsage()
 {
-    std::fputs(kUsage.data(), stdout);
+    log::Write(kUsage);
 }
 
 void PrintUnknownParameter(const char *parameter)
 {
-    std::printf("unknows parameter %s\n", parameter);
+    log::Warning("unknown parameter %s", parameter);
 }
 
 void PrintNoFilesFound()
 {
-    std::printf("no files found\n");
+    log::Warning("no files found");
 }
 
 void PrintFolderMissing(const std::string &path)
 {
-    std::printf("the folder %s does not exist\n", path.c_str());
+    log::Warning("the folder %s does not exist", path.c_str());
 }
 
 void PrintConversion(const char *format, const std::string &source, const std::string &destination)
 {
-    std::printf(format, source.c_str(), destination.c_str());
+    log::Info(format, source.c_str(), destination.c_str());
 }
 
 void ProcessMapInput(const Options &options, const char *format)
@@ -354,7 +355,7 @@ void ProcessMapInput(const Options &options, const char *format)
         PrintConversion(format, file.original, dest);
         if (DetectFileType(file.path) != FileType::kMap)
         {
-            std::printf("%s is probably not a MAP file\n", file.original.c_str());
+            log::Warning("%s is probably not a MAP file", file.original.c_str());
         }
     }
 }
@@ -373,7 +374,7 @@ void ProcessMapToAas(const Options &options)
         PrintConversion("map2aas: %s to %s\n", file.original, dest);
         if (DetectFileType(file.path) != FileType::kMap)
         {
-            std::printf("%s is probably not a MAP file\n", file.original.c_str());
+            log::Warning("%s is probably not a MAP file", file.original.c_str());
         }
     }
 }
@@ -392,7 +393,7 @@ void ProcessBspInput(const Options &options, const char *format, std::string_vie
         PrintConversion(format, file.original, dest);
         if (DetectFileType(file.path) != FileType::kBsp)
         {
-            std::printf("%s is probably not a BSP file\n", file.original.c_str());
+            log::Warning("%s is probably not a BSP file", file.original.c_str());
         }
     }
 }
@@ -403,7 +404,8 @@ int Main(int argc, char **argv)
 {
     Options options;
 
-    std::printf("BSPC version 1.2, May 20 1999 13:46:31 by Mr Elusive\n");
+    log::Initialize();
+    log::Info("BSPC version 1.2, May 20 1999 13:46:31 by Mr Elusive\n");
 
     if (argc <= 1)
     {
@@ -424,37 +426,37 @@ int Main(int argc, char **argv)
             }
             const char *value = argv[++index];
             options.threads = std::atoi(value);
-            std::printf("threads = %d\n", options.threads);
+            log::Info("threads = %d\n", options.threads);
         }
         else if (EqualsIgnoreCase(argument, "-noverbose"))
         {
             options.verbose = false;
-            std::printf("verbose = false\n");
+            log::Info("verbose = false\n");
         }
         else if (EqualsIgnoreCase(argument, "-breathfirst") || EqualsIgnoreCase(argument, "-breath"))
         {
             options.breath_first = true;
-            std::printf("breathfirst = true\n");
+            log::Info("breathfirst = true\n");
         }
         else if (EqualsIgnoreCase(argument, "-nobrushmerge"))
         {
             options.nobrushmerge = true;
-            std::printf("nobrushmerge = true\n");
+            log::Info("nobrushmerge = true\n");
         }
         else if (EqualsIgnoreCase(argument, "-noliquids"))
         {
             options.noliquids = true;
-            std::printf("noliquids = true\n");
+            log::Info("noliquids = true\n");
         }
         else if (EqualsIgnoreCase(argument, "-freetree"))
         {
             options.freetree = true;
-            std::printf("freetree = true\n");
+            log::Info("freetree = true\n");
         }
         else if (EqualsIgnoreCase(argument, "-nocsg"))
         {
             options.nocsg = true;
-            std::printf("nocsg = true\n");
+            log::Info("nocsg = true\n");
         }
         else if (EqualsIgnoreCase(argument, "-output"))
         {
@@ -544,7 +546,7 @@ int Main(int argc, char **argv)
 
     if (options.pipeline == Pipeline::kNone)
     {
-        std::printf("don't know what to do\n");
+        log::Warning("don't know what to do");
         return 1;
     }
 
