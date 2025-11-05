@@ -1,7 +1,9 @@
+#include "botlib/common/l_assets.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
 
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
