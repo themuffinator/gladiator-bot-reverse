@@ -38,6 +38,13 @@ void BotLib_Print(int type, const char *fmt, ...) {
     va_end(args);
 }
 
+void BotLib_LogWrite(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+}
+
 void BotLib_Error(int level, const char *fmt, ...) {
     (void)level;
     va_list args;
@@ -64,27 +71,16 @@ void *GetClearedMemory(size_t size) {
     return calloc(1, size);
 }
 
+void *GetMemory(size_t size) {
+    return malloc(size);
+}
+
 void FreeMemory(void *ptr) {
     free(ptr);
 }
 
 bool BotLib_LocateAssetRoot(char *buffer, size_t size) {
-    if (buffer != NULL && size > 0) {
-        buffer[0] = '\0';
-    }
+    (void)buffer;
+    (void)size;
     return false;
-}
-
-void BotLib_LogWrite(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
-    va_end(args);
-}
-
-void BotLib_LogWriteTimeStamped(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
-    va_end(args);
 }

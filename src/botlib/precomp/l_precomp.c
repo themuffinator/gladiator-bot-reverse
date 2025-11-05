@@ -145,6 +145,54 @@ typedef struct pc_foundfile_s {
     struct pc_foundfile_s *next;
 } pc_foundfile_t;
 
+static qboolean PC_CopyBoundedText(char *buffer, size_t size, const char *text)
+{
+    if (buffer == NULL || size == 0) {
+        return qfalse;
+    }
+
+    if (text == NULL) {
+        buffer[0] = '\0';
+        return qtrue;
+    }
+
+    int written = snprintf(buffer, size, "%s", text);
+    if (written < 0 || (size_t)written >= size) {
+        buffer[0] = '\0';
+        return qfalse;
+    }
+
+    return qtrue;
+}
+
+static qboolean PC_AppendBoundedText(char *buffer,
+                                     size_t size,
+                                     size_t *length,
+                                     const char *text)
+{
+    if (buffer == NULL || length == NULL || text == NULL) {
+        return qfalse;
+    }
+
+    size_t text_length = strlen(text);
+    if (text_length == 0) {
+        return qtrue;
+    }
+
+    if (*length >= size) {
+        return qfalse;
+    }
+
+    if (text_length > size - *length - 1) {
+        return qfalse;
+    }
+
+    memcpy(buffer + *length, text, text_length);
+    *length += text_length;
+    buffer[*length] = '\0';
+    return qtrue;
+}
+
 struct pc_source_s {
     char filename[MAX_PATH];
     char includepath[MAX_PATH];
@@ -1304,11 +1352,12 @@ void PC_ConvertPath(char *path)
 //============================================================================
 int PC_Directive_include(pc_source_t *source)
 {
-	pc_script_t *script;
-	pc_token_t token;
-	char path[MAX_PATH];
+        pc_script_t *script;
+        pc_token_t token;
+        char path[MAX_PATH];
+        qboolean path_overflow;
 #ifdef QUAKE
-	pc_foundfile_t file;
+        pc_foundfile_t file;
 #endif //QUAKE
 
 	if (source->skip > 0) return qtrue;
@@ -1323,40 +1372,90 @@ int PC_Directive_include(pc_source_t *source)
 		SourceError(source, "#include without file name");
 		return qfalse;
 	} //end if
-	if (token.type == TT_STRING)
-	{
-		StripDoubleQuotes(token.string);
-		PC_ConvertPath(token.string);
-		script = LoadScriptFile(token.string);
-		if (!script)
-		{
-			strcpy(path, source->includepath);
-			strcat(path, token.string);
-			script = LoadScriptFile(path);
-		} //end if
-	} //end if
-	else if (token.type == TT_PUNCTUATION && *token.string == '<')
-	{
-		strcpy(path, source->includepath);
-		while(PC_ReadSourceToken(source, &token))
-		{
-			if (token.linescrossed > 0)
-			{
-				PC_UnreadSourceToken(source, &token);
-				break;
-			} //end if
-			if (token.type == TT_PUNCTUATION && *token.string == '>') break;
-			strncat(path, token.string, MAX_PATH);
-		} //end while
-		if (*token.string != '>')
-		{
-			SourceWarning(source, "#include missing trailing >");
-		} //end if
-		if (!strlen(path))
-		{
-			SourceError(source, "#include without file name between < >");
-			return qfalse;
-		} //end if
+        if (token.type == TT_STRING)
+        {
+                StripDoubleQuotes(token.string);
+                PC_ConvertPath(token.string);
+                script = LoadScriptFile(token.string);
+                if (!script)
+                {
+                        size_t length = 0;
+                        path_overflow = qfalse;
+                        if (!PC_CopyBoundedText(path, sizeof(path), source->includepath))
+                        {
+                                path_overflow = qtrue;
+                        }
+                        else
+                        {
+                                length = strlen(path);
+                                if (!PC_AppendBoundedText(path,
+                                                          sizeof(path),
+                                                          &length,
+                                                          token.string))
+                                {
+                                        path_overflow = qtrue;
+                                }
+                        }
+
+                        if (path_overflow)
+                        {
+                                SourceError(source,
+                                            "#include path too long (max %d characters)",
+                                            MAX_PATH - 1);
+                                return qfalse;
+                        }
+
+                        script = LoadScriptFile(path);
+                } //end if
+        } //end if
+        else if (token.type == TT_PUNCTUATION && *token.string == '<')
+        {
+                size_t length = 0;
+                path_overflow = qfalse;
+                if (!PC_CopyBoundedText(path, sizeof(path), source->includepath))
+                {
+                        path_overflow = qtrue;
+                }
+                else
+                {
+                        length = strlen(path);
+                }
+
+                while(PC_ReadSourceToken(source, &token))
+                {
+                        if (token.linescrossed > 0)
+                        {
+                                PC_UnreadSourceToken(source, &token);
+                                break;
+                        } //end if
+                        if (token.type == TT_PUNCTUATION && *token.string == '>') break;
+                        if (!path_overflow)
+                        {
+                                if (!PC_AppendBoundedText(path,
+                                                          sizeof(path),
+                                                          &length,
+                                                          token.string))
+                                {
+                                        path_overflow = qtrue;
+                                }
+                        }
+                } //end while
+                if (*token.string != '>')
+                {
+                        SourceWarning(source, "#include missing trailing >");
+                } //end if
+                if (path_overflow)
+                {
+                        SourceError(source,
+                                    "#include path too long (max %d characters)",
+                                    MAX_PATH - 1);
+                        return qfalse;
+                }
+                if (!strlen(path))
+                {
+                        SourceError(source, "#include without file name between < >");
+                        return qfalse;
+                } //end if
 		PC_ConvertPath(path);
 		script = LoadScriptFile(path);
 	} //end if
@@ -3293,13 +3392,36 @@ void PC_UnreadToken(pc_source_t *source, pc_token_t *token)
 //============================================================================
 void PC_SetIncludePath(pc_source_t *source, char *path)
 {
-	strncpy(source->includepath, path, MAX_PATH);
-	//add trailing path seperator
-	if (source->includepath[strlen(source->includepath)-1] != '\\' &&
-		source->includepath[strlen(source->includepath)-1] != '/')
-	{
-		strcat(source->includepath, PATHSEPERATOR_STR);
-	} //end if
+        if (source == NULL)
+        {
+                return;
+        }
+
+        if (!PC_CopyBoundedText(source->includepath,
+                                sizeof(source->includepath),
+                                path))
+        {
+                source->includepath[0] = '\0';
+                return;
+        }
+
+        size_t length = strlen(source->includepath);
+        if (!length)
+        {
+                return;
+        }
+
+        if (source->includepath[length-1] != '\\' &&
+                source->includepath[length-1] != '/')
+        {
+                if (!PC_AppendBoundedText(source->includepath,
+                                          sizeof(source->includepath),
+                                          &length,
+                                          PATHSEPERATOR_STR))
+                {
+                        source->includepath[0] = '\0';
+                }
+        } //end if
 } //end of the function PC_SetIncludePath
 //============================================================================
 //
