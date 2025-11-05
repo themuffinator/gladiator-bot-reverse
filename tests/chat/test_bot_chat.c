@@ -118,6 +118,7 @@ int main(void) {
     test_reply_chat_falls_back_to_reply_table();
     test_synonym_lookup_contains_nearbyitem_entries();
     test_known_template_is_registered();
+    test_include_path_too_long_is_rejected();
 
     printf("bot_chat_tests: all checks passed\n");
     return 0;

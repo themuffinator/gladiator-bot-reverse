@@ -1668,13 +1668,40 @@ pc_script_t *LoadScriptFile(const char *filename)
     }
 
     char pathname[MAX_PATH];
+    int composed_length;
     if (basefolder[0] != '\0')
     {
-        snprintf(pathname, sizeof(pathname), "%s/%s", basefolder, filename);
+        composed_length = snprintf(pathname, sizeof(pathname), "%s/%s", basefolder, filename);
     }
     else
     {
-        snprintf(pathname, sizeof(pathname), "%s", filename);
+        composed_length = snprintf(pathname, sizeof(pathname), "%s", filename);
+    }
+
+    if (composed_length < 0)
+    {
+        BotLib_Print(PRT_ERROR, "LoadScriptFile: failed to compose include path for %s\n", filename);
+        return NULL;
+    }
+
+    if ((size_t)composed_length >= sizeof(pathname))
+    {
+        if (basefolder[0] != '\0')
+        {
+            BotLib_Print(PRT_ERROR,
+                         "LoadScriptFile: include path \"%s/%s\" exceeds %zu characters\n",
+                         basefolder,
+                         filename,
+                         sizeof(pathname) - 1);
+        }
+        else
+        {
+            BotLib_Print(PRT_ERROR,
+                         "LoadScriptFile: include path \"%s\" exceeds %zu characters\n",
+                         filename,
+                         sizeof(pathname) - 1);
+        }
+        return NULL;
     }
 
     FILE *fp = fopen(pathname, "rb");
