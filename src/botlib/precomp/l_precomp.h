@@ -97,6 +97,15 @@ int PC_ReadToken(pc_source_t *source, pc_token_t *token);
 // configuration loader when probing for optional blocks.
 int PC_PeekToken(pc_source_t *source, pc_token_t *token);
 
+// Reads the next token and validates its type/subtype before returning it to
+// the caller. Mirrors the helper the Quake III parsers relied on to enforce
+// schema expectations while still reusing the low-level lexer.
+int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token);
+
+// Registers a global define so subsequent source loads inherit the same macro
+// state as the historical botlib precompiler.
+int PC_AddGlobalDefine(const char *string);
+
 // Pushes the last token read back into the stream.
 void PC_UnreadToken(pc_source_t *source, pc_token_t *token);
 

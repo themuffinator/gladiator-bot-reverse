@@ -38,6 +38,8 @@
 #include "bot_interface.h"
 #include "bot_state.h"
 
+static void BotInterface_Printf(int priority, const char *fmt, ...);
+
 
 static bot_import_t *g_botImport = NULL;
 static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;

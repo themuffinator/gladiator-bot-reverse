@@ -164,7 +164,7 @@ void BotMoveToGoal(bot_moveresult_t *result,
 
 int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type);
 
-void BotResetAvoidReach(int movestate);
+void BotMove_ResetAvoidReach(int movestate);
 
 void AI_MoveFrame(bot_moveresult_t *result,
                   int movestate,

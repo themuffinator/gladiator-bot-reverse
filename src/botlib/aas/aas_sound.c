@@ -50,6 +50,7 @@ typedef struct aas_sound_state_s
 
 static aas_sound_state_t g_aas_sound_state;
 
+static bool AAS_Sound_PushInfo(const aas_soundinfo_t *info);
 static void AAS_Sound_NormalizeName(const char *input, char *output, size_t size)
 {
     if (output == NULL || size == 0)

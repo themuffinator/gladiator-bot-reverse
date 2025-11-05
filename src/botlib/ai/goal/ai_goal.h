@@ -15,7 +15,7 @@ void AI_GoalBotlib_FreeItemWeights(int handle);
 void AI_GoalBotlib_SetTime(float now);
 void AI_GoalBotlib_SynchroniseAvoid(int handle, const ai_goal_state_t *state, float now);
 int AI_GoalBotlib_Update(int handle,
-                         const vec3_t origin,
+                         vec3_t origin,
                          int *inventory,
                          int travelflags,
                          float now,

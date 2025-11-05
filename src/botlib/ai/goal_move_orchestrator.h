@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "q2bridge/botlib.h"
 #include "shared/q_shared.h"
+#include "move/bot_move.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,9 +13,6 @@ extern "C" {
 #define AI_GOAL_AVOID_LIST_CAPACITY 32
 
 struct bot_updateclient_s;
-
-typedef struct ai_goal_state_s ai_goal_state_t;
-typedef struct ai_move_state_s ai_move_state_t;
 
 typedef struct ai_goal_candidate_s {
     int item_index;
@@ -66,6 +64,26 @@ typedef struct ai_move_services_s {
     ai_move_submit_fn submit_fn;
     void *userdata;
 } ai_move_services_t;
+
+typedef struct ai_goal_state_s {
+    ai_goal_services_t services;
+    ai_goal_candidate_t candidates[AI_GOAL_MAX_CANDIDATES];
+    int candidate_count;
+    ai_goal_selection_t active_goal;
+    ai_avoid_list_t avoid_goals;
+    int current_area;
+    unsigned int temp_goal_serial;
+} ai_goal_state_t;
+
+typedef struct ai_move_state_s {
+    ai_move_services_t services;
+    ai_avoid_list_t *shared_avoid;
+    ai_goal_selection_t last_goal;
+    bot_input_t last_input;
+    bool has_last_input;
+    bot_moveresult_t last_result;
+    bool has_last_result;
+} ai_move_state_t;
 
 ai_goal_state_t *AI_GoalState_Create(void);
 void AI_GoalState_Destroy(ai_goal_state_t *state);
