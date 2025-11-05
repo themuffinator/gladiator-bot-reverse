@@ -11,9 +11,13 @@ find_package(Python3 COMPONENTS Interpreter)
 
 if(BOTLIB_PARITY_FRAMEWORK STREQUAL "cmocka")
     include(FetchContent)
+    # The original cmocka repository lives on git.cryptomilk.org, but that host
+    # frequently blocks automated fetches that originate from CI environments.
+    # Mirror the release tag from GitHub so contributors behind corporate
+    # proxies (and the hosted CI runners) can clone the dependency reliably.
     FetchContent_Declare(
         cmocka
-        GIT_REPOSITORY https://git.cryptomilk.org/projects/cmocka.git
+        GIT_REPOSITORY https://github.com/cmocka/cmocka.git
         GIT_TAG cmocka-1.1.7
         FIND_PACKAGE_ARGS 1.1.7
     )

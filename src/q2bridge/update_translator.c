@@ -11,7 +11,7 @@
 
 #include "botlib/common/l_libvar.h"
 
-#include "botlib/common/l_libvar.h"
+static void Bridge_LogMessage(int priority, const char *fmt, ...);
 
 #define BRIDGE_DEFAULT_MAX_ENTITIES 1024
 #define Q2_ABSOLUTE_MAX_ENTITIES 2048

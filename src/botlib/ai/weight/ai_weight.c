@@ -22,7 +22,7 @@ int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token);
 int PC_ExpectTokenString(pc_source_t *source, char *string);
 int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token);
 int PC_CheckTokenString(pc_source_t *source, char *string);
-int PC_AddGlobalDefine(char *string);
+int PC_AddGlobalDefine(const char *string);
 int PC_RemoveGlobalDefine(char *name);
 void StripDoubleQuotes(char *string);
 

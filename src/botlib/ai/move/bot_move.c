@@ -9,11 +9,17 @@
 #include "../../common/l_libvar.h"
 #include "../../common/l_log.h"
 #include "../../common/l_memory.h"
+#include "../../common/l_utils.h"
 #include "../../ea/ea_local.h"
 #include "../../../q2bridge/bridge.h"
 #include "../../../q2bridge/bridge_config.h"
 
 static bot_movestate_t *g_botMoveStates[MAX_CLIENTS + 1];
+
+static float VectorNormalizeInline(vec3_t v);
+static float VectorNormalizeTo(const vec3_t src, vec3_t dst);
+static int BotMove_FindAreaForPoint(const vec3_t origin);
+static float BotMove_TravelTimeout(int traveltype);
 
 static const char *BotMove_DefaultGrappleModel(void)
 {
@@ -167,8 +173,8 @@ bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const aas_reachability_t
     }
 
     float start_dist = VectorNormalizeInline(approach_dir);
-    float yaw_diff = fabsf(AngleDiff(ideal_viewangles[YAW], ms->viewangles[YAW]));
-    float pitch_diff = fabsf(AngleDiff(ideal_viewangles[PITCH], ms->viewangles[PITCH]));
+    float yaw_diff = fabsf(AngleDelta(ideal_viewangles[YAW], ms->viewangles[YAW]));
+    float pitch_diff = fabsf(AngleDelta(ideal_viewangles[PITCH], ms->viewangles[PITCH]));
 
     ms->grapplevisible_time = aasworld.time;
 
@@ -180,7 +186,7 @@ bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const aas_reachability_t
         vec3_t grapple_delta;
         VectorSubtract(reach->end, ms->origin, grapple_delta);
         grapple_delta[2] = 0.0f;
-        ms->lastgrappledist = VectorLength(grapple_delta);
+        ms->lastgrappledist = sqrtf(VectorLengthSquared(grapple_delta));
         result.flags |= MOVERESULT_MOVEMENTWEAPON;
         ms->reachability_time = aasworld.time + BotMove_TravelTimeout(TRAVEL_GRAPPLEHOOK);
         result.weapon = 0;
@@ -485,11 +491,6 @@ static bool BotMove_HandleGroundMover(bot_movestate_t *ms, bot_moveresult_t *res
     result->failure = 1;
     result->diagnostics |= BotMove_DiagnosticForMover(catalogue->kind, false);
     return true;
-}
-
-static float VectorLengthSquared(const vec3_t v)
-{
-    return v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
 }
 
 static float VectorNormalizeInline(vec3_t v)
@@ -1497,7 +1498,7 @@ int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type)
     return 1;
 }
 
-void BotResetAvoidReach(int movestate)
+void BotMove_ResetAvoidReach(int movestate)
 {
     bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
     if (ms == NULL)

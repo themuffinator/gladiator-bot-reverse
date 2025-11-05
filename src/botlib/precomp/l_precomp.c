@@ -1731,15 +1731,32 @@ int PC_AddDefine(pc_source_t *source, char *string)
 // Returns:					-
 // Changes Globals:		-
 //============================================================================
-int PC_AddGlobalDefine(char *string)
+int PC_AddGlobalDefine(const char *string)
 {
-	pc_define_t *define;
+        if (string == NULL)
+        {
+                return qfalse;
+        }
 
-	define = PC_DefineFromString(string);
-	if (!define) return qfalse;
-	define->next = globaldefines;
-	globaldefines = define;
-	return qtrue;
+        size_t length = strlen(string);
+        char *mutable_copy = (char *)malloc(length + 1U);
+        if (mutable_copy == NULL)
+        {
+                return qfalse;
+        }
+
+        memcpy(mutable_copy, string, length + 1U);
+
+        pc_define_t *define = PC_DefineFromString(mutable_copy);
+        free(mutable_copy);
+        if (define == NULL)
+        {
+                return qfalse;
+        }
+
+        define->next = globaldefines;
+        globaldefines = define;
+        return qtrue;
 } //end of the function PC_AddGlobalDefine
 //============================================================================
 // remove the given global define

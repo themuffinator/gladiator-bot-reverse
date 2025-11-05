@@ -385,7 +385,8 @@ static unsigned short AAS_LocalTravelTime(int areanum, const vec3_t origin)
         return 0;
     }
 
-    const vec3_t center = aasworld.areas[areanum].center;
+    vec3_t center;
+    VectorCopy(aasworld.areas[areanum].center, center);
     float distance = VectorDistance(origin, center);
     float travel = distance * 0.33f;
     if (travel < 0.0f)

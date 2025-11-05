@@ -131,7 +131,7 @@ int AI_GoalBotlib_GetSecondGoal(int handle, bot_goal_t *goal)
 }
 
 int AI_GoalBotlib_Update(int handle,
-                         const vec3_t origin,
+                         vec3_t origin,
                          int *inventory,
                          int travelflags,
                          float now,

@@ -423,26 +423,6 @@ static void ai_goal_consider_pointlight_events(ai_goal_state_t *state,
     }
 }
 
-struct ai_goal_state_s {
-    ai_goal_services_t services;
-    ai_goal_candidate_t candidates[AI_GOAL_MAX_CANDIDATES];
-    int candidate_count;
-    ai_goal_selection_t active_goal;
-    ai_avoid_list_t avoid_goals;
-    int current_area;
-    unsigned int temp_goal_serial;
-};
-
-struct ai_move_state_s {
-    ai_move_services_t services;
-    ai_avoid_list_t *shared_avoid;
-    ai_goal_selection_t last_goal;
-    bot_input_t last_input;
-    bool has_last_input;
-    bot_moveresult_t last_result;
-    bool has_last_result;
-};
-
 static void ai_goal_state_reset(ai_goal_state_t *state)
 {
     if (state == NULL) {
@@ -871,7 +851,7 @@ int AI_MoveOrchestrator_Dispatch(ai_move_state_t *state,
             return status;
         }
     } else {
-        VectorSubtract(selection->candidate.origin, vec3_origin, out_input->dir);
+        VectorCopy(selection->candidate.origin, out_input->dir);
         out_input->speed = selection->score;
     }
 
