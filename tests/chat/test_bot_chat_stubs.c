@@ -3,11 +3,19 @@
 #include "botlib/interface/botlib_interface.h"
 
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 void BotLib_Print(int type, const char *fmt, ...) {
     (void)type;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+}
+
+void BotLib_LogWrite(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     vfprintf(stderr, fmt, args);
@@ -36,6 +44,16 @@ void *GetClearedMemory(size_t size) {
     return calloc(1, size);
 }
 
+void *GetMemory(size_t size) {
+    return malloc(size);
+}
+
 void FreeMemory(void *ptr) {
     free(ptr);
+}
+
+bool BotLib_LocateAssetRoot(char *buffer, size_t size) {
+    (void)buffer;
+    (void)size;
+    return false;
 }
