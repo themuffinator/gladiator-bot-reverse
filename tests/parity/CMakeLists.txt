@@ -2,8 +2,6 @@ if(NOT BUILD_TESTING)
     return()
 endif()
 
-option(BOTLIB_PARITY_ENABLE_SOURCES "Build botlib parity test sources" OFF)
-
 set(PARITY_TEST_SOURCES
     botlib_contract_loader.c
     jsmn.c

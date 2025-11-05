@@ -4,8 +4,27 @@ if(NOT BUILD_TESTING)
     return()
 endif()
 
-set(BOTLIB_PARITY_FRAMEWORK "none" CACHE STRING "Unit test framework for botlib parity checks")
+option(BOTLIB_PARITY_ENABLE_SOURCES "Build botlib parity test sources" OFF)
+
+set(_botlib_parity_framework_default "none")
+if(BOTLIB_PARITY_ENABLE_SOURCES)
+    set(_botlib_parity_framework_default "cmocka")
+endif()
+
+if(NOT DEFINED CACHE{BOTLIB_PARITY_FRAMEWORK})
+    set(BOTLIB_PARITY_FRAMEWORK "${_botlib_parity_framework_default}" CACHE STRING
+        "Unit test framework for botlib parity checks")
+elseif(BOTLIB_PARITY_ENABLE_SOURCES AND BOTLIB_PARITY_FRAMEWORK STREQUAL "none")
+    # Promote legacy caches that were configured before the framework default was adjusted.
+    set(BOTLIB_PARITY_FRAMEWORK "${_botlib_parity_framework_default}" CACHE STRING
+        "Unit test framework for botlib parity checks" FORCE)
+endif()
 mark_as_advanced(BOTLIB_PARITY_FRAMEWORK)
+
+if(BOTLIB_PARITY_ENABLE_SOURCES AND BOTLIB_PARITY_FRAMEWORK STREQUAL "none")
+    message(FATAL_ERROR
+        "BOTLIB_PARITY_ENABLE_SOURCES=ON requires BOTLIB_PARITY_FRAMEWORK to select a supported framework, e.g. cmocka")
+endif()
 
 find_package(Python3 COMPONENTS Interpreter)
 
