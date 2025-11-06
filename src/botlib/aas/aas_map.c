@@ -32,6 +32,7 @@ static void AAS_ParseEntityLump(const char *data, size_t length);
  * during shutdown; the struct layout mirrors that memory region.
  */
 aas_world_t aasworld = {0};
+static qboolean g_aasLibraryInitialized = qfalse;
 
 qboolean AAS_WorldLoaded(void)
 {
@@ -40,14 +41,14 @@ qboolean AAS_WorldLoaded(void)
 
 int AAS_Init(void)
 {
-    if (aasworld.initialized)
+    if (g_aasLibraryInitialized)
     {
         return BLERR_NOERROR;
     }
 
     AAS_ClearWorld();
-    aasworld.initialized = qtrue;
-    BotLib_Print(PRT_MESSAGE, "AAS initialized.\n");
+    aasworld.initialized = qfalse;
+    g_aasLibraryInitialized = qtrue;
     return BLERR_NOERROR;
 }
 
@@ -1451,12 +1452,9 @@ int AAS_LoadMap(const char *mapname,
     aasworld.maxEntities = 0;
     aasworld.entities = NULL;
     aasworld.entitiesValid = qfalse;
-    aasworld.time = 0.0f;
     aasworld.numFrames = 0;
     aasworld.loaded = qtrue;
-    aasworld.initialized = qtrue;
-    aasworld.entitiesValid = qfalse;
-    aasworld.maxEntities = 0;
+    aasworld.initialized = qfalse;
 
     if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
     {
@@ -1484,7 +1482,7 @@ int AAS_LoadMap(const char *mapname,
 
     AAS_InvalidateRouteCache();
 
-    TranslateEntity_SetCurrentTime(0.0f);
+    AAS_FrameSynchronise(0.0f);
     TranslateEntity_SetWorldLoaded(qtrue);
     return BLERR_NOERROR;
 }
@@ -1499,6 +1497,7 @@ void AAS_Shutdown(void)
     TranslateEntity_SetCurrentTime(0.0f);
     TranslateEntity_SetWorldLoaded(qfalse);
     AAS_ClearWorld();
+    g_aasLibraryInitialized = qfalse;
 }
 
 static int AAS_EnsureEntityCapacity(int ent)

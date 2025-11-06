@@ -1682,6 +1682,117 @@ static void test_bot_bridge_tracks_mover_entity_updates(void **state)
     context->api->BotShutdownClient(1);
 }
 
+static void test_bot_start_frame_entity_lifecycle(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotLoadMap("maps/test2.bsp", 0, NULL, 0, NULL, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(aasworld.loaded);
+
+    status = context->api->BotStartFrame(0.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateentity_t entity;
+    memset(&entity, 0, sizeof(entity));
+    entity.solid = 31;
+    entity.modelindex = 2;
+    VectorSet(entity.origin, 32.0f, 24.0f, 40.0f);
+    VectorCopy(entity.origin, entity.old_origin);
+    VectorCopy(entity.origin, entity.previous_origin);
+    VectorSet(entity.mins, -16.0f, -16.0f, -16.0f);
+    VectorSet(entity.maxs, 16.0f, 16.0f, 16.0f);
+
+    const int entityNum = 7;
+    status = context->api->BotUpdateEntity(entityNum, &entity);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(aasworld.entitiesValid);
+    assert_non_null(aasworld.entities);
+    assert_true(aasworld.entities[entityNum].inuse);
+
+    const aas_entity_t *tracked = &aasworld.entities[entityNum];
+    assert_non_null(tracked->areas);
+
+    status = context->api->BotStartFrame(0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_false(aasworld.entities[entityNum].inuse);
+    assert_non_null(aasworld.entities[entityNum].areas);
+    assert_false(aasworld.entitiesValid);
+
+    status = context->api->BotStartFrame(0.2f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_null(aasworld.entities[entityNum].areas);
+    assert_true(aasworld.entities[entityNum].outsideAllAreas);
+    assert_false(aasworld.entitiesValid);
+    assert_int_equal(aasworld.numFrames, 3);
+
+    context->api->BotShutdownLibrary();
+}
+
+static void test_bot_start_frame_updates_routing_diagnostics(void **state)
+{
+    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+    Mock_Reset(&context->mock);
+
+    int status = context->api->BotSetupLibrary();
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotLoadMap("maps/test2.bsp", 0, NULL, 0, NULL, 0, NULL);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(aasworld.loaded);
+
+    AAS_RouteFrameResetDiagnostics();
+    AAS_ReachabilityFrameResetDiagnostics();
+
+    status = context->api->BotLibVarSet("framereachability", "0");
+    assert_int_equal(status, BLERR_NOERROR);
+    status = context->api->BotLibVarSet("forcewrite", "0");
+    assert_int_equal(status, BLERR_NOERROR);
+    status = context->api->BotLibVarSet("forcereachability", "0");
+    assert_int_equal(status, BLERR_NOERROR);
+    status = context->api->BotLibVarSet("forceclustering", "0");
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotStartFrame(0.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(AAS_RouteFrameSkipCounter(), 1);
+    assert_int_equal(AAS_RouteFrameWorkCounter(), 0);
+    assert_int_equal(AAS_RouteFrameLastBudget(), 0);
+    assert_false(AAS_RouteFrameForceWriteActive());
+    assert_int_equal(AAS_ReachabilityFrameSkipCounter(), 1);
+    assert_int_equal(AAS_ReachabilityFrameWorkCounter(), 0);
+    assert_false(AAS_ReachabilityForceReachabilityActive());
+    assert_false(AAS_ReachabilityForceClusteringActive());
+
+    status = context->api->BotLibVarSet("framereachability", "16");
+    assert_int_equal(status, BLERR_NOERROR);
+    status = context->api->BotLibVarSet("forcewrite", "1");
+    assert_int_equal(status, BLERR_NOERROR);
+    status = context->api->BotLibVarSet("forcereachability", "1");
+    assert_int_equal(status, BLERR_NOERROR);
+    status = context->api->BotLibVarSet("forceclustering", "1");
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotStartFrame(0.2f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(AAS_RouteFrameSkipCounter(), 1);
+    assert_int_equal(AAS_RouteFrameWorkCounter(), 1);
+    assert_int_equal(AAS_RouteFrameLastBudget(), 16);
+    assert_true(AAS_RouteFrameForceWriteActive());
+    assert_int_equal(AAS_ReachabilityFrameSkipCounter(), 1);
+    assert_int_equal(AAS_ReachabilityFrameWorkCounter(), 1);
+    assert_true(AAS_ReachabilityForceReachabilityActive());
+    assert_true(AAS_ReachabilityForceClusteringActive());
+
+    context->api->BotShutdownLibrary();
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -1713,6 +1824,12 @@ int main(void)
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_interface_mover_parity,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_start_frame_entity_lifecycle,
+                                        setup_bot_interface,
+                                        teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_routing_diagnostics,
                                         setup_bot_interface,
                                         teardown_bot_interface),
         cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,

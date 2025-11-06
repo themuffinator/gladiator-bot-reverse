@@ -2089,7 +2089,13 @@ static int BotStartFrame(float time)
     }
 
     BotInterface_BeginFrame(time);
-    aasworld.time = time;
+    AAS_FrameSynchronise(time);
+    AAS_UnlinkInvalidEntities();
+    AAS_InvalidateEntities();
+    AAS_ContinueInit(time);
+    AAS_RouteFrameUpdate();
+    AAS_ReachabilityFrameUpdate();
+
     aasworld.numFrames += 1;
 
     return BLERR_NOERROR;
