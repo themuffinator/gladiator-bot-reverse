@@ -142,6 +142,8 @@ contains the following slots:
 | `BotInput` | `void (*)(int client, bot_input_t *bi)` | Push controller commands collected by the bot into the engine. |
 | `BotClientCommand` | `void (*)(int client, char *str, ...)` | Issue console commands to the client. |
 | `Print` | `void (*)(int type, char *fmt, ...)` | Send formatted diagnostics to the engine log. |
+| `CvarGet` | `cvar_t *(*)(const char *name, const char *default_value, int flags)` | Query or create console variables within the engine. |
+| `Error` | `void (*)(const char *fmt, ...)` | Emit fatal diagnostics routed through the engine's error handler. |
 | `Trace` | `bsp_trace_t (*)(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask)` | Query collision geometry for visibility or movement checks. |
 | `PointContents` | `int (*)(vec3_t point)` | Determine the material or contents at a point in space. |
 | `GetMemory` | `void *(*)(int size)` | Allocate memory through the engine. |

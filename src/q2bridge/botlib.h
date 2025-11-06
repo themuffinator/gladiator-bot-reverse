@@ -5,6 +5,9 @@
 #include "shared/platform_export.h"
 #include "../shared/q_shared.h"
 
+struct cvar_s;
+typedef struct cvar_s cvar_t;
+
 struct bot_goal_s;
 typedef struct bot_goal_s bot_goal_t;
 
@@ -240,6 +243,8 @@ typedef struct bot_import_s {
     void (*BotInput)(int client, bot_input_t *bi);
     void (*BotClientCommand)(int client, char *str, ...);
     void (*Print)(int type, char *fmt, ...);
+    cvar_t *(*CvarGet)(const char *name, const char *default_value, int flags);
+    void (*Error)(const char *fmt, ...);
     bsp_trace_t (*Trace)(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end,
                          int passent, int contentmask);
     int  (*PointContents)(vec3_t point);

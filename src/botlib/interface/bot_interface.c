@@ -1642,6 +1642,7 @@ static int BotShutdownLibraryWrapper(void)
     BotInterface_ResetEntityCache();
     BotInterface_ResetFrameQueues();
     g_botInterfaceDebugDrawEnabled = false;
+    Q2Bridge_SetDebugLinesEnabled(false);
 
     AAS_Shutdown();
 
@@ -1669,6 +1670,7 @@ static int BotInterface_BotShutdownLibrary(void)
     BotInterface_ResetEntityCache();
     BotInterface_ResetFrameQueues();
     g_botInterfaceDebugDrawEnabled = false;
+    Q2Bridge_SetDebugLinesEnabled(false);
 
     AAS_Shutdown();
     BotInterface_FreeImportCache();
@@ -2893,19 +2895,23 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
             if (BotInterface_StringCompareIgnoreCase(arguments, "on") == 0)
             {
                 g_botInterfaceDebugDrawEnabled = true;
+                Q2Bridge_SetDebugLinesEnabled(g_botInterfaceDebugDrawEnabled);
             }
             else if (BotInterface_StringCompareIgnoreCase(arguments, "off") == 0)
             {
                 g_botInterfaceDebugDrawEnabled = false;
+                Q2Bridge_SetDebugLinesEnabled(g_botInterfaceDebugDrawEnabled);
             }
             else
             {
                 g_botInterfaceDebugDrawEnabled = (strtol(arguments, NULL, 10) != 0);
+                Q2Bridge_SetDebugLinesEnabled(g_botInterfaceDebugDrawEnabled);
             }
         }
         else
         {
             g_botInterfaceDebugDrawEnabled = !g_botInterfaceDebugDrawEnabled;
+            Q2Bridge_SetDebugLinesEnabled(g_botInterfaceDebugDrawEnabled);
         }
 
         BotInterface_Printf(PRT_MESSAGE,
@@ -2930,6 +2936,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     BotInterface_BuildImportTable(import);
     BotInterface_SetImportTable(&g_botInterfaceImportTable);
     Q2Bridge_SetImportTable(import);
+    Q2Bridge_SetDebugLinesEnabled(g_botInterfaceDebugDrawEnabled);
     Bridge_ResetCachedUpdates();
     assert(g_botImport != NULL);
 
