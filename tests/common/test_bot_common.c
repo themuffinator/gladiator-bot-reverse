@@ -8,12 +8,12 @@
 #include <string.h>
 #include <limits.h>
 
-#include "botlib/common/l_assets.h"
-#include "botlib/common/l_crc.h"
-#include "botlib/common/l_libvar.h"
-#include "botlib/common/l_struct.h"
-#include "botlib/common/l_utils.h"
-#include "botlib/precomp/l_precomp.h"
+#include "botlib_common/l_assets.h"
+#include "botlib_common/l_crc.h"
+#include "botlib_common/l_libvar.h"
+#include "botlib_common/l_struct.h"
+#include "botlib_common/l_utils.h"
+#include "botlib_precomp/l_precomp.h"
 #include "shared/q_platform.h"
 
 #include <errno.h>

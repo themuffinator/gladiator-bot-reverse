@@ -8,12 +8,12 @@
 
 #include <cmocka.h>
 
-#include "botlib/ai/move/bot_move.h"
-#include "botlib/aas/aas_local.h"
-#include "botlib/common/l_libvar.h"
-#include "botlib/common/l_memory.h"
-#include "botlib/ea/ea_local.h"
-#include "botlib/interface/botlib_interface.h"
+#include "botlib_ai_move/bot_move.h"
+#include "botlib_aas/aas_local.h"
+#include "botlib_common/l_libvar.h"
+#include "botlib_common/l_memory.h"
+#include "botlib_ea/ea_local.h"
+#include "botlib_interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/bridge_config.h"
 

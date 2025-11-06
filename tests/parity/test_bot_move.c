@@ -7,13 +7,13 @@
 
 #include <cmocka.h>
 
-#include "botlib/aas/aas_local.h"
-#include "botlib/aas/aas_map.h"
-#include "botlib/ai/move/bot_move.h"
-#include "botlib/ai/move/mover_catalogue.h"
-#include "botlib/common/bot_common.h"
-#include "botlib/common/l_libvar.h"
-#include "botlib/interface/botlib_interface.h"
+#include "botlib_aas/aas_local.h"
+#include "botlib_aas/aas_map.h"
+#include "botlib_ai_move/bot_move.h"
+#include "botlib_ai_move/mover_catalogue.h"
+#include "botlib_common/bot_common.h"
+#include "botlib_common/l_libvar.h"
+#include "botlib_interface/botlib_interface.h"
 
 #define TEST_LOG_CAPACITY 8
 

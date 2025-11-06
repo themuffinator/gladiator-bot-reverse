@@ -9,7 +9,7 @@
 #include "q2bridge/bridge.h"
 #include "q2bridge/bridge_config.h"
 
-#include "botlib/common/l_libvar.h"
+#include "botlib_common/l_libvar.h"
 
 static void Bridge_LogMessage(int priority, const char *fmt, ...);
 

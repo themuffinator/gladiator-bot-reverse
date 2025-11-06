@@ -4,9 +4,9 @@ endif()
 
 add_executable(bot_chat_tests
     test_bot_chat.c
-    ${PROJECT_SOURCE_DIR}/src/botlib/ai/chat/ai_chat.c
-    ${PROJECT_SOURCE_DIR}/src/botlib/precomp/l_precomp.c
-    ${PROJECT_SOURCE_DIR}/src/botlib/precomp/l_script.c
+    ${PROJECT_SOURCE_DIR}/src/botlib_ai_chat/ai_chat.c
+    ${PROJECT_SOURCE_DIR}/src/botlib_precomp/l_precomp.c
+    ${PROJECT_SOURCE_DIR}/src/botlib_precomp/l_script.c
     test_bot_chat_stubs.c
 )
 

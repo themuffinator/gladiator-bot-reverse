@@ -1,8 +1,8 @@
 #ifndef TESTS_REFERENCE_PRECOMP_LEXER_EXPECTATIONS_H
 #define TESTS_REFERENCE_PRECOMP_LEXER_EXPECTATIONS_H
 
-#include "botlib/precomp/l_precomp.h"
-#include "botlib/precomp/l_script.h"
+#include "botlib_precomp/l_precomp.h"
+#include "botlib_precomp/l_script.h"
 
 #ifdef __cplusplus
 extern "C" {

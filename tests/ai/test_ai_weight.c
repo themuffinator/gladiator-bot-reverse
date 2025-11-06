@@ -7,8 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "botlib/ai/weight/bot_weight.h"
-#include "botlib/common/l_libvar.h"
+#include "botlib_ai_weight/bot_weight.h"
+#include "botlib_common/l_libvar.h"
 #include "inv.h"
 
 #ifndef PROJECT_SOURCE_DIR

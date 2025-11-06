@@ -16,8 +16,9 @@ implementations while the reverse-engineered logic is reconstructed.
 
 These names reflect the interfaces invoked by `GetBotLibAPI` when the engine
 binds botlib exports (see `botlib_export_t` in the Quake III Arena source). As
-reconstruction progresses, ensure the same signatures exist under
-`src/botlib/ai/` so downstream modules can link without modification.
+reconstruction progresses, ensure the same signatures exist under the
+`src/botlib_ai*` directories so downstream modules can link without
+modification.
 
 ## Chat HLIL String Mapping
 
@@ -34,7 +35,7 @@ of the full translation.
 | `"couldn't load chat %s from %s\n"` | Final failure path after attempting to load and cache a chat file.| `BotLoadChatFile` export, propagating loader errors up to the engine. | HLIL `sub_1002dff0` reports the error; Quake III signals it from `BotLoadChatFile`.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36258-L36268】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2226-L2239】 |
 | `"BotConstructChat: message ..."` family | String assembly helper validates message length, random string tables, and variable expansion.| `BotConstructChatMessage`, used by in-game events such as `BotChat_EnterGame`, `BotChat_Kill`, and other response helpers.| HLIL `sub_1002e060` enforces length/random string checks; Quake III's `BotConstructChatMessage` performs the same validations before dispatching event-specific chats.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36290-L36374】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2289-L2399】 |
 
-These correlations ensure the new stubs in `src/botlib/ai/chat` can call into
+These correlations ensure the new stubs in `src/botlib_ai_chat` can call into
 the script precompiler and structure their TODOs around the actual chat event
 flow (`BotChat_EnterGame`, `BotChat_Kill`, etc.) observed in both the HLIL dump
 and id Software's GPL source.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L35770-L36374】【F:dev_tools/Quake-III-Arena-master/code/game/ai_chat.c†L415-L898】
