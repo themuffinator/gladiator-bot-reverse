@@ -1580,6 +1580,27 @@ static void BotInterface_Printf(int priority, const char *fmt, ...)
     g_botImport->Print(priority, "%s", buffer);
 }
 
+static bool BotInterface_EnsureLibraryReady(const char *function_name)
+{
+    if (g_botImport == NULL)
+    {
+        return false;
+    }
+
+    if (!BotLibraryInitialized())
+    {
+        if (function_name != NULL)
+        {
+            BotInterface_Printf(PRT_ERROR,
+                                 "[bot_interface] %s: library not initialised\\n",
+                                 function_name);
+        }
+        return false;
+    }
+
+    return true;
+}
+
 static bot_chatstate_t *BotInterface_EnsureConsoleChatState(void)
 {
     if (g_botInterfaceConsoleChat == NULL) {
@@ -2926,9 +2947,393 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
     return BLERR_INVALIDIMPORT;
 }
 
+static int BotInterface_BotWeightIndex(int handle, const char *classname)
+{
+    if (!BotInterface_EnsureLibraryReady("BotWeightIndex"))
+    {
+        return -1;
+    }
+
+    return BotWeightIndex(handle, classname);
+}
+
+static int BotInterface_BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal)
+{
+    if (!BotInterface_EnsureLibraryReady("BotTouchingGoal"))
+    {
+        return 0;
+    }
+
+    return BotTouchingGoal(origin, goal);
+}
+
+static int BotInterface_BotAllocWeightConfig(void)
+{
+    if (!BotInterface_EnsureLibraryReady("BotAllocWeightConfig"))
+    {
+        return 0;
+    }
+
+    return BotAllocWeightConfig();
+}
+
+static void BotInterface_BotFreeWeightConfig(int handle)
+{
+    if (!BotInterface_EnsureLibraryReady("BotFreeWeightConfig"))
+    {
+        return;
+    }
+
+    BotFreeWeightConfig(handle);
+}
+
+static void BotInterface_BotFreeWeightConfig2(bot_weight_config_t *config)
+{
+    if (!BotInterface_EnsureLibraryReady("BotFreeWeightConfig2"))
+    {
+        return;
+    }
+
+    BotFreeWeightConfig2(config);
+}
+
+static int BotInterface_BotLoadWeights(int handle, const char *filename)
+{
+    if (!BotInterface_EnsureLibraryReady("BotLoadWeights"))
+    {
+        return 0;
+    }
+
+    return BotLoadWeights(handle, filename);
+}
+
+static int BotInterface_BotWriteWeights(int handle, const char *filename)
+{
+    if (!BotInterface_EnsureLibraryReady("BotWriteWeights"))
+    {
+        return 0;
+    }
+
+    return BotWriteWeights(handle, filename);
+}
+
+static int BotInterface_BotSetWeight(int handle, const char *name, float value)
+{
+    if (!BotInterface_EnsureLibraryReady("BotSetWeight"))
+    {
+        return 0;
+    }
+
+    return BotSetWeight(handle, name, value);
+}
+
+static bot_weight_config_t *BotInterface_BotReadWeightsFile(const char *filename)
+{
+    if (!BotInterface_EnsureLibraryReady("BotReadWeightsFile"))
+    {
+        return NULL;
+    }
+
+    return BotReadWeightsFile(filename);
+}
+
+static int BotInterface_BotAllocMoveState(void)
+{
+    if (!BotInterface_EnsureLibraryReady("BotAllocMoveState"))
+    {
+        return 0;
+    }
+
+    return BotAllocMoveState();
+}
+
+static void BotInterface_BotFreeMoveState(int handle)
+{
+    if (!BotInterface_EnsureLibraryReady("BotFreeMoveState"))
+    {
+        return;
+    }
+
+    BotFreeMoveState(handle);
+}
+
+static void BotInterface_BotResetMoveState(int handle)
+{
+    if (!BotInterface_EnsureLibraryReady("BotResetMoveState"))
+    {
+        return;
+    }
+
+    BotResetMoveState(handle);
+}
+
+static void BotInterface_BotInitMoveState(int handle, const bot_initmove_t *initmove)
+{
+    if (!BotInterface_EnsureLibraryReady("BotInitMoveState"))
+    {
+        return;
+    }
+
+    BotInitMoveState(handle, initmove);
+}
+
+static void BotInterface_BotMoveToGoal(bot_moveresult_t *result,
+                                       int movestate,
+                                       const bot_goal_t *goal,
+                                       int travelflags)
+{
+    if (!BotInterface_EnsureLibraryReady("BotMoveToGoal"))
+    {
+        if (result != NULL)
+        {
+            memset(result, 0, sizeof(*result));
+        }
+        return;
+    }
+
+    BotMoveToGoal(result, movestate, goal, travelflags);
+}
+
+static int BotInterface_BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type)
+{
+    if (!BotInterface_EnsureLibraryReady("BotMoveInDirection"))
+    {
+        return 0;
+    }
+
+    return BotMoveInDirection(movestate, dir, speed, type);
+}
+
+static void BotInterface_BotResetAvoidReach(int movestate)
+{
+    if (!BotInterface_EnsureLibraryReady("BotResetAvoidReach"))
+    {
+        return;
+    }
+
+    BotMove_ResetAvoidReach(movestate);
+}
+
+static int BotInterface_BotAllocWeaponState(void)
+{
+    if (!BotInterface_EnsureLibraryReady("BotAllocWeaponState"))
+    {
+        return 0;
+    }
+
+    return BotAllocWeaponState();
+}
+
+static void BotInterface_BotFreeWeaponState(int handle)
+{
+    if (!BotInterface_EnsureLibraryReady("BotFreeWeaponState"))
+    {
+        return;
+    }
+
+    BotFreeWeaponState(handle);
+}
+
+static void BotInterface_BotResetWeaponState(int handle)
+{
+    if (!BotInterface_EnsureLibraryReady("BotResetWeaponState"))
+    {
+        return;
+    }
+
+    BotResetWeaponState(handle);
+}
+
+static int BotInterface_BotLoadWeaponWeights(int weaponstate, const char *filename)
+{
+    if (!BotInterface_EnsureLibraryReady("BotLoadWeaponWeights"))
+    {
+        return BLERR_LIBRARYNOTSETUP;
+    }
+
+    return BotLoadWeaponWeights(weaponstate, filename);
+}
+
+static void BotInterface_BotFreeWeaponWeights(int weaponstate)
+{
+    if (!BotInterface_EnsureLibraryReady("BotFreeWeaponWeights"))
+    {
+        return;
+    }
+
+    BotFreeWeaponWeights(weaponstate);
+}
+
+static int BotInterface_BotChooseBestFightWeapon(int weaponstate, const int *inventory)
+{
+    if (!BotInterface_EnsureLibraryReady("BotChooseBestFightWeapon"))
+    {
+        return 0;
+    }
+
+    return BotChooseBestFightWeapon(weaponstate, inventory);
+}
+
+static int BotInterface_BotGetTopRankedWeapon(int weaponstate)
+{
+    if (!BotInterface_EnsureLibraryReady("BotGetTopRankedWeapon"))
+    {
+        return 0;
+    }
+
+    return BotGetTopRankedWeapon(weaponstate);
+}
+
+static void BotInterface_BotGetWeaponInfo(int weaponstate, int weapon, bot_weapon_info_t *weaponinfo)
+{
+    if (!BotInterface_EnsureLibraryReady("BotGetWeaponInfo"))
+    {
+        if (weaponinfo != NULL)
+        {
+            memset(weaponinfo, 0, sizeof(*weaponinfo));
+        }
+        return;
+    }
+
+    BotGetWeaponInfo(weaponstate, weapon, weaponinfo);
+}
+
+static void BotInterface_BotFreeCharacterStrings(ai_character_profile_t *profile)
+{
+    if (!BotInterface_EnsureLibraryReady("BotFreeCharacterStrings"))
+    {
+        return;
+    }
+
+    BotFreeCharacterStrings(profile);
+}
+
+static bot_chatstate_t *BotInterface_BotAllocChatState(void)
+{
+    if (!BotInterface_EnsureLibraryReady("BotAllocChatState"))
+    {
+        return NULL;
+    }
+
+    return BotAllocChatState();
+}
+
+static void BotInterface_BotFreeChatState(bot_chatstate_t *state)
+{
+    if (!BotInterface_EnsureLibraryReady("BotFreeChatState"))
+    {
+        return;
+    }
+
+    BotFreeChatState(state);
+}
+
+static int BotInterface_BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *chatname)
+{
+    if (!BotInterface_EnsureLibraryReady("BotLoadChatFile"))
+    {
+        return 0;
+    }
+
+    return BotLoadChatFile(state, chatfile, chatname);
+}
+
+static void BotInterface_BotFreeChatFile(bot_chatstate_t *state)
+{
+    if (!BotInterface_EnsureLibraryReady("BotFreeChatFile"))
+    {
+        return;
+    }
+
+    BotFreeChatFile(state);
+}
+
+static void BotInterface_BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message)
+{
+    if (!BotInterface_EnsureLibraryReady("BotQueueConsoleMessage"))
+    {
+        return;
+    }
+
+    BotQueueConsoleMessage(state, type, message);
+}
+
+static int BotInterface_BotRemoveConsoleMessage(bot_chatstate_t *state, int type)
+{
+    if (!BotInterface_EnsureLibraryReady("BotRemoveConsoleMessage"))
+    {
+        return 0;
+    }
+
+    return BotRemoveConsoleMessage(state, type);
+}
+
+static int BotInterface_BotNextConsoleMessage(bot_chatstate_t *state,
+                                              int *type,
+                                              char *buffer,
+                                              size_t buffer_size)
+{
+    if (!BotInterface_EnsureLibraryReady("BotNextConsoleMessage"))
+    {
+        if (type != NULL)
+        {
+            *type = 0;
+        }
+        if (buffer != NULL && buffer_size > 0)
+        {
+            buffer[0] = '\0';
+        }
+        return 0;
+    }
+
+    return BotNextConsoleMessage(state, type, buffer, buffer_size);
+}
+
+static size_t BotInterface_BotNumConsoleMessages(const bot_chatstate_t *state)
+{
+    if (!BotInterface_EnsureLibraryReady("BotNumConsoleMessages"))
+    {
+        return 0U;
+    }
+
+    return BotNumConsoleMessages(state);
+}
+
+static void BotInterface_BotEnterChat(bot_chatstate_t *state, int client, int sendto)
+{
+    if (!BotInterface_EnsureLibraryReady("BotEnterChat"))
+    {
+        return;
+    }
+
+    BotEnterChat(state, client, sendto);
+}
+
+static int BotInterface_BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context)
+{
+    if (!BotInterface_EnsureLibraryReady("BotReplyChat"))
+    {
+        return 0;
+    }
+
+    return BotReplyChat(state, message, context);
+}
+
+static int BotInterface_BotChatLength(const char *message)
+{
+    if (!BotInterface_EnsureLibraryReady("BotChatLength"))
+    {
+        return 0;
+    }
+
+    return BotChatLength(message);
+}
+
 GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 {
     static bot_export_t exportTable;
+
+    memset(&exportTable, 0, sizeof(exportTable));
 
     BotInterface_FreeImportCache();
     BotInterface_InitialiseImportTable(import);
@@ -2965,6 +3370,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotResetGoalState = AI_GoalBotlib_ResetState;
     exportTable.BotLoadItemWeights = AI_GoalBotlib_LoadItemWeights;
     exportTable.BotFreeItemWeights = AI_GoalBotlib_FreeItemWeights;
+    exportTable.BotWeightIndex = BotInterface_BotWeightIndex;
     exportTable.BotPushGoal = AI_GoalBotlib_PushGoal;
     exportTable.BotPopGoal = AI_GoalBotlib_PopGoal;
     exportTable.BotGetTopGoal = AI_GoalBotlib_GetTopGoal;
@@ -2977,14 +3383,49 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotRegisterLevelItem = AI_GoalBotlib_RegisterLevelItem;
     exportTable.BotUnregisterLevelItem = AI_GoalBotlib_UnregisterLevelItem;
     exportTable.BotMarkLevelItemTaken = AI_GoalBotlib_MarkItemTaken;
+    exportTable.BotTouchingGoal = BotInterface_BotTouchingGoal;
+    exportTable.BotAllocWeightConfig = BotInterface_BotAllocWeightConfig;
+    exportTable.BotFreeWeightConfig = BotInterface_BotFreeWeightConfig;
+    exportTable.BotFreeWeightConfig2 = BotInterface_BotFreeWeightConfig2;
+    exportTable.BotLoadWeights = BotInterface_BotLoadWeights;
+    exportTable.BotWriteWeights = BotInterface_BotWriteWeights;
+    exportTable.BotSetWeight = BotInterface_BotSetWeight;
+    exportTable.BotReadWeightsFile = BotInterface_BotReadWeightsFile;
+    exportTable.BotAllocMoveState = BotInterface_BotAllocMoveState;
+    exportTable.BotFreeMoveState = BotInterface_BotFreeMoveState;
+    exportTable.BotResetMoveState = BotInterface_BotResetMoveState;
+    exportTable.BotInitMoveState = BotInterface_BotInitMoveState;
+    exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
+    exportTable.BotMoveInDirection = BotInterface_BotMoveInDirection;
+    exportTable.BotResetAvoidReach = BotInterface_BotResetAvoidReach;
     exportTable.BotLoadCharacter = BotLoadCharacter;
     exportTable.BotFreeCharacter = BotFreeCharacter;
     exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
+    exportTable.BotFreeCharacterStrings = BotInterface_BotFreeCharacterStrings;
     exportTable.Characteristic_Float = Characteristic_Float;
     exportTable.Characteristic_BFloat = Characteristic_BFloat;
     exportTable.Characteristic_Integer = Characteristic_Integer;
     exportTable.Characteristic_BInteger = Characteristic_BInteger;
     exportTable.Characteristic_String = Characteristic_String;
+    exportTable.BotAllocWeaponState = BotInterface_BotAllocWeaponState;
+    exportTable.BotFreeWeaponState = BotInterface_BotFreeWeaponState;
+    exportTable.BotResetWeaponState = BotInterface_BotResetWeaponState;
+    exportTable.BotLoadWeaponWeights = BotInterface_BotLoadWeaponWeights;
+    exportTable.BotFreeWeaponWeights = BotInterface_BotFreeWeaponWeights;
+    exportTable.BotChooseBestFightWeapon = BotInterface_BotChooseBestFightWeapon;
+    exportTable.BotGetTopRankedWeapon = BotInterface_BotGetTopRankedWeapon;
+    exportTable.BotGetWeaponInfo = BotInterface_BotGetWeaponInfo;
+    exportTable.BotAllocChatState = BotInterface_BotAllocChatState;
+    exportTable.BotFreeChatState = BotInterface_BotFreeChatState;
+    exportTable.BotLoadChatFile = BotInterface_BotLoadChatFile;
+    exportTable.BotFreeChatFile = BotInterface_BotFreeChatFile;
+    exportTable.BotQueueConsoleMessage = BotInterface_BotQueueConsoleMessage;
+    exportTable.BotRemoveConsoleMessage = BotInterface_BotRemoveConsoleMessage;
+    exportTable.BotNextConsoleMessage = BotInterface_BotNextConsoleMessage;
+    exportTable.BotNumConsoleMessages = BotInterface_BotNumConsoleMessages;
+    exportTable.BotEnterChat = BotInterface_BotEnterChat;
+    exportTable.BotReplyChat = BotInterface_BotReplyChat;
+    exportTable.BotChatLength = BotInterface_BotChatLength;
 
     return &exportTable;
 }

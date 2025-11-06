@@ -4,7 +4,7 @@ if(NOT BUILD_TESTING)
     return()
 endif()
 
-option(BOTLIB_PARITY_ENABLE_SOURCES "Build botlib parity test sources" OFF)
+option(BOTLIB_PARITY_ENABLE_SOURCES "Build botlib parity test sources" ON)
 
 set(_botlib_parity_framework_default "none")
 if(BOTLIB_PARITY_ENABLE_SOURCES)

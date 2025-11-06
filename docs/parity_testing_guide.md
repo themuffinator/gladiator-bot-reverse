@@ -14,10 +14,10 @@ This guide outlines how to configure a development environment for the botlib pa
 
 2. **Configure the build tree**
    ```bash
-   cmake -S . -B build -DBUILD_TESTING=ON -DBOTLIB_PARITY_ENABLE_SOURCES=ON
+   cmake -S . -B build -DBUILD_TESTING=ON
    ```
    - `BUILD_TESTING=ON` activates the `tests/` subtree. 【F:CMakeLists.txt†L17-L25】
-   - `BOTLIB_PARITY_ENABLE_SOURCES=ON` switches the parity target from the placeholder custom target to an executable that compiles `tests/parity/test_bot_interface.c`. Leave this option off if the suite should remain a stub during feature work. 【F:tests/parity/CMakeLists.txt†L1-L20】
+   - Parity sources are now enabled by default; pass `-DBOTLIB_PARITY_ENABLE_SOURCES=OFF` if you temporarily need the lightweight placeholder target instead of the cmocka fixtures. 【F:tests/parity/CMakeLists.txt†L1-L20】
 
 3. **Reconfigure when dependencies change**
    - If the FetchContent checkout becomes corrupted or cmocka fails to update, remove `build/_deps/cmocka-*` and rerun the configure command above. 【F:tests/CMakeLists.txt†L10-L23】
@@ -69,7 +69,7 @@ When HLIL review reveals new behaviour:
 - **cmocka fetch issues** – Delete the cached `_deps/cmocka-*` directories inside the build tree and rerun CMake to re-fetch the dependency. 【F:tests/CMakeLists.txt†L10-L23】
 - **Stale mock import tables** – After modifying the recording doubles or helper APIs described in `tests/README.md`, clean the parity target (`cmake --build build --target clean` or delete the corresponding `CMakeFiles` directory) before rebuilding so the updated structures are linked. 【F:tests/README.md†L5-L136】【F:tests/parity/test_bot_interface.c†L14-L25】
 - **Mismatched expectations after HLIL updates** – Re-run the catalogue update process above and ensure both the README and test fixtures reflect the latest findings before rerunning `ctest`.
-- **CTest finds no tests** – Confirm that both `BUILD_TESTING=ON` and `BOTLIB_PARITY_ENABLE_SOURCES=ON` were set during configuration; otherwise the parity target remains a placeholder custom target and no executable is built. 【F:tests/parity/CMakeLists.txt†L1-L20】
+- **CTest finds no tests** – Confirm that `BUILD_TESTING=ON` was supplied and that `BOTLIB_PARITY_ENABLE_SOURCES` was not explicitly forced to `OFF`; otherwise the parity target falls back to the placeholder custom target and no executable is built. 【F:tests/parity/CMakeLists.txt†L1-L20】
 
 Keeping this workflow up to date ensures contributors can quickly validate reconstructed functionality against the original Gladiator botlib contract while iterating on new discoveries from the HLIL traces.
 
