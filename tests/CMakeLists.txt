@@ -40,7 +40,26 @@ if(BOTLIB_PARITY_FRAMEWORK STREQUAL "cmocka")
         GIT_TAG cmocka-1.1.7
         FIND_PACKAGE_ARGS 1.1.7
     )
-    FetchContent_MakeAvailable(cmocka)
+    FetchContent_GetProperties(cmocka)
+    if(NOT cmocka_POPULATED)
+        FetchContent_Populate(cmocka)
+
+        set(_cmocka_cmakelists "${cmocka_SOURCE_DIR}/CMakeLists.txt")
+        if(EXISTS "${_cmocka_cmakelists}")
+            file(READ "${_cmocka_cmakelists}" _cmocka_root)
+            set(_cmocka_symlink_block [=[# Link combile database for clangd
+execute_process(COMMAND cmake -E create_symlink
+                "${cmocka_BINARY_DIR}/compile_commands.json"
+                "${cmocka_SOURCE_DIR}/compile_commands.json")
+]=])
+            string(REPLACE "${_cmocka_symlink_block}" "" _cmocka_patched "${_cmocka_root}")
+            if(NOT _cmocka_root STREQUAL _cmocka_patched)
+                file(WRITE "${_cmocka_cmakelists}" "${_cmocka_patched}")
+            endif()
+        endif()
+
+        add_subdirectory("${cmocka_SOURCE_DIR}" "${cmocka_BINARY_DIR}")
+    endif()
     if(NOT TARGET cmocka)
         add_library(cmocka INTERFACE)
         target_include_directories(cmocka INTERFACE ${cmocka_SOURCE_DIR}/include)
