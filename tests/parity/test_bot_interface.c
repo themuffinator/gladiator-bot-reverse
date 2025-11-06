@@ -10,6 +10,7 @@
 
 #include <cmocka.h>
 
+#include "q2bridge/bridge.h"
 #include "botlib/interface/bot_interface.h"
 #include "botlib/interface/bot_state.h"
 #include "botlib/ai/chat/ai_chat.h"
@@ -109,6 +110,32 @@ static void Mock_Print(int type, char *fmt, ...)
         strncpy(slot->message, buffer, sizeof(slot->message) - 1);
         slot->message[sizeof(slot->message) - 1] = '\0';
     }
+}
+
+static void Mock_Error(const char *fmt, ...)
+{
+    if (fmt == NULL)
+    {
+        return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+    va_end(args);
+
+    Mock_Print(PRT_ERROR, "%s", buffer);
+}
+
+static cvar_t *Mock_CvarGet(const char *name, const char *default_value, int flags)
+{
+    (void)name;
+    (void)default_value;
+    (void)flags;
+    return NULL;
 }
 
 static void Mock_BotInput(int client, bot_input_t *input)
@@ -592,6 +619,8 @@ static int setup_bot_interface(void **state)
     context->mock.table.BotInput = Mock_BotInput;
     context->mock.table.BotClientCommand = Mock_BotClientCommand;
     context->mock.table.Print = Mock_Print;
+    context->mock.table.CvarGet = Mock_CvarGet;
+    context->mock.table.Error = Mock_Error;
     context->mock.table.Trace = Mock_Trace;
     context->mock.table.PointContents = Mock_PointContents;
     context->mock.table.GetMemory = Mock_GetMemory;

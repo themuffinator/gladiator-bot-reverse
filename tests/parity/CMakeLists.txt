@@ -5,10 +5,12 @@ endif()
 set(PARITY_TEST_SOURCES
     botlib_contract_loader.c
     jsmn.c
+    ${PROJECT_SOURCE_DIR}/src/q2bridge/bridge.c
     test_bot_interface.c
     test_bot_move.c
     test_precompiler_lexer.c
     test_aas_debug.c
+    test_bridge.c
     test_update_translator.c
     ../support/asset_env.c
 )
