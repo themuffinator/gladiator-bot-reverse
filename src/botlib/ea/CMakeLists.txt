@@ -2,6 +2,12 @@ add_library(botlib_ea STATIC
     ea_main.c
 )
 
+register_botlib_sources(
+    TARGET botlib_ea
+    SOURCES
+        ea_main.c
+)
+
 target_include_directories(botlib_ea
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/..

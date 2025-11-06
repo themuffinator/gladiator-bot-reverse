@@ -4,6 +4,14 @@ add_library(botlib_interface STATIC
     botlib_interface.c
 )
 
+register_botlib_sources(
+    TARGET botlib_interface
+    SOURCES
+        bot_interface.c
+        bot_state.c
+        botlib_interface.c
+)
+
 target_include_directories(botlib_interface
     PUBLIC
         ${PROJECT_SOURCE_DIR}/src

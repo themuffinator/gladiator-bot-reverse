@@ -15,7 +15,13 @@ set(BOTLIB_AI_SOURCES
     chat/ai_chat.c
 )
 
-add_library(botlib_ai OBJECT ${BOTLIB_AI_SOURCES})
+add_library(botlib_ai STATIC ${BOTLIB_AI_SOURCES})
+
+register_botlib_sources(
+    TARGET botlib_ai
+    SOURCES
+        ${BOTLIB_AI_SOURCES}
+)
 
 target_include_directories(botlib_ai
     PUBLIC
