@@ -18,6 +18,12 @@ The following placeholder files capture the structure and integration points bef
 
 Both files will expand as we translate HLIL output into C code.
 
+## Runtime Lifecycle
+
+- `AAS_ContinueInit` finalises the map boot process inside `BotStartFrame`, mirroring the original DLL’s `AAS_StartFrame` continuation step before the routing work kicks off.【F:src/botlib/aas/aas_main.c†L62-L80】【F:src/botlib/interface/bot_interface.c†L2096-L2104】
+- `AAS_UnlinkInvalidEntities` and `AAS_InvalidateEntities` now run every frame, matching the HLIL sequence that invalidates entity state before consuming new snapshots.【F:src/botlib/aas/aas_main.c†L18-L61】【F:src/botlib/interface/bot_interface.c†L2096-L2103】
+- Routing and reachability diagnostics advance through the new per-frame bridge, ensuring libvar-driven budgets and force flags mirror the Quake III cadence.【F:src/botlib/interface/bot_interface.c†L2099-L2103】【F:src/botlib/aas/aas_route.c†L548-L604】【F:src/botlib/aas/aas_reach.c†L200-L232】
+
 ## Module Dependencies & Initialization Order
 
 1. **Libvars (`src/botlib/common/l_libvar.c`)** — Provide runtime configuration toggles such as `saveroutingcache`. Routing setup must query or define these before cache creation so that persistence settings are honoured.【F:src/botlib/common/l_libvar.c†L201-L291】
