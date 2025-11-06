@@ -14,14 +14,14 @@
 #define PATH_MAX 4096
 #endif
 
-#include "botlib/ai/character/bot_character.h"
-#include "botlib/ai/chat/ai_chat.h"
-#include "botlib/ai/weapon/bot_weapon.h"
-#include "botlib/ai/weight/bot_weight.h"
-#include "botlib/common/l_libvar.h"
-#include "botlib/common/l_memory.h"
-#include "botlib/interface/bot_state.h"
-#include "botlib/interface/botlib_interface.h"
+#include "botlib_ai_character/bot_character.h"
+#include "botlib_ai_chat/ai_chat.h"
+#include "botlib_ai_weapon/bot_weapon.h"
+#include "botlib_ai_weight/bot_weight.h"
+#include "botlib_common/l_libvar.h"
+#include "botlib_common/l_memory.h"
+#include "botlib_interface/bot_state.h"
+#include "botlib_interface/botlib_interface.h"
 #include "q2bridge/botlib.h"
 #include "../support/asset_env.h"
 

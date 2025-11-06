@@ -3,7 +3,7 @@
 
 #include "shared/bot_types.h"
 #include "shared/platform_export.h"
-#include "../shared/q_shared.h"
+#include "shared/q_shared.h"
 
 struct cvar_s;
 typedef struct cvar_s cvar_t;

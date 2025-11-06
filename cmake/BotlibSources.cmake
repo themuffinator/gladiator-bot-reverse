@@ -37,16 +37,26 @@ function(_botlib_relativize _input_list _output_var)
     set(${_output_var} "${_result}" PARENT_SCOPE)
 endfunction()
 
-function(verify_all_botlib_sources BOTLIB_ROOT)
-    if(NOT IS_DIRECTORY "${BOTLIB_ROOT}")
-        message(FATAL_ERROR "verify_all_botlib_sources: '${BOTLIB_ROOT}' is not a directory")
+function(verify_all_botlib_sources)
+    if(NOT ARGN)
+        message(FATAL_ERROR "verify_all_botlib_sources requires at least one directory")
     endif()
 
-    file(GLOB_RECURSE BOTLIB_DISCOVERED_SOURCES
-        LIST_DIRECTORIES FALSE
-        CONFIGURE_DEPENDS
-        "${BOTLIB_ROOT}/*.c"
-    )
+    set(BOTLIB_DISCOVERED_SOURCES)
+
+    foreach(BOTLIB_ROOT IN LISTS ARGN)
+        if(NOT IS_DIRECTORY "${BOTLIB_ROOT}")
+            message(FATAL_ERROR "verify_all_botlib_sources: '${BOTLIB_ROOT}' is not a directory")
+        endif()
+
+        file(GLOB_RECURSE _botlib_root_sources
+            LIST_DIRECTORIES FALSE
+            CONFIGURE_DEPENDS
+            "${BOTLIB_ROOT}/*.c"
+        )
+
+        list(APPEND BOTLIB_DISCOVERED_SOURCES ${_botlib_root_sources})
+    endforeach()
 
     get_property(BOTLIB_REGISTERED_SOURCES GLOBAL PROPERTY BOTLIB_REGISTERED_SOURCES)
     if(NOT BOTLIB_REGISTERED_SOURCES)

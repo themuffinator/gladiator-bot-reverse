@@ -1,5 +1,5 @@
-#include "botlib/precomp/l_precomp.h"
-#include "botlib/precomp/l_script.h"
+#include "botlib_precomp/l_precomp.h"
+#include "botlib_precomp/l_script.h"
 
 #include <ctype.h>
 #include <stdbool.h>

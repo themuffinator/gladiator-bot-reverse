@@ -21,11 +21,11 @@
 #define PATH_MAX 4096
 #endif
 
-#include "botlib/aas/aas_map.h"
-#include "botlib/aas/aas_local.h"
-#include "botlib/common/l_libvar.h"
-#include "botlib/common/l_memory.h"
-#include "botlib/interface/botlib_interface.h"
+#include "botlib_aas/aas_map.h"
+#include "botlib_aas/aas_local.h"
+#include "botlib_common/l_libvar.h"
+#include "botlib_common/l_memory.h"
+#include "botlib_interface/botlib_interface.h"
 #include "q2bridge/aas_translation.h"
 #include "q2bridge/botlib.h"
 #include "q2bridge/bridge_config.h"
