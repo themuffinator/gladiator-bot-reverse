@@ -56,6 +56,11 @@ libraries can be linked into the shared `gladiator` module without relinking. ã€
    On Windows invoke the command from an MSVC developer prompt.  To generate
    Debug binaries swap `-DCMAKE_BUILD_TYPE=Release` for `Debug`.
 
+   CMake writes the configuration artifacts, including
+   `build/CMakeCache.txt`, into the `build/` directory during this step.  The
+   cache file will not exist until you run the configure command at least once
+   in a fresh clone.
+
 2. Compile just the shared library (this avoids linking the optional test
    executables unless you request them explicitly):
 
