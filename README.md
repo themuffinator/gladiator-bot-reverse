@@ -13,12 +13,26 @@ drop-in replacement in environments that expect the original Gladiator assets.
 
 ## Building
 
+### Quick start
+
+If you just want a working `gladiator` binary, run the bootstrap helper:
+
+```bash
+python dev_tools/bootstrap_cmake.py
+```
+
+The script creates the `build/` directory, configures CMake, and then invokes
+`cmake --build`. Use it any time you encounter the `missing CMakeCache.txt`
+error after cloning the repository on a new machine. 【F:dev_tools/bootstrap_cmake.py†L1-L189】
+
+### Detailed steps
+
 The reconstructed bot library is published as a shared module named
 `gladiator`/`gladiator.dll`.  CMake drives the build across every supported
 platform; the steps below mirror the CI configuration so the resulting binaries
 match the artifacts we ship.
 
-### Prerequisites
+#### Prerequisites
 
 | Platform | Toolchain | Notes |
 | --- | --- | --- |
@@ -30,7 +44,7 @@ All platforms require CMake 3.16 or newer and Python 3.8+ (for tooling and
 tests).  The build system always enables position-independent code so static
 libraries can be linked into the shared `gladiator` module without relinking. 【F:CMakeLists.txt†L1-L28】
 
-### Configure and build the module
+#### Configure and build the module
 
 1. Create a build tree for the desired configuration.  Use Ninja to mirror the
    CI jobs and keep build scripts identical on every platform.
