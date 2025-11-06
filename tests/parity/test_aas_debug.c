@@ -6,9 +6,9 @@
 
 #include <cmocka.h>
 
-#include "botlib_aas/aas_debug.h"
-#include "botlib_aas/aas_local.h"
-#include "botlib_interface/botlib_interface.h"
+#include "botlib/aas/aas_debug.h"
+#include "botlib/aas/aas_local.h"
+#include "botlib/interface/botlib_interface.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
 

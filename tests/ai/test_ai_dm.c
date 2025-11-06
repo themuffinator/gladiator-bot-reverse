@@ -7,11 +7,11 @@
 #include <string.h>
 #include <math.h>
 
-#include "botlib_ai/ai_dm.h"
-#include "botlib_ai_move/bot_move.h"
-#include "botlib_ea/ea_local.h"
-#include "botlib_common/l_libvar.h"
-#include "botlib_ai/goal_move_orchestrator.h"
+#include "botlib/ai/ai_dm.h"
+#include "botlib/ai_move/bot_move.h"
+#include "botlib/ea/ea_local.h"
+#include "botlib/common/l_libvar.h"
+#include "botlib/ai/goal_move_orchestrator.h"
 #include "q2bridge/botlib.h"
 
 #include "shared/q_shared.h"

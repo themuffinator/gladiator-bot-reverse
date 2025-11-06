@@ -75,15 +75,15 @@ Keeping this workflow up to date ensures contributors can quickly validate recon
 
 ## 5. Weapon configuration parity
 
-`BotSetupLibrary` now caches the `weaponconfig`, `max_weaponinfo`, and `max_projectileinfo` libvars before attempting to load the global weapon library. The cache is populated through the bridge helpers so tests can override the libvar values without rebuilding the AI loader, and a missing or malformed weapon configuration will cause setup to fail with `BLERR_CANNOTLOADWEAPONCONFIG`. Parity fixtures that stub `BotLibVarGet` should therefore provide consistent responses for these names when exercising the startup path.【F:src/botlib_interface/botlib_interface.c†L36-L124】【F:src/q2bridge/bridge_config.c†L1-L214】
+`BotSetupLibrary` now caches the `weaponconfig`, `max_weaponinfo`, and `max_projectileinfo` libvars before attempting to load the global weapon library. The cache is populated through the bridge helpers so tests can override the libvar values without rebuilding the AI loader, and a missing or malformed weapon configuration will cause setup to fail with `BLERR_CANNOTLOADWEAPONCONFIG`. Parity fixtures that stub `BotLibVarGet` should therefore provide consistent responses for these names when exercising the startup path.【F:src/botlib/interface/botlib_interface.c†L36-L124】【F:src/q2bridge/bridge_config.c†L1-L214】
 
 ## 6. Weight configuration parity
 
 Handle-based helpers now wrap the weight parser so callers mirror Gladiator’s lifecycle:
 
-- `BotAllocWeightConfig` returns a 1-based identifier backed by the botlib heap; the guard path emits `"BotAllocWeightConfig: no free handles"` when the small table is exhausted so parity tests can assert the legacy failure mode.【F:src/botlib_ai_weight/bot_weight.c†L37-L83】
-- `BotLoadWeights` validates both the handle and filename before dispatching to `ReadWeightConfig`. Parser failures continue to raise the historical `"couldn't load weights\n"` diagnostic captured in the HLIL trace.【F:src/botlib_ai_weight/bot_weight.c†L95-L123】【F:docs/weight_config_analysis.md†L6-L18】
-- `BotSetWeight` leverages the exported `BotWeight_FindIndex` helper so tests can probe guard clauses (missing handle/config, unknown names) without poking the private tree representation.【F:src/botlib_ai_weight/bot_weight.c†L143-L174】【F:src/botlib_ai_weight/bot_weight.h†L53-L67】
-- `BotFindFuzzyWeight` / `BotFuzzyWeightHandle` expose read-only queries for upcoming goal and weapon tests, falling back to sentinel values when the handle is invalid. This mirrors the Quake III access pattern while keeping the tree management internal.【F:src/botlib_ai_weight/bot_weight.c†L176-L197】
+- `BotAllocWeightConfig` returns a 1-based identifier backed by the botlib heap; the guard path emits `"BotAllocWeightConfig: no free handles"` when the small table is exhausted so parity tests can assert the legacy failure mode.【F:src/botlib/ai_weight/bot_weight.c†L37-L83】
+- `BotLoadWeights` validates both the handle and filename before dispatching to `ReadWeightConfig`. Parser failures continue to raise the historical `"couldn't load weights\n"` diagnostic captured in the HLIL trace.【F:src/botlib/ai_weight/bot_weight.c†L95-L123】【F:docs/weight_config_analysis.md†L6-L18】
+- `BotSetWeight` leverages the exported `BotWeight_FindIndex` helper so tests can probe guard clauses (missing handle/config, unknown names) without poking the private tree representation.【F:src/botlib/ai_weight/bot_weight.c†L143-L174】【F:src/botlib/ai_weight/bot_weight.h†L53-L67】
+- `BotFindFuzzyWeight` / `BotFuzzyWeightHandle` expose read-only queries for upcoming goal and weapon tests, falling back to sentinel values when the handle is invalid. This mirrors the Quake III access pattern while keeping the tree management internal.【F:src/botlib/ai_weight/bot_weight.c†L176-L197】
 
 Document these behaviours in parity fixtures whenever a new guard clause or diagnostic is asserted so the automated checks stay aligned with the reconstructed loader.

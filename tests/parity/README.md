@@ -16,7 +16,7 @@ module.
 
 ## Exported interface coverage
 
-Each exported entry point in `src/botlib_interface/botlib_interface.c` receives a dedicated test fixture.  With cmocka now enabled by
+Each exported entry point in `src/botlib/interface/botlib_interface.c` receives a dedicated test fixture.  With cmocka now enabled by
 default (when `BUILD_TESTING=ON`), these fixtures compile automatically so interface regressions are caught as soon as new changes land.
 The outlines below describe the assertions the harness enforces and provide guidance for expanding coverage as additional reverse-
 engineered details surface.

@@ -7,8 +7,8 @@
 
 #include <cmocka.h>
 
-#include "botlib_ea/ea_local.h"
-#include "botlib_common/l_log.h"
+#include "botlib/ea/ea_local.h"
+#include "botlib/common/l_log.h"
 #include "q2bridge/bridge.h"
 
 #define TEST_MAX_COMMANDS 8

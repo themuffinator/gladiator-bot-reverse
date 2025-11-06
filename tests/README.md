@@ -256,6 +256,6 @@ This document outlines planned test scenarios for `GetBotAPI`. Each section desc
 - Ensure `GetBotAPI` protects against double-unload issues, avoiding crashes or double-free errors.
 
 ## Placeholder-return expectations
-- For modules under `src/shared/`, `src/q2bridge/`, and `src/botlib_interface/`, confirm that unimplemented interfaces return safe placeholder objects when `GetBotAPI` is invoked.
+- For modules under `src/shared/`, `src/q2bridge/`, and `src/botlib/interface/`, confirm that unimplemented interfaces return safe placeholder objects when `GetBotAPI` is invoked.
 - Each placeholder should provide deterministic stub behavior (e.g., no-ops, default values) so downstream components can continue operating in tests.
 - Verify that placeholder returns are clearly distinguishable from fully initialized interfaces, allowing tests to assert the correct path was taken.
