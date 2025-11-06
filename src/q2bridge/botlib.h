@@ -2,6 +2,7 @@
 #define Q2BRIDGE_BOTLIB_H
 
 #include "shared/bot_types.h"
+#include "shared/platform_export.h"
 #include "../shared/q_shared.h"
 
 struct bot_goal_s;
@@ -253,7 +254,7 @@ typedef struct bot_import_s {
     const char *(*CmdArgv)(int index);
 } bot_import_t;
 
-bot_export_t *GetBotAPI(bot_import_t *import);
+GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import);
 
 #ifdef __cplusplus
 }

@@ -129,7 +129,7 @@ typedef enum pc_punctuation_id_e {
 typedef struct pc_punctuation_s {
     const char *p;
     int n;
-    const struct pc_punctuation_s *next;
+    struct pc_punctuation_s *next;
 } pc_punctuation_t;
 
 typedef struct pc_token_s {
@@ -158,8 +158,8 @@ typedef struct pc_script_s {
     int lastline;
     int tokenavailable;
     int flags;
-    const pc_punctuation_t *punctuations;
-    const pc_punctuation_t **punctuationtable;
+    pc_punctuation_t *punctuations;
+    pc_punctuation_t **punctuationtable;
     pc_diagnostic_t *diagnostics;
     pc_diagnostic_t *diagnostics_tail;
     const pc_diagnostic_t *last_source_diagnostic;
