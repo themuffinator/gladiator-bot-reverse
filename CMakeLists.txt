@@ -61,6 +61,13 @@ set_target_properties(gladiator
         WINDOWS_EXPORT_ALL_SYMBOLS OFF
 )
 
+audit_gladiator_sources(
+    SOURCE_ROOT "${PROJECT_SOURCE_DIR}/src"
+    TARGETS
+        gladiator
+        q2bridge
+)
+
 install(
     TARGETS gladiator
     EXPORT GladiatorTargets
