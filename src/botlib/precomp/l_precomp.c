@@ -196,7 +196,7 @@ static qboolean PC_AppendBoundedText(char *buffer,
 struct pc_source_s {
     char filename[MAX_PATH];
     char includepath[MAX_PATH];
-    const pc_punctuation_t *punctuations;
+    pc_punctuation_t *punctuations;
     pc_script_t *scriptstack;
     pc_token_t *tokens;
     pc_define_t *defines;
@@ -1089,8 +1089,8 @@ int PC_ExpandBuiltinDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_
 										pc_token_t **firsttoken, pc_token_t **lasttoken)
 {
 	pc_token_t *token;
-	unsigned long t;	//	time_t t; //to prevent LCC warning
-	char *curtime;
+	time_t t;
+	const char *curtime;
 
 	token = PC_CopyToken(deftoken);
 	switch(define->builtin)
@@ -1121,11 +1121,16 @@ int PC_ExpandBuiltinDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_
 		{
 			t = time(NULL);
 			curtime = ctime(&t);
+			if (curtime == NULL)
+			{
+				*firsttoken = NULL;
+				*lasttoken = NULL;
+				break;
+			}
 			strcpy(token->string, "\"");
-			strncat(token->string, curtime+4, 7);
-			strncat(token->string+7, curtime+20, 4);
+			strncat(token->string, curtime + 4, 7);
+			strncat(token->string + 7, curtime + 20, 4);
 			strcat(token->string, "\"");
-			free(curtime);
 			token->type = TT_NAME;
 			token->subtype = strlen(token->string);
 			*firsttoken = token;
@@ -1136,10 +1141,15 @@ int PC_ExpandBuiltinDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_
 		{
 			t = time(NULL);
 			curtime = ctime(&t);
+			if (curtime == NULL)
+			{
+				*firsttoken = NULL;
+				*lasttoken = NULL;
+				break;
+			}
 			strcpy(token->string, "\"");
-			strncat(token->string, curtime+11, 8);
+			strncat(token->string, curtime + 11, 8);
 			strcat(token->string, "\"");
-			free(curtime);
 			token->type = TT_NAME;
 			token->subtype = strlen(token->string);
 			*firsttoken = token;

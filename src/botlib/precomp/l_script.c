@@ -427,7 +427,7 @@ void PS_CreatePunctuationTable(pc_script_t *script, pc_punctuation_t *punctuatio
 // Returns:					-
 // Changes Globals:		-
 //===========================================================================
-char *PunctuationFromNum(pc_script_t *script, int num)
+const char *PunctuationFromNum(pc_script_t *script, int num)
 {
 	int i;
 
@@ -1002,7 +1002,7 @@ int PS_ReadLiteral(pc_script_t *script, pc_token_t *token)
 int PS_ReadPunctuation(pc_script_t *script, pc_token_t *token)
 {
 	int len;
-	char *p;
+	const char *p;
 	pc_punctuation_t *punc;
 
 #ifdef PUNCTABLE
