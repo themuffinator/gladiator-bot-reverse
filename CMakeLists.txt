@@ -10,31 +10,31 @@ include(GNUInstallDirs)
 
 # TODO: Define targets for shared utilities under src/shared.
 # TODO: Flesh out the remaining Q2 bridge entry points in src/q2bridge.
-# TODO: Expand the botlib interface implementation in src/botlib_interface.
+# TODO: Expand the botlib interface implementation in src/botlib/interface.
 
 # Temporary target that keeps the reconstructed botlib utility sources building
 # while their functionality is filled in.
-add_subdirectory(src/botlib_common)
-add_subdirectory(src/botlib_precomp)
-add_subdirectory(src/botlib_aas)
-add_subdirectory(src/botlib_ea)
-add_subdirectory(src/botlib_ai)
+add_subdirectory(src/botlib/common)
+add_subdirectory(src/botlib/precomp)
+add_subdirectory(src/botlib/aas)
+add_subdirectory(src/botlib/ea)
+add_subdirectory(src/botlib/ai)
 add_subdirectory(src/q2bridge)
-add_subdirectory(src/botlib_interface)
+add_subdirectory(src/botlib/interface)
 
 set(_botlib_source_directories
-    ${PROJECT_SOURCE_DIR}/src/botlib_common
-    ${PROJECT_SOURCE_DIR}/src/botlib_precomp
-    ${PROJECT_SOURCE_DIR}/src/botlib_aas
-    ${PROJECT_SOURCE_DIR}/src/botlib_ea
-    ${PROJECT_SOURCE_DIR}/src/botlib_ai
-    ${PROJECT_SOURCE_DIR}/src/botlib_ai_chat
-    ${PROJECT_SOURCE_DIR}/src/botlib_ai_character
-    ${PROJECT_SOURCE_DIR}/src/botlib_ai_goal
-    ${PROJECT_SOURCE_DIR}/src/botlib_ai_move
-    ${PROJECT_SOURCE_DIR}/src/botlib_ai_weapon
-    ${PROJECT_SOURCE_DIR}/src/botlib_ai_weight
-    ${PROJECT_SOURCE_DIR}/src/botlib_interface
+    ${PROJECT_SOURCE_DIR}/src/botlib/common
+    ${PROJECT_SOURCE_DIR}/src/botlib/precomp
+    ${PROJECT_SOURCE_DIR}/src/botlib/aas
+    ${PROJECT_SOURCE_DIR}/src/botlib/ea
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai_chat
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai_character
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai_goal
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai_move
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai_weapon
+    ${PROJECT_SOURCE_DIR}/src/botlib/ai_weight
+    ${PROJECT_SOURCE_DIR}/src/botlib/interface
 )
 
 verify_all_botlib_sources(${_botlib_source_directories})
@@ -85,7 +85,7 @@ endif()
 # Test integration plan:
 # * Once the production targets above exist, expose them to the tests via
 #   add_subdirectory(src/shared ...), add_subdirectory(src/q2bridge ...), and
-#   add_subdirectory(src/botlib_interface ...) as appropriate so the test harness
+#   add_subdirectory(src/botlib/interface ...) as appropriate so the test harness
 #   can link against their exported libraries.
 # * Enable CTest (enable_testing() and include(CTest)) and add a tests directory
 #   (add_subdirectory(tests)) that will host upcoming integration and unit checks.

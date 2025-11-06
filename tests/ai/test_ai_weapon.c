@@ -8,10 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "botlib_ai_weapon/bot_weapon.h"
-#include "botlib_common/l_libvar.h"
-#include "botlib_common/l_memory.h"
-#include "botlib_interface/botlib_interface.h"
+#include "botlib/ai_weapon/bot_weapon.h"
+#include "botlib/common/l_libvar.h"
+#include "botlib/common/l_memory.h"
+#include "botlib/interface/botlib_interface.h"
 #include "q2bridge/botlib.h"
 
 #include "inv.h"

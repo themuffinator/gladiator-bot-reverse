@@ -7,8 +7,8 @@
 
 #include "q2bridge/bridge.h"
 #include "q2bridge/update_translator.h"
-#include "botlib_aas/aas_map.h"
-#include "botlib_ai_move/mover_catalogue.h"
+#include "botlib/aas/aas_map.h"
+#include "botlib/ai_move/mover_catalogue.h"
 
 static qboolean g_aas_loaded = qfalse;
 static float g_aas_current_time = 0.0f;

@@ -9,7 +9,7 @@
 #include <cmocka.h>
 
 #include "q2bridge/bridge.h"
-#include "botlib_common/l_libvar.h"
+#include "botlib/common/l_libvar.h"
 
 #include "botlib_contract_loader.h"
 

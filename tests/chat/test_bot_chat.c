@@ -3,9 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "botlib_ai_chat/ai_chat.h"
-#include "botlib_precomp/l_precomp.h"
-#include "botlib_precomp/l_script.h"
+#include "botlib/ai_chat/ai_chat.h"
+#include "botlib/precomp/l_precomp.h"
+#include "botlib/precomp/l_script.h"
 
 static void drain_console(bot_chatstate_t *chat) {
     int type = 0;

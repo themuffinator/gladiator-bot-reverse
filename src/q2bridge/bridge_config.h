@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 
-#include "botlib_common/l_libvar.h"
+#include "botlib/common/l_libvar.h"
 
 #ifdef __cplusplus
 extern "C" {

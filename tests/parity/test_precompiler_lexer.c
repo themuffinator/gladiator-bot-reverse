@@ -7,8 +7,8 @@
 #include <sys/stat.h>
 #include <cmocka.h>
 
-#include "botlib_precomp/l_precomp.h"
-#include "botlib_precomp/l_script.h"
+#include "botlib/precomp/l_precomp.h"
+#include "botlib/precomp/l_script.h"
 
 #include "../reference/precomp_lexer_expectations.h"
 

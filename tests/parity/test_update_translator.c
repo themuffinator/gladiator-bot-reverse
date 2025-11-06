@@ -13,9 +13,9 @@
 #include "q2bridge/aas_translation.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/update_translator.h"
-#include "botlib_common/l_libvar.h"
-#include "botlib_ai_move/mover_catalogue.h"
-#include "botlib_common/l_libvar.h"
+#include "botlib/common/l_libvar.h"
+#include "botlib/ai_move/mover_catalogue.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib_contract_loader.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))

@@ -6,13 +6,13 @@ add_executable(bot_common_tests
     test_bot_common.c
     test_bot_common_stubs.c
     test_bot_common_precomp_stub.c
-    ${PROJECT_SOURCE_DIR}/src/botlib_common/l_assets.c
-    ${PROJECT_SOURCE_DIR}/src/botlib_common/l_crc.c
-    ${PROJECT_SOURCE_DIR}/src/botlib_common/l_struct.c
-    ${PROJECT_SOURCE_DIR}/src/botlib_common/l_utils.c
-    ${PROJECT_SOURCE_DIR}/src/botlib_common/l_libvar.c
-    ${PROJECT_SOURCE_DIR}/src/botlib_common/l_log.c
-    ${PROJECT_SOURCE_DIR}/src/botlib_common/l_memory.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_assets.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_crc.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_struct.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_utils.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_libvar.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_log.c
+    ${PROJECT_SOURCE_DIR}/src/botlib/common/l_memory.c
 )
 
 target_include_directories(bot_common_tests
