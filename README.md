@@ -52,6 +52,17 @@ libraries can be linked into the shared `gladiator` module without relinking. �
    The target emits `libgladiator.so`/`gladiator.dll` under `build/` alongside
    static archives for each subsystem.
 
+   If you accidentally skip the configuration step, CMake will emit
+   `Error: not a CMake build directory (missing CMakeCache.txt)` when you try to
+   build.  Re-run step 1 or use the automated bootstrap helper:
+
+   ```bash
+   python dev_tools/bootstrap_cmake.py
+   ```
+
+   The script configures the default build tree when required and then invokes
+   the `gladiator` target for you. 【F:dev_tools/bootstrap_cmake.py†L1-L181】
+
 3. (Optional) Install the runtime into a staging directory that mimics your
    game or mod layout:
 
