@@ -25,6 +25,11 @@ add_subdirectory(src/botlib/interface)
 verify_all_botlib_sources("${PROJECT_SOURCE_DIR}/src/botlib")
 
 add_library(gladiator SHARED)
+
+get_property(_gladiator_botlib_sources GLOBAL PROPERTY BOTLIB_REGISTERED_SOURCES)
+if(_gladiator_botlib_sources)
+    target_sources(gladiator PRIVATE ${_gladiator_botlib_sources})
+endif()
 target_link_libraries(gladiator
     PRIVATE
         botlib_interface
