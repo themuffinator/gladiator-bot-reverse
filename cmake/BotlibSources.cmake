@@ -37,6 +37,96 @@ function(_botlib_relativize _input_list _output_var)
     set(${_output_var} "${_result}" PARENT_SCOPE)
 endfunction()
 
+function(_botlib_collect_target_sources _target _output_var)
+    if(NOT TARGET "${_target}")
+        message(FATAL_ERROR "_botlib_collect_target_sources: '${_target}' is not a valid target")
+    endif()
+
+    get_target_property(_sources "${_target}" SOURCES)
+
+    if(NOT _sources)
+        set(${_output_var} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    get_target_property(_source_dir "${_target}" SOURCE_DIR)
+
+    set(_absolute_sources)
+    foreach(_source IN LISTS _sources)
+        if(IS_ABSOLUTE "${_source}")
+            list(APPEND _absolute_sources "${_source}")
+        else()
+            if(NOT _source_dir)
+                message(FATAL_ERROR "Target '${_target}' reported a relative source but has no SOURCE_DIR")
+            endif()
+            get_filename_component(_resolved "${_source_dir}/${_source}" ABSOLUTE)
+            list(APPEND _absolute_sources "${_resolved}")
+        endif()
+    endforeach()
+
+    set(${_output_var} "${_absolute_sources}" PARENT_SCOPE)
+endfunction()
+
+function(audit_gladiator_sources)
+    set(options)
+    set(oneValueArgs SOURCE_ROOT)
+    set(multiValueArgs TARGETS)
+    cmake_parse_arguments(AGS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    if(NOT AGS_SOURCE_ROOT)
+        message(FATAL_ERROR "audit_gladiator_sources requires SOURCE_ROOT to be specified")
+    endif()
+
+    if(NOT AGS_TARGETS)
+        message(FATAL_ERROR "audit_gladiator_sources requires at least one target")
+    endif()
+
+    file(GLOB_RECURSE _tree_sources
+        LIST_DIRECTORIES FALSE
+        CONFIGURE_DEPENDS
+        "${AGS_SOURCE_ROOT}/*.c"
+    )
+
+    set(_registered_sources)
+    foreach(_target IN LISTS AGS_TARGETS)
+        _botlib_collect_target_sources("${_target}" _target_sources)
+        list(APPEND _registered_sources ${_target_sources})
+    endforeach()
+
+    list(REMOVE_DUPLICATES _registered_sources)
+
+    _botlib_relativize(_tree_sources _tree_sources_rel)
+    _botlib_relativize(_registered_sources _registered_sources_rel)
+
+    set(_missing)
+    foreach(_source IN LISTS _tree_sources_rel)
+        list(FIND _registered_sources_rel "${_source}" _index)
+        if(_index EQUAL -1)
+            list(APPEND _missing "${_source}")
+        endif()
+    endforeach()
+
+    set(_untracked)
+    foreach(_source IN LISTS _registered_sources_rel)
+        list(FIND _tree_sources_rel "${_source}" _index)
+        if(_index EQUAL -1)
+            list(APPEND _untracked "${_source}")
+        endif()
+    endforeach()
+
+    if(_missing)
+        list(SORT _missing)
+        string(REPLACE ";" "\n  " _missing_message "${_missing}")
+        message(FATAL_ERROR "Gladiator source audit detected unreferenced sources:\n  ${_missing_message}")
+    endif()
+
+    if(_untracked)
+        list(SORT _untracked)
+        string(REPLACE ";" "\n  " _untracked_message "${_untracked}")
+        message(FATAL_ERROR "Gladiator source audit detected unexpected registered sources:\n  ${_untracked_message}")
+    endif()
+endfunction()
+
 function(verify_all_botlib_sources)
     if(NOT ARGN)
         message(FATAL_ERROR "verify_all_botlib_sources requires at least one directory")
