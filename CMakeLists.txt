@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(gladiator-bot-reverse LANGUAGES C CXX)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(BotlibSources)
+
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 include(GNUInstallDirs)
@@ -18,6 +21,8 @@ add_subdirectory(src/botlib/ea)
 add_subdirectory(src/botlib/ai)
 add_subdirectory(src/q2bridge)
 add_subdirectory(src/botlib/interface)
+
+verify_all_botlib_sources("${PROJECT_SOURCE_DIR}/src/botlib")
 
 add_library(gladiator SHARED)
 target_link_libraries(gladiator
