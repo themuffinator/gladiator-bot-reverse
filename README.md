@@ -95,20 +95,18 @@ Optional parity validation can be driven through CTest.  See the
 guide for environment setup, CI integration notes, and instructions on running
 the long-running harness locally.
 
-To build the automated parity tests locally you must enable the cmocka-backed
-fixtures when configuring the tree:
+To build the automated parity tests locally enable testing when configuring the
+tree (the cmocka-backed fixtures are now enabled by default):
 
 ```bash
 cmake -S . -B build -G Ninja \
-      -DBUILD_TESTING=ON \
-      -DBOTLIB_PARITY_ENABLE_SOURCES=ON \
-      -DBOTLIB_PARITY_FRAMEWORK=cmocka
+      -DBUILD_TESTING=ON
 cmake --build build --target botlib_parity_tests
 ```
 
 The FetchContent script retrieves cmocka from GitHub so ensure the host has
 outbound HTTPS access.  If the dependency cannot be fetched, re-run CMake with
-`-DBOTLIB_PARITY_FRAMEWORK=none` to skip the cmocka targets and still build the
+`-DBOTLIB_PARITY_FRAMEWORK=none` or `-DBOTLIB_PARITY_ENABLE_SOURCES=OFF` to skip the cmocka targets and still build the
 core library. 【F:tests/CMakeLists.txt†L7-L33】
 
 ## Asset packaging workflow

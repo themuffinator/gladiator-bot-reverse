@@ -11,6 +11,24 @@ typedef struct bot_goal_s bot_goal_t;
 struct bot_levelitem_setup_s;
 typedef struct bot_levelitem_setup_s bot_levelitem_setup_t;
 
+struct bot_chatstate_s;
+typedef struct bot_chatstate_s bot_chatstate_t;
+
+struct bot_weight_config_s;
+typedef struct bot_weight_config_s bot_weight_config_t;
+
+struct bot_initmove_s;
+typedef struct bot_initmove_s bot_initmove_t;
+
+struct bot_moveresult_s;
+typedef struct bot_moveresult_s bot_moveresult_t;
+
+struct bot_weapon_info_s;
+typedef struct bot_weapon_info_s bot_weapon_info_t;
+
+struct ai_character_profile_s;
+typedef struct ai_character_profile_s ai_character_profile_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -213,6 +231,7 @@ typedef struct bot_export_s {
     void (*BotResetGoalState)(int handle);
     int (*BotLoadItemWeights)(int handle, const char *filename);
     void (*BotFreeItemWeights)(int handle);
+    int (*BotWeightIndex)(int handle, const char *classname);
     int (*BotPushGoal)(int handle, const bot_goal_t *goal);
     int (*BotPopGoal)(int handle);
     int (*BotGetTopGoal)(int handle, bot_goal_t *goal);
@@ -225,14 +244,49 @@ typedef struct bot_export_s {
     int (*BotRegisterLevelItem)(const bot_levelitem_setup_t *setup);
     void (*BotUnregisterLevelItem)(int number);
     void (*BotMarkLevelItemTaken)(int number, float respawn_delay);
+    int (*BotTouchingGoal)(const vec3_t origin, const bot_goal_t *goal);
+    int (*BotAllocWeightConfig)(void);
+    void (*BotFreeWeightConfig)(int handle);
+    void (*BotFreeWeightConfig2)(bot_weight_config_t *config);
+    int (*BotLoadWeights)(int handle, const char *filename);
+    int (*BotWriteWeights)(int handle, const char *filename);
+    int (*BotSetWeight)(int handle, const char *name, float value);
+    bot_weight_config_t *(*BotReadWeightsFile)(const char *filename);
+    int (*BotAllocMoveState)(void);
+    void (*BotFreeMoveState)(int handle);
+    void (*BotResetMoveState)(int handle);
+    void (*BotInitMoveState)(int handle, const bot_initmove_t *initmove);
+    void (*BotMoveToGoal)(bot_moveresult_t *result, int movestate, const bot_goal_t *goal, int travelflags);
+    int (*BotMoveInDirection)(int movestate, const vec3_t dir, float speed, int type);
+    void (*BotResetAvoidReach)(int movestate);
     int (*BotLoadCharacter)(const char *character_file, float skill);
     void (*BotFreeCharacter)(int handle);
     int (*BotLoadCharacterSkill)(const char *character_file, float skill);
+    void (*BotFreeCharacterStrings)(ai_character_profile_t *profile);
     float (*Characteristic_Float)(int handle, int index);
     float (*Characteristic_BFloat)(int handle, int index, float minimum, float maximum);
     int (*Characteristic_Integer)(int handle, int index);
     int (*Characteristic_BInteger)(int handle, int index, int minimum, int maximum);
     void (*Characteristic_String)(int handle, int index, char *buffer, int buffer_size);
+    int (*BotAllocWeaponState)(void);
+    void (*BotFreeWeaponState)(int handle);
+    void (*BotResetWeaponState)(int handle);
+    int (*BotLoadWeaponWeights)(int weaponstate, const char *filename);
+    void (*BotFreeWeaponWeights)(int weaponstate);
+    int (*BotChooseBestFightWeapon)(int weaponstate, const int *inventory);
+    int (*BotGetTopRankedWeapon)(int weaponstate);
+    void (*BotGetWeaponInfo)(int weaponstate, int weapon, bot_weapon_info_t *weaponinfo);
+    bot_chatstate_t *(*BotAllocChatState)(void);
+    void (*BotFreeChatState)(bot_chatstate_t *state);
+    int (*BotLoadChatFile)(bot_chatstate_t *state, const char *chatfile, const char *chatname);
+    void (*BotFreeChatFile)(bot_chatstate_t *state);
+    void (*BotQueueConsoleMessage)(bot_chatstate_t *state, int type, const char *message);
+    int (*BotRemoveConsoleMessage)(bot_chatstate_t *state, int type);
+    int (*BotNextConsoleMessage)(bot_chatstate_t *state, int *type, char *buffer, size_t buffer_size);
+    size_t (*BotNumConsoleMessages)(const bot_chatstate_t *state);
+    void (*BotEnterChat)(bot_chatstate_t *state, int client, int sendto);
+    int (*BotReplyChat)(bot_chatstate_t *state, const char *message, unsigned long context);
+    int (*BotChatLength)(const char *message);
 } bot_export_t;
 
 // Bot library imported functions

@@ -16,8 +16,10 @@ module.
 
 ## Exported interface coverage
 
-Each exported entry point in `src/botlib/interface/botlib_interface.c` receives a dedicated test fixture.  The placeholders below outline
-how the cmocka-based harness will interrogate the implementation once the helper shims and mocks are committed.
+Each exported entry point in `src/botlib/interface/botlib_interface.c` receives a dedicated test fixture.  With cmocka now enabled by
+default (when `BUILD_TESTING=ON`), these fixtures compile automatically so interface regressions are caught as soon as new changes land.
+The outlines below describe the assertions the harness enforces and provide guidance for expanding coverage as additional reverse-
+engineered details surface.
 
 ### `GetBotAPI`
 * **Handshake wiring** &mdash; Expect the loader to translate the raw `bot_import_t` into a `botlib_import_table_t`, seeding wrappers for
@@ -91,6 +93,39 @@ how the cmocka-based harness will interrogate the implementation once the helper
 ### `BotSettings`
 * **Inactive guard** &mdash; Mirror the inactive guard behaviour detected in HLIL (`BLERR_AICLIENTNOTSETUP`) and confirm the output buffer is cleared.
 * **Round-trip copy** &mdash; Validate that the original `bot_settings_t` provided during setup is returned verbatim.
+
+### Weight configuration exports
+* **Handle guards** &mdash; Exercise `BotAllocWeightConfig`, `BotFreeWeightConfig`, and `BotReadWeightsFile` with the library uninitialised to confirm
+  the wrappers surface the `[bot_interface] ...: library not initialised` diagnostic without leaking handles.
+* **Parser parity** &mdash; Load a known-good weight script through the export table and verify the resulting handle matches the direct
+  `BotLoadItemWeights` path used in client setup. Follow up with `BotWriteWeights` to assert the exported path serialises back to disk.
+* **Mutation safeguards** &mdash; Use `BotSetWeight` and `BotWeightIndex` to confirm invalid handles, unknown classnames, and read-only configurations
+  generate the legacy error messages captured in the HLIL catalogue.
+
+### Movement exports
+* **Lifecycle pairing** &mdash; Allocate a move state through `BotAllocMoveState`, initialise it, and ensure `BotResetMoveState` mirrors the internal
+  helper invoked during client setup. Fixtures should assert that calling any movement export before setup logs the expected library-not-
+  initialised diagnostic.
+* **Goal dispatch** &mdash; Feed a minimal `bot_goal_t` into `BotMoveToGoal` and `BotMoveInDirection`, capturing the populated `bot_moveresult_t`
+  so navigation heuristics can be compared against the direct orchestrator calls used by the AI tests.
+* **Avoidance bookkeeping** &mdash; Confirm `BotResetAvoidReach` clears the stateful arrays exposed to the orchestrator and that the export refuses to
+  operate when the handle is invalid.
+
+### Weapon state exports
+* **Handle reuse** &mdash; Allocate, reset, and free weapon state handles through the export table to ensure the wrappers enforce the same guard
+  ordering (library initialisation, handle validation) as the direct calls in `BotSetupClient`.
+* **Weight loading** &mdash; Load the default weapon weight file via `BotLoadWeaponWeights` and confirm `BotChooseBestFightWeapon` and
+  `BotGetTopRankedWeapon` report identical selections to the internal combat orchestrator.
+* **Information queries** &mdash; Invoke `BotGetWeaponInfo` with invalid handles to verify the export zeroes the caller's buffer and logs the
+  historical diagnostics.
+
+### Chat exports
+* **State lifecycle** &mdash; Allocate and free chat states through the export table, ensuring `BotLoadChatFile` and `BotFreeChatFile` mirror the
+  behaviour exercised by `BotConsoleMessage` during runtime tests.
+* **Queue semantics** &mdash; Push and drain console messages with `BotQueueConsoleMessage`, `BotNextConsoleMessage`, and
+  `BotNumConsoleMessages`, validating that the guard paths clear the caller's buffers when the library is not initialised.
+* **Reply scaffolding** &mdash; Exercise `BotReplyChat` and `BotEnterChat` with the stub implementation so fixtures can assert the exported paths
+  continue to return zero until the full HLIL behaviour is reconstructed.
 
 The tests above will share a harness that wires recording doubles into the mocked `bot_import_t` table and exposes helper assertions for
 sequence ordering, argument capture, and log comparison.
