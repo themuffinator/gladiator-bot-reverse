@@ -165,6 +165,7 @@ void BotMoveToGoal(bot_moveresult_t *result,
 int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type);
 
 void BotMove_ResetAvoidReach(int movestate);
+void BotResetLastAvoidReach(int movestate);
 int BotReachabilityArea(const vec3_t origin, int client);
 int BotMovementViewTarget(int movestate,
 						  const bot_goal_t *goal,
