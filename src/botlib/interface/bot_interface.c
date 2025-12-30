@@ -3439,6 +3439,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotRegisterLevelItem = AI_GoalBotlib_RegisterLevelItem;
     exportTable.BotUnregisterLevelItem = AI_GoalBotlib_UnregisterLevelItem;
     exportTable.BotMarkLevelItemTaken = AI_GoalBotlib_MarkItemTaken;
+    exportTable.BotGetLevelItemGoal = AI_GoalBotlib_GetLevelItemGoal;
     exportTable.BotTouchingGoal = BotInterface_BotTouchingGoal;
     exportTable.BotAllocWeightConfig = BotInterface_BotAllocWeightConfig;
     exportTable.BotFreeWeightConfig = BotInterface_BotFreeWeightConfig;
@@ -3485,4 +3486,3 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 
     return &exportTable;
 }
-

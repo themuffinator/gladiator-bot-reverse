@@ -29,6 +29,7 @@ void AI_GoalBotlib_AddAvoidGoal(int handle, int number, float avoidtime);
 int AI_GoalBotlib_RegisterLevelItem(const bot_levelitem_setup_t *setup);
 void AI_GoalBotlib_UnregisterLevelItem(int number);
 void AI_GoalBotlib_MarkItemTaken(int number, float respawn_delay);
+int AI_GoalBotlib_GetLevelItemGoal(int index, char *classname, bot_goal_t *goal);
 int AI_GoalBotlib_ChooseLTG(int handle, vec3_t origin, int *inventory, int travelflags);
 int AI_GoalBotlib_ChooseNBG(int handle, vec3_t origin, int *inventory, int travelflags, bot_goal_t *ltg, float maxtime);
 const bot_goalstate_t *AI_GoalBotlib_DebugPeek(int handle);
@@ -36,4 +37,3 @@ const bot_goalstate_t *AI_GoalBotlib_DebugPeek(int handle);
 #ifdef __cplusplus
 }
 #endif
-

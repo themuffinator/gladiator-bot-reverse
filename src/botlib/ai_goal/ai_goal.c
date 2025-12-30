@@ -198,6 +198,18 @@ void AI_GoalBotlib_UnregisterLevelItem(int number)
     BotGoal_UnregisterLevelItem(number);
 }
 
+/*
+=============
+AI_GoalBotlib_GetLevelItemGoal
+
+Lookup level item goals by classname with a resumable index.
+=============
+*/
+int AI_GoalBotlib_GetLevelItemGoal(int index, char *classname, bot_goal_t *goal)
+{
+	return BotGetLevelItemGoal(index, classname, goal);
+}
+
 void AI_GoalBotlib_MarkItemTaken(int number, float respawn_delay)
 {
     BotGoal_MarkItemTaken(number, respawn_delay);

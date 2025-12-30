@@ -1039,6 +1039,68 @@ void BotGoalName(int number, char *name, int size)
     snprintf(name, (size_t)size, "%s", item->classname);
 }
 
+/*
+=============
+BotGetLevelItemGoal
+
+Find the next level item goal matching the classname after the supplied index.
+=============
+*/
+int BotGetLevelItemGoal(int index, const char *classname, bot_goal_t *goal)
+{
+	if (classname == NULL || classname[0] == '\0' || goal == NULL)
+	{
+		return -1;
+	}
+
+	int start_index = 0;
+	if (index >= 0)
+	{
+		bool found = false;
+		for (int i = 0; i < g_levelitem_count; ++i)
+		{
+			const bot_levelitem_t *item = &g_levelitems[i];
+			if (!item->valid)
+			{
+				continue;
+			}
+			if (item->goal.number == index)
+			{
+				start_index = i + 1;
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+		{
+			return -1;
+		}
+	}
+
+	for (int i = start_index; i < g_levelitem_count; ++i)
+	{
+		const bot_levelitem_t *item = &g_levelitems[i];
+		if (!item->valid)
+		{
+			continue;
+		}
+		if (Q_stricmp(classname, item->classname) != 0)
+		{
+			continue;
+		}
+
+		*goal = item->goal;
+		goal->flags = GFL_ITEM;
+		if (item->goal.flags & GFL_DROPPED)
+		{
+			goal->flags |= GFL_DROPPED;
+		}
+		return item->goal.number;
+	}
+
+	return -1;
+}
+
 void BotDumpAvoidGoals(int handle)
 {
     const bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
