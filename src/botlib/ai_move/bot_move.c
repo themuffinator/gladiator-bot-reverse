@@ -19,6 +19,9 @@ static bot_movestate_t *g_botMoveStates[MAX_CLIENTS + 1];
 static float VectorNormalizeInline(vec3_t v);
 static float VectorNormalizeTo(const vec3_t src, vec3_t dst);
 static int BotMove_FindAreaForPoint(const vec3_t origin);
+static bool BotMove_AreaHasReachability(int areanum);
+static int BotMove_FuzzyPointReachabilityArea(const vec3_t origin);
+static void BotMove_GetClientBounds(int client, vec3_t mins, vec3_t maxs);
 static float BotMove_TravelTimeout(int traveltype);
 
 static const char *BotMove_DefaultGrappleModel(void)
@@ -545,6 +548,153 @@ static int BotMove_FindAreaForPoint(const vec3_t origin)
     }
 
     return 0;
+}
+
+/*
+=============
+BotMove_AreaHasReachability
+
+Check whether an area has reachability data attached.
+=============
+*/
+static bool BotMove_AreaHasReachability(int areanum)
+{
+	if (areanum <= 0)
+	{
+		return false;
+	}
+
+	if (aasworld.reachability == NULL || aasworld.numReachability <= 0)
+	{
+		return false;
+	}
+
+	if (aasworld.reachabilityFromArea != NULL)
+	{
+		for (int index = 0; index < aasworld.numReachability; ++index)
+		{
+			if (aasworld.reachabilityFromArea[index] == areanum)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	for (int index = 0; index < aasworld.numReachability; ++index)
+	{
+		if (aasworld.reachability[index].facenum == areanum)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+=============
+BotMove_FuzzyPointReachabilityArea
+
+Resolve an area near the origin using small offsets when needed.
+=============
+*/
+static int BotMove_FuzzyPointReachabilityArea(const vec3_t origin)
+{
+	if (origin == NULL)
+	{
+		return 0;
+	}
+
+	int area = BotMove_FindAreaForPoint(origin);
+	if (area > 0)
+	{
+		return area;
+	}
+
+	int firstArea = 0;
+	int bestArea = 0;
+	float bestDist = FLT_MAX;
+
+	for (int z = 1; z >= -1; --z)
+	{
+		for (int x = 1; x >= -1; --x)
+		{
+			for (int y = 1; y >= -1; --y)
+			{
+				vec3_t offset;
+				VectorCopy(origin, offset);
+				offset[0] += (float)(x * 8);
+				offset[1] += (float)(y * 8);
+				offset[2] += (float)(z * 12);
+
+				area = BotMove_FindAreaForPoint(offset);
+				if (area <= 0)
+				{
+					continue;
+				}
+
+				if (firstArea == 0)
+				{
+					firstArea = area;
+				}
+
+				vec3_t delta;
+				VectorSubtract(offset, origin, delta);
+				float dist = VectorLength(delta);
+				if (dist < bestDist)
+				{
+					bestDist = dist;
+					bestArea = area;
+				}
+			}
+		}
+
+		if (bestArea > 0)
+		{
+			return bestArea;
+		}
+	}
+
+	return firstArea;
+}
+
+/*
+=============
+BotMove_GetClientBounds
+
+Gather the client bounding box for traces.
+=============
+*/
+static void BotMove_GetClientBounds(int client, vec3_t mins, vec3_t maxs)
+{
+	if (mins == NULL || maxs == NULL)
+	{
+		return;
+	}
+
+	VectorClear(mins);
+	VectorClear(maxs);
+
+	if (aasworld.entities == NULL || aasworld.maxEntities <= 0)
+	{
+		return;
+	}
+
+	if (client < 0 || client >= aasworld.maxEntities)
+	{
+		return;
+	}
+
+	const aas_entity_t *entity = &aasworld.entities[client];
+	if (entity == NULL || !entity->inuse)
+	{
+		return;
+	}
+
+	VectorCopy(entity->mins, mins);
+	VectorCopy(entity->maxs, maxs);
 }
 
 static int BotMove_TravelFlagsForType(int traveltype)
@@ -1544,6 +1694,81 @@ void BotMove_ResetAvoidReach(int movestate)
     memset(ms->avoidreach, 0, sizeof(ms->avoidreach));
     memset(ms->avoidreachtimes, 0, sizeof(ms->avoidreachtimes));
     memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
+}
+
+/*
+=============
+BotReachabilityArea
+
+Resolve the reachability area for an origin with mover/solid handling.
+=============
+*/
+int BotReachabilityArea(const vec3_t origin, int client)
+{
+	if (origin == NULL)
+	{
+		return 0;
+	}
+
+	vec3_t mins;
+	vec3_t maxs;
+	BotMove_GetClientBounds(client, mins, maxs);
+
+	vec3_t start;
+	vec3_t end;
+	VectorCopy(origin, start);
+	VectorCopy(origin, end);
+	end[2] -= 3.0f;
+
+	bsp_trace_t trace = Q2_Trace(start, mins, maxs, end, client, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+	if (!trace.startsolid && trace.fraction < 1.0f)
+	{
+		int entnum = trace.ent;
+		if (entnum > 0 && aasworld.entities != NULL && entnum < aasworld.maxEntities)
+		{
+			const aas_entity_t *entity = &aasworld.entities[entnum];
+			if (entity != NULL && entity->inuse)
+			{
+				int modelnum = AAS_ModelNumForEntity(entnum);
+				if (modelnum > 0)
+				{
+					const bot_mover_catalogue_entry_t *entry = BotMove_MoverCatalogueFindByModel(modelnum);
+					if (entry != NULL &&
+						(entry->kind == BOT_MOVER_KIND_FUNC_PLAT ||
+						 entry->kind == BOT_MOVER_KIND_FUNC_BOB))
+					{
+						aas_reachability_t reach;
+						int reachnum = AAS_NextModelReachability(0, modelnum);
+						if (reachnum > 0 && BotMove_LoadReachability(reachnum, &reach))
+						{
+							return reach.areanum;
+						}
+					}
+				}
+			}
+		}
+
+		if (Q2_PointContents(start) & MASK_WATER)
+		{
+			return BotMove_FuzzyPointReachabilityArea(start);
+		}
+
+		int areanum = BotMove_FuzzyPointReachabilityArea(start);
+		if (areanum > 0 && BotMove_AreaHasReachability(areanum))
+		{
+			return areanum;
+		}
+
+		VectorCopy(origin, end);
+		end[2] -= 800.0f;
+		trace = Q2_Trace(start, mins, maxs, end, client, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+		if (!trace.startsolid)
+		{
+			return BotMove_FuzzyPointReachabilityArea(trace.endpos);
+		}
+	}
+
+	return BotMove_FuzzyPointReachabilityArea(start);
 }
 
 /*

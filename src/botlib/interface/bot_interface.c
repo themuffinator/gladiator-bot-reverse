@@ -3360,6 +3360,23 @@ static void BotInterface_BotResetAvoidReach(int movestate)
 
 /*
 =============
+BotInterface_BotReachabilityArea
+
+Bridge reachability area lookup through the botlib API.
+=============
+*/
+static int BotInterface_BotReachabilityArea(vec3_t origin, int client)
+{
+	if (!BotInterface_EnsureLibraryReady("BotReachabilityArea"))
+	{
+		return 0;
+	}
+
+	return BotReachabilityArea(origin, client);
+}
+
+/*
+=============
 BotInterface_BotMovementViewTarget
 
 Bridge movement lookahead targeting through the botlib API.
@@ -3698,6 +3715,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 	exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
     exportTable.BotMoveInDirection = BotInterface_BotMoveInDirection;
     exportTable.BotResetAvoidReach = BotInterface_BotResetAvoidReach;
+	exportTable.BotReachabilityArea = BotInterface_BotReachabilityArea;
 	exportTable.BotMovementViewTarget = BotInterface_BotMovementViewTarget;
 	exportTable.BotPredictVisiblePosition = BotInterface_BotPredictVisiblePosition;
     exportTable.BotLoadCharacter = BotLoadCharacter;
