@@ -3013,6 +3013,26 @@ static int BotInterface_BotWeightIndex(int handle, const char *classname)
     return BotWeightIndex(handle, classname);
 }
 
+/*
+=============
+BotInterface_BotItemGoalInVisButNotVisible
+
+Checks item goals against AAS visibility and trace results.
+=============
+*/
+static int BotInterface_BotItemGoalInVisButNotVisible(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	const bot_goal_t *goal)
+{
+	if (!BotInterface_EnsureLibraryReady("BotItemGoalInVisButNotVisible"))
+	{
+		return 0;
+	}
+
+	return BotItemGoalInVisButNotVisible(viewer, eye, viewangles, goal);
+}
+
 static int BotInterface_BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal)
 {
     if (!BotInterface_EnsureLibraryReady("BotTouchingGoal"))
@@ -3461,6 +3481,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotRegisterLevelItem = AI_GoalBotlib_RegisterLevelItem;
     exportTable.BotUnregisterLevelItem = AI_GoalBotlib_UnregisterLevelItem;
     exportTable.BotMarkLevelItemTaken = AI_GoalBotlib_MarkItemTaken;
+	exportTable.BotItemGoalInVisButNotVisible = BotInterface_BotItemGoalInVisButNotVisible;
     exportTable.BotTouchingGoal = BotInterface_BotTouchingGoal;
     exportTable.BotAllocWeightConfig = BotInterface_BotAllocWeightConfig;
     exportTable.BotFreeWeightConfig = BotInterface_BotFreeWeightConfig;

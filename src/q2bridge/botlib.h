@@ -248,6 +248,7 @@ typedef struct bot_export_s {
     int (*BotRegisterLevelItem)(const bot_levelitem_setup_t *setup);
     void (*BotUnregisterLevelItem)(int number);
     void (*BotMarkLevelItemTaken)(int number, float respawn_delay);
+	int (*BotItemGoalInVisButNotVisible)(int viewer, vec3_t eye, vec3_t viewangles, struct bot_goal_s *goal);
     int (*BotTouchingGoal)(const vec3_t origin, const bot_goal_t *goal);
     int (*BotAllocWeightConfig)(void);
     void (*BotFreeWeightConfig)(int handle);

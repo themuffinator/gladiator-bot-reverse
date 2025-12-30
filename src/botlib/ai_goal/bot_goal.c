@@ -11,6 +11,7 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "q2bridge/bridge.h"
 
 #define BOT_GOAL_MAX_LEVELITEMS 512
 #define BOT_GOAL_TRAVELTIME_SCALE 0.01f
@@ -1089,6 +1090,50 @@ int BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal)
         return 0;
     }
     return 1;
+}
+
+/*
+=============
+BotItemGoalInVisButNotVisible
+
+Checks for item goals that are in AAS visibility but blocked by a trace.
+=============
+*/
+int BotItemGoalInVisButNotVisible(int viewer, const vec3_t eye, const vec3_t viewangles, const bot_goal_t *goal)
+{
+	if (goal == NULL || eye == NULL)
+	{
+		return 0;
+	}
+
+	if ((goal->flags & GFL_ITEM) == 0)
+	{
+		return 0;
+	}
+
+	vec3_t middle;
+	VectorAdd(goal->mins, goal->maxs, middle);
+	VectorScale(middle, 0.5f, middle);
+	VectorAdd(goal->origin, middle, middle);
+
+	vec3_t start;
+	VectorCopy(eye, start);
+	vec3_t mins = {0.0f, 0.0f, 0.0f};
+	vec3_t maxs = {0.0f, 0.0f, 0.0f};
+	bsp_trace_t aas_trace = Q2_Trace(start, mins, maxs, middle, viewer, CONTENTS_SOLID);
+	if (aas_trace.fraction < 1.0f)
+	{
+		return 0;
+	}
+
+	bsp_trace_t trace = Q2_Trace(start, mins, maxs, middle, viewer, MASK_SHOT);
+	if (trace.fraction < 1.0f)
+	{
+		return 1;
+	}
+
+	(void)viewangles;
+	return 0;
 }
 
 void BotGoalName(int number, char *name, int size)
