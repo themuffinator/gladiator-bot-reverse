@@ -14,6 +14,7 @@ int AI_GoalBotlib_LoadItemWeights(int handle, const char *filename);
 void AI_GoalBotlib_FreeItemWeights(int handle);
 void AI_GoalBotlib_SetTime(float now);
 void AI_GoalBotlib_SynchroniseAvoid(int handle, const ai_goal_state_t *state, float now);
+void AI_GoalBotlib_UpdateEntityItems(void);
 int AI_GoalBotlib_Update(int handle,
                          vec3_t origin,
                          int *inventory,
@@ -36,4 +37,3 @@ const bot_goalstate_t *AI_GoalBotlib_DebugPeek(int handle);
 #ifdef __cplusplus
 }
 #endif
-

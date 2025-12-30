@@ -112,6 +112,7 @@ float BotGoal_EvaluateStackGoal(int handle,
                                 int *travel_time);
 
 int BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal);
+int BotItemGoalInVisButNotVisible(int viewer, const vec3_t eye, const vec3_t viewangles, const bot_goal_t *goal);
 void BotGoalName(int number, char *name, int size);
 void BotDumpAvoidGoals(int handle);
 void BotDumpGoalStack(int handle);
@@ -119,6 +120,7 @@ void BotDumpGoalStack(int handle);
 int BotGoal_RegisterLevelItem(const bot_levelitem_setup_t *setup);
 void BotGoal_UnregisterLevelItem(int number);
 void BotGoal_MarkItemTaken(int number, float respawn_delay);
+void BotUpdateEntityItems(void);
 
 void BotGoal_SetCurrentTime(float now);
 float BotGoal_CurrentTime(void);
@@ -128,4 +130,3 @@ const bot_goalstate_t *BotGoalStatePeek(int handle);
 #ifdef __cplusplus
 }
 #endif
-

@@ -3013,6 +3013,26 @@ static int BotInterface_BotWeightIndex(int handle, const char *classname)
     return BotWeightIndex(handle, classname);
 }
 
+/*
+=============
+BotInterface_BotItemGoalInVisButNotVisible
+
+Checks item goals against AAS visibility and trace results.
+=============
+*/
+static int BotInterface_BotItemGoalInVisButNotVisible(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	const bot_goal_t *goal)
+{
+	if (!BotInterface_EnsureLibraryReady("BotItemGoalInVisButNotVisible"))
+	{
+		return 0;
+	}
+
+	return BotItemGoalInVisButNotVisible(viewer, eye, viewangles, goal);
+}
+
 static int BotInterface_BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal)
 {
     if (!BotInterface_EnsureLibraryReady("BotTouchingGoal"))
@@ -3168,6 +3188,27 @@ static void BotInterface_BotResetAvoidReach(int movestate)
     }
 
     BotMove_ResetAvoidReach(movestate);
+}
+
+/*
+=============
+BotInterface_BotMovementViewTarget
+
+Bridge movement lookahead targeting through the botlib API.
+=============
+*/
+static int BotInterface_BotMovementViewTarget(int movestate,
+											  const bot_goal_t *goal,
+											  int travelflags,
+											  float lookahead,
+											  vec3_t target)
+{
+	if (!BotInterface_EnsureLibraryReady("BotMovementViewTarget"))
+	{
+		return 0;
+	}
+
+	return BotMovementViewTarget(movestate, goal, travelflags, lookahead, target);
 }
 
 static int BotInterface_BotAllocWeaponState(void)
@@ -3436,9 +3477,11 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotResetAvoidGoals = AI_GoalBotlib_ResetAvoidGoals;
     exportTable.BotAddAvoidGoal = AI_GoalBotlib_AddAvoidGoal;
     exportTable.BotUpdateGoalState = AI_GoalBotlib_Update;
+	exportTable.BotUpdateEntityItems = AI_GoalBotlib_UpdateEntityItems;
     exportTable.BotRegisterLevelItem = AI_GoalBotlib_RegisterLevelItem;
     exportTable.BotUnregisterLevelItem = AI_GoalBotlib_UnregisterLevelItem;
     exportTable.BotMarkLevelItemTaken = AI_GoalBotlib_MarkItemTaken;
+	exportTable.BotItemGoalInVisButNotVisible = BotInterface_BotItemGoalInVisButNotVisible;
     exportTable.BotTouchingGoal = BotInterface_BotTouchingGoal;
     exportTable.BotAllocWeightConfig = BotInterface_BotAllocWeightConfig;
     exportTable.BotFreeWeightConfig = BotInterface_BotFreeWeightConfig;
@@ -3454,6 +3497,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
     exportTable.BotMoveInDirection = BotInterface_BotMoveInDirection;
     exportTable.BotResetAvoidReach = BotInterface_BotResetAvoidReach;
+	exportTable.BotMovementViewTarget = BotInterface_BotMovementViewTarget;
     exportTable.BotLoadCharacter = BotLoadCharacter;
     exportTable.BotFreeCharacter = BotFreeCharacter;
     exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
@@ -3485,4 +3529,3 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 
     return &exportTable;
 }
-

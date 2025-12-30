@@ -393,9 +393,16 @@ int BotShutdownLibrary(void)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotLibraryInitialized
+
+Reports whether the botlib has been successfully initialised.
+=============
+*/
 bool BotLibraryInitialized(void)
 {
-    return g_library_initialised;
+	return g_library_initialised && g_import_table != NULL;
 }
 
 /*

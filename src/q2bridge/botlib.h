@@ -244,9 +244,11 @@ typedef struct bot_export_s {
     void (*BotResetAvoidGoals)(int handle);
     void (*BotAddAvoidGoal)(int handle, int number, float avoidtime);
     int (*BotUpdateGoalState)(int handle, vec3_t origin, int *inventory, int travelflags, float now, float nearby_time);
+	void (*BotUpdateEntityItems)(void);
     int (*BotRegisterLevelItem)(const bot_levelitem_setup_t *setup);
     void (*BotUnregisterLevelItem)(int number);
     void (*BotMarkLevelItemTaken)(int number, float respawn_delay);
+	int (*BotItemGoalInVisButNotVisible)(int viewer, vec3_t eye, vec3_t viewangles, struct bot_goal_s *goal);
     int (*BotTouchingGoal)(const vec3_t origin, const bot_goal_t *goal);
     int (*BotAllocWeightConfig)(void);
     void (*BotFreeWeightConfig)(int handle);
@@ -262,6 +264,7 @@ typedef struct bot_export_s {
     void (*BotMoveToGoal)(bot_moveresult_t *result, int movestate, const bot_goal_t *goal, int travelflags);
     int (*BotMoveInDirection)(int movestate, const vec3_t dir, float speed, int type);
     void (*BotResetAvoidReach)(int movestate);
+	int (*BotMovementViewTarget)(int movestate, const bot_goal_t *goal, int travelflags, float lookahead, vec3_t target);
     int (*BotLoadCharacter)(const char *character_file, float skill);
     void (*BotFreeCharacter)(int handle);
     int (*BotLoadCharacterSkill)(const char *character_file, float skill);
