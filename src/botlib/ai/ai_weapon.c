@@ -753,82 +753,79 @@ const bot_weapon_config_t *AI_GetWeaponConfig(const ai_weapon_library_t *library
 
 ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 {
-    char resolved_path[AI_WEAPON_MAX_PATH];
-    if (!BotLib_ResolveAssetPath(filename, NULL, resolved_path, sizeof(resolved_path)))
-    {
-        BotLib_Print(PRT_ERROR,
-                     "[ai_weapon] failed to locate weapon weights %s\n",
-                     filename != NULL ? filename : "<null>");
-        return NULL;
-    }
+	char resolved_path[AI_WEAPON_MAX_PATH];
+	if (!BotLib_ResolveAssetPath(filename, NULL, resolved_path, sizeof(resolved_path)))
+	{
+		BotLib_Print(PRT_ERROR,
+					 "[ai_weapon] failed to locate weapon weights %s\n",
+					 filename != NULL ? filename : "<null>");
+		return NULL;
+	}
 
-    bot_weight_config_t *config = ReadWeightConfig(resolved_path);
-    if (config == NULL)
-    {
-        return NULL;
-    }
+	bot_weight_config_t *config = ReadWeightConfig(resolved_path);
+	if (config == NULL)
+	{
+		return NULL;
+	}
 
-    const bot_weapon_config_t *definitions = g_active_weapon_config;
-    if (definitions == NULL)
-    {
-        BotLib_Print(PRT_ERROR,
-                     "[ai_weapon] unable to compile weapon weights without an active weapon config (%s)\n",
-                     (filename != NULL) ? filename : "<null>");
-        FreeWeightConfig(config);
-        return NULL;
-    }
+	const bot_weapon_config_t *definitions = g_active_weapon_config;
+	if (definitions == NULL)
+	{
+		BotLib_Print(PRT_ERROR,
+					 "[ai_weapon] unable to compile weapon weights without an active weapon config (%s)\n",
+					 (filename != NULL) ? filename : "<null>");
+		goto cleanup_config;
+	}
 
-    ai_weapon_weights_t *weights = (ai_weapon_weights_t *)GetClearedMemory(sizeof(ai_weapon_weights_t));
-    if (weights == NULL)
-    {
-        FreeWeightConfig(config);
-        return NULL;
-    }
+	ai_weapon_weights_t *weights = (ai_weapon_weights_t *)GetClearedMemory(sizeof(ai_weapon_weights_t));
+	if (weights == NULL)
+	{
+		goto cleanup_config;
+	}
 
-    weights->config = config;
-    weights->definitions = definitions;
-    weights->index_count = definitions->num_weapons;
+	weights->config = config;
+	weights->definitions = definitions;
+	weights->index_count = definitions->num_weapons;
 
-    if (weights->index_count > 0)
-    {
-        weights->index_by_weapon = (int *)GetClearedMemory(sizeof(int) * (size_t)weights->index_count);
-        if (weights->index_by_weapon == NULL)
-        {
-            AI_FreeWeaponWeights(weights);
-            return NULL;
-        }
+	if (weights->index_count > 0)
+	{
+		weights->index_by_weapon = (int *)GetClearedMemory(sizeof(int) * (size_t)weights->index_count);
+		if (weights->index_by_weapon == NULL)
+		{
+			goto cleanup_weights;
+		}
 
-        for (int i = 0; i < weights->index_count; ++i)
-        {
-            weights->index_by_weapon[i] = -1;
-        }
+		for (int i = 0; i < weights->index_count; ++i)
+		{
+			weights->index_by_weapon[i] = -1;
+		}
 
-        bool mismatch = false;
-        for (int i = 0; i < weights->index_count; ++i)
-        {
-            const bot_weapon_info_t *weapon = &definitions->weapons[i];
-            int weight_index = BotWeight_FindIndex(config, weapon->name);
-            if (weight_index < 0)
-            {
-                BotLib_Print(PRT_WARNING,
-                             "item info %d \"%s\" has no fuzzy weight\n",
-                             weapon->number,
-                             weapon->name);
-                mismatch = true;
-                break;
-            }
+		for (int i = 0; i < weights->index_count; ++i)
+		{
+			const bot_weapon_info_t *weapon = &definitions->weapons[i];
+			int weight_index = BotWeight_FindIndex(config, weapon->name);
+			if (weight_index < 0)
+			{
+				BotLib_Print(PRT_WARNING,
+							 "item info %d \"%s\" has no fuzzy weight\n",
+							 weapon->number,
+							 weapon->name);
+				goto cleanup_weights;
+			}
 
-            weights->index_by_weapon[i] = weight_index;
-        }
+			weights->index_by_weapon[i] = weight_index;
+		}
+	}
 
-        if (mismatch)
-        {
-            AI_FreeWeaponWeights(weights);
-            return NULL;
-        }
-    }
+	return weights;
 
-    return weights;
+cleanup_weights:
+	AI_FreeWeaponWeights(weights);
+	return NULL;
+
+cleanup_config:
+	FreeWeightConfig(config);
+	return NULL;
 }
 
 void AI_FreeWeaponWeights(ai_weapon_weights_t *weights)
@@ -889,4 +886,3 @@ float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_in
 
     return FuzzyWeight(NULL, weights->config, weight_index);
 }
-

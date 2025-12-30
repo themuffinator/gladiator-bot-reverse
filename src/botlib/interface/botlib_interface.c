@@ -226,16 +226,16 @@ static void Botlib_ShutdownUtilities(void)
 
 static void Botlib_ShutdownAISubsystem(void)
 {
-    if (!g_subsystem_state.ai_initialised) {
-        return;
-    }
+	if (g_weapon_library != NULL) {
+		AI_UnloadWeaponLibrary(g_weapon_library);
+		g_weapon_library = NULL;
+	}
 
-    if (g_weapon_library != NULL) {
-        AI_UnloadWeaponLibrary(g_weapon_library);
-        g_weapon_library = NULL;
-    }
+	if (!g_subsystem_state.ai_initialised) {
+		return;
+	}
 
-    g_subsystem_state.ai_initialised = false;
+	g_subsystem_state.ai_initialised = false;
 }
 
 static void Botlib_ShutdownSoundSubsystem(void)
