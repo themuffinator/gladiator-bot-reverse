@@ -4,6 +4,7 @@
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_struct.h"
+#include "botlib/interface/botlib_interface.h"
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -52,42 +53,60 @@ static void BotWeight_LogHandleError(const char *function, int handle)
     BotLib_Print(PRT_ERROR, "%s: invalid weight handle %d\n", function, handle);
 }
 
+/*
+=============
+BotAllocWeightConfig
+=============
+*/
 int BotAllocWeightConfig(void)
 {
-    for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
-        if (g_weight_handles[i] != NULL) {
-            continue;
-        }
+	if (!BotLibraryEnsureSetup("BotAllocWeightConfig")) {
+		return 0;
+	}
 
-        bot_weight_handle_t *entry = GetClearedMemory(sizeof(*entry));
-        if (entry == NULL) {
-            BotLib_Print(PRT_FATAL, "BotAllocWeightConfig: allocation failed\n");
-            return 0;
-        }
+	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
+		if (g_weight_handles[i] != NULL) {
+			continue;
+		}
 
-        g_weight_handles[i] = entry;
-        return i + 1;
-    }
+		bot_weight_handle_t *entry = GetClearedMemory(sizeof(*entry));
+		if (entry == NULL) {
+			BotLib_Print(PRT_FATAL, "BotAllocWeightConfig: allocation failed\n");
+			return 0;
+		}
 
-    BotLib_Print(PRT_ERROR, "BotAllocWeightConfig: no free handles\n");
-    return 0;
+		g_weight_handles[i] = entry;
+		return i + 1;
+	}
+
+	BotLib_Print(PRT_ERROR, "BotAllocWeightConfig: no free handles\n");
+	return 0;
 }
 
+/*
+=============
+BotFreeWeightConfig
+=============
+*/
 void BotFreeWeightConfig(int handle)
 {
-    if (!BotWeight_HandleInRange(handle)) {
-        BotWeight_LogHandleError("BotFreeWeightConfig", handle);
-        return;
-    }
+	if (!BotLibraryEnsureSetup("BotFreeWeightConfig")) {
+		return;
+	}
 
-    bot_weight_handle_t *entry = g_weight_handles[handle - 1];
-    if (entry == NULL) {
-        BotWeight_LogHandleError("BotFreeWeightConfig", handle);
-        return;
-    }
+	if (!BotWeight_HandleInRange(handle)) {
+		BotWeight_LogHandleError("BotFreeWeightConfig", handle);
+		return;
+	}
 
-    BotWeight_DestroyHandle(entry);
-    g_weight_handles[handle - 1] = NULL;
+	bot_weight_handle_t *entry = g_weight_handles[handle - 1];
+	if (entry == NULL) {
+		BotWeight_LogHandleError("BotFreeWeightConfig", handle);
+		return;
+	}
+
+	BotWeight_DestroyHandle(entry);
+	g_weight_handles[handle - 1] = NULL;
 }
 
 void BotFreeWeightConfig2(bot_weight_config_t *config)
@@ -325,35 +344,44 @@ static void BotWeight_AssignValue(bot_fuzzy_seperator_t *fs, float value)
     BotWeight_AssignValue(fs->next, value);
 }
 
+/*
+=============
+BotSetWeight
+=============
+*/
 int BotSetWeight(int handle, const char *name, float value)
 {
-    if (name == NULL || name[0] == '\0') {
-        BotLib_Print(PRT_ERROR, "BotSetWeight: name required\n");
-        return 0;
-    }
+	if (!BotLibraryEnsureSetup("BotSetWeight")) {
+		return 0;
+	}
 
-    bot_weight_handle_t *entry = BotWeight_ResolveHandle("BotSetWeight", handle);
-    if (entry == NULL) {
-        return 0;
-    }
+	if (name == NULL || name[0] == '\0') {
+		BotLib_Print(PRT_ERROR, "BotSetWeight: name required\n");
+		return 0;
+	}
 
-    if (entry->config == NULL) {
-        BotLib_Print(PRT_ERROR, "BotSetWeight: handle %d has no configuration\n", handle);
-        return 0;
-    }
+	bot_weight_handle_t *entry = BotWeight_ResolveHandle("BotSetWeight", handle);
+	if (entry == NULL) {
+		return 0;
+	}
 
-    int index = BotWeight_FindIndex(entry->config, name);
-    if (index < 0) {
-        BotLib_Print(PRT_WARNING,
-                     "BotSetWeight: unknown weight '%s' in %s\n",
-                     name,
-                     entry->config->source_file);
-        return 0;
-    }
+	if (entry->config == NULL) {
+		BotLib_Print(PRT_ERROR, "BotSetWeight: handle %d has no configuration\n", handle);
+		return 0;
+	}
 
-    bot_weight_t *weight = &entry->config->weights[index];
-    BotWeight_AssignValue(weight->first_seperator, value);
-    return 1;
+	int index = BotWeight_FindIndex(entry->config, name);
+	if (index < 0) {
+		BotLib_Print(PRT_WARNING,
+					 "BotSetWeight: unknown weight '%s' in %s\n",
+					 name,
+					 entry->config->source_file);
+		return 0;
+	}
+
+	bot_weight_t *weight = &entry->config->weights[index];
+	BotWeight_AssignValue(weight->first_seperator, value);
+	return 1;
 }
 
 int BotFindFuzzyWeight(int handle, const char *name)
@@ -390,7 +418,16 @@ const bot_weight_config_t *BotGetWeightConfig(int handle)
     return entry->config;
 }
 
+/*
+=============
+BotReadWeightsFile
+=============
+*/
 bot_weight_config_t *BotReadWeightsFile(const char *filename)
 {
-    return ReadWeightConfig(filename);
+	if (!BotLibraryEnsureSetup("BotReadWeightsFile")) {
+		return NULL;
+	}
+
+	return ReadWeightConfig(filename);
 }

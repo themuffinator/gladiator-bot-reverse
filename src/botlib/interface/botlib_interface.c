@@ -398,6 +398,26 @@ bool BotLibraryInitialized(void)
     return g_library_initialised;
 }
 
+/*
+=============
+BotLibraryEnsureSetup
+
+Logs when the bot library is used before setup has completed.
+=============
+*/
+bool BotLibraryEnsureSetup(const char *function_name)
+{
+	if (g_library_initialised) {
+		return true;
+	}
+
+	if (function_name != NULL) {
+		BotLib_Print(PRT_ERROR, "%s: bot library used before being setup\n", function_name);
+	}
+
+	return false;
+}
+
 const botlib_library_variables_t *BotInterface_GetLibraryVariables(void)
 {
     return &g_library_variables;
