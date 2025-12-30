@@ -20,6 +20,10 @@ static float VectorNormalizeInline(vec3_t v);
 static float VectorNormalizeTo(const vec3_t src, vec3_t dst);
 static int BotMove_FindAreaForPoint(const vec3_t origin);
 static float BotMove_TravelTimeout(int traveltype);
+static bool BotMove_AreaHasReachability(int areanum);
+static int BotMove_FuzzyPointReachabilityArea(const vec3_t origin);
+static bool BotMove_GetClientTraceBounds(int client, vec3_t mins, vec3_t maxs);
+static int BotMove_FindMoverReachabilityArea(const vec3_t origin);
 
 static const char *BotMove_DefaultGrappleModel(void)
 {
@@ -545,6 +549,175 @@ static int BotMove_FindAreaForPoint(const vec3_t origin)
     }
 
     return 0;
+}
+
+/*
+=============
+BotMove_AreaHasReachability
+
+Returns true when the supplied area has any reachability records.
+=============
+*/
+static bool BotMove_AreaHasReachability(int areanum)
+{
+	if (aasworld.areasettings == NULL || areanum <= 0 || areanum >= aasworld.numAreaSettings)
+	{
+		return false;
+	}
+
+	return aasworld.areasettings[areanum].numreachableareas > 0;
+}
+
+/*
+=============
+BotMove_FuzzyPointReachabilityArea
+
+Resolves a reachable area by probing the origin and nearby offsets.
+=============
+*/
+static int BotMove_FuzzyPointReachabilityArea(const vec3_t origin)
+{
+	int firstareanum = 0;
+	int areanum = BotMove_FindAreaForPoint(origin);
+	if (areanum > 0)
+	{
+		firstareanum = areanum;
+		if (BotMove_AreaHasReachability(areanum))
+		{
+			return areanum;
+		}
+	}
+
+	float bestdist = FLT_MAX;
+	int bestareanum = 0;
+
+	for (int z = 1; z >= -1; --z)
+	{
+		for (int x = 1; x >= -1; --x)
+		{
+			for (int y = 1; y >= -1; --y)
+			{
+				vec3_t end;
+				end[0] = origin[0] + (float)x * 8.0f;
+				end[1] = origin[1] + (float)y * 8.0f;
+				end[2] = origin[2] + (float)z * 12.0f;
+
+				areanum = BotMove_FindAreaForPoint(end);
+				if (areanum <= 0)
+				{
+					continue;
+				}
+
+				if (firstareanum == 0)
+				{
+					firstareanum = areanum;
+				}
+
+				if (BotMove_AreaHasReachability(areanum))
+				{
+					vec3_t delta;
+					VectorSubtract(end, origin, delta);
+					float dist = VectorLengthSquared(delta);
+					if (dist < bestdist)
+					{
+						bestdist = dist;
+						bestareanum = areanum;
+					}
+				}
+			}
+		}
+	}
+
+	if (bestareanum != 0)
+	{
+		return bestareanum;
+	}
+
+	return firstareanum;
+}
+
+/*
+=============
+BotMove_GetClientTraceBounds
+
+Fetches the bounding box for a client entity if available.
+=============
+*/
+static bool BotMove_GetClientTraceBounds(int client, vec3_t mins, vec3_t maxs)
+{
+	if (mins == NULL || maxs == NULL)
+	{
+		return false;
+	}
+
+	VectorClear(mins);
+	VectorClear(maxs);
+
+	if (aasworld.entities == NULL || aasworld.maxEntities <= 0)
+	{
+		return false;
+	}
+
+	if (client < 0 || client >= aasworld.maxEntities)
+	{
+		return false;
+	}
+
+	const aas_entity_t *entity = &aasworld.entities[client];
+	if (entity == NULL || !entity->inuse)
+	{
+		return false;
+	}
+
+	VectorCopy(entity->mins, mins);
+	VectorCopy(entity->maxs, maxs);
+	return true;
+}
+
+/*
+=============
+BotMove_FindMoverReachabilityArea
+
+Returns the reachability area for a mover supporting the origin.
+=============
+*/
+static int BotMove_FindMoverReachabilityArea(const vec3_t origin)
+{
+	bot_movestate_t ms;
+	memset(&ms, 0, sizeof(ms));
+	VectorCopy(origin, ms.origin);
+	ms.areanum = BotMove_FindAreaForPoint(origin);
+
+	bot_move_mover_support_t support;
+	if (!BotMove_FindSupportingMover(&ms, &support))
+	{
+		return 0;
+	}
+
+	if (support.catalogue == NULL)
+	{
+		return 0;
+	}
+
+	if (support.catalogue->kind != BOT_MOVER_KIND_FUNC_PLAT &&
+		support.catalogue->kind != BOT_MOVER_KIND_FUNC_BOB)
+	{
+		return 0;
+	}
+
+	int reachnum = AAS_NextModelReachability(0, support.modelnum);
+	if (reachnum <= 0)
+	{
+		return 0;
+	}
+
+	aas_reachability_t reach;
+	if (!BotMove_LoadReachability(reachnum, &reach))
+	{
+		return 0;
+	}
+
+	return reach.areanum;
 }
 
 static int BotMove_TravelFlagsForType(int traveltype)
@@ -1385,6 +1558,44 @@ void BotMoveClassifyEnvironment(bot_movestate_t *ms)
     }
 }
 
+/*
+=============
+BotReachabilityArea
+
+Returns the reachability area for a point, with solid-area handling.
+=============
+*/
+int BotReachabilityArea(vec3_t origin, int client)
+{
+	int mover_area = BotMove_FindMoverReachabilityArea(origin);
+	if (mover_area > 0)
+	{
+		return mover_area;
+	}
+
+	int areanum = BotMove_FuzzyPointReachabilityArea(origin);
+	if (BotMove_AreaHasReachability(areanum))
+	{
+		return areanum;
+	}
+
+	vec3_t mins;
+	vec3_t maxs;
+	(void)BotMove_GetClientTraceBounds(client, mins, maxs);
+
+	vec3_t end;
+	VectorCopy(origin, end);
+	end[2] -= 800.0f;
+
+	bsp_trace_t trace = Q2_Trace(origin, mins, maxs, end, client, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+	if (!trace.startsolid)
+	{
+		return BotMove_FuzzyPointReachabilityArea(trace.endpos);
+	}
+
+	return areanum;
+}
+
 void BotMoveToGoal(bot_moveresult_t *result,
                    int movestate,
                    const bot_goal_t *goal,
@@ -1510,4 +1721,3 @@ void BotMove_ResetAvoidReach(int movestate)
     memset(ms->avoidreachtimes, 0, sizeof(ms->avoidreachtimes));
     memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
 }
-

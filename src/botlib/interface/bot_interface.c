@@ -3170,6 +3170,23 @@ static void BotInterface_BotResetAvoidReach(int movestate)
     BotMove_ResetAvoidReach(movestate);
 }
 
+/*
+=============
+BotInterface_BotReachabilityArea
+
+Returns the reachability area for the supplied origin.
+=============
+*/
+static int BotInterface_BotReachabilityArea(vec3_t origin, int client)
+{
+	if (!BotInterface_EnsureLibraryReady("BotReachabilityArea"))
+	{
+		return 0;
+	}
+
+	return BotReachabilityArea(origin, client);
+}
+
 static int BotInterface_BotAllocWeaponState(void)
 {
     if (!BotInterface_EnsureLibraryReady("BotAllocWeaponState"))
@@ -3454,6 +3471,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
     exportTable.BotMoveInDirection = BotInterface_BotMoveInDirection;
     exportTable.BotResetAvoidReach = BotInterface_BotResetAvoidReach;
+    exportTable.BotReachabilityArea = BotInterface_BotReachabilityArea;
     exportTable.BotLoadCharacter = BotLoadCharacter;
     exportTable.BotFreeCharacter = BotFreeCharacter;
     exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
@@ -3485,4 +3503,3 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 
     return &exportTable;
 }
-
