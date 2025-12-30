@@ -2038,8 +2038,14 @@ Migrates an active bot client to a new slot and preserves bridge state.
 */
 static int BotMoveClient(int oldclnum, int newclnum)
 {
-	if (!BotInterface_EnsureLibraryReady("BotMoveClient"))
+	if (g_botImport == NULL)
 	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
+
+	if (!BotLibraryInitialized())
+	{
+		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: library not initialised\n");
 		return BLERR_LIBRARYNOTSETUP;
 	}
 
@@ -2074,6 +2080,8 @@ static int BotMoveClient(int oldclnum, int newclnum)
 	}
 
 	BotState_Move(oldclnum, newclnum);
+	Bridge_ClearClientSlot(newclnum);
+	Bridge_SetClientActive(newclnum, qtrue);
 	int status = Bridge_MoveClientSlot(oldclnum, newclnum);
 	if (status != BLERR_NOERROR)
 	{
@@ -2081,6 +2089,9 @@ static int BotMoveClient(int oldclnum, int newclnum)
 		                    "[bot_interface] BotMoveClient: bridge move failed for %d -> %d\n",
 		                    oldclnum,
 		                    newclnum);
+		Bridge_ClearClientSlot(newclnum);
+		Bridge_SetClientActive(newclnum, qfalse);
+		Bridge_SetClientActive(oldclnum, qtrue);
 		BotState_Move(newclnum, oldclnum);
 		return status;
 	}
@@ -3485,4 +3496,3 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 
     return &exportTable;
 }
-

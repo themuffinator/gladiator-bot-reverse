@@ -421,32 +421,49 @@ void Bridge_ClearClientSlot(int client)
     memset(&g_bridge_clients[client], 0, sizeof(g_bridge_clients[client]));
 }
 
+/*
+=============
+Bridge_MoveClientSlot
+
+Migrates cached client updates to a new slot and clears the source cache.
+=============
+*/
 int Bridge_MoveClientSlot(int old_client, int new_client)
 {
-    if (!Bridge_CheckLibraryReady("BotMoveClient"))
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!Bridge_CheckLibraryReady("BotMoveClient"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    if (!Bridge_CheckClientNumber(old_client, "BotMoveClient"))
-    {
-        return BLERR_INVALIDCLIENTNUMBER;
-    }
+	if (!Bridge_CheckClientNumber(old_client, "BotMoveClient"))
+	{
+		return BLERR_INVALIDCLIENTNUMBER;
+	}
 
-    if (!Bridge_CheckClientNumber(new_client, "BotMoveClient"))
-    {
-        return BLERR_INVALIDCLIENTNUMBER;
-    }
+	if (!Bridge_CheckClientNumber(new_client, "BotMoveClient"))
+	{
+		return BLERR_INVALIDCLIENTNUMBER;
+	}
 
-    if (old_client == new_client)
-    {
-        return BLERR_NOERROR;
-    }
+	if (old_client == new_client)
+	{
+		return BLERR_NOERROR;
+	}
 
-    g_bridge_clients[new_client] = g_bridge_clients[old_client];
-    memset(&g_bridge_clients[old_client], 0, sizeof(g_bridge_clients[old_client]));
+	bridge_client_slot_t *old_slot = &g_bridge_clients[old_client];
+	if (old_slot->seen)
+	{
+		bot_updateclient_t snapshot = old_slot->snapshot;
+		int status = Bridge_UpdateClient(new_client, &snapshot);
+		if (status != BLERR_NOERROR)
+		{
+			return status;
+		}
+	}
 
-    return BLERR_NOERROR;
+	Bridge_ClearClientSlot(old_client);
+
+	return BLERR_NOERROR;
 }
 
 void Bridge_SetFrameTime(float time)
