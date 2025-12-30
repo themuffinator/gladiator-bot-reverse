@@ -862,23 +862,33 @@ static void BotMove_RefreshAvoidReach(bot_movestate_t *ms)
     }
 }
 
-static bool BotMove_ShouldAvoidReach(const bot_movestate_t *ms, int reachnum)
+/*
+=============
+BotMove_ShouldAvoidReach
+
+Check whether a reachability should be avoided while updating last-avoid tracking.
+=============
+*/
+static bool BotMove_ShouldAvoidReach(bot_movestate_t *ms, int reachnum)
 {
-    if (ms == NULL || reachnum <= 0)
-    {
-        return false;
-    }
+	if (ms == NULL || reachnum <= 0)
+	{
+		return false;
+	}
 
-    float now = aasworld.time;
-    for (int i = 0; i < MAX_AVOIDREACH; ++i)
-    {
-        if (ms->avoidreach[i] == reachnum && ms->avoidreachtimes[i] > now)
-        {
-            return true;
-        }
-    }
+	float now = aasworld.time;
+	for (int i = 0; i < MAX_AVOIDREACH; ++i)
+	{
+		if (ms->avoidreach[i] == reachnum && ms->avoidreachtimes[i] > now)
+		{
+			ms->lastavoidreach = reachnum;
+			ms->lastavoidreachtime = ms->avoidreachtimes[i];
+			ms->lastavoidreachtries = ms->avoidreachtries[i];
+			return true;
+		}
+	}
 
-    return false;
+	return false;
 }
 
 static int BotMove_ReconstructFirstReach(const int *parent_area,
@@ -1683,17 +1693,27 @@ int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type)
     return 1;
 }
 
+/*
+=============
+BotMove_ResetAvoidReach
+
+Clear movement state avoid reachability tracking.
+=============
+*/
 void BotMove_ResetAvoidReach(int movestate)
 {
-    bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-    if (ms == NULL)
-    {
-        return;
-    }
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	if (ms == NULL)
+	{
+		return;
+	}
 
-    memset(ms->avoidreach, 0, sizeof(ms->avoidreach));
-    memset(ms->avoidreachtimes, 0, sizeof(ms->avoidreachtimes));
-    memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
+	memset(ms->avoidreach, 0, sizeof(ms->avoidreach));
+	memset(ms->avoidreachtimes, 0, sizeof(ms->avoidreachtimes));
+	memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
+	ms->lastavoidreach = 0;
+	ms->lastavoidreachtime = 0.0f;
+	ms->lastavoidreachtries = 0;
 }
 
 /*
@@ -1705,9 +1725,6 @@ Clear the most recent avoid reach entry.
 */
 void BotResetLastAvoidReach(int movestate)
 {
-	int i;
-	int latest;
-	float latesttime;
 	bot_movestate_t *ms;
 
 	ms = BotMoveStateFromHandle(movestate);
@@ -1716,25 +1733,25 @@ void BotResetLastAvoidReach(int movestate)
 		return;
 	}
 
-	latesttime = 0.0f;
-	latest = 0;
-	for (i = 0; i < MAX_AVOIDREACH; i++)
+	if (ms->lastavoidreach > 0)
 	{
-		if (ms->avoidreachtimes[i] > latesttime)
+		for (int i = 0; i < MAX_AVOIDREACH; i++)
 		{
-			latesttime = ms->avoidreachtimes[i];
-			latest = i;
+			if (ms->avoidreach[i] == ms->lastavoidreach)
+			{
+				ms->avoidreachtimes[i] = 0.0f;
+				if (ms->avoidreachtries[i] > 0)
+				{
+					ms->avoidreachtries[i]--;
+				}
+				break;
+			}
 		}
 	}
 
-	if (latesttime != 0.0f)
-	{
-		ms->avoidreachtimes[latest] = 0.0f;
-		if (ms->avoidreachtries[i] > 0)
-		{
-			ms->avoidreachtries[latest]--;
-		}
-	}
+	ms->lastavoidreach = 0;
+	ms->lastavoidreachtime = 0.0f;
+	ms->lastavoidreachtries = 0;
 }
 
 /*

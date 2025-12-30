@@ -140,9 +140,12 @@ typedef struct bot_movestate_s
     float lastgrappledist;
     float reachability_time;
 
-    int avoidreach[MAX_AVOIDREACH];
-    float avoidreachtimes[MAX_AVOIDREACH];
-    int avoidreachtries[MAX_AVOIDREACH];
+	int avoidreach[MAX_AVOIDREACH];
+	float avoidreachtimes[MAX_AVOIDREACH];
+	int avoidreachtries[MAX_AVOIDREACH];
+	int lastavoidreach;
+	float lastavoidreachtime;
+	int lastavoidreachtries;
 
     bot_avoidspot_t avoidspots[MAX_AVOIDSPOTS];
     int numavoidspots;
