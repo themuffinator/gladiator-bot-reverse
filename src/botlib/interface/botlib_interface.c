@@ -33,6 +33,7 @@ typedef struct botlib_subsystem_state_s {
 } botlib_subsystem_state_t;
 
 static const botlib_import_table_t *g_import_table = NULL;
+static const botlib_import_capture_t *g_import_capture = NULL;
 static bool g_library_initialised = false;
 static botlib_library_variables_t g_library_variables;
 static botlib_subsystem_state_t g_subsystem_state;
@@ -276,6 +277,30 @@ void BotInterface_SetImportTable(const botlib_import_table_t *import_table)
 const botlib_import_table_t *BotInterface_GetImportTable(void)
 {
     return g_import_table;
+}
+
+/*
+=============
+BotInterface_SetImportCapture
+
+Registers optional capture hooks for shimmed import callbacks.
+=============
+*/
+void BotInterface_SetImportCapture(const botlib_import_capture_t *capture)
+{
+	g_import_capture = capture;
+}
+
+/*
+=============
+BotInterface_GetImportCapture
+
+Returns the active capture hooks for shimmed import callbacks.
+=============
+*/
+const botlib_import_capture_t *BotInterface_GetImportCapture(void)
+{
+	return g_import_capture;
 }
 
 int BotSetupLibrary(void)
