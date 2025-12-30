@@ -3170,6 +3170,27 @@ static void BotInterface_BotResetAvoidReach(int movestate)
     BotMove_ResetAvoidReach(movestate);
 }
 
+/*
+=============
+BotInterface_BotPredictVisiblePosition
+
+Routes the visibility prediction request to the bot movement module.
+=============
+*/
+static int BotInterface_BotPredictVisiblePosition(vec3_t origin,
+												  int areanum,
+												  bot_goal_t *goal,
+												  int travelflags,
+												  vec3_t target)
+{
+	if (!BotInterface_EnsureLibraryReady("BotPredictVisiblePosition"))
+	{
+		return 0;
+	}
+
+	return BotPredictVisiblePosition(origin, areanum, goal, travelflags, target);
+}
+
 static int BotInterface_BotAllocWeaponState(void)
 {
     if (!BotInterface_EnsureLibraryReady("BotAllocWeaponState"))
@@ -3454,6 +3475,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
     exportTable.BotMoveInDirection = BotInterface_BotMoveInDirection;
     exportTable.BotResetAvoidReach = BotInterface_BotResetAvoidReach;
+    exportTable.BotPredictVisiblePosition = BotInterface_BotPredictVisiblePosition;
     exportTable.BotLoadCharacter = BotLoadCharacter;
     exportTable.BotFreeCharacter = BotFreeCharacter;
     exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
@@ -3485,4 +3507,3 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 
     return &exportTable;
 }
-

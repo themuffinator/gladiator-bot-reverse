@@ -519,6 +519,31 @@ static float VectorNormalizeTo(const vec3_t src, vec3_t dst)
     return VectorNormalizeInline(dst);
 }
 
+/*
+=============
+BotMove_VisiblePosition
+
+Checks if a point is visible from a viewpoint.
+=============
+*/
+static bool BotMove_VisiblePosition(int ent, const vec3_t eye, const vec3_t target)
+{
+	if (eye == NULL || target == NULL)
+	{
+		return false;
+	}
+
+	vec3_t start;
+	vec3_t end;
+	VectorCopy(eye, start);
+	VectorCopy(target, end);
+
+	vec3_t mins = {0.0f, 0.0f, 0.0f};
+	vec3_t maxs = {0.0f, 0.0f, 0.0f};
+	bsp_trace_t trace = Q2_Trace(start, mins, maxs, end, ent, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+	return trace.fraction >= 1.0f;
+}
+
 static int BotMove_FindAreaForPoint(const vec3_t origin)
 {
     if (!aasworld.loaded || aasworld.areas == NULL || aasworld.numAreas <= 0)
@@ -1511,3 +1536,59 @@ void BotMove_ResetAvoidReach(int movestate)
     memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
 }
 
+/*
+=============
+BotPredictVisiblePosition
+
+Predicts a reachability point that remains visible from the goal.
+=============
+*/
+int BotPredictVisiblePosition(vec3_t origin, int areanum, bot_goal_t *goal, int travelflags, vec3_t target)
+{
+	if (goal == NULL || target == NULL)
+	{
+		return false;
+	}
+
+	if (!areanum || !goal->areanum)
+	{
+		return false;
+	}
+
+	bot_movestate_t temp_state;
+	memset(&temp_state, 0, sizeof(temp_state));
+
+	for (int i = 0; i < 20 && areanum != goal->areanum; ++i)
+	{
+		aas_reachability_t reach;
+		temp_state.areanum = areanum;
+
+		int reachnum = BotGetReachabilityToGoal(&temp_state, goal, travelflags, &reach, NULL);
+		if (!reachnum)
+		{
+			return false;
+		}
+
+		if (BotMove_VisiblePosition(goal->entitynum, goal->origin, reach.start))
+		{
+			VectorCopy(reach.start, target);
+			return true;
+		}
+
+		if (BotMove_VisiblePosition(goal->entitynum, goal->origin, reach.end))
+		{
+			VectorCopy(reach.end, target);
+			return true;
+		}
+
+		if (reach.areanum == goal->areanum)
+		{
+			VectorCopy(reach.end, target);
+			return true;
+		}
+
+		areanum = reach.areanum;
+	}
+
+	return false;
+}

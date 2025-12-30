@@ -166,6 +166,8 @@ int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type);
 
 void BotMove_ResetAvoidReach(int movestate);
 
+int BotPredictVisiblePosition(vec3_t origin, int areanum, bot_goal_t *goal, int travelflags, vec3_t target);
+
 void AI_MoveFrame(bot_moveresult_t *result,
                   int movestate,
                   const bot_goal_t *goal,
@@ -176,4 +178,3 @@ bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const struct aas_reachab
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
-
