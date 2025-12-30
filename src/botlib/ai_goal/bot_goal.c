@@ -221,55 +221,58 @@ static bool BotGoal_EnsureWeightCapacity(bot_goalstate_t *gs)
 
 int BotLoadItemWeights(int handle, const char *filename)
 {
-    bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
-    if (gs == NULL)
-    {
-        BotLib_Print(PRT_ERROR, "BotLoadItemWeights: invalid goal state %d\n", handle);
-        return 0;
-    }
+	bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
+	if (gs == NULL)
+	{
+		BotLib_Print(PRT_ERROR, "BotLoadItemWeights: invalid goal state %d\n", handle);
+		return 0;
+	}
 
-    char path[BOT_GOAL_ASSET_MAX_PATH];
-    if (!BotGoal_BuildWeightPath(filename, path, sizeof(path)))
-    {
-        BotLib_Print(PRT_ERROR, "BotLoadItemWeights: unable to resolve %s\n", filename);
-        return 0;
-    }
+	char path[BOT_GOAL_ASSET_MAX_PATH];
+	if (!BotGoal_BuildWeightPath(filename, path, sizeof(path)))
+	{
+		BotLib_Print(PRT_ERROR,
+					 "BotLoadItemWeights: unable to resolve %s\n",
+					 filename != NULL ? filename : "<null>");
+		return 0;
+	}
 
-    bot_weight_config_t *config = ReadWeightConfig(path);
-    if (config == NULL)
-    {
-        BotLib_Print(PRT_FATAL, "BotLoadItemWeights: couldn't load %s\n", path);
-        return 0;
-    }
+	bot_weight_config_t *config = ReadWeightConfig(path);
+	if (config == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "BotLoadItemWeights: couldn't load %s\n", path);
+		return 0;
+	}
 
-    if (gs->itemweightconfig != NULL)
-    {
-        FreeWeightConfig(gs->itemweightconfig);
-        gs->itemweightconfig = NULL;
-    }
+	if (!BotGoal_EnsureWeightCapacity(gs))
+	{
+		BotLib_Print(PRT_ERROR, "BotLoadItemWeights: weight index allocation failed\n");
+		FreeWeightConfig(config);
+		return 0;
+	}
 
-    gs->itemweightconfig = config;
+	if (gs->itemweightconfig != NULL)
+	{
+		FreeWeightConfig(gs->itemweightconfig);
+		gs->itemweightconfig = NULL;
+	}
 
-    if (!BotGoal_EnsureWeightCapacity(gs))
-    {
-        BotLib_Print(PRT_ERROR, "BotLoadItemWeights: weight index allocation failed\n");
-        return 0;
-    }
+	gs->itemweightconfig = config;
 
-    for (int i = 0; i < gs->itemweightcount; ++i)
-    {
-        const char *classname = g_iteminfo_names[i];
-        gs->itemweightindex[i] = BotWeight_FindIndex(gs->itemweightconfig, classname);
-        if (gs->itemweightindex[i] < 0)
-        {
-            BotLib_Print(PRT_WARNING,
-                         "BotLoadItemWeights: item '%s' missing weight definition in %s\n",
-                         classname,
-                         path);
-        }
-    }
+	for (int i = 0; i < gs->itemweightcount; ++i)
+	{
+		const char *classname = g_iteminfo_names[i];
+		gs->itemweightindex[i] = BotWeight_FindIndex(gs->itemweightconfig, classname);
+		if (gs->itemweightindex[i] < 0)
+		{
+			BotLib_Print(PRT_WARNING,
+						 "item info %d \"%s\" has no fuzzy weight\n",
+						 i,
+						 classname);
+		}
+	}
 
-    return 1;
+	return 1;
 }
 
 void BotFreeItemWeights(int handle)
