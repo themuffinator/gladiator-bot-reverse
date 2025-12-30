@@ -9,6 +9,7 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 
 #define BOT_CHAT_MAX_CONSOLE_MESSAGES 16
@@ -2267,24 +2268,55 @@ state->has_time_override = 0;
 state->time_override_seconds = 0.0;
 }
 
-void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message)
+/*
+=============
+BotChat_ConsoleQueueReady
+=============
+*/
+static int BotChat_ConsoleQueueReady(const bot_chatstate_t *state)
 {
-	if (state == NULL || message == NULL) {
-	return;
+	if (!BotLibraryInitialized())
+	{
+		return 0;
+	}
+
+	if (state == NULL)
+	{
+		return 0;
+	}
+
+	if (state->console_head >= BOT_CHAT_MAX_CONSOLE_MESSAGES
+		|| state->console_count > BOT_CHAT_MAX_CONSOLE_MESSAGES)
+	{
+		return 0;
+	}
+
+	return 1;
 }
 
-    if (state->console_count == BOT_CHAT_MAX_CONSOLE_MESSAGES) {
-        // Drop the oldest message to make room. The real implementation would
-        // honour the HLIL eviction rules when the queue overflows.
-        state->console_head = (state->console_head + 1) % BOT_CHAT_MAX_CONSOLE_MESSAGES;
-        state->console_count--;
-    }
+/*
+=============
+BotQueueConsoleMessage
+=============
+*/
+void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message)
+{
+	if (!BotChat_ConsoleQueueReady(state) || message == NULL)
+	{
+		return;
+	}
 
-    size_t insert_index = (state->console_head + state->console_count) % BOT_CHAT_MAX_CONSOLE_MESSAGES;
-    bot_console_message_t *slot = &state->console_queue[insert_index];
-    slot->type = type;
-    strncpy(slot->text, message, sizeof(slot->text) - 1);
-    slot->text[sizeof(slot->text) - 1] = '\0';
+	if (state->console_count == BOT_CHAT_MAX_CONSOLE_MESSAGES)
+	{
+		BotLib_Print(PRT_ERROR, "empty console message heap\n");
+		return;
+	}
+
+	size_t insert_index = (state->console_head + state->console_count) % BOT_CHAT_MAX_CONSOLE_MESSAGES;
+	bot_console_message_t *slot = &state->console_queue[insert_index];
+	slot->type = type;
+	strncpy(slot->text, message, sizeof(slot->text) - 1);
+	slot->text[sizeof(slot->text) - 1] = '\0';
 	state->console_count++;
 }
 
@@ -2345,25 +2377,46 @@ double cooldown_seconds)
 	entry->next_allowed_time = 0.0;
 }
 
+/*
+=============
+BotNextConsoleMessage
+=============
+*/
 int BotNextConsoleMessage(bot_chatstate_t *state, int *type, char *buffer, size_t buffer_size)
 {
-    if (state == NULL || state->console_count == 0) {
-        return 0;
-    }
+	if (!BotChat_ConsoleQueueReady(state))
+	{
+		if (type != NULL)
+		{
+			*type = 0;
+		}
+		if (buffer != NULL && buffer_size > 0)
+		{
+			buffer[0] = '\0';
+		}
+		return 0;
+	}
 
-    const bot_console_message_t *slot = &state->console_queue[state->console_head];
-    if (type != NULL) {
-        *type = slot->type;
-    }
+	if (state->console_count == 0)
+	{
+		return 0;
+	}
 
-    if (buffer != NULL && buffer_size > 0) {
-        strncpy(buffer, slot->text, buffer_size - 1);
-        buffer[buffer_size - 1] = '\0';
-    }
+	const bot_console_message_t *slot = &state->console_queue[state->console_head];
+	if (type != NULL)
+	{
+		*type = slot->type;
+	}
 
-    state->console_head = (state->console_head + 1) % BOT_CHAT_MAX_CONSOLE_MESSAGES;
-    state->console_count--;
-    return 1;
+	if (buffer != NULL && buffer_size > 0)
+	{
+		strncpy(buffer, slot->text, buffer_size - 1);
+		buffer[buffer_size - 1] = '\0';
+	}
+
+	state->console_head = (state->console_head + 1) % BOT_CHAT_MAX_CONSOLE_MESSAGES;
+	state->console_count--;
+	return 1;
 }
 
 int BotRemoveConsoleMessage(bot_chatstate_t *state, int type)
@@ -2389,9 +2442,15 @@ int BotRemoveConsoleMessage(bot_chatstate_t *state, int type)
     return 0;
 }
 
+/*
+=============
+BotNumConsoleMessages
+=============
+*/
 size_t BotNumConsoleMessages(const bot_chatstate_t *state)
 {
-	if (state == NULL) {
+	if (!BotChat_ConsoleQueueReady(state))
+	{
 		return 0;
 	}
 
