@@ -119,6 +119,7 @@ void BotDumpGoalStack(int handle);
 int BotGoal_RegisterLevelItem(const bot_levelitem_setup_t *setup);
 void BotGoal_UnregisterLevelItem(int number);
 void BotGoal_MarkItemTaken(int number, float respawn_delay);
+void BotInitLevelItems(void);
 
 void BotGoal_SetCurrentTime(float now);
 float BotGoal_CurrentTime(void);
@@ -128,4 +129,3 @@ const bot_goalstate_t *BotGoalStatePeek(int handle);
 #ifdef __cplusplus
 }
 #endif
-

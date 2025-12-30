@@ -188,6 +188,18 @@ void AI_GoalBotlib_AddAvoidGoal(int handle, int number, float avoidtime)
     BotAddToAvoidGoals(handle, number, avoidtime);
 }
 
+/*
+=============
+AI_GoalBotlib_InitLevelItems
+
+Populate the level item tables for the currently loaded map.
+=============
+*/
+void AI_GoalBotlib_InitLevelItems(void)
+{
+	BotInitLevelItems();
+}
+
 int AI_GoalBotlib_RegisterLevelItem(const bot_levelitem_setup_t *setup)
 {
     return BotGoal_RegisterLevelItem(setup);

@@ -26,6 +26,7 @@ int AI_GoalBotlib_PushGoal(int handle, const bot_goal_t *goal);
 int AI_GoalBotlib_PopGoal(int handle);
 void AI_GoalBotlib_ResetAvoidGoals(int handle);
 void AI_GoalBotlib_AddAvoidGoal(int handle, int number, float avoidtime);
+void AI_GoalBotlib_InitLevelItems(void);
 int AI_GoalBotlib_RegisterLevelItem(const bot_levelitem_setup_t *setup);
 void AI_GoalBotlib_UnregisterLevelItem(int number);
 void AI_GoalBotlib_MarkItemTaken(int number, float respawn_delay);
@@ -36,4 +37,3 @@ const bot_goalstate_t *AI_GoalBotlib_DebugPeek(int handle);
 #ifdef __cplusplus
 }
 #endif
-
