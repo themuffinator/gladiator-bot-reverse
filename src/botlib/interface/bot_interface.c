@@ -3360,6 +3360,23 @@ static void BotInterface_BotResetAvoidReach(int movestate)
 
 /*
 =============
+BotInterface_BotResetLastAvoidReach
+
+Expose last-avoid reachability resets through the botlib API.
+=============
+*/
+static void BotInterface_BotResetLastAvoidReach(int movestate)
+{
+	if (!BotInterface_EnsureLibraryReady("BotResetLastAvoidReach"))
+	{
+		return;
+	}
+
+	BotResetLastAvoidReach(movestate);
+}
+
+/*
+=============
 BotInterface_BotReachabilityArea
 
 Bridge reachability area lookup through the botlib API.
@@ -3712,9 +3729,10 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotFreeMoveState = BotInterface_BotFreeMoveState;
     exportTable.BotResetMoveState = BotInterface_BotResetMoveState;
     exportTable.BotInitMoveState = BotInterface_BotInitMoveState;
-	exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
+    exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
     exportTable.BotMoveInDirection = BotInterface_BotMoveInDirection;
     exportTable.BotResetAvoidReach = BotInterface_BotResetAvoidReach;
+	exportTable.BotResetLastAvoidReach = BotInterface_BotResetLastAvoidReach;
 	exportTable.BotReachabilityArea = BotInterface_BotReachabilityArea;
 	exportTable.BotMovementViewTarget = BotInterface_BotMovementViewTarget;
 	exportTable.BotPredictVisiblePosition = BotInterface_BotPredictVisiblePosition;

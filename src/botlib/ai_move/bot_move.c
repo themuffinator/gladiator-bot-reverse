@@ -1698,6 +1698,42 @@ void BotMove_ResetAvoidReach(int movestate)
 
 /*
 =============
+BotResetLastAvoidReach
+
+Clear the most recently avoided reachability timer without resetting the full list.
+=============
+*/
+void BotResetLastAvoidReach(int movestate)
+{
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	if (ms == NULL)
+	{
+		return;
+	}
+
+	int latest = -1;
+	float latesttime = 0.0f;
+	for (int i = 0; i < MAX_AVOIDREACH; ++i)
+	{
+		if (ms->avoidreachtimes[i] > latesttime)
+		{
+			latesttime = ms->avoidreachtimes[i];
+			latest = i;
+		}
+	}
+
+	if (latest >= 0 && latesttime > 0.0f)
+	{
+		ms->avoidreachtimes[latest] = 0.0f;
+		if (ms->avoidreachtries[latest] > 0)
+		{
+			ms->avoidreachtries[latest]--;
+		}
+	}
+}
+
+/*
+=============
 BotReachabilityArea
 
 Resolve the reachability area for an origin with mover/solid handling.
