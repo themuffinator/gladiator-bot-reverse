@@ -165,6 +165,11 @@ void BotMoveToGoal(bot_moveresult_t *result,
 int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type);
 
 void BotMove_ResetAvoidReach(int movestate);
+int BotMovementViewTarget(int movestate,
+						  const bot_goal_t *goal,
+						  int travelflags,
+						  float lookahead,
+						  vec3_t target);
 
 void AI_MoveFrame(bot_moveresult_t *result,
                   int movestate,
@@ -176,4 +181,3 @@ bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const struct aas_reachab
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
-
