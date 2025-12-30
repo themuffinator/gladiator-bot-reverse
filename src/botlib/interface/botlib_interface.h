@@ -39,6 +39,16 @@ typedef struct botlib_import_table_s {
 } botlib_import_table_t;
 
 /**
+ * Optional capture hooks for shimmed import callbacks.
+ */
+typedef struct botlib_import_capture_s {
+	void (*Print)(int type, const char *message);
+	void (*DPrint)(const char *message);
+	void (*BotLibVarGet)(const char *var_name, const char *value, int status);
+	void (*BotLibVarSet)(const char *var_name, const char *value, int status);
+} botlib_import_capture_t;
+
+/**
  * Stores the runtime library variables that are queried from the engine.
  * Additional values can be appended as more of the library is recovered.
  */
@@ -79,6 +89,8 @@ typedef struct botlib_library_variables_s {
  */
 void BotInterface_SetImportTable(const botlib_import_table_t *import_table);
 const botlib_import_table_t *BotInterface_GetImportTable(void);
+void BotInterface_SetImportCapture(const botlib_import_capture_t *capture);
+const botlib_import_capture_t *BotInterface_GetImportCapture(void);
 
 /**
  * Lifecycle management entry points mirrored from the original Gladiator bot

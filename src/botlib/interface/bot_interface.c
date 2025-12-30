@@ -1244,52 +1244,80 @@ static botinterface_import_libvar_t *BotInterface_EnsureImportLibVar(const char 
     return entry;
 }
 
+/*
+=============
+BotInterface_PrintWrapper
+
+Formats print output and forwards it through the engine import table.
+=============
+*/
 static void BotInterface_PrintWrapper(int type, const char *fmt, ...)
 {
-    if (fmt == NULL)
-    {
-        return;
-    }
+	if (fmt == NULL)
+	{
+		return;
+	}
 
-    if (g_botImport == NULL || g_botImport->Print == NULL)
-    {
-        return;
-    }
+	if (g_botImport == NULL || g_botImport->Print == NULL)
+	{
+		return;
+	}
 
-    va_list args;
-    va_start(args, fmt);
+	va_list args;
+	va_start(args, fmt);
 
-    char buffer[1024];
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
+	char buffer[1024];
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
 
-    va_end(args);
+	va_end(args);
 
-    buffer[sizeof(buffer) - 1] = '\0';
-    g_botImport->Print(type, "%s", buffer);
+	buffer[sizeof(buffer) - 1] = '\0';
+
+	const botlib_import_capture_t *capture = BotInterface_GetImportCapture();
+	if (capture != NULL && capture->Print != NULL)
+	{
+		capture->Print(type, buffer);
+	}
+
+	g_botImport->Print(type, "%s", buffer);
 }
 
+/*
+=============
+BotInterface_DPrintWrapper
+
+Formats developer output and forwards it through the engine print callback.
+=============
+*/
 static void BotInterface_DPrintWrapper(const char *fmt, ...)
 {
-    if (fmt == NULL)
-    {
-        return;
-    }
+	if (fmt == NULL)
+	{
+		return;
+	}
 
-    if (g_botImport == NULL || g_botImport->Print == NULL)
-    {
-        return;
-    }
+	if (g_botImport == NULL || g_botImport->Print == NULL)
+	{
+		return;
+	}
 
-    va_list args;
-    va_start(args, fmt);
+	va_list args;
+	va_start(args, fmt);
 
-    char buffer[1024];
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
+	char buffer[1024];
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
 
-    va_end(args);
+	va_end(args);
 
-    buffer[sizeof(buffer) - 1] = '\0';
-    g_botImport->Print(PRT_MESSAGE, "%s", buffer);
+	buffer[sizeof(buffer) - 1] = '\0';
+
+	const botlib_import_capture_t *capture = BotInterface_GetImportCapture();
+	if (capture != NULL && capture->DPrint != NULL)
+	{
+		capture->DPrint(buffer);
+	}
+
+	g_botImport->Print(PRT_MESSAGE, "%s", buffer);
 }
 
 static void BotInterface_AddCommandWrapper(const char *name, void (*function)(void))
@@ -1332,59 +1360,87 @@ static const char *BotInterface_CmdArgvWrapper(int index)
     return g_botImport->CmdArgv(index);
 }
 
+/*
+=============
+BotInterface_BotLibVarGetWrapper
+
+Returns cached libvar values from the import-side shim table.
+=============
+*/
 static int BotInterface_BotLibVarGetWrapper(const char *var_name, char *value, size_t size)
 {
-    if (value == NULL || size == 0)
-    {
-        return -1;
-    }
+	int status = -1;
 
-    value[0] = '\0';
+	if (value == NULL || size == 0)
+	{
+		return -1;
+	}
 
-    if (var_name == NULL)
-    {
-        return -1;
-    }
+	value[0] = '\0';
 
-    botinterface_import_libvar_t *entry = BotInterface_FindImportLibVar(var_name);
-    if (entry == NULL || entry->value == NULL)
-    {
-        return -1;
-    }
+	if (var_name == NULL)
+	{
+		return -1;
+	}
 
-    size_t length = strlen(entry->value);
-    if (length >= size)
-    {
-        length = size - 1;
-    }
+	botinterface_import_libvar_t *entry = BotInterface_FindImportLibVar(var_name);
+	if (entry != NULL && entry->value != NULL)
+	{
+		size_t length = strlen(entry->value);
+		if (length >= size)
+		{
+			length = size - 1;
+		}
 
-    memcpy(value, entry->value, length);
-    value[length] = '\0';
-    return 0;
+		memcpy(value, entry->value, length);
+		value[length] = '\0';
+		status = 0;
+	}
+
+	const botlib_import_capture_t *capture = BotInterface_GetImportCapture();
+	if (capture != NULL && capture->BotLibVarGet != NULL)
+	{
+		capture->BotLibVarGet(var_name, value, status);
+	}
+
+	return status;
 }
 
+/*
+=============
+BotInterface_BotLibVarSetWrapper
+
+Updates cached libvar values supplied through the import-side shim table.
+=============
+*/
 static int BotInterface_BotLibVarSetWrapper(const char *var_name, const char *value)
 {
-    if (var_name == NULL || value == NULL)
-    {
-        return -1;
-    }
+	int status = -1;
 
-    botinterface_import_libvar_t *entry = BotInterface_EnsureImportLibVar(var_name);
-    if (entry == NULL)
-    {
-        return -1;
-    }
+	if (var_name == NULL || value == NULL)
+	{
+		return -1;
+	}
 
-    char *copy = BotInterface_CopyString(value);
-    if (copy == NULL)
-    {
-        return -1;
-    }
+	botinterface_import_libvar_t *entry = BotInterface_EnsureImportLibVar(var_name);
+	if (entry != NULL)
+	{
+		char *copy = BotInterface_CopyString(value);
+		if (copy != NULL)
+		{
+			free(entry->value);
+			entry->value = copy;
+			status = 0;
+		}
+	}
 
-    free(entry->value);
-    entry->value = copy;
-    return 0;
+	const botlib_import_capture_t *capture = BotInterface_GetImportCapture();
+	if (capture != NULL && capture->BotLibVarSet != NULL)
+	{
+		capture->BotLibVarSet(var_name, value, status);
+	}
+
+	return status;
 }
 
 static void BotInterface_BuildImportTable(bot_import_t *import_table)
@@ -1490,59 +1546,159 @@ static bool BotInterface_UpdateImportCache(const char *name, const char *value)
     return true;
 }
 
+/*
+=============
+BotInterface_BotLibVarGetShim
+
+Fetches cached libvar values for the bootstrapped import table.
+=============
+*/
 static int BotInterface_BotLibVarGetShim(const char *name, char *buffer, size_t buffer_size)
 {
-    if (name == NULL || buffer == NULL || buffer_size == 0)
-    {
-        return BLERR_INVALIDIMPORT;
-    }
+	int status = BLERR_INVALIDIMPORT;
 
-    for (botlib_import_cache_entry_t *entry = g_botImportCache; entry != NULL; entry = entry->next)
-    {
-        if (strcmp(entry->name, name) == 0)
-        {
-            strncpy(buffer, entry->value, buffer_size - 1);
-            buffer[buffer_size - 1] = '\0';
-            return BLERR_NOERROR;
-        }
-    }
+	if (name == NULL || buffer == NULL || buffer_size == 0)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
 
-    buffer[0] = '\0';
-    return BLERR_INVALIDIMPORT;
+	for (botlib_import_cache_entry_t *entry = g_botImportCache; entry != NULL; entry = entry->next)
+	{
+		if (strcmp(entry->name, name) == 0)
+		{
+			strncpy(buffer, entry->value, buffer_size - 1);
+			buffer[buffer_size - 1] = '\0';
+			status = BLERR_NOERROR;
+			break;
+		}
+	}
+
+	if (status != BLERR_NOERROR)
+	{
+		buffer[0] = '\0';
+	}
+
+	const botlib_import_capture_t *capture = BotInterface_GetImportCapture();
+	if (capture != NULL && capture->BotLibVarGet != NULL)
+	{
+		capture->BotLibVarGet(name, buffer, status);
+	}
+
+	return status;
 }
 
+/*
+=============
+BotInterface_BotLibVarSetShim
+
+Stores cached libvar values for the bootstrapped import table.
+=============
+*/
+static int BotInterface_BotLibVarSetShim(const char *name, const char *value)
+{
+	int status = BLERR_INVALIDIMPORT;
+
+	if (name == NULL || value == NULL)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	if (BotInterface_UpdateImportCache(name, value))
+	{
+		status = BLERR_NOERROR;
+	}
+
+	const botlib_import_capture_t *capture = BotInterface_GetImportCapture();
+	if (capture != NULL && capture->BotLibVarSet != NULL)
+	{
+		capture->BotLibVarSet(name, value, status);
+	}
+
+	return status;
+}
+
+/*
+=============
+BotInterface_PrintShim
+
+Formats and forwards print output during the import table handshake.
+=============
+*/
 static void BotInterface_PrintShim(int priority, const char *fmt, ...)
 {
-    if (g_botImport == NULL || g_botImport->Print == NULL || fmt == NULL)
-    {
-        return;
-    }
+	if (g_botImport == NULL || g_botImport->Print == NULL || fmt == NULL)
+	{
+		return;
+	}
 
-    va_list args;
-    va_start(args, fmt);
+	va_list args;
+	va_start(args, fmt);
 
-    char buffer[1024];
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
+	char buffer[1024];
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
 
-    va_end(args);
+	va_end(args);
 
-    g_botImport->Print(priority, "%s", buffer);
+	const botlib_import_capture_t *capture = BotInterface_GetImportCapture();
+	if (capture != NULL && capture->Print != NULL)
+	{
+		capture->Print(priority, buffer);
+	}
+
+	g_botImport->Print(priority, "%s", buffer);
 }
 
+/*
+=============
+BotInterface_DPrintShim
+
+Formats and forwards developer output during the import table handshake.
+=============
+*/
+static void BotInterface_DPrintShim(const char *fmt, ...)
+{
+	if (g_botImport == NULL || g_botImport->Print == NULL || fmt == NULL)
+	{
+		return;
+	}
+
+	va_list args;
+	va_start(args, fmt);
+
+	char buffer[1024];
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+	va_end(args);
+
+	const botlib_import_capture_t *capture = BotInterface_GetImportCapture();
+	if (capture != NULL && capture->DPrint != NULL)
+	{
+		capture->DPrint(buffer);
+	}
+
+	g_botImport->Print(PRT_MESSAGE, "%s", buffer);
+}
+
+/*
+=============
+BotInterface_InitialiseImportTable
+
+Prepares the bootstrapped import table used during library setup.
+=============
+*/
 static void BotInterface_InitialiseImportTable(bot_import_t *imports)
 {
-    g_botImport = imports;
+	g_botImport = imports;
 
-    memset(&g_botlibImportTable, 0, sizeof(g_botlibImportTable));
-    g_botlibImportTable.Print = BotInterface_PrintShim;
-    g_botlibImportTable.BotLibVarGet = BotInterface_BotLibVarGetShim;
-    g_botlibImportTable.BotLibVarSet = NULL;
-    g_botlibImportTable.AddCommand = NULL;
-    g_botlibImportTable.RemoveCommand = NULL;
-    g_botlibImportTable.CmdArgc = NULL;
-    g_botlibImportTable.CmdArgv = NULL;
-
-    BotInterface_SetImportTable(&g_botlibImportTable);
+	memset(&g_botlibImportTable, 0, sizeof(g_botlibImportTable));
+	g_botlibImportTable.Print = BotInterface_PrintShim;
+	g_botlibImportTable.DPrint = BotInterface_DPrintShim;
+	g_botlibImportTable.BotLibVarGet = BotInterface_BotLibVarGetShim;
+	g_botlibImportTable.BotLibVarSet = BotInterface_BotLibVarSetShim;
+	g_botlibImportTable.AddCommand = NULL;
+	g_botlibImportTable.RemoveCommand = NULL;
+	g_botlibImportTable.CmdArgc = NULL;
+	g_botlibImportTable.CmdArgv = NULL;
 }
 
 static void BotInterface_PrintBanner(int priority, const char *message)
@@ -3438,21 +3594,33 @@ static int BotInterface_BotChatLength(const char *message)
     return BotChatLength(message);
 }
 
+/*
+=============
+GetBotAPI
+
+Builds the export table and wires import shims in the HLIL-defined order.
+=============
+*/
 GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 {
-    static bot_export_t exportTable;
+	static bot_export_t exportTable;
 
-    memset(&exportTable, 0, sizeof(exportTable));
+	memset(&exportTable, 0, sizeof(exportTable));
 
-    BotInterface_FreeImportCache();
-    BotInterface_InitialiseImportTable(import);
-    g_botImport = import;
-    BotInterface_BuildImportTable(import);
-    BotInterface_SetImportTable(&g_botInterfaceImportTable);
-    Q2Bridge_SetImportTable(import);
-    Q2Bridge_SetDebugLinesEnabled(g_botInterfaceDebugDrawEnabled);
-    Bridge_ResetCachedUpdates();
-    assert(g_botImport != NULL);
+	BotInterface_FreeImportCache();
+	BotInterface_InitialiseImportTable(import);
+	BotInterface_BuildImportTable(import);
+
+	/*
+	 * HLIL ordering: translate bot_import_t to botlib_import_table_t, then
+	 * install the botlib import table, feed the bridge import table, and
+	 * reset cached update translation state.
+	 */
+	BotInterface_SetImportTable(&g_botInterfaceImportTable);
+	Q2Bridge_SetImportTable(import);
+	Bridge_ResetCachedUpdates();
+	Q2Bridge_SetDebugLinesEnabled(g_botInterfaceDebugDrawEnabled);
+	assert(g_botImport != NULL);
 
     exportTable.BotVersion = BotVersion;
     exportTable.BotSetupLibrary = BotSetupLibraryWrapper;
