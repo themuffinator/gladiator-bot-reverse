@@ -1022,6 +1022,48 @@ int BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal)
     return 1;
 }
 
+/*
+=============
+BotGetNextCampSpotGoal
+
+Iterates the map camp spots and returns the next goal entry.
+=============
+*/
+int BotGetNextCampSpotGoal(int num, bot_goal_t *goal)
+{
+	if (goal == NULL)
+	{
+		return 0;
+	}
+
+	if (num < 0)
+	{
+		num = 0;
+	}
+
+	int index = num;
+	const aas_campspot_t *spot = aasworld.campSpots;
+	while (spot != NULL)
+	{
+		if (--index < 0)
+		{
+			vec3_t mins = {-8.0f, -8.0f, -8.0f};
+			vec3_t maxs = {8.0f, 8.0f, 8.0f};
+
+			goal->areanum = BotGoal_PointAreaNum(spot->origin);
+			VectorCopy(spot->origin, goal->origin);
+			goal->entitynum = 0;
+			VectorCopy(mins, goal->mins);
+			VectorCopy(maxs, goal->maxs);
+			return num + 1;
+		}
+
+		spot = spot->next;
+	}
+
+	return 0;
+}
+
 void BotGoalName(int number, char *name, int size)
 {
     if (name == NULL || size <= 0)

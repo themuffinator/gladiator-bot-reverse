@@ -26,6 +26,8 @@ static size_t AAS_AreaBitWordCount(void);
 static void AAS_ClampMinsMaxs(vec3_t mins, vec3_t maxs);
 static void AAS_ClearWorld(void);
 static void AAS_ParseEntityLump(const char *data, size_t length);
+static qboolean AAS_ParseVectorValue(const char *value, vec3_t outValue);
+static void AAS_RegisterCampSpot(const aas_parsed_entity_t *entity);
 
 /*
  * Global AAS world state.  The original DLL zeroed the data_100667e0 block
@@ -105,6 +107,8 @@ typedef struct aas_parsed_entity_s
     qboolean hasClassname;
     char model[64];
     qboolean hasModel;
+	vec3_t origin;
+	qboolean hasOrigin;
     float lip;
     qboolean hasLip;
     float height;
@@ -191,6 +195,61 @@ static qboolean AAS_ParseIntValue(const char *value, int *outValue)
 
     *outValue = (int)parsed;
     return qtrue;
+}
+
+/*
+=============
+AAS_ParseVectorValue
+
+Parses a whitespace-delimited vec3 from the entity lump.
+=============
+*/
+static qboolean AAS_ParseVectorValue(const char *value, vec3_t outValue)
+{
+	if (value == NULL || outValue == NULL)
+	{
+		return qfalse;
+	}
+
+	const char *cursor = value;
+	float parsed[3] = {0.0f, 0.0f, 0.0f};
+
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		while (*cursor != '\0' && isspace((unsigned char)*cursor))
+		{
+			++cursor;
+		}
+
+		if (*cursor == '\0')
+		{
+			return qfalse;
+		}
+
+		errno = 0;
+		char *endPtr = NULL;
+		float val = strtof(cursor, &endPtr);
+		if (endPtr == cursor || errno == ERANGE)
+		{
+			return qfalse;
+		}
+
+		parsed[axis] = val;
+		cursor = endPtr;
+	}
+
+	while (*cursor != '\0' && isspace((unsigned char)*cursor))
+	{
+		++cursor;
+	}
+
+	if (*cursor != '\0')
+	{
+		return qfalse;
+	}
+
+	VectorSet(outValue, parsed[0], parsed[1], parsed[2]);
+	return qtrue;
 }
 
 static void AAS_CopyStringField(char *destination,
@@ -473,6 +532,21 @@ static void AAS_ParseEntityKeyValue(aas_parsed_entity_t *entity, const char *key
         AAS_CopyStringField(entity->model, sizeof(entity->model), value, key);
         entity->hasModel = qtrue;
     }
+	else if (strcmp(key, "origin") == 0)
+	{
+		vec3_t parsed;
+		if (AAS_ParseVectorValue(value, parsed))
+		{
+			VectorCopy(parsed, entity->origin);
+			entity->hasOrigin = qtrue;
+		}
+		else
+		{
+			BotLib_Print(PRT_WARNING,
+			             "AAS_ParseEntityLump: failed to parse origin value '%s'\n",
+			             value);
+		}
+	}
     else if (strcmp(key, "lip") == 0)
     {
         float parsed = 0.0f;
@@ -609,6 +683,39 @@ static void AAS_RegisterMoverEntity(const aas_parsed_entity_t *entity)
     }
 }
 
+/*
+=============
+AAS_RegisterCampSpot
+
+Stores info_camp origins parsed from the BSP entity lump.
+=============
+*/
+static void AAS_RegisterCampSpot(const aas_parsed_entity_t *entity)
+{
+	if (entity == NULL || !entity->hasClassname || !entity->hasOrigin)
+	{
+		return;
+	}
+
+	if (strcmp(entity->classname, "info_camp") != 0)
+	{
+		return;
+	}
+
+	aas_campspot_t *spot = (aas_campspot_t *)calloc(1, sizeof(*spot));
+	if (spot == NULL)
+	{
+		BotLib_Print(PRT_WARNING,
+		             "AAS_ParseEntityLump: out of memory registering camp spot\n");
+		return;
+	}
+
+	VectorCopy(entity->origin, spot->origin);
+	spot->next = aasworld.campSpots;
+	aasworld.campSpots = spot;
+	aasworld.numCampSpots++;
+}
+
 static void AAS_ParseEntityLump(const char *data, size_t length)
 {
     if (data == NULL || length == 0U)
@@ -718,6 +825,7 @@ static void AAS_ParseEntityLump(const char *data, size_t length)
         if (!malformed)
         {
             AAS_RegisterMoverEntity(&entity);
+			AAS_RegisterCampSpot(&entity);
         }
     }
 }
@@ -1096,6 +1204,19 @@ static void AAS_ClearWorld(void)
     AAS_ReachabilityFrameResetDiagnostics();
     AAS_FreeAllRoutingCaches();
     AAS_ClearReachabilityData();
+
+	if (aasworld.campSpots != NULL)
+	{
+		aas_campspot_t *spot = aasworld.campSpots;
+		while (spot != NULL)
+		{
+			aas_campspot_t *next = spot->next;
+			free(spot);
+			spot = next;
+		}
+		aasworld.campSpots = NULL;
+		aasworld.numCampSpots = 0;
+	}
 
     if (aasworld.entities != NULL)
     {

@@ -34,6 +34,12 @@ typedef struct aas_node_s
     int children[2];    /* <0 means leaf/area, 0 means solid */
 } aas_node_t;
 
+typedef struct aas_campspot_s
+{
+	vec3_t origin;
+	struct aas_campspot_s *next;
+} aas_campspot_t;
+
 /*
  * Travel type definitions reconstructed from the Quake III / Gladiator
  * binaries. The values mirror the original enum encoded in the reachability
@@ -226,6 +232,9 @@ typedef struct aas_world_s
 
     int maxEntities;
     aas_entity_t *entities; /* base pointer from data_100669a0 */
+
+    int numCampSpots;
+    aas_campspot_t *campSpots;
 
     size_t areaEntityListCount;  /* number of heads in areaEntityLists */
     aas_link_t **areaEntityLists; /* entities linked per area */

@@ -112,6 +112,7 @@ float BotGoal_EvaluateStackGoal(int handle,
                                 int *travel_time);
 
 int BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal);
+int BotGetNextCampSpotGoal(int num, bot_goal_t *goal);
 void BotGoalName(int number, char *name, int size);
 void BotDumpAvoidGoals(int handle);
 void BotDumpGoalStack(int handle);
@@ -128,4 +129,3 @@ const bot_goalstate_t *BotGoalStatePeek(int handle);
 #ifdef __cplusplus
 }
 #endif
-
