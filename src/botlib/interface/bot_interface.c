@@ -2019,7 +2019,8 @@ static int BotShutdownClient(int client)
 	bot_client_state_t *state = BotState_Get(client);
 	if (state == NULL || !state->active)
 	{
-		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotShutdownClient: client %d not active\n", client);
+		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotShutdownClient: client %d already shutdown\n", client);
+		Bridge_ClearClientSlot(client);
 		return BLERR_AICLIENTALREADYSHUTDOWN;
 	}
 
@@ -3485,4 +3486,3 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 
     return &exportTable;
 }
-
