@@ -11,6 +11,7 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 
 #define BOT_GOAL_MAX_LEVELITEMS 512
@@ -294,21 +295,33 @@ void BotFreeItemWeights(int handle)
     gs->itemweightcount = 0;
 }
 
+/*
+=============
+BotWeightIndex
+=============
+*/
 int BotWeightIndex(int handle, const char *classname)
 {
-    bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
-    if (gs == NULL || classname == NULL)
-    {
-        return -1;
-    }
+	if (!BotLibraryEnsureSetup("BotWeightIndex")) {
+		return -1;
+	}
 
-    int index = BotGoal_FindItemInfoIndex(classname);
-    if (index < 0 || index >= gs->itemweightcount)
-    {
-        return -1;
-    }
+	bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
+	if (gs == NULL) {
+		BotLib_Print(PRT_ERROR, "BotWeightIndex: invalid goal state %d\n", handle);
+		return -1;
+	}
 
-    return gs->itemweightindex[index];
+	if (classname == NULL) {
+		return -1;
+	}
+
+	int index = BotGoal_FindItemInfoIndex(classname);
+	if (index < 0 || index >= gs->itemweightcount) {
+		return -1;
+	}
+
+	return gs->itemweightindex[index];
 }
 
 void BotResetAvoidGoals(int handle)
