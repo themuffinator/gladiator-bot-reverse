@@ -11,6 +11,7 @@
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_utils.h"
 #include "botlib/ea/ea_local.h"
+#include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/bridge_config.h"
 
@@ -20,6 +21,23 @@ static float VectorNormalizeInline(vec3_t v);
 static float VectorNormalizeTo(const vec3_t src, vec3_t dst);
 static int BotMove_FindAreaForPoint(const vec3_t origin);
 static float BotMove_TravelTimeout(int traveltype);
+
+/*
+=============
+BotMove_ResolveMoveState
+
+Validate movement state handles and emit parity diagnostics.
+=============
+*/
+static bot_movestate_t *BotMove_ResolveMoveState(const char *function_name, int movestate)
+{
+	if (movestate <= 0 || movestate > MAX_CLIENTS || g_botMoveStates[movestate] == NULL) {
+		BotLib_Print(PRT_ERROR, "%s: index %d not setup\n", function_name, movestate);
+		return NULL;
+	}
+
+	return g_botMoveStates[movestate];
+}
 
 static const char *BotMove_DefaultGrappleModel(void)
 {
@@ -1257,18 +1275,29 @@ static void BotMove_DispatchTravel(bot_movestate_t *ms,
     BotMove_CopyMoveResult(result, &temp);
 }
 
+/*
+=============
+BotAllocMoveState
+
+Allocate a new movement state slot.
+=============
+*/
 int BotAllocMoveState(void)
 {
-    for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
-    {
-        if (g_botMoveStates[handle] == NULL)
-        {
-            g_botMoveStates[handle] = GetClearedMemory(sizeof(bot_movestate_t));
-            return handle;
-        }
-    }
+	if (!BotLibraryEnsureInitialized("BotAllocMoveState")) {
+		return 0;
+	}
 
-    return 0;
+	for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
+	{
+		if (g_botMoveStates[handle] == NULL)
+		{
+			g_botMoveStates[handle] = GetClearedMemory(sizeof(bot_movestate_t));
+			return handle;
+		}
+	}
+
+	return 0;
 }
 
 void BotFreeMoveState(int handle)
@@ -1304,43 +1333,65 @@ bot_movestate_t *BotMoveStateFromHandle(int handle)
     return g_botMoveStates[handle];
 }
 
+/*
+=============
+BotResetMoveState
+
+Reset a movement state back to its default values.
+=============
+*/
 void BotResetMoveState(int movestate)
 {
-    bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-    if (ms == NULL)
-    {
-        return;
-    }
+	if (!BotLibraryEnsureInitialized("BotResetMoveState")) {
+		return;
+	}
 
-    memset(ms, 0, sizeof(*ms));
+	bot_movestate_t *ms = BotMove_ResolveMoveState("BotResetMoveState", movestate);
+	if (ms == NULL)
+	{
+		return;
+	}
+
+	memset(ms, 0, sizeof(*ms));
 }
 
+/*
+=============
+BotInitMoveState
+
+Initialise a movement state with the supplied snapshot data.
+=============
+*/
 void BotInitMoveState(int handle, const bot_initmove_t *initmove)
 {
-    bot_movestate_t *ms = BotMoveStateFromHandle(handle);
-    if (ms == NULL)
-    {
-        return;
-    }
+	if (!BotLibraryEnsureInitialized("BotInitMoveState")) {
+		return;
+	}
 
-    BotResetMoveState(handle);
+	bot_movestate_t *ms = BotMove_ResolveMoveState("BotInitMoveState", handle);
+	if (ms == NULL)
+	{
+		return;
+	}
 
-    if (initmove == NULL)
-    {
-        return;
-    }
+	BotResetMoveState(handle);
 
-    VectorCopy(initmove->origin, ms->origin);
-    VectorCopy(initmove->velocity, ms->velocity);
-    VectorCopy(initmove->viewoffset, ms->viewoffset);
-    ms->entitynum = initmove->entitynum;
-    ms->client = initmove->client;
-    ms->thinktime = initmove->thinktime;
-    ms->presencetype = initmove->presencetype;
-    VectorCopy(initmove->viewangles, ms->viewangles);
-    ms->moveflags = initmove->or_moveflags;
+	if (initmove == NULL)
+	{
+		return;
+	}
 
-    BotMoveClassifyEnvironment(ms);
+	VectorCopy(initmove->origin, ms->origin);
+	VectorCopy(initmove->velocity, ms->velocity);
+	VectorCopy(initmove->viewoffset, ms->viewoffset);
+	ms->entitynum = initmove->entitynum;
+	ms->client = initmove->client;
+	ms->thinktime = initmove->thinktime;
+	ms->presencetype = initmove->presencetype;
+	VectorCopy(initmove->viewangles, ms->viewangles);
+	ms->moveflags = initmove->or_moveflags;
+
+	BotMoveClassifyEnvironment(ms);
 }
 
 void BotClearMoveResult(bot_moveresult_t *moveresult)
@@ -1385,117 +1436,140 @@ void BotMoveClassifyEnvironment(bot_movestate_t *ms)
     }
 }
 
+/*
+=============
+BotMoveToGoal
+
+Advance the bot toward the current goal and populate the moveresult.
+=============
+*/
 void BotMoveToGoal(bot_moveresult_t *result,
                    int movestate,
                    const bot_goal_t *goal,
                    int travelflags)
 {
-    if (result == NULL)
-    {
-        return;
-    }
+	if (result == NULL)
+	{
+		return;
+	}
 
-    bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-    if (ms == NULL)
-    {
-        result->failure = 1;
-        return;
-    }
+	BotClearMoveResult(result);
 
-    if (goal == NULL || goal->areanum <= 0)
-    {
-        result->failure = 1;
-        result->type = RESULTTYPE_INSOLIDAREA;
-        return;
-    }
+	if (!BotLibraryEnsureInitialized("BotMoveToGoal")) {
+		return;
+	}
 
-    BotMove_RefreshAvoidReach(ms);
+	bot_movestate_t *ms = BotMove_ResolveMoveState("BotMoveToGoal", movestate);
+	if (ms == NULL)
+	{
+		return;
+	}
 
-    ms->moveflags &= ~(MFL_SWIMMING | MFL_AGAINSTLADDER);
+	if (goal == NULL || goal->areanum <= 0)
+	{
+		result->failure = 1;
+		result->type = RESULTTYPE_INSOLIDAREA;
+		return;
+	}
 
-    if (BotMove_HandleGroundMover(ms, result))
-    {
-        ms->lastgoalareanum = goal->areanum;
-        ms->lastareanum = ms->areanum;
-        VectorCopy(ms->origin, ms->lastorigin);
-        return;
-    }
+	BotMove_RefreshAvoidReach(ms);
 
-    if (ms->areanum == goal->areanum)
-    {
-        BotMove_DirectToGoal(ms, goal, result);
-        return;
-    }
+	ms->moveflags &= ~(MFL_SWIMMING | MFL_AGAINSTLADDER);
 
-    aas_reachability_t reach;
-    int resultFlags = 0;
-    int reachIndex = BotGetReachabilityToGoal(ms, goal, travelflags, &reach, &resultFlags);
-    if (reachIndex <= 0)
-    {
-        BotMove_DirectToGoal(ms, goal, result);
-        ms->lastreachnum = 0;
-        ms->lastgoalareanum = goal->areanum;
-        VectorCopy(ms->origin, ms->lastorigin);
-        return;
-    }
+	if (BotMove_HandleGroundMover(ms, result))
+	{
+		ms->lastgoalareanum = goal->areanum;
+		ms->lastareanum = ms->areanum;
+		VectorCopy(ms->origin, ms->lastorigin);
+		return;
+	}
 
-    BotMove_DispatchTravel(ms, &reach, result);
+	if (ms->areanum == goal->areanum)
+	{
+		BotMove_DirectToGoal(ms, goal, result);
+		return;
+	}
 
-    int traveltype = reach.traveltype & TRAVELTYPE_MASK;
-    int finalReachIndex = reachIndex;
-    int finalReachArea = reach.areanum;
-    float finalReachabilityTime = aasworld.time + BotMove_TravelTimeout(traveltype);
+	aas_reachability_t reach;
+	int resultFlags = 0;
+	int reachIndex = BotGetReachabilityToGoal(ms, goal, travelflags, &reach, &resultFlags);
+	if (reachIndex <= 0)
+	{
+		BotMove_DirectToGoal(ms, goal, result);
+		ms->lastreachnum = 0;
+		ms->lastgoalareanum = goal->areanum;
+		VectorCopy(ms->origin, ms->lastorigin);
+		return;
+	}
 
-    BotMove_HandleMoverLanding(ms,
-                               reachIndex,
-                               &reach,
-                               result,
-                               &finalReachIndex,
-                               &finalReachArea,
-                               &finalReachabilityTime);
+	BotMove_DispatchTravel(ms, &reach, result);
 
-    result->flags |= resultFlags;
+	int traveltype = reach.traveltype & TRAVELTYPE_MASK;
+	int finalReachIndex = reachIndex;
+	int finalReachArea = reach.areanum;
+	float finalReachabilityTime = aasworld.time + BotMove_TravelTimeout(traveltype);
 
-    if (result->blocked)
-    {
-        return;
-    }
+	BotMove_HandleMoverLanding(ms,
+							   reachIndex,
+							   &reach,
+							   result,
+							   &finalReachIndex,
+							   &finalReachArea,
+							   &finalReachabilityTime);
 
-    ms->reachability_time = finalReachabilityTime;
-    ms->lastreachnum = finalReachIndex;
-    ms->reachareanum = finalReachArea;
-    ms->lastgoalareanum = goal->areanum;
-    ms->lastareanum = ms->areanum;
-    VectorCopy(ms->origin, ms->lastorigin);
+	result->flags |= resultFlags;
+
+	if (result->blocked)
+	{
+		return;
+	}
+
+	ms->reachability_time = finalReachabilityTime;
+	ms->lastreachnum = finalReachIndex;
+	ms->reachareanum = finalReachArea;
+	ms->lastgoalareanum = goal->areanum;
+	ms->lastareanum = ms->areanum;
+	VectorCopy(ms->origin, ms->lastorigin);
 }
 
+/*
+=============
+BotMoveInDirection
+
+Apply directional movement impulses for the active move state.
+=============
+*/
 int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type)
 {
-    (void)speed;
+	(void)speed;
 
-    bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-    if (ms == NULL || dir == NULL)
-    {
-        return 0;
-    }
+	if (!BotLibraryEnsureInitialized("BotMoveInDirection")) {
+		return 0;
+	}
 
-    vec3_t normalized;
-    if (VectorNormalizeTo(dir, normalized) <= 0.0f)
-    {
-        return 0;
-    }
+	bot_movestate_t *ms = BotMove_ResolveMoveState("BotMoveInDirection", movestate);
+	if (ms == NULL || dir == NULL)
+	{
+		return 0;
+	}
 
-    if (type & MOVE_JUMP)
-    {
-        ms->jumpreach = 1;
-    }
-    if (type & MOVE_GRAPPLE)
-    {
-        ms->moveflags |= MFL_ACTIVEGRAPPLE;
-    }
+	vec3_t normalized;
+	if (VectorNormalizeTo(dir, normalized) <= 0.0f)
+	{
+		return 0;
+	}
 
-    (void)normalized;
-    return 1;
+	if (type & MOVE_JUMP)
+	{
+		ms->jumpreach = 1;
+	}
+	if (type & MOVE_GRAPPLE)
+	{
+		ms->moveflags |= MFL_ACTIVEGRAPPLE;
+	}
+
+	(void)normalized;
+	return 1;
 }
 
 void BotMove_ResetAvoidReach(int movestate)
@@ -1510,4 +1584,3 @@ void BotMove_ResetAvoidReach(int movestate)
     memset(ms->avoidreachtimes, 0, sizeof(ms->avoidreachtimes));
     memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
 }
-

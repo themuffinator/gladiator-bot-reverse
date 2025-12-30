@@ -87,6 +87,7 @@ const botlib_import_table_t *BotInterface_GetImportTable(void);
 int BotSetupLibrary(void);
 int BotShutdownLibrary(void);
 bool BotLibraryInitialized(void);
+bool BotLibraryEnsureInitialized(const char *function_name);
 
 /**
  * Accessor for the cached library variable state gathered during setup.
