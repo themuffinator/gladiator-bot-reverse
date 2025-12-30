@@ -263,6 +263,7 @@ typedef struct bot_export_s {
     int (*BotMoveInDirection)(int movestate, const vec3_t dir, float speed, int type);
     void (*BotResetAvoidReach)(int movestate);
 	int (*BotMovementViewTarget)(int movestate, const bot_goal_t *goal, int travelflags, float lookahead, vec3_t target);
+	int (*BotPredictVisiblePosition)(vec3_t origin, int areanum, const bot_goal_t *goal, int travelflags, vec3_t target);
     int (*BotLoadCharacter)(const char *character_file, float skill);
     void (*BotFreeCharacter)(int handle);
     int (*BotLoadCharacterSkill)(const char *character_file, float skill);

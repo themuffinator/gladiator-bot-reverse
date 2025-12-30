@@ -1637,3 +1637,102 @@ int BotMovementViewTarget(int movestate,
 
 	return 0;
 }
+
+/*
+=============
+BotMove_Visible
+
+Check line of sight between two points for movement prediction.
+=============
+*/
+static bool BotMove_Visible(int ent, const vec3_t start, const vec3_t end)
+{
+	if (start == NULL || end == NULL)
+	{
+		return false;
+	}
+
+	vec3_t trace_start;
+	vec3_t trace_end;
+	VectorCopy(start, trace_start);
+	VectorCopy(end, trace_end);
+
+	vec3_t mins = {0.0f, 0.0f, 0.0f};
+	vec3_t maxs = {0.0f, 0.0f, 0.0f};
+	bsp_trace_t trace = Q2_Trace(trace_start,
+								 mins,
+								 maxs,
+								 trace_end,
+								 ent,
+								 CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+	return trace.fraction >= 1.0f;
+}
+
+/*
+=============
+BotPredictVisiblePosition
+
+Predict a reachable point that is visible from the goal.
+=============
+*/
+int BotPredictVisiblePosition(const vec3_t origin,
+							  int areanum,
+							  const bot_goal_t *goal,
+							  int travelflags,
+							  vec3_t target)
+{
+	if (origin == NULL || target == NULL || goal == NULL)
+	{
+		return 0;
+	}
+
+	if (areanum <= 0 || goal->areanum <= 0)
+	{
+		return 0;
+	}
+
+	bot_movestate_t temp;
+	memset(&temp, 0, sizeof(temp));
+	VectorCopy(origin, temp.origin);
+	temp.areanum = areanum;
+
+	vec3_t end;
+	VectorCopy(origin, end);
+
+	for (int i = 0; i < 20 && areanum != goal->areanum; ++i)
+	{
+		aas_reachability_t reach;
+
+		temp.areanum = areanum;
+		VectorCopy(end, temp.origin);
+
+		int reachnum = BotGetReachabilityToGoal(&temp, goal, travelflags, &reach, NULL);
+		if (reachnum <= 0)
+		{
+			return 0;
+		}
+
+		if (BotMove_Visible(goal->entitynum, goal->origin, reach.start))
+		{
+			VectorCopy(reach.start, target);
+			return 1;
+		}
+
+		if (BotMove_Visible(goal->entitynum, goal->origin, reach.end))
+		{
+			VectorCopy(reach.end, target);
+			return 1;
+		}
+
+		if (reach.areanum == goal->areanum)
+		{
+			VectorCopy(reach.end, target);
+			return 1;
+		}
+
+		areanum = reach.areanum;
+		VectorCopy(reach.end, end);
+	}
+
+	return 0;
+}
