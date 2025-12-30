@@ -661,6 +661,8 @@ static void BotMove_RefreshAvoidReach(bot_movestate_t *ms)
     }
 
     float now = aasworld.time;
+	int latestIndex = -1;
+	float latestTime = 0.0f;
     for (int i = 0; i < MAX_AVOIDREACH; ++i)
     {
         if (ms->avoidreach[i] <= 0)
@@ -673,8 +675,28 @@ static void BotMove_RefreshAvoidReach(bot_movestate_t *ms)
             ms->avoidreach[i] = 0;
             ms->avoidreachtimes[i] = 0.0f;
             ms->avoidreachtries[i] = 0;
+            continue;
         }
+
+		if (ms->avoidreachtimes[i] > latestTime)
+		{
+			latestTime = ms->avoidreachtimes[i];
+			latestIndex = i;
+		}
     }
+
+	ms->lastavoidreachindex = latestIndex;
+	ms->lastavoidreachtime = latestTime;
+	if (latestIndex >= 0)
+	{
+		ms->lastavoidreach = ms->avoidreach[latestIndex];
+		ms->lastavoidreachtries = ms->avoidreachtries[latestIndex];
+	}
+	else
+	{
+		ms->lastavoidreach = 0;
+		ms->lastavoidreachtries = 0;
+	}
 }
 
 static bool BotMove_ShouldAvoidReach(const bot_movestate_t *ms, int reachnum)
@@ -1509,5 +1531,39 @@ void BotMove_ResetAvoidReach(int movestate)
     memset(ms->avoidreach, 0, sizeof(ms->avoidreach));
     memset(ms->avoidreachtimes, 0, sizeof(ms->avoidreachtimes));
     memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
+	ms->lastavoidreach = 0;
+	ms->lastavoidreachtime = 0.0f;
+	ms->lastavoidreachtries = 0;
+	ms->lastavoidreachindex = -1;
 }
 
+/*
+=============
+BotMove_ResetLastAvoidReach
+
+Clears the most recently avoided reachability timer and decrements its tries.
+=============
+*/
+void BotMove_ResetLastAvoidReach(int movestate)
+{
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	if (ms == NULL)
+	{
+		return;
+	}
+
+	if (ms->lastavoidreachtime <= 0.0f ||
+		ms->lastavoidreachindex < 0 ||
+		ms->lastavoidreachindex >= MAX_AVOIDREACH)
+	{
+		return;
+	}
+
+	ms->avoidreachtimes[ms->lastavoidreachindex] = 0.0f;
+	if (ms->avoidreachtries[ms->lastavoidreachindex] > 0)
+	{
+		ms->avoidreachtries[ms->lastavoidreachindex]--;
+	}
+
+	BotMove_RefreshAvoidReach(ms);
+}

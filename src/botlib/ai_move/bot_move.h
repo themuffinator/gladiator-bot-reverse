@@ -140,12 +140,16 @@ typedef struct bot_movestate_s
     float lastgrappledist;
     float reachability_time;
 
-    int avoidreach[MAX_AVOIDREACH];
-    float avoidreachtimes[MAX_AVOIDREACH];
-    int avoidreachtries[MAX_AVOIDREACH];
+	int avoidreach[MAX_AVOIDREACH];
+	float avoidreachtimes[MAX_AVOIDREACH];
+	int avoidreachtries[MAX_AVOIDREACH];
+	int lastavoidreach;
+	float lastavoidreachtime;
+	int lastavoidreachtries;
+	int lastavoidreachindex;
 
-    bot_avoidspot_t avoidspots[MAX_AVOIDSPOTS];
-    int numavoidspots;
+	bot_avoidspot_t avoidspots[MAX_AVOIDSPOTS];
+	int numavoidspots;
 } bot_movestate_t;
 
 int BotAllocMoveState(void);
@@ -165,6 +169,7 @@ void BotMoveToGoal(bot_moveresult_t *result,
 int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type);
 
 void BotMove_ResetAvoidReach(int movestate);
+void BotMove_ResetLastAvoidReach(int movestate);
 
 void AI_MoveFrame(bot_moveresult_t *result,
                   int movestate,
@@ -176,4 +181,3 @@ bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const struct aas_reachab
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
-
