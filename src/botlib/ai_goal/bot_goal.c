@@ -27,6 +27,7 @@ typedef struct bot_levelitem_s
     float base_weight;
     float respawntime;
     float next_respawn_time;
+    float timeout;
     int flags;
     bool valid;
 } bot_levelitem_t;
@@ -733,6 +734,11 @@ int BotGoal_RegisterLevelItem(const bot_levelitem_setup_t *setup)
     slot->base_weight = setup->weight;
     slot->respawntime = (setup->respawntime > 0.0f) ? setup->respawntime : 0.0f;
     slot->next_respawn_time = BotGoal_CurrentTime();
+	slot->timeout = 0.0f;
+	if ((slot->goal.flags & GFL_DROPPED) && setup->respawntime > 0.0f)
+	{
+		slot->timeout = BotGoal_CurrentTime() + setup->respawntime;
+	}
     slot->flags = setup->flags;
     slot->valid = true;
     return slot->goal.number;
@@ -766,6 +772,69 @@ void BotGoal_MarkItemTaken(int number, float respawn_delay)
     }
 
     item->next_respawn_time = BotGoal_CurrentTime() + delay;
+}
+
+/*
+=============
+BotUpdateEntityItems
+
+Refresh dropped or temporary entity items each frame.
+=============
+*/
+void BotUpdateEntityItems(void)
+{
+	if (!aasworld.loaded || aasworld.entities == NULL || aasworld.maxEntities <= 0)
+	{
+		return;
+	}
+
+	float now = aasworld.time;
+
+	for (int i = 0; i < g_levelitem_count; ++i)
+	{
+		bot_levelitem_t *item = &g_levelitems[i];
+		if (!item->valid)
+		{
+			continue;
+		}
+
+		if (!(item->goal.flags & GFL_DROPPED))
+		{
+			continue;
+		}
+
+		if (item->timeout > 0.0f && item->timeout <= now)
+		{
+			item->valid = false;
+			continue;
+		}
+
+		int entnum = item->goal.entitynum;
+		if (entnum < 0 || entnum >= aasworld.maxEntities)
+		{
+			continue;
+		}
+
+		aas_entity_t *entity = &aasworld.entities[entnum];
+		if (!entity->inuse)
+		{
+			item->valid = false;
+			continue;
+		}
+
+		bool origin_changed = entity->origin[0] != item->goal.origin[0] ||
+		                      entity->origin[1] != item->goal.origin[1] ||
+		                      entity->origin[2] != item->goal.origin[2];
+		if (origin_changed)
+		{
+			VectorCopy(entity->origin, item->goal.origin);
+		}
+
+		if (origin_changed || item->goal.areanum <= 0)
+		{
+			item->goal.areanum = BotGoal_PointAreaNum(item->goal.origin);
+		}
+	}
 }
 
 static float BotGoal_LevelItemScore(bot_goalstate_t *gs,

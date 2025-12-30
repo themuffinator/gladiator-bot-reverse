@@ -244,6 +244,7 @@ typedef struct bot_export_s {
     void (*BotResetAvoidGoals)(int handle);
     void (*BotAddAvoidGoal)(int handle, int number, float avoidtime);
     int (*BotUpdateGoalState)(int handle, vec3_t origin, int *inventory, int travelflags, float now, float nearby_time);
+	void (*BotUpdateEntityItems)(void);
     int (*BotRegisterLevelItem)(const bot_levelitem_setup_t *setup);
     void (*BotUnregisterLevelItem)(int number);
     void (*BotMarkLevelItemTaken)(int number, float respawn_delay);

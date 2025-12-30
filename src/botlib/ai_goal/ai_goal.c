@@ -63,6 +63,18 @@ void AI_GoalBotlib_SetTime(float now)
     BotGoal_SetCurrentTime(now);
 }
 
+/*
+=============
+AI_GoalBotlib_UpdateEntityItems
+
+Refresh dropped or temporary entity items for the current frame.
+=============
+*/
+void AI_GoalBotlib_UpdateEntityItems(void)
+{
+	BotUpdateEntityItems();
+}
+
 static void AI_GoalBotlib_UpdateAvoidGoals(int handle, const ai_avoid_list_t *list, float now)
 {
     BotResetAvoidGoals(handle);

@@ -3457,6 +3457,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotResetAvoidGoals = AI_GoalBotlib_ResetAvoidGoals;
     exportTable.BotAddAvoidGoal = AI_GoalBotlib_AddAvoidGoal;
     exportTable.BotUpdateGoalState = AI_GoalBotlib_Update;
+	exportTable.BotUpdateEntityItems = AI_GoalBotlib_UpdateEntityItems;
     exportTable.BotRegisterLevelItem = AI_GoalBotlib_RegisterLevelItem;
     exportTable.BotUnregisterLevelItem = AI_GoalBotlib_UnregisterLevelItem;
     exportTable.BotMarkLevelItemTaken = AI_GoalBotlib_MarkItemTaken;
