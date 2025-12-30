@@ -1636,28 +1636,14 @@ static char *BotVersion(void)
 =============
 BotSetupLibraryWrapper
 
-Initialises the botlib bridge and emits the historical startup banners.
+Initialises the botlib bridge and delegates setup to the core entry point.
 =============
 */
 static int BotSetupLibraryWrapper(void)
 {
-	if (BotLibraryInitialized())
-	{
-		BotInterface_Printf(PRT_ERROR, "bot library already setup\n");
-		return BLERR_LIBRARYALREADYSETUP;
-	}
-
-	BotInterface_PrintBanner(PRT_MESSAGE, "------- BotLib Initialization -------\n");
-	BotInterface_PrintBanner(PRT_MESSAGE, "BotLib v0.96\n");
 	BotInterface_SetImportTable(&g_botlibImportTable);
 
 	int result = BotSetupLibrary();
-	if (result != BLERR_NOERROR)
-	{
-		return result;
-	}
-
-	BotInterface_PrintBanner(PRT_MESSAGE, "-------------------------------------\n");
 	return result;
 }
 
@@ -3485,4 +3471,3 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 
     return &exportTable;
 }
-
