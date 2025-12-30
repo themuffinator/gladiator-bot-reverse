@@ -3379,6 +3379,27 @@ static int BotInterface_BotMovementViewTarget(int movestate,
 	return BotMovementViewTarget(movestate, goal, travelflags, lookahead, target);
 }
 
+/*
+=============
+BotInterface_BotPredictVisiblePosition
+
+Bridge visibility prediction through the botlib API.
+=============
+*/
+static int BotInterface_BotPredictVisiblePosition(vec3_t origin,
+												  int areanum,
+												  const bot_goal_t *goal,
+												  int travelflags,
+												  vec3_t target)
+{
+	if (!BotInterface_EnsureLibraryReady("BotPredictVisiblePosition"))
+	{
+		return 0;
+	}
+
+	return BotPredictVisiblePosition(origin, areanum, goal, travelflags, target);
+}
+
 static int BotInterface_BotAllocWeaponState(void)
 {
     if (!BotInterface_EnsureLibraryReady("BotAllocWeaponState"))
@@ -3674,10 +3695,11 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotFreeMoveState = BotInterface_BotFreeMoveState;
     exportTable.BotResetMoveState = BotInterface_BotResetMoveState;
     exportTable.BotInitMoveState = BotInterface_BotInitMoveState;
-    exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
+	exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
     exportTable.BotMoveInDirection = BotInterface_BotMoveInDirection;
     exportTable.BotResetAvoidReach = BotInterface_BotResetAvoidReach;
 	exportTable.BotMovementViewTarget = BotInterface_BotMovementViewTarget;
+	exportTable.BotPredictVisiblePosition = BotInterface_BotPredictVisiblePosition;
     exportTable.BotLoadCharacter = BotLoadCharacter;
     exportTable.BotFreeCharacter = BotFreeCharacter;
     exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
