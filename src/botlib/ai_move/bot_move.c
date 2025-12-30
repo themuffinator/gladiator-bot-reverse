@@ -1511,3 +1511,36 @@ void BotMove_ResetAvoidReach(int movestate)
     memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
 }
 
+/*
+=============
+BotAddAvoidSpot
+
+Adds or clears avoid spots for the movement state.
+=============
+*/
+void BotAddAvoidSpot(int movestate, vec3_t origin, float radius, int type)
+{
+	bot_movestate_t *ms;
+
+	ms = BotMoveStateFromHandle(movestate);
+	if (ms == NULL)
+	{
+		return;
+	}
+
+	if (type == AVOID_CLEAR)
+	{
+		ms->numavoidspots = 0;
+		return;
+	}
+
+	if (ms->numavoidspots >= MAX_AVOIDSPOTS)
+	{
+		return;
+	}
+
+	VectorCopy(origin, ms->avoidspots[ms->numavoidspots].origin);
+	ms->avoidspots[ms->numavoidspots].radius = radius;
+	ms->avoidspots[ms->numavoidspots].type = type;
+	ms->numavoidspots++;
+}
