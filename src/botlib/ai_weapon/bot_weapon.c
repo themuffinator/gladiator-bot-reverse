@@ -7,6 +7,8 @@
 
 #include <string.h>
 
+#define BOT_WEAPON_DEFAULT_WEIGHTS "default/defaul_w.c"
+
 static bot_weaponstate_t *g_bot_weapon_states[MAX_CLIENTS + 1];
 
 static bool BotWeapon_HandleInRange(int handle)
@@ -16,25 +18,30 @@ static bool BotWeapon_HandleInRange(int handle)
 
 static bot_weaponstate_t *BotWeapon_StateEntry(int handle)
 {
-    if (!BotWeapon_HandleInRange(handle))
-    {
-        BotLib_Print(PRT_FATAL, "weapon state handle %d out of range\n", handle);
-        return NULL;
-    }
+	if (!BotWeapon_HandleInRange(handle))
+	{
+		return NULL;
+	}
 
-    return g_bot_weapon_states[handle];
+	return g_bot_weapon_states[handle];
 }
 
 static bot_weaponstate_t *BotWeapon_StateForHandle(int handle)
 {
-    bot_weaponstate_t *state = BotWeapon_StateEntry(handle);
-    if (state == NULL)
-    {
-        BotLib_Print(PRT_FATAL, "invalid weapon state %d\n", handle);
-        return NULL;
-    }
+	if (!BotWeapon_HandleInRange(handle))
+	{
+		BotLib_Print(PRT_FATAL, "weapon state handle %d out of range\n", handle);
+		return NULL;
+	}
 
-    return state;
+	bot_weaponstate_t *state = g_bot_weapon_states[handle];
+	if (state == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "invalid weapon state %d\n", handle);
+		return NULL;
+	}
+
+	return state;
 }
 
 static void BotWeapon_ResetRanking(bot_weaponstate_t *state)
@@ -95,22 +102,15 @@ int BotAllocWeaponState(void)
 
 void BotFreeWeaponState(int handle)
 {
-    if (!BotWeapon_HandleInRange(handle))
-    {
-        BotLib_Print(PRT_FATAL, "BotFreeWeaponState: handle %d out of range\n", handle);
-        return;
-    }
+	bot_weaponstate_t *state = BotWeapon_StateForHandle(handle);
+	if (state == NULL)
+	{
+		return;
+	}
 
-    bot_weaponstate_t *state = g_bot_weapon_states[handle];
-    if (state == NULL)
-    {
-        BotLib_Print(PRT_FATAL, "BotFreeWeaponState: invalid handle %d\n", handle);
-        return;
-    }
-
-    BotWeapon_ClearWeights(state);
-    FreeMemory(state);
-    g_bot_weapon_states[handle] = NULL;
+	BotWeapon_ClearWeights(state);
+	FreeMemory(state);
+	g_bot_weapon_states[handle] = NULL;
 }
 
 void BotResetWeaponState(int handle)
@@ -126,32 +126,32 @@ void BotResetWeaponState(int handle)
 
 int BotLoadWeaponWeights(int weaponstate, const char *filename)
 {
-    bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
-    if (state == NULL)
-    {
-        return BLERR_CANNOTLOADWEAPONWEIGHTS;
-    }
+	bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
+	if (state == NULL)
+	{
+		return BLERR_CANNOTLOADWEAPONWEIGHTS;
+	}
 
-    BotWeapon_ClearWeights(state);
+	BotWeapon_ClearWeights(state);
 
-    if (filename == NULL || filename[0] == '\0')
-    {
-        BotLib_Print(PRT_ERROR, "BotLoadWeaponWeights: filename required\n");
-        return BLERR_CANNOTLOADWEAPONWEIGHTS;
-    }
+	const char *resolved = filename;
+	if (resolved == NULL || resolved[0] == '\0')
+	{
+		resolved = BOT_WEAPON_DEFAULT_WEIGHTS;
+	}
 
-    ai_weapon_weights_t *weights = AI_LoadWeaponWeights(filename);
-    if (weights == NULL)
-    {
-        return BLERR_CANNOTLOADWEAPONWEIGHTS;
-    }
+	ai_weapon_weights_t *weights = AI_LoadWeaponWeights(resolved);
+	if (weights == NULL)
+	{
+		return BLERR_CANNOTLOADWEAPONWEIGHTS;
+	}
 
-    state->weights = weights;
-    state->config = weights->definitions;
-    state->weight_config = weights->config;
-    state->owns_weights = true;
-    BotWeapon_ResetRanking(state);
-    return BLERR_NOERROR;
+	state->weights = weights;
+	state->config = weights->definitions;
+	state->weight_config = weights->config;
+	state->owns_weights = true;
+	BotWeapon_ResetRanking(state);
+	return BLERR_NOERROR;
 }
 
 void BotFreeWeaponWeights(int weaponstate)
@@ -260,22 +260,29 @@ int BotGetTopRankedWeapon(int weaponstate)
 
 void BotGetWeaponInfo(int weaponstate, int weapon, bot_weapon_info_t *weaponinfo)
 {
-    bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
-    if (state == NULL || weaponinfo == NULL)
-    {
-        return;
-    }
+	if (weaponinfo == NULL)
+	{
+		return;
+	}
 
-    if (state->config == NULL)
-    {
-        return;
-    }
+	memset(weaponinfo, 0, sizeof(*weaponinfo));
 
-    if (weapon < 0 || weapon >= state->config->num_weapons)
-    {
-        BotLib_Print(PRT_ERROR, "BotGetWeaponInfo: weapon %d out of range\n", weapon);
-        return;
-    }
+	bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
+	if (state == NULL)
+	{
+		return;
+	}
 
-    memcpy(weaponinfo, &state->config->weapons[weapon], sizeof(*weaponinfo));
+	if (state->config == NULL)
+	{
+		return;
+	}
+
+	if (weapon < 0 || weapon >= state->config->num_weapons)
+	{
+		BotLib_Print(PRT_ERROR, "BotGetWeaponInfo: weapon %d out of range\n", weapon);
+		return;
+	}
+
+	memcpy(weaponinfo, &state->config->weapons[weapon], sizeof(*weaponinfo));
 }
