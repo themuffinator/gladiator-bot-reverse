@@ -582,6 +582,41 @@ static float BotMove_TravelTimeout(int traveltype)
     }
 }
 
+/*
+=============
+BotMove_AddToTarget
+
+Accumulate distance towards the movement lookahead target.
+=============
+*/
+static bool BotMove_AddToTarget(const vec3_t start,
+								const vec3_t end,
+								float maxdist,
+								float *dist,
+								vec3_t target)
+{
+	vec3_t dir;
+	float curdist;
+
+	if (dist == NULL || target == NULL)
+	{
+		return false;
+	}
+
+	VectorSubtract(end, start, dir);
+	curdist = VectorNormalizeInline(dir);
+	if (*dist + curdist < maxdist)
+	{
+		VectorCopy(end, target);
+		*dist += curdist;
+		return false;
+	}
+
+	VectorMA(start, maxdist - *dist, dir, target);
+	*dist = maxdist;
+	return true;
+}
+
 static void BotMove_SetMovementView(const vec3_t dir, bot_moveresult_t *result, bool swimming)
 {
     if (result == NULL)
@@ -1511,3 +1546,94 @@ void BotMove_ResetAvoidReach(int movestate)
     memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
 }
 
+/*
+=============
+BotMovementViewTarget
+
+Compute a lookahead target point along the current movement path.
+=============
+*/
+int BotMovementViewTarget(int movestate,
+						  const bot_goal_t *goal,
+						  int travelflags,
+						  float lookahead,
+						  vec3_t target)
+{
+	aas_reachability_t reach;
+	aas_reachability_t next_reach;
+	int reachnum;
+	int lastareanum;
+	bot_movestate_t *ms;
+	vec3_t end;
+	float dist;
+
+	if (target == NULL)
+	{
+		return 0;
+	}
+
+	ms = BotMoveStateFromHandle(movestate);
+	if (ms == NULL)
+	{
+		return 0;
+	}
+
+	if (goal == NULL || ms->lastreachnum <= 0)
+	{
+		return 0;
+	}
+
+	reachnum = ms->lastreachnum;
+	VectorCopy(ms->origin, end);
+	lastareanum = ms->lastareanum;
+	dist = 0.0f;
+
+	while (reachnum > 0 && dist < lookahead)
+	{
+		int traveltype;
+
+		if (!BotMove_LoadReachability(reachnum, &reach))
+		{
+			return 0;
+		}
+
+		if (BotMove_AddToTarget(end, reach.start, lookahead, &dist, target))
+		{
+			return 1;
+		}
+
+		traveltype = reach.traveltype & TRAVELTYPE_MASK;
+		if (traveltype == TRAVEL_TELEPORT ||
+			traveltype == TRAVEL_ROCKETJUMP ||
+			traveltype == TRAVEL_BFGJUMP)
+		{
+			return 1;
+		}
+
+		if (traveltype != TRAVEL_JUMPPAD &&
+			traveltype != TRAVEL_ELEVATOR &&
+			traveltype != TRAVEL_FUNCBOB)
+		{
+			if (BotMove_AddToTarget(reach.start, reach.end, lookahead, &dist, target))
+			{
+				return 1;
+			}
+		}
+
+		{
+			bot_movestate_t temp = *ms;
+			temp.areanum = reach.areanum;
+			reachnum = BotGetReachabilityToGoal(&temp, goal, travelflags, &next_reach, NULL);
+		}
+
+		VectorCopy(reach.end, end);
+		lastareanum = reach.areanum;
+		if (lastareanum == goal->areanum)
+		{
+			BotMove_AddToTarget(reach.end, goal->origin, lookahead, &dist, target);
+			return 1;
+		}
+	}
+
+	return 0;
+}

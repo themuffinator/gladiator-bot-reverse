@@ -3170,6 +3170,27 @@ static void BotInterface_BotResetAvoidReach(int movestate)
     BotMove_ResetAvoidReach(movestate);
 }
 
+/*
+=============
+BotInterface_BotMovementViewTarget
+
+Bridge movement lookahead targeting through the botlib API.
+=============
+*/
+static int BotInterface_BotMovementViewTarget(int movestate,
+											  const bot_goal_t *goal,
+											  int travelflags,
+											  float lookahead,
+											  vec3_t target)
+{
+	if (!BotInterface_EnsureLibraryReady("BotMovementViewTarget"))
+	{
+		return 0;
+	}
+
+	return BotMovementViewTarget(movestate, goal, travelflags, lookahead, target);
+}
+
 static int BotInterface_BotAllocWeaponState(void)
 {
     if (!BotInterface_EnsureLibraryReady("BotAllocWeaponState"))
@@ -3454,6 +3475,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotMoveToGoal = BotInterface_BotMoveToGoal;
     exportTable.BotMoveInDirection = BotInterface_BotMoveInDirection;
     exportTable.BotResetAvoidReach = BotInterface_BotResetAvoidReach;
+	exportTable.BotMovementViewTarget = BotInterface_BotMovementViewTarget;
     exportTable.BotLoadCharacter = BotLoadCharacter;
     exportTable.BotFreeCharacter = BotFreeCharacter;
     exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
@@ -3485,4 +3507,3 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 
     return &exportTable;
 }
-
