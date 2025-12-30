@@ -98,6 +98,11 @@ void AAS_Shutdown(void);
 int AAS_UpdateEntity(int ent, const AASEntityFrame *state);
 
 qboolean AAS_WorldLoaded(void);
+int AAS_NextBSPEntity(int ent);
+qboolean AAS_ValueForBSPEpairKey(int ent, const char *key, char *value, int size);
+qboolean AAS_VectorForBSPEpairKey(int ent, const char *key, vec3_t v);
+qboolean AAS_FloatForBSPEpairKey(int ent, const char *key, float *value);
+qboolean AAS_IntForBSPEpairKey(int ent, const char *key, int *value);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -17,6 +17,8 @@
 #include "botlib/interface/botlib_interface.h"
 #include "botlib/ai_move/mover_catalogue.h"
 
+typedef struct aas_bsp_entity_s aas_bsp_entity_t;
+
 static void AAS_UnlinkEntityFromAreas(aas_entity_t *entity);
 static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs);
 static void AAS_ResetEntityBitset(aas_entity_t *entity);
@@ -26,6 +28,11 @@ static size_t AAS_AreaBitWordCount(void);
 static void AAS_ClampMinsMaxs(vec3_t mins, vec3_t maxs);
 static void AAS_ClearWorld(void);
 static void AAS_ParseEntityLump(const char *data, size_t length);
+static void AAS_FreeBSPEntityPairs(aas_bsp_entity_t *entity);
+static void AAS_FreeBSPEntities(void);
+static qboolean AAS_BSPEntity_AddPair(aas_bsp_entity_t *entity, const char *key, const char *value);
+static qboolean AAS_BSPEntity_Push(aas_bsp_entity_t *entity);
+static qboolean AAS_ParseVector3(const char *value, vec3_t out);
 
 /*
  * Global AAS world state.  The original DLL zeroed the data_100667e0 block
@@ -37,6 +44,138 @@ static qboolean g_aasLibraryInitialized = qfalse;
 qboolean AAS_WorldLoaded(void)
 {
     return aasworld.loaded;
+}
+
+/*
+=============
+AAS_NextBSPEntity
+
+Return the next parsed BSP entity index for iteration.
+=============
+*/
+int AAS_NextBSPEntity(int ent)
+{
+	if (g_aas_bsp_entity_count <= 0)
+	{
+		return 0;
+	}
+
+	if (ent < 0)
+	{
+		return 0;
+	}
+
+	if (ent == 0)
+	{
+		return 1;
+	}
+
+	if (ent >= g_aas_bsp_entity_count)
+	{
+		return 0;
+	}
+
+	return ent + 1;
+}
+
+/*
+=============
+AAS_ValueForBSPEpairKey
+
+Lookup a string value from a parsed BSP entity.
+=============
+*/
+qboolean AAS_ValueForBSPEpairKey(int ent, const char *key, char *value, int size)
+{
+	if (key == NULL || value == NULL || size <= 0)
+	{
+		return qfalse;
+	}
+
+	if (ent <= 0 || ent > g_aas_bsp_entity_count)
+	{
+		return qfalse;
+	}
+
+	const aas_bsp_entity_t *entity = &g_aas_bsp_entities[ent - 1];
+	for (const aas_bsp_epair_t *pair = entity->epairs; pair != NULL; pair = pair->next)
+	{
+		if (strcmp(pair->key, key) == 0)
+		{
+			strncpy(value, pair->value, (size_t)size - 1U);
+			value[size - 1] = '\0';
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+=============
+AAS_VectorForBSPEpairKey
+
+Lookup a vector value from a parsed BSP entity.
+=============
+*/
+qboolean AAS_VectorForBSPEpairKey(int ent, const char *key, vec3_t v)
+{
+	char buffer[256];
+
+	if (!AAS_ValueForBSPEpairKey(ent, key, buffer, sizeof(buffer)))
+	{
+		return qfalse;
+	}
+
+	return AAS_ParseVector3(buffer, v);
+}
+
+/*
+=============
+AAS_FloatForBSPEpairKey
+
+Lookup a float value from a parsed BSP entity.
+=============
+*/
+qboolean AAS_FloatForBSPEpairKey(int ent, const char *key, float *value)
+{
+	char buffer[256];
+
+	if (value == NULL)
+	{
+		return qfalse;
+	}
+
+	if (!AAS_ValueForBSPEpairKey(ent, key, buffer, sizeof(buffer)))
+	{
+		return qfalse;
+	}
+
+	return AAS_ParseFloatValue(buffer, value);
+}
+
+/*
+=============
+AAS_IntForBSPEpairKey
+
+Lookup an integer value from a parsed BSP entity.
+=============
+*/
+qboolean AAS_IntForBSPEpairKey(int ent, const char *key, int *value)
+{
+	char buffer[256];
+
+	if (value == NULL)
+	{
+		return qfalse;
+	}
+
+	if (!AAS_ValueForBSPEpairKey(ent, key, buffer, sizeof(buffer)))
+	{
+		return qfalse;
+	}
+
+	return AAS_ParseIntValue(buffer, value);
 }
 
 int AAS_Init(void)
@@ -115,6 +254,18 @@ typedef struct aas_parsed_entity_s
     qboolean hasSpawnflags;
 } aas_parsed_entity_t;
 
+typedef struct aas_bsp_epair_s
+{
+	char *key;
+	char *value;
+	struct aas_bsp_epair_s *next;
+} aas_bsp_epair_t;
+
+typedef struct aas_bsp_entity_s
+{
+	aas_bsp_epair_t *epairs;
+} aas_bsp_entity_t;
+
 enum
 {
     AAS_MOVER_DOORTYPE_NONE = 0,
@@ -122,6 +273,9 @@ enum
     AAS_MOVER_DOORTYPE_ROTATING = 2,
     AAS_MOVER_DOORTYPE_SECRET = 3
 };
+
+static aas_bsp_entity_t *g_aas_bsp_entities = NULL;
+static int g_aas_bsp_entity_count = 0;
 
 static qboolean AAS_ParseFloatValue(const char *value, float *outValue);
 static qboolean AAS_ParseIntValue(const char *value, int *outValue);
@@ -191,6 +345,177 @@ static qboolean AAS_ParseIntValue(const char *value, int *outValue)
 
     *outValue = (int)parsed;
     return qtrue;
+}
+
+/*
+=============
+AAS_ParseVector3
+
+Parse three floats from a key/value string into a vector.
+=============
+*/
+static qboolean AAS_ParseVector3(const char *value, vec3_t out)
+{
+	if (value == NULL || out == NULL)
+	{
+		return qfalse;
+	}
+
+	const char *cursor = value;
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		while (*cursor != '\0' && isspace((unsigned char)*cursor))
+		{
+			++cursor;
+		}
+
+		if (*cursor == '\0')
+		{
+			return qfalse;
+		}
+
+		errno = 0;
+		char *endPtr = NULL;
+		float parsed = strtof(cursor, &endPtr);
+		if (endPtr == cursor || errno == ERANGE)
+		{
+			return qfalse;
+		}
+
+		out[axis] = parsed;
+		cursor = endPtr;
+	}
+
+	while (*cursor != '\0')
+	{
+		if (!isspace((unsigned char)*cursor))
+		{
+			return qfalse;
+		}
+		++cursor;
+	}
+
+	return qtrue;
+}
+
+/*
+=============
+AAS_FreeBSPEntityPairs
+
+Release key/value pairs allocated for a BSP entity.
+=============
+*/
+static void AAS_FreeBSPEntityPairs(aas_bsp_entity_t *entity)
+{
+	if (entity == NULL)
+	{
+		return;
+	}
+
+	aas_bsp_epair_t *pair = entity->epairs;
+	while (pair != NULL)
+	{
+		aas_bsp_epair_t *next = pair->next;
+		free(pair->key);
+		free(pair->value);
+		free(pair);
+		pair = next;
+	}
+
+	entity->epairs = NULL;
+}
+
+/*
+=============
+AAS_FreeBSPEntities
+
+Free the cached BSP entity list.
+=============
+*/
+static void AAS_FreeBSPEntities(void)
+{
+	if (g_aas_bsp_entities == NULL || g_aas_bsp_entity_count <= 0)
+	{
+		g_aas_bsp_entity_count = 0;
+		return;
+	}
+
+	for (int i = 0; i < g_aas_bsp_entity_count; ++i)
+	{
+		AAS_FreeBSPEntityPairs(&g_aas_bsp_entities[i]);
+	}
+
+	free(g_aas_bsp_entities);
+	g_aas_bsp_entities = NULL;
+	g_aas_bsp_entity_count = 0;
+}
+
+/*
+=============
+AAS_BSPEntity_AddPair
+
+Add a parsed key/value pair to a BSP entity.
+=============
+*/
+static qboolean AAS_BSPEntity_AddPair(aas_bsp_entity_t *entity, const char *key, const char *value)
+{
+	if (entity == NULL || key == NULL || value == NULL)
+	{
+		return qfalse;
+	}
+
+	aas_bsp_epair_t *pair = (aas_bsp_epair_t *)malloc(sizeof(aas_bsp_epair_t));
+	if (pair == NULL)
+	{
+		return qfalse;
+	}
+
+	size_t keyLength = strlen(key);
+	size_t valueLength = strlen(value);
+	pair->key = (char *)malloc(keyLength + 1U);
+	pair->value = (char *)malloc(valueLength + 1U);
+	if (pair->key == NULL || pair->value == NULL)
+	{
+		free(pair->key);
+		free(pair->value);
+		free(pair);
+		return qfalse;
+	}
+
+	memcpy(pair->key, key, keyLength + 1U);
+	memcpy(pair->value, value, valueLength + 1U);
+	pair->next = entity->epairs;
+	entity->epairs = pair;
+	return qtrue;
+}
+
+/*
+=============
+AAS_BSPEntity_Push
+
+Append a parsed BSP entity to the cached list.
+=============
+*/
+static qboolean AAS_BSPEntity_Push(aas_bsp_entity_t *entity)
+{
+	if (entity == NULL)
+	{
+		return qfalse;
+	}
+
+	int newCount = g_aas_bsp_entity_count + 1;
+	aas_bsp_entity_t *resized =
+		(aas_bsp_entity_t *)realloc(g_aas_bsp_entities, sizeof(aas_bsp_entity_t) * (size_t)newCount);
+	if (resized == NULL)
+	{
+		return qfalse;
+	}
+
+	resized[g_aas_bsp_entity_count] = *entity;
+	g_aas_bsp_entities = resized;
+	g_aas_bsp_entity_count = newCount;
+	entity->epairs = NULL;
+	return qtrue;
 }
 
 static void AAS_CopyStringField(char *destination,
@@ -616,6 +941,8 @@ static void AAS_ParseEntityLump(const char *data, size_t length)
         return;
     }
 
+	AAS_FreeBSPEntities();
+
     const char *cursor = data;
     const char *end = data + length;
 
@@ -639,6 +966,7 @@ static void AAS_ParseEntityLump(const char *data, size_t length)
 
         ++cursor;
         aas_parsed_entity_t entity = {0};
+		aas_bsp_entity_t bsp_entity = {0};
         qboolean malformed = qfalse;
 
         while (cursor < end)
@@ -703,6 +1031,12 @@ static void AAS_ParseEntityLump(const char *data, size_t length)
             if (key != NULL && value != NULL)
             {
                 AAS_ParseEntityKeyValue(&entity, key, value);
+				if (!AAS_BSPEntity_AddPair(&bsp_entity, key, value))
+				{
+					BotLib_Print(PRT_WARNING,
+								 "AAS_ParseEntityLump: failed to store entity key '%s'\n",
+								 key);
+				}
             }
 
             if (key != NULL)
@@ -717,8 +1051,18 @@ static void AAS_ParseEntityLump(const char *data, size_t length)
 
         if (!malformed)
         {
-            AAS_RegisterMoverEntity(&entity);
-        }
+			AAS_RegisterMoverEntity(&entity);
+			if (!AAS_BSPEntity_Push(&bsp_entity))
+			{
+				BotLib_Print(PRT_WARNING,
+							 "AAS_ParseEntityLump: failed to record entity\n");
+				AAS_FreeBSPEntityPairs(&bsp_entity);
+			}
+		}
+		else
+		{
+			AAS_FreeBSPEntityPairs(&bsp_entity);
+		}
     }
 }
 
@@ -1096,6 +1440,7 @@ static void AAS_ClearWorld(void)
     AAS_ReachabilityFrameResetDiagnostics();
     AAS_FreeAllRoutingCaches();
     AAS_ClearReachabilityData();
+	AAS_FreeBSPEntities();
 
     if (aasworld.entities != NULL)
     {

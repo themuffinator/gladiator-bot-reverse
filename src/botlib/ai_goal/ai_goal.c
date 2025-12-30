@@ -203,6 +203,30 @@ void AI_GoalBotlib_MarkItemTaken(int number, float respawn_delay)
     BotGoal_MarkItemTaken(number, respawn_delay);
 }
 
+/*
+=============
+AI_GoalBotlib_InitLevelItems
+
+Initialise level items from parsed BSP data.
+=============
+*/
+void AI_GoalBotlib_InitLevelItems(void)
+{
+	BotInitLevelItems();
+}
+
+/*
+=============
+AI_GoalBotlib_GetNextCampSpotGoal
+
+Return the next camp spot goal in the parsed camp list.
+=============
+*/
+int AI_GoalBotlib_GetNextCampSpotGoal(int num, bot_goal_t *goal)
+{
+	return BotGetNextCampSpotGoal(num, goal);
+}
+
 int AI_GoalBotlib_ChooseLTG(int handle, vec3_t origin, int *inventory, int travelflags)
 {
     if (!AI_GoalBotlib_ValidateHandle(handle))

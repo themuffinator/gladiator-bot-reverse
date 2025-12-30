@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "botlib/aas/aas_local.h"
+#include "botlib/aas/aas_map.h"
 #include "botlib/common/l_assets.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
@@ -31,8 +32,21 @@ typedef struct bot_levelitem_s
     bool valid;
 } bot_levelitem_t;
 
+typedef struct bot_campspot_s
+{
+	vec3_t origin;
+	int areanum;
+	char name[64];
+	float range;
+	float weight;
+	float wait;
+	float random;
+	struct bot_campspot_s *next;
+} bot_campspot_t;
+
 static bot_levelitem_t g_levelitems[BOT_GOAL_MAX_LEVELITEMS];
 static int g_levelitem_count = 0;
+static bot_campspot_t *g_campspots = NULL;
 
 static char g_iteminfo_names[BOT_GOAL_MAX_LEVELITEMS][64];
 static int g_iteminfo_count = 0;
@@ -608,6 +622,26 @@ static int BotGoal_PointAreaNum(const vec3_t origin)
     return 0;
 }
 
+/*
+=============
+BotGoal_FreeCampSpots
+
+Release cached camp spot definitions for the current map.
+=============
+*/
+static void BotGoal_FreeCampSpots(void)
+{
+	bot_campspot_t *spot = g_campspots;
+	while (spot != NULL)
+	{
+		bot_campspot_t *next = spot->next;
+		FreeMemory(spot);
+		spot = next;
+	}
+
+	g_campspots = NULL;
+}
+
 static bot_levelitem_t *BotGoal_FindLevelItem(int number)
 {
     for (int i = 0; i < g_levelitem_count; ++i)
@@ -766,6 +800,112 @@ void BotGoal_MarkItemTaken(int number, float respawn_delay)
     }
 
     item->next_respawn_time = BotGoal_CurrentTime() + delay;
+}
+
+/*
+=============
+BotInitLevelItems
+
+Parse BSP entity data to register info_camp spots for the level.
+=============
+*/
+void BotInitLevelItems(void)
+{
+	char classname[64];
+	vec3_t origin;
+	int num_campspots = 0;
+
+	BotGoal_FreeCampSpots();
+
+	for (int ent = AAS_NextBSPEntity(0); ent; ent = AAS_NextBSPEntity(ent))
+	{
+		if (!AAS_ValueForBSPEpairKey(ent, "classname", classname, sizeof(classname)))
+		{
+			continue;
+		}
+
+		if (strcmp(classname, "info_camp") != 0)
+		{
+			continue;
+		}
+
+		if (!AAS_VectorForBSPEpairKey(ent, "origin", origin))
+		{
+			continue;
+		}
+
+		bot_campspot_t *spot = (bot_campspot_t *)GetClearedMemory(sizeof(bot_campspot_t));
+		if (spot == NULL)
+		{
+			BotLib_Print(PRT_ERROR, "BotInitLevelItems: failed to allocate camp spot\n");
+			break;
+		}
+
+		VectorCopy(origin, spot->origin);
+		AAS_ValueForBSPEpairKey(ent, "message", spot->name, sizeof(spot->name));
+		AAS_FloatForBSPEpairKey(ent, "range", &spot->range);
+		AAS_FloatForBSPEpairKey(ent, "weight", &spot->weight);
+		AAS_FloatForBSPEpairKey(ent, "wait", &spot->wait);
+		AAS_FloatForBSPEpairKey(ent, "random", &spot->random);
+
+		spot->areanum = BotGoal_PointAreaNum(spot->origin);
+		if (spot->areanum <= 0)
+		{
+			FreeMemory(spot);
+			continue;
+		}
+
+		spot->next = g_campspots;
+		g_campspots = spot;
+		++num_campspots;
+	}
+
+	if (num_campspots > 0)
+	{
+		BotLib_Print(PRT_MESSAGE, "BotInitLevelItems: found %d camp spots\n", num_campspots);
+	}
+}
+
+/*
+=============
+BotGetNextCampSpotGoal
+
+Return the next camp spot goal after the provided index.
+=============
+*/
+int BotGetNextCampSpotGoal(int num, bot_goal_t *goal)
+{
+	vec3_t mins = {-8.0f, -8.0f, -8.0f};
+	vec3_t maxs = {8.0f, 8.0f, 8.0f};
+
+	if (goal == NULL)
+	{
+		return 0;
+	}
+
+	if (num < 0)
+	{
+		num = 0;
+	}
+
+	int index = num;
+	for (bot_campspot_t *spot = g_campspots; spot != NULL; spot = spot->next)
+	{
+		if (--index < 0)
+		{
+			goal->areanum = spot->areanum;
+			VectorCopy(spot->origin, goal->origin);
+			goal->entitynum = 0;
+			goal->number = 0;
+			goal->flags = 0;
+			goal->iteminfo = 0;
+			VectorCopy(mins, goal->mins);
+			VectorCopy(maxs, goal->maxs);
+			return num + 1;
+		}
+	}
+
+	return 0;
 }
 
 static float BotGoal_LevelItemScore(bot_goalstate_t *gs,
