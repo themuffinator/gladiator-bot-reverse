@@ -3,6 +3,15 @@
 #include "jsmn.h"
 
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define JSMN_DEBUG_LOG(...) \
+	do { \
+		if (getenv("BOTLIB_CONTRACT_DEBUG") != NULL) { \
+			fprintf(stderr, __VA_ARGS__); \
+		} \
+	} while (0)
 
 static int jsmn_parse_primitive(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *tokens, unsigned int num_tokens);
 static int jsmn_parse_string(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *tokens, unsigned int num_tokens);
@@ -52,6 +61,9 @@ static int jsmn_parse_primitive(jsmn_parser *parser, const char *js, size_t len,
         if (c < 32 || c >= 127)
         {
             parser->pos = (unsigned int)start;
+			JSMN_DEBUG_LOG("jsmn: invalid primitive byte %d at %u\n",
+			               (int)c,
+			               (unsigned int)parser->pos);
             return JSMN_ERROR_INVAL;
         }
     }
@@ -69,6 +81,9 @@ static int jsmn_parse_primitive(jsmn_parser *parser, const char *js, size_t len,
         return JSMN_ERROR_NOMEM;
     }
     jsmn_fill_token(token, JSMN_PRIMITIVE, start, (int)parser->pos);
+#ifdef JSMN_PARENT_LINKS
+	token->parent = parser->toksuper;
+#endif
 
     parser->pos--;
     return 0;
@@ -135,6 +150,7 @@ static int jsmn_parse_string(jsmn_parser *parser, const char *js, size_t len, js
                         if (!((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F') || (ch >= 'a' && ch <= 'f')))
                         {
                             parser->pos = (unsigned int)start;
+							JSMN_DEBUG_LOG("jsmn: invalid unicode escape at %u\n", (unsigned int)parser->pos);
                             return JSMN_ERROR_INVAL;
                         }
                         parser->pos++;
@@ -142,6 +158,7 @@ static int jsmn_parse_string(jsmn_parser *parser, const char *js, size_t len, js
                     break;
                 default:
                     parser->pos = (unsigned int)start;
+					JSMN_DEBUG_LOG("jsmn: invalid escape at %u\n", (unsigned int)parser->pos);
                     return JSMN_ERROR_INVAL;
             }
         }
@@ -206,6 +223,7 @@ int jsmn_parse(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *token
                     {
                         if (token->type != JSMN_OBJECT && token->type != JSMN_ARRAY)
                         {
+							JSMN_DEBUG_LOG("jsmn: invalid close at %u\n", (unsigned int)parser->pos);
                             return JSMN_ERROR_INVAL;
                         }
                         break;
@@ -258,6 +276,7 @@ int jsmn_parse(jsmn_parser *parser, const char *js, size_t len, jsmntok_t *token
                 }
                 break;
             default:
+				JSMN_DEBUG_LOG("jsmn: invalid byte %d at %u\n", (int)c, (unsigned int)parser->pos);
                 return JSMN_ERROR_INVAL;
         }
     }

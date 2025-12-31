@@ -12,6 +12,10 @@
 
 #include "../reference/precomp_lexer_expectations.h"
 
+#ifndef cmocka_skip
+#define cmocka_skip(...) skip()
+#endif
+
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #endif
@@ -250,8 +254,8 @@ static void test_pc_loads_fw_items_and_matches_hlil_tokens(void **state)
         pc_token_t token;
         const int status = PC_ReadToken(source, &token);
         assert_int_equal(1, status);
-        assert_token_matches(&g_fw_items_token_expectations[i], &token);
-    }
+		assert_token_matches(i, &g_fw_items_token_expectations[i], &token);
+	}
 
     assert_fixture_diagnostics(source,
                                g_fw_items_diagnostics,
@@ -274,10 +278,17 @@ static void test_pc_loads_synonyms_and_matches_hlil_tokens(void **state)
         pc_token_t token;
         const int status = PC_ReadToken(source, &token);
         assert_int_equal(1, status);
-        assert_token_matches(&g_synonyms_token_expectations[i], &token);
-    }
+		assert_token_matches(i, &g_synonyms_token_expectations[i], &token);
+	}
 
-    drain_remaining_tokens(source);
+	for (;;)
+	{
+		pc_token_t token;
+		if (PC_ReadToken(source, &token) <= 0)
+		{
+			break;
+		}
+	}
 
     assert_fixture_diagnostics(source,
                                g_synonyms_diagnostics,
@@ -311,7 +322,7 @@ static void test_pc_peek_and_unread_mirror_hlil_behaviour(void **state)
     assert_non_null(first);
     assert_token_matches(0, &g_fw_items_token_expectations[0], first);
 
-    PC_UnreadToken(source);
+	PC_UnreadToken(source, &token);
 
     status = 0;
     pc_token_t *second = read_token_or_null(source, &token, &status);

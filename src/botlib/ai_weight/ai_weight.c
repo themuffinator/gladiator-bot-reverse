@@ -593,6 +593,75 @@ static float BotWeight_FuzzyWeightRecursive(const int *inventory, const bot_fuzz
     return fs->weight;
 }
 
+/*
+=============
+BotWeight_RandomFloat
+=============
+*/
+static float BotWeight_RandomFloat(void)
+{
+	return (float)rand() / ((float)RAND_MAX + 1.0f);
+}
+
+/*
+=============
+BotWeight_CRandom
+=============
+*/
+static float BotWeight_CRandom(void)
+{
+	return BotWeight_RandomFloat() * 2.0f - 1.0f;
+}
+
+/*
+=============
+BotWeight_FuzzyWeightUndecidedRecursive
+=============
+*/
+static float BotWeight_FuzzyWeightUndecidedRecursive(const int *inventory, const bot_fuzzy_seperator_t *fs)
+{
+	if (fs == NULL) {
+		return 0.0f;
+	}
+
+	int inventory_value = 0;
+	if (inventory != NULL) {
+		inventory_value = inventory[fs->index];
+	}
+
+	if (inventory_value < fs->value) {
+		if (fs->child != NULL) {
+			return BotWeight_FuzzyWeightUndecidedRecursive(inventory, fs->child);
+		}
+		return fs->min_weight + BotWeight_RandomFloat() * (fs->max_weight - fs->min_weight);
+	}
+
+	if (fs->next != NULL) {
+		if (inventory_value < fs->next->value) {
+			float w1 = fs->child
+				? BotWeight_FuzzyWeightUndecidedRecursive(inventory, fs->child)
+				: fs->min_weight + BotWeight_RandomFloat() * (fs->max_weight - fs->min_weight);
+			float w2 = fs->next->child
+				? BotWeight_FuzzyWeightRecursive(inventory, fs->next->child)
+				: fs->next->min_weight + BotWeight_RandomFloat() * (fs->next->max_weight - fs->next->min_weight);
+			float denominator = (float)(fs->next->value - fs->value);
+			if (denominator <= 0.0f) {
+				return w2;
+			}
+			float scale = (float)(inventory_value - fs->value) / denominator;
+			if (scale < 0.0f) {
+				scale = 0.0f;
+			} else if (scale > 1.0f) {
+				scale = 1.0f;
+			}
+			return scale * w2 + (1.0f - scale) * w1;
+		}
+		return BotWeight_FuzzyWeightUndecidedRecursive(inventory, fs->next);
+	}
+
+	return fs->weight;
+}
+
 float FuzzyWeight(const int *inventory, const bot_weight_config_t *config, int weight_index)
 {
     if (config == NULL || weight_index < 0 || weight_index >= config->num_weights) {
@@ -605,6 +674,25 @@ float FuzzyWeight(const int *inventory, const bot_weight_config_t *config, int w
     }
 
     return BotWeight_FuzzyWeightRecursive(inventory, fs);
+}
+
+/*
+=============
+FuzzyWeightUndecided
+=============
+*/
+float FuzzyWeightUndecided(const int *inventory, const bot_weight_config_t *config, int weight_index)
+{
+	if (config == NULL || weight_index < 0 || weight_index >= config->num_weights) {
+		return 0.0f;
+	}
+
+	const bot_fuzzy_seperator_t *fs = config->weights[weight_index].first_seperator;
+	if (fs == NULL) {
+		return 0.0f;
+	}
+
+	return BotWeight_FuzzyWeightUndecidedRecursive(inventory, fs);
 }
 
 int BotWeight_FindIndex(const bot_weight_config_t *config, const char *name)
@@ -623,3 +711,230 @@ int BotWeight_FindIndex(const bot_weight_config_t *config, const char *name)
     return -1;
 }
 
+/*
+=============
+BotWeight_EvolveFuzzySeperator
+=============
+*/
+static void BotWeight_EvolveFuzzySeperator(bot_fuzzy_seperator_t *fs)
+{
+	if (fs == NULL) {
+		return;
+	}
+
+	if (fs->child != NULL) {
+		BotWeight_EvolveFuzzySeperator(fs->child);
+	} else if (fs->type == WEIGHT_TYPE_BALANCE) {
+		float range = fs->max_weight - fs->min_weight;
+		if (BotWeight_RandomFloat() < 0.01f) {
+			fs->weight += BotWeight_CRandom() * range;
+		} else {
+			fs->weight += BotWeight_CRandom() * range * 0.5f;
+		}
+
+		if (fs->weight < fs->min_weight) {
+			fs->min_weight = fs->weight;
+		} else if (fs->weight > fs->max_weight) {
+			fs->max_weight = fs->weight;
+		}
+	}
+
+	if (fs->next != NULL) {
+		BotWeight_EvolveFuzzySeperator(fs->next);
+	}
+}
+
+/*
+=============
+EvolveWeightConfig
+=============
+*/
+void EvolveWeightConfig(bot_weight_config_t *config)
+{
+	if (config == NULL) {
+		return;
+	}
+
+	for (int i = 0; i < config->num_weights; ++i) {
+		BotWeight_EvolveFuzzySeperator(config->weights[i].first_seperator);
+	}
+}
+
+/*
+=============
+BotWeight_ScaleFuzzySeperator
+=============
+*/
+static void BotWeight_ScaleFuzzySeperator(bot_fuzzy_seperator_t *fs, float scale)
+{
+	if (fs == NULL) {
+		return;
+	}
+
+	if (fs->child != NULL) {
+		BotWeight_ScaleFuzzySeperator(fs->child, scale);
+	} else if (fs->type == WEIGHT_TYPE_BALANCE) {
+		fs->weight = (fs->max_weight + fs->min_weight) * scale;
+		if (fs->weight < fs->min_weight) {
+			fs->weight = fs->min_weight;
+		} else if (fs->weight > fs->max_weight) {
+			fs->weight = fs->max_weight;
+		}
+	}
+
+	if (fs->next != NULL) {
+		BotWeight_ScaleFuzzySeperator(fs->next, scale);
+	}
+}
+
+/*
+=============
+ScaleWeight
+=============
+*/
+void ScaleWeight(bot_weight_config_t *config, const char *name, float scale)
+{
+	if (config == NULL || name == NULL || name[0] == '\0') {
+		return;
+	}
+
+	if (scale < 0.0f) {
+		scale = 0.0f;
+	} else if (scale > 1.0f) {
+		scale = 1.0f;
+	}
+
+	for (int i = 0; i < config->num_weights; ++i) {
+		if (config->weights[i].name == NULL) {
+			continue;
+		}
+
+		if (strcmp(name, config->weights[i].name) == 0) {
+			BotWeight_ScaleFuzzySeperator(config->weights[i].first_seperator, scale);
+			break;
+		}
+	}
+}
+
+/*
+=============
+BotWeight_ScaleFuzzyBalanceRange
+=============
+*/
+static void BotWeight_ScaleFuzzyBalanceRange(bot_fuzzy_seperator_t *fs, float scale)
+{
+	if (fs == NULL) {
+		return;
+	}
+
+	if (fs->child != NULL) {
+		BotWeight_ScaleFuzzyBalanceRange(fs->child, scale);
+	} else if (fs->type == WEIGHT_TYPE_BALANCE) {
+		float mid = (fs->min_weight + fs->max_weight) * 0.5f;
+		fs->max_weight = mid + (fs->max_weight - mid) * scale;
+		fs->min_weight = mid + (fs->min_weight - mid) * scale;
+		if (fs->max_weight < fs->min_weight) {
+			fs->max_weight = fs->min_weight;
+		}
+	}
+
+	if (fs->next != NULL) {
+		BotWeight_ScaleFuzzyBalanceRange(fs->next, scale);
+	}
+}
+
+/*
+=============
+ScaleBalanceRange
+=============
+*/
+void ScaleBalanceRange(bot_weight_config_t *config, float scale)
+{
+	if (config == NULL) {
+		return;
+	}
+
+	if (scale < 0.0f) {
+		scale = 0.0f;
+	} else if (scale > 100.0f) {
+		scale = 100.0f;
+	}
+
+	for (int i = 0; i < config->num_weights; ++i) {
+		BotWeight_ScaleFuzzyBalanceRange(config->weights[i].first_seperator, scale);
+	}
+}
+
+/*
+=============
+BotWeight_InterbreedFuzzySeperator
+=============
+*/
+static bool BotWeight_InterbreedFuzzySeperator(const bot_fuzzy_seperator_t *fs1,
+                                               const bot_fuzzy_seperator_t *fs2,
+                                               bot_fuzzy_seperator_t *fsout)
+{
+	if (fs1 == NULL || fs2 == NULL || fsout == NULL) {
+		return false;
+	}
+
+	if (fs1->child != NULL) {
+		if (fs2->child == NULL || fsout->child == NULL) {
+			BotLib_Print(PRT_ERROR, "cannot interbreed weight configs, unequal child\n");
+			return false;
+		}
+		if (!BotWeight_InterbreedFuzzySeperator(fs2->child, fs2->child, fsout->child)) {
+			return false;
+		}
+	} else if (fs1->type == WEIGHT_TYPE_BALANCE) {
+		if (fs2->type != WEIGHT_TYPE_BALANCE || fsout->type != WEIGHT_TYPE_BALANCE) {
+			BotLib_Print(PRT_ERROR, "cannot interbreed weight configs, unequal balance\n");
+			return false;
+		}
+		fsout->weight = (fs1->weight + fs2->weight) / 2.0f;
+		if (fsout->weight > fsout->max_weight) {
+			fsout->max_weight = fsout->weight;
+		}
+		if (fsout->weight > fsout->min_weight) {
+			fsout->min_weight = fsout->weight;
+		}
+	}
+
+	if (fs1->next != NULL) {
+		if (fs2->next == NULL || fsout->next == NULL) {
+			BotLib_Print(PRT_ERROR, "cannot interbreed weight configs, unequal next\n");
+			return false;
+		}
+		if (!BotWeight_InterbreedFuzzySeperator(fs1->next, fs2->next, fsout->next)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/*
+=============
+InterbreedWeightConfigs
+=============
+*/
+void InterbreedWeightConfigs(bot_weight_config_t *config1,
+                             bot_weight_config_t *config2,
+                             bot_weight_config_t *configout)
+{
+	if (config1 == NULL || config2 == NULL || configout == NULL) {
+		return;
+	}
+
+	if (config1->num_weights != config2->num_weights
+		|| config1->num_weights != configout->num_weights) {
+		BotLib_Print(PRT_ERROR, "cannot interbreed weight configs, unequal numweights\n");
+		return;
+	}
+
+	for (int i = 0; i < config1->num_weights; ++i) {
+		BotWeight_InterbreedFuzzySeperator(config1->weights[i].first_seperator,
+		                                   config2->weights[i].first_seperator,
+		                                   configout->weights[i].first_seperator);
+	}
+}

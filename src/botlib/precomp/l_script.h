@@ -3,6 +3,8 @@
 
 #include "l_precomp.h"
 
+#define DOLLAR
+
 // -----------------------------------------------------------------------------
 //  Lexer Token Model
 // -----------------------------------------------------------------------------
@@ -187,8 +189,11 @@ int PS_ReadToken(pc_script_t *script, pc_token_t *token);
 
 // Convenience helpers used by the original loaders to enforce schema-specific
 // expectations.  They will be filled in when the parser logic is implemented.
+int PS_CheckTokenString(pc_script_t *script, char *string);
 int PS_ExpectTokenString(pc_script_t *script, const char *string);
 int PS_ExpectTokenType(pc_script_t *script, int type, int subtype, pc_token_t *token);
+void PS_UnreadToken(pc_script_t *script, pc_token_t *token);
 int PS_SkipUntilString(pc_script_t *script, const char *string);
+void ResetScript(pc_script_t *script);
 
 #endif // BOTLIB_PRECOMP_L_SCRIPT_H

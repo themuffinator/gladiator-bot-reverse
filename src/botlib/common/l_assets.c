@@ -805,6 +805,11 @@ bool BotLib_LocateAssetRoot(char *buffer, size_t size)
     return false;
 }
 
+/*
+=============
+BotLib_ResolveAssetPath
+=============
+*/
 bool BotLib_ResolveAssetPath(const char *requested,
                              const char *preferred_subdir,
                              char *buffer,
@@ -818,15 +823,15 @@ bool BotLib_ResolveAssetPath(const char *requested,
         return false;
     }
 
-    if (BotLib_FileExists(requested)) {
-        BotLib_CopyPath(buffer, size, requested);
-        return true;
-    }
+	const bool bare_name = (strchr(requested, '/') == NULL && strchr(requested, '\\') == NULL);
+
+	if (!bare_name && BotLib_FileExists(requested)) {
+		BotLib_CopyPath(buffer, size, requested);
+		return true;
+	}
 
     char last_candidate[BOTLIB_ASSET_MAX_PATH];
     last_candidate[0] = '\0';
-
-    const bool bare_name = (strchr(requested, '/') == NULL && strchr(requested, '\\') == NULL);
 
     const char *roots[16];
     bool override_flags[sizeof(roots) / sizeof(roots[0])];

@@ -25,12 +25,17 @@
 #include "botlib/common/l_struct.h"
 #include "botlib/common/l_utils.h"
 #include "botlib/aas/aas_sound.h"
+#include "botlib/aas/aas_map.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib/aas/aas_debug.h"
 #include "botlib_contract_loader.h"
 #include "../support/asset_env.h"
 #include "q2bridge/bridge_config.h"
 #include "q2bridge/update_translator.h"
+
+#ifndef cmocka_skip
+#define cmocka_skip(...) skip()
+#endif
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -111,6 +116,7 @@ typedef struct bot_interface_test_context_s
 
 static mock_bot_import_t *g_active_mock = NULL;
 static int g_mock_import_libvar_set_status = BLERR_NOERROR;
+static bool ensure_map_fixture(const asset_env_t *assets, const char *stem);
 
 /*
 =============
@@ -1040,7 +1046,7 @@ assert_int_equal(status, 0);
 Mock_AssertPrintContains(&context->mock, "BotLoadWeights: filename required", PRT_ERROR);
 
 Mock_ClearPrints(&context->mock);
-status = context->api->BotLoadWeights(handle, "items.c");
+status = context->api->BotLoadWeights(handle, "fw_items.c");
 assert_int_equal(status, 1);
 
 char out_path[PATH_MAX];
@@ -1736,8 +1742,6 @@ static void test_bot_interface_mover_parity(void **state)
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
     snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
-    settings.skill = 1;
-
     status = context->api->BotSetupClient(1, &settings);
     assert_int_equal(status, BLERR_NOERROR);
 
@@ -2109,7 +2113,6 @@ static void test_bot_start_frame_entity_lifecycle(void **state)
     entity.modelindex = 2;
     VectorSet(entity.origin, 32.0f, 24.0f, 40.0f);
     VectorCopy(entity.origin, entity.old_origin);
-    VectorCopy(entity.origin, entity.previous_origin);
     VectorSet(entity.mins, -16.0f, -16.0f, -16.0f);
     VectorSet(entity.maxs, 16.0f, 16.0f, 16.0f);
 

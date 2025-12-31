@@ -25,22 +25,7 @@ typedef struct pc_diagnostic_snapshot_s {
     const char *message;
 } pc_diagnostic_snapshot_t;
 
-// Punctuation IDs mirrored from the historical precompiler.  The HLIL export
-// shows that single character braces and parentheses share the same identifiers
-// as Quake III Arena's botlib implementation.
-#ifndef PC_PUNCTUATION_IDS
-#define PC_PUNCTUATION_IDS
-enum {
-    P_PARENTHESESOPEN = 44,
-    P_PARENTHESESCLOSE = 45,
-    P_BRACEOPEN = 46,
-    P_BRACECLOSE = 47,
-    P_COLON = 42,
-    P_COMMA = 40,
-    P_SQBRACKETOPEN = 48,
-    P_SQBRACKETCLOSE = 49,
-};
-#endif // PC_PUNCTUATION_IDS
+// Punctuation IDs are supplied by the production lexer in l_script.h.
 
 static const char g_fw_items_source_path[] = "dev_tools/assets/fw_items.c";
 static const char g_synonyms_source_path[] = "dev_tools/assets/syn.c";

@@ -2240,8 +2240,17 @@ int PC_EvaluateTokens(pc_source_t *source, pc_token_t *tokens, signed long int *
 				} //end if
 				if (strcmp(t->string, "defined"))
 				{
-					SourceError(source, "undefined name %s in #if/#elif", t->string);
-					error = 1;
+					AllocValue(v);
+					v->intvalue = negativevalue ? 0 : 0;
+					v->floatvalue = negativevalue ? 0.0 : 0.0;
+					v->parentheses = parentheses;
+					v->next = NULL;
+					v->prev = lastvalue;
+					if (lastvalue) lastvalue->next = v;
+					else firstvalue = v;
+					lastvalue = v;
+					lastwasvalue = 1;
+					negativevalue = 0;
 					break;
 				} //end if
 				t = t->next;
@@ -3161,6 +3170,38 @@ int PC_ReadDollarDirective(pc_source_t *source)
 	return qfalse;
 } //end of the function PC_ReadDirective
 
+#ifndef BOTLIB_PRECOMP_CONTEXT_PREFIX
+#define BOTLIB_PRECOMP_CONTEXT_PREFIX "CONTEXT_"
+#endif
+#ifndef BOTLIB_PRECOMP_MTCONTEXT_PREFIX
+#define BOTLIB_PRECOMP_MTCONTEXT_PREFIX "MTCONTEXT_"
+#endif
+//============================================================================
+//
+// Parameter:				-
+// Returns:					-
+// Changes Globals:		-
+//============================================================================
+static qboolean PC_ShouldExpandDefine(const char *name)
+{
+	if (name == NULL)
+	{
+		return qfalse;
+	}
+
+	if (!strncmp(name, BOTLIB_PRECOMP_CONTEXT_PREFIX, strlen(BOTLIB_PRECOMP_CONTEXT_PREFIX)))
+	{
+		return qfalse;
+	}
+
+	if (!strncmp(name, BOTLIB_PRECOMP_MTCONTEXT_PREFIX, strlen(BOTLIB_PRECOMP_MTCONTEXT_PREFIX)))
+	{
+		return qfalse;
+	}
+
+	return qtrue;
+} //end of the function PC_ShouldExpandDefine
+
 #ifdef QUAKEC
 //============================================================================
 //
@@ -3277,6 +3318,11 @@ int PC_ReadToken(pc_source_t *source, pc_token_t *token)
 		//if the token is a name
 		if (token->type == TT_NAME)
 		{
+			if (!PC_ShouldExpandDefine(token->string))
+			{
+				memcpy(&source->token, token, sizeof(pc_token_t));
+				return qtrue;
+			}
 			//check if the name is a define macro
 #if DEFINEHASHING
 			define = PC_FindHashedDefine(source->definehash, token->string);

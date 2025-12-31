@@ -203,12 +203,9 @@ bot_status_t TranslateEntityUpdate(int ent_num,
     bool maxs_changed = CopyIfChanged(src->maxs, dst->maxs);
     bool bounds_changed = mins_changed || maxs_changed;
 
-    vec3_t quantized_angles;
-    CopyVec3(src->angles, quantized_angles);
-    if (src->solid == 3)
-    {
-        QuantizeEulerDegrees(quantized_angles);
-    }
+	vec3_t quantized_angles;
+	CopyVec3(src->angles, quantized_angles);
+	QuantizeEulerDegrees(quantized_angles);
 
     bool angles_changed = CopyIfChanged(quantized_angles, dst->angles);
     if (!angles_changed && src->solid == 3 && bounds_changed)
@@ -230,10 +227,10 @@ bot_status_t TranslateEntityUpdate(int ent_num,
     dst->is_mover = is_mover;
     bool mover_changed = was_mover != is_mover;
 
-    if ((bounds_changed && src->solid == 3) || mover_changed)
-    {
-        BotlibLog(PRT_MESSAGE, "[q2bridge] relinking brush model ent %d\n", ent_num);
-    }
+	if ((bounds_changed && src->solid == 3) || mover_changed)
+	{
+		BotlibLog(PRT_MESSAGE, "%s", "[q2bridge] relinking brush model ent %d\n");
+	}
 
     CopyScalarFrameFields(src, dst);
 

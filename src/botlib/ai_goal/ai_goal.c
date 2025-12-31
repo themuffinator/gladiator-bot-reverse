@@ -5,6 +5,7 @@
 #include "bot_goal.h"
 #include "botlib/ai/goal_move_orchestrator.h"
 #include "botlib/common/l_log.h"
+#include "q2bridge/botlib.h"
 
 static int AI_GoalBotlib_ValidateHandle(int handle)
 {
@@ -40,13 +41,18 @@ void AI_GoalBotlib_ResetState(int handle)
     BotResetGoalState(handle);
 }
 
+/*
+=============
+AI_GoalBotlib_LoadItemWeights
+=============
+*/
 int AI_GoalBotlib_LoadItemWeights(int handle, const char *filename)
 {
-    if (!AI_GoalBotlib_ValidateHandle(handle))
-    {
-        return 0;
-    }
-    return BotLoadItemWeights(handle, filename);
+	if (!AI_GoalBotlib_ValidateHandle(handle))
+	{
+		return BLERR_CANNOTLOADITEMWEIGHTS;
+	}
+	return BotLoadItemWeights(handle, filename);
 }
 
 void AI_GoalBotlib_FreeItemWeights(int handle)

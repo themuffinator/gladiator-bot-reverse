@@ -63,6 +63,60 @@ static void AI_Weapon_CopyTokenString(char *dest, size_t dest_size, const pc_tok
     dest[dest_size - 1] = '\0';
 }
 
+/*
+=============
+AI_Weapon_ReadSignedFloat
+=============
+*/
+static bool AI_Weapon_ReadSignedFloat(pc_source_t *source, float *out)
+{
+	pc_token_t token;
+	bool negative = false;
+
+	if (source == NULL || out == NULL)
+	{
+		return false;
+	}
+
+	if (!PC_ReadToken(source, &token))
+	{
+		return false;
+	}
+
+	if (token.type == TT_PUNCTUATION)
+	{
+		if (token.subtype == P_SUB)
+		{
+			negative = true;
+			if (!PC_ReadToken(source, &token))
+			{
+				return false;
+			}
+		}
+		else if (token.subtype == P_ADD)
+		{
+			if (!PC_ReadToken(source, &token))
+			{
+				return false;
+			}
+		}
+	}
+
+	if (token.type != TT_NUMBER)
+	{
+		return false;
+	}
+
+	float value = AI_Weapon_TokenToFloat(&token);
+	*out = negative ? -value : value;
+	return true;
+}
+
+/*
+=============
+AI_Weapon_ReadVector
+=============
+*/
 static bool AI_Weapon_ReadVector(pc_source_t *source, vec3_t out)
 {
     if (source == NULL || out == NULL)
@@ -78,12 +132,12 @@ static bool AI_Weapon_ReadVector(pc_source_t *source, vec3_t out)
 
     for (int i = 0; i < 3; ++i)
     {
-        pc_token_t value;
-        if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-        {
-            return false;
-        }
-        out[i] = AI_Weapon_TokenToFloat(&value);
+		float value = 0.0f;
+		if (!AI_Weapon_ReadSignedFloat(source, &value))
+		{
+			return false;
+		}
+		out[i] = value;
 
         if (i < 2)
         {

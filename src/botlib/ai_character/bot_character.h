@@ -33,6 +33,7 @@ int BotLoadCharacterSkill(const char *character_file, float skill);
 void BotFreeCharacter(int handle);
 void BotFreeCharacterStrings(ai_character_profile_t *profile);
 ai_character_profile_t *BotCharacterFromHandle(int handle);
+void BotShutdownCharacters(void);
 
 float Characteristic_Float(int handle, int index);
 float Characteristic_BFloat(int handle, int index, float minimum, float maximum);

@@ -8,7 +8,10 @@
 #include "botlib/aas/aas_debug.h"
 #include "botlib/aas/aas_sound.h"
 #include "botlib/ea/ea_local.h"
+#include "botlib/ai_character/bot_character.h"
+#include "botlib/ai_goal/bot_goal.h"
 #include "botlib/ai_weapon/bot_weapon.h"
+#include "botlib/ai_weight/bot_weight.h"
 #include "botlib/common/l_assets.h"
 #include "botlib/common/l_struct.h"
 #include "botlib/common/l_libvar.h"
@@ -37,7 +40,6 @@ static const botlib_import_capture_t *g_import_capture = NULL;
 static bool g_library_initialised = false;
 static botlib_library_variables_t g_library_variables;
 static botlib_subsystem_state_t g_subsystem_state;
-static ai_weapon_library_t *g_weapon_library = NULL;
 
 static const char *Botlib_DefaultWeaponConfig(void)
 {
@@ -47,7 +49,6 @@ static const char *Botlib_DefaultWeaponConfig(void)
 static void Botlib_ResetSubsystemState(void)
 {
     memset(&g_subsystem_state, 0, sizeof(g_subsystem_state));
-    g_weapon_library = NULL;
 }
 
 static void Botlib_ResetLibraryVariables(void)
@@ -145,22 +146,30 @@ static int Botlib_SetupEASubsystem(void)
     return BLERR_NOERROR;
 }
 
-static bool Botlib_SetupAISubsystem(void)
+/*
+=============
+Botlib_SetupAISubsystem
+=============
+*/
+static int Botlib_SetupAISubsystem(void)
 {
-    if (g_subsystem_state.ai_initialised) {
-        return true;
-    }
+	if (g_subsystem_state.ai_initialised) {
+		return BLERR_NOERROR;
+	}
 
-    const char *weapon_config_path =
-        (g_library_variables.weaponconfig[0] != '\0') ? g_library_variables.weaponconfig : NULL;
+	int status = BotSetupWeaponAI();
+	if (status != BLERR_NOERROR) {
+		return status;
+	}
 
-    g_weapon_library = AI_LoadWeaponLibrary(weapon_config_path);
-    if (g_weapon_library == NULL) {
-        return false;
-    }
+	status = BotSetupGoalAI();
+	if (status != BLERR_NOERROR) {
+		BotShutdownWeaponAI();
+		return status;
+	}
 
-    g_subsystem_state.ai_initialised = true;
-    return true;
+	g_subsystem_state.ai_initialised = true;
+	return BLERR_NOERROR;
 }
 
 static int Botlib_SetupSoundSubsystem(void)
@@ -225,8 +234,14 @@ static void Botlib_ShutdownUtilities(void)
     g_subsystem_state.utilities_initialised = false;
 }
 
+/*
+=============
+Botlib_ShutdownAISubsystem
+=============
+*/
 static void Botlib_ShutdownAISubsystem(void)
 {
+<<<<<<< Updated upstream
 	if (g_weapon_library != NULL) {
 		AI_UnloadWeaponLibrary(g_weapon_library);
 		g_weapon_library = NULL;
@@ -235,6 +250,16 @@ static void Botlib_ShutdownAISubsystem(void)
 	if (!g_subsystem_state.ai_initialised) {
 		return;
 	}
+=======
+	if (!g_subsystem_state.ai_initialised) {
+		return;
+	}
+
+	BotShutdownGoalAI();
+	BotShutdownWeaponAI();
+	BotShutdownWeights();
+	BotShutdownCharacters();
+>>>>>>> Stashed changes
 
 	g_subsystem_state.ai_initialised = false;
 }
@@ -281,6 +306,7 @@ const botlib_import_table_t *BotInterface_GetImportTable(void)
 
 /*
 =============
+<<<<<<< Updated upstream
 BotInterface_SetImportCapture
 
 Registers optional capture hooks for shimmed import callbacks.
@@ -303,96 +329,103 @@ const botlib_import_capture_t *BotInterface_GetImportCapture(void)
 	return g_import_capture;
 }
 
+=======
+BotSetupLibrary
+=============
+*/
+>>>>>>> Stashed changes
 int BotSetupLibrary(void)
 {
-    if (g_library_initialised) {
-        return BLERR_LIBRARYALREADYSETUP;
-    }
+	if (g_library_initialised) {
+		return BLERR_LIBRARYALREADYSETUP;
+	}
 
-    if (g_import_table == NULL || g_import_table->BotLibVarGet == NULL) {
-        return BLERR_INVALIDIMPORT;
-    }
+	if (g_import_table == NULL || g_import_table->BotLibVarGet == NULL) {
+		return BLERR_INVALIDIMPORT;
+	}
 
-    if (!BotMemory_Init(BOT_MEMORY_DEFAULT_HEAP_SIZE)) {
-        return BLERR_INVALIDIMPORT;
-    }
+	if (!BotMemory_Init(BOT_MEMORY_DEFAULT_HEAP_SIZE)) {
+		return BLERR_INVALIDIMPORT;
+	}
 
-    Botlib_ResetSubsystemState();
-    Botlib_ResetLibraryVariables();
-    LibVar_ResetCache();
-    BotLib_LogShutdown();
+	Botlib_ResetSubsystemState();
+	Botlib_ResetLibraryVariables();
+	LibVar_ResetCache();
+	BotLib_LogShutdown();
 
-    int status = Botlib_SetupUtilities();
-    if (status != BLERR_NOERROR) {
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return status;
-    }
+	int status = Botlib_SetupUtilities();
+	if (status != BLERR_NOERROR) {
+		Botlib_ResetLibraryVariables();
+		Botlib_ResetSubsystemState();
+		LibVar_Shutdown();
+		BotMemory_Shutdown();
+		return status;
+	}
 
-    Botlib_CacheLibraryVariables();
+	Botlib_CacheLibraryVariables();
 
-    status = Botlib_SetupAASSubsystem();
-    if (status != BLERR_NOERROR) {
-        Botlib_ShutdownUtilities();
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return status;
-    }
+	status = Botlib_SetupAASSubsystem();
+	if (status != BLERR_NOERROR) {
+		Botlib_ShutdownUtilities();
+		Botlib_ResetLibraryVariables();
+		Botlib_ResetSubsystemState();
+		LibVar_Shutdown();
+		BotMemory_Shutdown();
+		return status;
+	}
 
-    status = Botlib_SetupEASubsystem();
-    if (status != BLERR_NOERROR) {
-        Botlib_ShutdownAASSubsystem();
-        Botlib_ShutdownUtilities();
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return status;
-    }
+	status = Botlib_SetupEASubsystem();
+	if (status != BLERR_NOERROR) {
+		Botlib_ShutdownAASSubsystem();
+		Botlib_ShutdownUtilities();
+		Botlib_ResetLibraryVariables();
+		Botlib_ResetSubsystemState();
+		LibVar_Shutdown();
+		BotMemory_Shutdown();
+		return status;
+	}
 
-    /*
-     * The Gladiator HLIL initialises shared data before exposing the bot state
-     * table: item configuration is loaded via sub_100309d0 ("itemconfig") and
-     * the weapon library comes online through sub_10035680 ("weaponconfig")
-     * prior to character setup routines that request per-bot weight handles and
-     * chat files. When the AI subsystem grows beyond stubs, its setup function
-     * will need to honour that order so movement, weight, and character modules
-     * can acquire their dependencies deterministically.
-     *【F:dev_tools/gladiator.dll.bndb_hlil.txt†L38344-L38405】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L41398-L41415】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32483-L32552】
-     */
-    if (!Botlib_SetupAISubsystem()) {
-        Botlib_ShutdownEASubsystem();
-        Botlib_ShutdownAASSubsystem();
-        Botlib_ShutdownUtilities();
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return BLERR_CANNOTLOADWEAPONCONFIG;
-    }
+	/*
+	 * The Gladiator HLIL initialises shared data before exposing the bot state
+	 * table: the weapon library is loaded via sub_10035680 ("weaponconfig") and
+	 * the item configuration is parsed through sub_100309d0 ("itemconfig")
+	 * prior to character setup routines that request per-bot weight handles and
+	 * chat files. When the AI subsystem grows beyond stubs, its setup function
+	 * must honour that order so movement, weight, and character modules can
+	 * acquire their dependencies deterministically.
+	 *?F:dev_tools/gladiator.dll.bndb_hlil.txt+L38344-L38405??F:dev_tools/gladiator.dll.bndb_hlil.txt+L41398-L41415??F:dev_tools/gladiator.dll.bndb_hlil.txt+L32483-L32552?
+	 */
+	status = Botlib_SetupAISubsystem();
+	if (status != BLERR_NOERROR) {
+		Botlib_ShutdownEASubsystem();
+		Botlib_ShutdownAASSubsystem();
+		Botlib_ShutdownUtilities();
+		Botlib_ResetLibraryVariables();
+		Botlib_ResetSubsystemState();
+		LibVar_Shutdown();
+		BotMemory_Shutdown();
+		return status;
+	}
 
-    status = Botlib_SetupSoundSubsystem();
-    if (status != BLERR_NOERROR) {
-        Botlib_ShutdownAISubsystem();
-        Botlib_ShutdownEASubsystem();
-        Botlib_ShutdownAASSubsystem();
-        Botlib_ShutdownUtilities();
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return status;
-    }
+	status = Botlib_SetupSoundSubsystem();
+	if (status != BLERR_NOERROR) {
+		Botlib_ShutdownAISubsystem();
+		Botlib_ShutdownEASubsystem();
+		Botlib_ShutdownAASSubsystem();
+		Botlib_ShutdownUtilities();
+		Botlib_ResetLibraryVariables();
+		Botlib_ResetSubsystemState();
+		LibVar_Shutdown();
+		BotMemory_Shutdown();
+		return status;
+	}
 
-    AAS_DebugRegisterConsoleCommands();
+	AAS_DebugRegisterConsoleCommands();
 
-    g_library_initialised = true;
-    return BLERR_NOERROR;
+	g_library_initialised = true;
+	return BLERR_NOERROR;
 }
+
 
 int BotShutdownLibrary(void)
 {

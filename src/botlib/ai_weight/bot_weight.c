@@ -330,6 +330,30 @@ int BotWriteWeights(int handle, const char *filename)
     return 1;
 }
 
+/*
+=============
+WriteWeightConfig
+=============
+*/
+int WriteWeightConfig(const char *filename, bot_weight_config_t *config)
+{
+	if (filename == NULL || filename[0] == '\0' || config == NULL) {
+		return 0;
+	}
+
+	FILE *fp = fopen(filename, "wb");
+	if (fp == NULL) {
+		return 0;
+	}
+
+	bool wrote = BotWeight_WriteConfig(fp, config);
+	if (fclose(fp) != 0) {
+		wrote = false;
+	}
+
+	return wrote ? 1 : 0;
+}
+
 static void BotWeight_AssignValue(bot_fuzzy_seperator_t *fs, float value)
 {
     if (fs == NULL) {
@@ -430,4 +454,21 @@ bot_weight_config_t *BotReadWeightsFile(const char *filename)
 	}
 
 	return ReadWeightConfig(filename);
+}
+
+/*
+=============
+BotShutdownWeights
+=============
+*/
+void BotShutdownWeights(void)
+{
+	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
+		if (g_weight_handles[i] == NULL) {
+			continue;
+		}
+
+		BotWeight_DestroyHandle(g_weight_handles[i]);
+		g_weight_handles[i] = NULL;
+	}
 }

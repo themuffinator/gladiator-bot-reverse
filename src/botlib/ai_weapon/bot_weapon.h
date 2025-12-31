@@ -118,6 +118,9 @@ ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename);
 void AI_FreeWeaponWeights(ai_weapon_weights_t *weights);
 float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_index);
 
+int BotSetupWeaponAI(void);
+void BotShutdownWeaponAI(void);
+
 int BotAllocWeaponState(void);
 void BotFreeWeaponState(int handle);
 void BotResetWeaponState(int handle);

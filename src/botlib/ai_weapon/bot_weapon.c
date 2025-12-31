@@ -2,6 +2,7 @@
 
 #include "q2bridge/botlib.h"
 
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 
@@ -10,6 +11,7 @@
 #define BOT_WEAPON_DEFAULT_WEIGHTS "default/defaul_w.c"
 
 static bot_weaponstate_t *g_bot_weapon_states[MAX_CLIENTS + 1];
+static ai_weapon_library_t *g_weapon_library = NULL;
 
 static bool BotWeapon_HandleInRange(int handle)
 {
@@ -74,6 +76,46 @@ static void BotWeapon_ClearWeights(bot_weaponstate_t *state)
     state->owns_weights = false;
 
     BotWeapon_ResetRanking(state);
+}
+
+/*
+=============
+BotSetupWeaponAI
+=============
+*/
+int BotSetupWeaponAI(void)
+{
+	const char *file = LibVarString("weaponconfig", "weapons.c");
+	g_weapon_library = AI_LoadWeaponLibrary(file);
+	if (g_weapon_library == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "couldn't load the weapon config\n");
+		return BLERR_CANNOTLOADWEAPONCONFIG;
+	}
+
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotShutdownWeaponAI
+=============
+*/
+void BotShutdownWeaponAI(void)
+{
+	if (g_weapon_library != NULL)
+	{
+		AI_UnloadWeaponLibrary(g_weapon_library);
+		g_weapon_library = NULL;
+	}
+
+	for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
+	{
+		if (g_bot_weapon_states[handle] != NULL)
+		{
+			BotFreeWeaponState(handle);
+		}
+	}
 }
 
 int BotAllocWeaponState(void)

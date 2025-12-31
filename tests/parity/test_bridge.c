@@ -212,34 +212,59 @@ static void Mock_BotInput(int client, bot_input_t *input)
     mock->last_input = *input;
 }
 
+/*
+=============
+Mock_BotClientCommand
+=============
+*/
 static void Mock_BotClientCommand(int client, char *fmt, ...)
 {
-    if (g_active_bridge_mock == NULL || fmt == NULL)
-    {
-        return;
-    }
+	if (g_active_bridge_mock == NULL || fmt == NULL)
+	{
+		return;
+	}
 
-    bridge_import_mock_t *mock = g_active_bridge_mock;
+	bridge_import_mock_t *mock = g_active_bridge_mock;
 
-    va_list args;
-    va_start(args, fmt);
+	va_list args;
+	va_start(args, fmt);
 
-    char buffer[1024];
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
+	va_list args_copy;
+	va_copy(args_copy, args);
+#if defined(_WIN32)
+	int required = _vscprintf(fmt, args_copy);
+#else
+	int required = vsnprintf(NULL, 0, fmt, args_copy);
+#endif
+	va_end(args_copy);
 
-    va_end(args);
+	if (required < 0)
+	{
+		va_end(args);
+		return;
+	}
 
-    if (mock->last_command != NULL)
-    {
-        free(mock->last_command);
-    }
+	size_t length = (size_t)required + 1U;
+	char *buffer = (char *)malloc(length);
+	if (buffer == NULL)
+	{
+		va_end(args);
+		return;
+	}
 
-    size_t length = strlen(buffer);
-    mock->last_command = (char *)malloc(length + 1U);
-    assert_non_null(mock->last_command);
-    memcpy(mock->last_command, buffer, length + 1U);
-    mock->command_calls += 1;
-    mock->command_client = client;
+	int written = vsnprintf(buffer, length, fmt, args);
+	va_end(args);
+
+	if (written < 0)
+	{
+		free(buffer);
+		return;
+	}
+
+	free(mock->last_command);
+	mock->last_command = buffer;
+	mock->command_calls += 1;
+	mock->command_client = client;
 }
 
 /*
@@ -534,28 +559,41 @@ static int bridge_test_teardown(void **state)
     return 0;
 }
 
+/*
+=============
+BridgeTest_AssertInvalidClientLog
+=============
+*/
 static void BridgeTest_AssertInvalidClientLog(const bridge_test_context_t *context,
                                               const char *function_name,
                                               int client,
                                               int max_index)
 {
-    assert_non_null(context);
-    assert_true(context->mock.print_count > 0);
+	assert_non_null(context);
+	assert_true(context->mock.print_count > 0);
 
-    const captured_print_t *print = &context->mock.prints[0];
-    const botlib_contract_export_t *guard =
-        BotlibContract_FindExport(&context->catalogue, "GuardClientNumber");
-    assert_non_null(guard);
+	const captured_print_t *print = &context->mock.prints[0];
+	const botlib_contract_export_t *guard =
+		BotlibContract_FindExport(&context->catalogue, "GuardClientNumber");
+	assert_non_null(guard);
 
-    const botlib_contract_message_t *message =
-        BotlibContract_FindMessageWithSeverity(guard, print->severity);
-    assert_non_null(message);
+	const botlib_contract_scenario_t *scenario =
+		BotlibContract_FindScenario(guard, "failure");
+	if (scenario == NULL)
+	{
+		scenario = BotlibContract_FindScenario(guard, NULL);
+	}
+	assert_non_null(scenario);
 
-    char expected[256];
-    int written = snprintf(expected, sizeof(expected), message->text, function_name, client, max_index);
-    assert_true(written > 0);
-    assert_true((size_t)written < sizeof(expected));
-    assert_string_equal(print->message, expected);
+	const botlib_contract_message_t *message =
+		BotlibContract_FindMessageWithSeverity(scenario, print->severity);
+	assert_non_null(message);
+
+	char expected[256];
+	int written = snprintf(expected, sizeof(expected), message->text, function_name, client, max_index);
+	assert_true(written > 0);
+	assert_true((size_t)written < sizeof(expected));
+	assert_string_equal(print->message, expected);
 }
 
 static void test_bridge_rejects_invalid_bot_input(void **state)

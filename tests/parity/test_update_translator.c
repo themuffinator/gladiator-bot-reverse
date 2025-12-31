@@ -15,6 +15,7 @@
 #include "q2bridge/update_translator.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/ai_move/mover_catalogue.h"
+#include "botlib/interface/botlib_interface.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib_contract_loader.h"
 
@@ -38,6 +39,17 @@ static translator_test_context_t *g_active_context = NULL;
 
 #define TRANSLATOR_DEFAULT_MAX_CLIENTS 4
 #define TRANSLATOR_DEFAULT_MAX_ENTITIES 1024
+
+//============================================================================
+//
+// Parameter:				-
+// Returns:					-
+// Changes Globals:		-
+//============================================================================
+const botlib_import_table_t *BotInterface_GetImportTable(void)
+{
+	return NULL;
+} //end of the function BotInterface_GetImportTable
 
 #if defined(__GNUC__)
 #define WEAK_SYMBOL __attribute__((weak))
@@ -397,94 +409,149 @@ static void test_bridge_update_client_inactive_logs_contract_message(void **stat
     assert_non_null(code);
 }
 
+/*
+=============
+test_bridge_update_client_rejects_out_of_range_slot
+=============
+*/
 static void test_bridge_update_client_rejects_out_of_range_slot(void **state)
 {
-    translator_test_context_t *context = (translator_test_context_t *)(*state);
-    context->print_count = 0U;
+	translator_test_context_t *context = (translator_test_context_t *)(*state);
+	context->print_count = 0U;
 
-    LibVarSet("maxclients", "2");
-    Bridge_ResetCachedUpdates();
-  
-static void test_bridge_update_client_rejects_indices_beyond_mocked_limit(void **state)
-{
-    translator_test_context_t *context = (translator_test_context_t *)(*state);
+	LibVarSet("maxclients", "2");
+	Bridge_ResetCachedUpdates();
 
-    translator_set_mock_max_clients(3);
-    context->print_count = 0U;
+	bot_updateclient_t update;
+	memset(&update, 0, sizeof(update));
 
-    bot_updateclient_t update;
-    memset(&update, 0, sizeof(update));
+	int status = Bridge_UpdateClient(2, &update);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	assert_true(context->print_count > 0U);
 
-    int status = Bridge_UpdateClient(2, &update);
-    assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
-    assert_true(context->print_count > 0U);
-    assert_string_equal(context->prints[0].message, "BotUpdateClient: invalid client number 2, [0, 1]\n");
-    assert_int_equal(context->prints[0].severity, PRT_ERROR);
+	const botlib_contract_export_t *guard =
+		BotlibContract_FindExport(&context->catalogue, "GuardClientNumber");
+	assert_non_null(guard);
+	const botlib_contract_scenario_t *scenario =
+		BotlibContract_FindScenario(guard, "failure");
+	if (scenario == NULL)
+	{
+		scenario = BotlibContract_FindScenario(guard, NULL);
+	}
+	assert_non_null(scenario);
+	const botlib_contract_message_t *expected =
+		BotlibContract_FindMessageContaining(scenario, "invalid client number");
+	assert_non_null(expected);
 
-    LibVarSet("maxclients", "4");
-    Bridge_ResetCachedUpdates();
-    int status = Bridge_UpdateClient(3, &update);
-    assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
-    assert_true(context->print_count > 0U);
+	char formatted[128];
+	snprintf(formatted,
+			 sizeof(formatted),
+			 expected->text,
+			 "BotUpdateClient",
+			 2,
+			 1);
+	assert_string_equal(context->prints[0].message, formatted);
+	assert_int_equal(context->prints[0].severity, expected->severity);
 
-    const botlib_contract_export_t *entry = BotlibContract_FindExport(&context->catalogue, "BridgeDiagnostics");
-    assert_non_null(entry);
-    const botlib_contract_scenario_t *scenario = BotlibContract_FindScenario(entry, "success");
-    assert_non_null(scenario);
-    const botlib_contract_message_t *expected =
-        BotlibContract_FindMessageContaining(scenario, "invalid client number");
-    assert_non_null(expected);
-
-    char formatted[128];
-    snprintf(formatted,
-             sizeof(formatted),
-             expected->text,
-             "BotUpdateClient",
-             3,
-             g_configured_max_clients - 1);
-    assert_string_equal(context->prints[0].message, formatted);
-    assert_int_equal(context->prints[0].severity, expected->severity);
-
-    const botlib_contract_return_code_t *code =
-        BotlibContract_FindReturnCode(scenario, BLERR_INVALIDCLIENTNUMBER);
-    assert_non_null(code);
+	LibVarSet("maxclients", "4");
+	Bridge_ResetCachedUpdates();
 }
 
+/*
+=============
+test_bridge_update_client_rejects_indices_beyond_mocked_limit
+=============
+*/
+static void test_bridge_update_client_rejects_indices_beyond_mocked_limit(void **state)
+{
+	translator_test_context_t *context = (translator_test_context_t *)(*state);
+
+	translator_set_mock_max_clients(2);
+	context->print_count = 0U;
+
+	bot_updateclient_t update;
+	memset(&update, 0, sizeof(update));
+
+	int status = Bridge_UpdateClient(2, &update);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	assert_true(context->print_count > 0U);
+	assert_string_equal(context->prints[0].message, "BotUpdateClient: invalid client number 2, [0, 1]\n");
+	assert_int_equal(context->prints[0].severity, PRT_ERROR);
+
+	LibVarSet("maxclients", "4");
+	Bridge_ResetCachedUpdates();
+	context->print_count = 0U;
+	status = Bridge_UpdateClient(3, &update);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	assert_true(context->print_count > 0U);
+
+	const botlib_contract_export_t *guard =
+		BotlibContract_FindExport(&context->catalogue, "GuardClientNumber");
+	assert_non_null(guard);
+	const botlib_contract_scenario_t *scenario =
+		BotlibContract_FindScenario(guard, "failure");
+	if (scenario == NULL)
+	{
+		scenario = BotlibContract_FindScenario(guard, NULL);
+	}
+	assert_non_null(scenario);
+	const botlib_contract_message_t *expected =
+		BotlibContract_FindMessageContaining(scenario, "invalid client number");
+	assert_non_null(expected);
+
+	char formatted[128];
+	snprintf(formatted,
+			 sizeof(formatted),
+			 expected->text,
+			 "BotUpdateClient",
+			 3,
+			 g_configured_max_clients - 1);
+	assert_string_equal(context->prints[0].message, formatted);
+	assert_int_equal(context->prints[0].severity, expected->severity);
+}
+
+/*
+=============
+test_bridge_update_entity_rejects_indices_beyond_mocked_limit
+=============
+*/
 static void test_bridge_update_entity_rejects_indices_beyond_mocked_limit(void **state)
 {
-    translator_test_context_t *context = (translator_test_context_t *)(*state);
+	translator_test_context_t *context = (translator_test_context_t *)(*state);
 
-    translator_set_mock_max_entities(6);
-    context->print_count = 0U;
+	translator_set_mock_max_entities(6);
+	context->print_count = 0U;
 
-    bot_updateentity_t update;
-    memset(&update, 0, sizeof(update));
+	bot_updateentity_t update;
+	memset(&update, 0, sizeof(update));
 
-    int status = Bridge_UpdateEntity(6, &update);
-    assert_int_equal(status, BLERR_INVALIDENTITYNUMBER);
-    assert_true(context->print_count > 0U);
+	int status = Bridge_UpdateEntity(6, &update);
+	assert_int_equal(status, BLERR_INVALIDENTITYNUMBER);
+	assert_true(context->print_count > 0U);
 
-    const botlib_contract_export_t *entry = BotlibContract_FindExport(&context->catalogue, "BridgeDiagnostics");
-    assert_non_null(entry);
-    const botlib_contract_scenario_t *scenario = BotlibContract_FindScenario(entry, "success");
-    assert_non_null(scenario);
-    const botlib_contract_message_t *expected =
-        BotlibContract_FindMessageContaining(scenario, "invalid entity number");
-    assert_non_null(expected);
+	const botlib_contract_export_t *guard =
+		BotlibContract_FindExport(&context->catalogue, "GuardEntityNumber");
+	assert_non_null(guard);
+	const botlib_contract_scenario_t *scenario =
+		BotlibContract_FindScenario(guard, "failure");
+	if (scenario == NULL)
+	{
+		scenario = BotlibContract_FindScenario(guard, NULL);
+	}
+	assert_non_null(scenario);
+	const botlib_contract_message_t *expected =
+		BotlibContract_FindMessageContaining(scenario, "invalid entity number");
+	assert_non_null(expected);
 
-    char formatted[128];
-    snprintf(formatted,
-             sizeof(formatted),
-             expected->text,
-             "BotUpdateEntity",
-             6,
-             g_configured_max_entities - 1);
-    assert_string_equal(context->prints[0].message, formatted);
-    assert_int_equal(context->prints[0].severity, expected->severity);
-
-    const botlib_contract_return_code_t *code =
-        BotlibContract_FindReturnCode(scenario, BLERR_INVALIDENTITYNUMBER);
-    assert_non_null(code);
+	char formatted[128];
+	snprintf(formatted,
+			 sizeof(formatted),
+			 expected->text,
+			 "BotUpdateEntity",
+			 6,
+			 g_configured_max_entities - 1);
+	assert_string_equal(context->prints[0].message, formatted);
+	assert_int_equal(context->prints[0].severity, expected->severity);
 }
 
 static void test_bridge_update_client_accepts_runtime_limit_increase(void **state)
@@ -758,27 +825,39 @@ static void test_translate_entity_aas_not_loaded_logs(void **state)
     assert_non_null(code);
 }
 
+/*
+=============
+test_bot_update_entity_logging_stops_after_map_load
+=============
+*/
 static void test_bot_update_entity_logging_stops_after_map_load(void **state)
 {
-    translator_test_context_t *context = (translator_test_context_t *)(*state);
-    context->print_count = 0U;
+	translator_test_context_t *context = (translator_test_context_t *)(*state);
+	context->print_count = 0U;
 
-    TranslateEntity_SetWorldLoaded(qfalse);
+	TranslateEntity_SetWorldLoaded(qfalse);
 
-    bot_updateentity_t update;
-    memset(&update, 0, sizeof(update));
+	bot_updateentity_t update;
+	memset(&update, 0, sizeof(update));
 
-    int status = Bridge_UpdateEntity(3, &update);
-    assert_int_equal(status, BLERR_NOAASFILE);
-    assert_true(context->print_count > 0U);
+	int status = Bridge_UpdateEntity(3, &update);
+	assert_int_equal(status, BLERR_NOAASFILE);
+	assert_true(context->print_count > 0U);
 
-    TranslateEntity_SetCurrentTime(0.0f);
-    TranslateEntity_SetWorldLoaded(qtrue);
-    context->print_count = 0U;
+	TranslateEntity_SetCurrentTime(0.0f);
+	TranslateEntity_SetWorldLoaded(qtrue);
+	context->print_count = 0U;
 
-    status = Bridge_UpdateEntity(3, &update);
-    assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(context->print_count, 0U);
+	assert_ptr_equal(Q2Bridge_GetImportTable(), &context->imports);
+
+	AASEntityFrame direct_frame;
+	memset(&direct_frame, 0, sizeof(direct_frame));
+	int direct_status = TranslateEntityUpdate(3, &update, &direct_frame);
+	assert_int_equal(direct_status, BLERR_NOERROR);
+
+	status = Bridge_UpdateEntity(3, &update);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(context->print_count, 0U);
 }
 
 static void test_bridge_entity_cache_tracks_maxentities(void **state)

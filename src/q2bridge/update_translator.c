@@ -54,70 +54,98 @@ static const char *Bridge_GetMaxClientsVarName(const libvar_t *var)
 
 static void Bridge_UpdateMaxClientIndex(qboolean force_refresh)
 {
-    const int fallback_clients = MAX_CLIENTS;
-    int max_clients = fallback_clients;
+	const int fallback_clients = MAX_CLIENTS;
+	int max_clients = fallback_clients;
 
-    libvar_t *maxclients = Bridge_MaxClients();
-    if (maxclients != NULL)
-    {
-        const char *var_name = Bridge_GetMaxClientsVarName(maxclients);
+	libvar_t *maxclients = Bridge_MaxClients();
+	if (maxclients != NULL)
+	{
+		const char *var_name = Bridge_GetMaxClientsVarName(maxclients);
+		qboolean refresh = qfalse;
 
-        if (force_refresh || maxclients->modified)
-        {
-            max_clients = (int)LibVarValue(var_name, "0");
-            LibVarSetNotModified(var_name);
-        }
-        else
-        {
-            max_clients = (int)maxclients->value;
-        }
+		if (maxclients->modified || LibVarChanged(var_name))
+		{
+			refresh = qtrue;
+		}
 
-        if (max_clients <= 0)
-        {
-            max_clients = fallback_clients;
-        }
-    }
-    else
-    {
-        int fetched = (int)LibVarValue(Bridge_GetMaxClientsVarName(NULL), "0");
-        if (fetched > 0)
-        {
-            max_clients = fetched;
-        }
-    }
+		if (refresh)
+		{
+			max_clients = (int)LibVarValue(var_name, "0");
+			LibVarSetNotModified(var_name);
+			maxclients->value = (float)max_clients;
+			maxclients->modified = qfalse;
+		}
+		else
+		{
+			max_clients = (int)maxclients->value;
+			if (force_refresh && max_clients <= 0)
+			{
+				int fetched = (int)LibVarValue(var_name, "0");
+				if (fetched > 0)
+				{
+					max_clients = fetched;
+					maxclients->value = (float)max_clients;
+				}
+			}
+		}
 
-    if (max_clients > fallback_clients)
-    {
-        max_clients = fallback_clients;
-    }
+		if (max_clients <= 0)
+		{
+			max_clients = fallback_clients;
+		}
+	}
+	else
+	{
+		int fetched = (int)LibVarValue(Bridge_GetMaxClientsVarName(NULL), "0");
+		if (fetched > 0)
+		{
+			max_clients = fetched;
+		}
+	}
 
-    g_bridge_max_client_index = max_clients - 1;
+	if (max_clients > fallback_clients)
+	{
+		max_clients = fallback_clients;
+	}
+
+	g_bridge_max_client_index = max_clients - 1;
 }
 
 static int Bridge_ReadConfiguredMaxEntities(void)
 {
-    int configured = 0;
+	int configured = 0;
 
-    const libvar_t *maxentities = Bridge_MaxEntities();
-    if (maxentities != NULL && maxentities->name != NULL)
-    {
-        configured = (int)LibVarValue(maxentities->name, "0");
-    }
-    else
-    {
-        configured = (int)LibVarValue("maxentities", "0");
-    }
+	libvar_t *maxentities = Bridge_MaxEntities();
+	if (maxentities != NULL && maxentities->name != NULL)
+	{
+		const char *var_name = maxentities->name;
+		if (maxentities->modified || LibVarChanged(var_name))
+		{
+			configured = (int)LibVarValue(var_name, "0");
+			LibVarSetNotModified(var_name);
+			maxentities->value = (float)configured;
+			maxentities->modified = qfalse;
+		}
+		else
+		{
+			configured = (int)maxentities->value;
+		}
+	}
+	else
+	{
+		configured = (int)LibVarValue("maxentities", "0");
+	}
 
-    if (configured <= 0)
-    {
-        configured = BRIDGE_DEFAULT_MAX_ENTITIES;
-    }
-    if (configured > Q2_ABSOLUTE_MAX_ENTITIES)
-    {
-        configured = Q2_ABSOLUTE_MAX_ENTITIES;
-    }
+	if (configured <= 0)
+	{
+		configured = BRIDGE_DEFAULT_MAX_ENTITIES;
+	}
+	if (configured > Q2_ABSOLUTE_MAX_ENTITIES)
+	{
+		configured = Q2_ABSOLUTE_MAX_ENTITIES;
+	}
 
-    return configured;
+	return configured;
 }
 
 static qboolean Bridge_GrowEntityTable(int new_capacity)
@@ -286,31 +314,20 @@ static qboolean Bridge_CheckEntityNumber(int ent, const char *caller)
     return qtrue;
 }
 
+/*
+=============
+Bridge_LogFirstCapture
+=============
+*/
 static void Bridge_LogFirstCapture(qboolean *logged, const char *fmt, ...)
 {
-    if (*logged)
-    {
-        return;
-    }
+	if (*logged)
+	{
+		return;
+	}
 
-    va_list args;
-    va_start(args, fmt);
-
-    bot_import_t *imports = Q2Bridge_GetImportTable();
-    if (imports != NULL && imports->Print != NULL)
-    {
-        char buffer[512];
-        vsnprintf(buffer, sizeof(buffer), fmt, args);
-        imports->Print(PRT_MESSAGE, "%s", buffer);
-    }
-    else
-    {
-        vfprintf(stderr, fmt, args);
-    }
-
-    va_end(args);
-
-    *logged = qtrue;
+	(void)fmt;
+	*logged = qtrue;
 }
 
 int Bridge_UpdateClient(int client, const bot_updateclient_t *update)

@@ -119,14 +119,32 @@ bool asset_env_initialise(asset_env_t *env)
 
     memset(env, 0, sizeof(*env));
 
-    int written = snprintf(env->asset_root,
-                           sizeof(env->asset_root),
-                           "%s/dev_tools/assets",
-                           PROJECT_SOURCE_DIR);
-    if (written <= 0 || (size_t)written >= sizeof(env->asset_root))
-    {
-        return false;
-    }
+	const char *asset_override = getenv("GLADIATOR_ASSET_DIR");
+	const char *asset_root = asset_override;
+	if (asset_root == NULL || asset_root[0] == '\0')
+	{
+		asset_root = NULL;
+	}
+
+	int written;
+	if (asset_root != NULL)
+	{
+		written = snprintf(env->asset_root,
+		                   sizeof(env->asset_root),
+		                   "%s",
+		                   asset_root);
+	}
+	else
+	{
+		written = snprintf(env->asset_root,
+		                   sizeof(env->asset_root),
+		                   "%s/dev_tools/assets",
+		                   PROJECT_SOURCE_DIR);
+	}
+	if (written <= 0 || (size_t)written >= sizeof(env->asset_root))
+	{
+		return false;
+	}
 
     char character_path[PATH_MAX];
     snprintf(character_path, sizeof(character_path), "%s/bots/babe_c.c", env->asset_root);

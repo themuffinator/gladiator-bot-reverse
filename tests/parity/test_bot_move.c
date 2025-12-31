@@ -11,7 +11,6 @@
 #include "botlib/aas/aas_map.h"
 #include "botlib/ai_move/bot_move.h"
 #include "botlib/ai_move/mover_catalogue.h"
-#include "botlib/common/bot_common.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/interface/botlib_interface.h"
 

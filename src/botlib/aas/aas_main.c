@@ -120,7 +120,6 @@ void AAS_ContinueInit(float time)
     }
 
     aasworld.initialized = qtrue;
-    BotLib_Print(PRT_MESSAGE, "AAS initialized.\n");
 }
 
 void AAS_FrameSynchronise(float time)

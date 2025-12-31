@@ -1,0 +1,7 @@
+1:parity_asset_verification
+8:botlib_parity_bot_interface
+9:botlib_parity_bot_move
+10:botlib_parity_precompiler_lexer
+11:botlib_parity_aas_debug
+12:botlib_parity_bridge
+13:botlib_parity_update_translator

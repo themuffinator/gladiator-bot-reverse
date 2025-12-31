@@ -1,0 +1,30 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/src/shared/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/src/botlib/common/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/src/botlib/precomp/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/src/botlib/aas/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/src/botlib/ea/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/src/botlib/ai/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/src/q2bridge/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/src/botlib/interface/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tools/bspc/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-build/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-build/include/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-build/src/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-build/doc/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-build/example/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/parity/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/chat/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/ai/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/ea/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/aas/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/common/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/tools/cmake_install.cmake",
+		"C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/tests/bspc/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

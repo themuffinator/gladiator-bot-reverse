@@ -706,15 +706,25 @@ static int BotMove_TravelFlagsForType(int traveltype)
     return aasworld.travelflagfortype[traveltype];
 }
 
+/*
+=============
+BotMove_TravelAllowed
+=============
+*/
 static bool BotMove_TravelAllowed(int traveltype, int travelflags)
 {
-    int flags = BotMove_TravelFlagsForType(traveltype);
-    int required = (travelflags != 0) ? travelflags : TFL_DEFAULT;
-    if (required == 0)
-    {
-        return true;
-    }
-    return (flags & required) != 0;
+	int flags = BotMove_TravelFlagsForType(traveltype);
+	if (flags == 0)
+	{
+		return true;
+	}
+
+	int required = (travelflags != 0) ? travelflags : TFL_DEFAULT;
+	if (required == 0)
+	{
+		return true;
+	}
+	return (flags & required) != 0;
 }
 
 static float BotMove_TravelTimeout(int traveltype)
@@ -1580,88 +1590,95 @@ void BotMoveClassifyEnvironment(bot_movestate_t *ms)
     }
 }
 
+/*
+=============
+BotMoveToGoal
+=============
+*/
 void BotMoveToGoal(bot_moveresult_t *result,
-                   int movestate,
-                   const bot_goal_t *goal,
-                   int travelflags)
+				   int movestate,
+				   const bot_goal_t *goal,
+				   int travelflags)
 {
-    if (result == NULL)
-    {
-        return;
-    }
+	if (result == NULL)
+	{
+		return;
+	}
 
-    bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-    if (ms == NULL)
-    {
-        result->failure = 1;
-        return;
-    }
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	if (ms == NULL)
+	{
+		result->failure = 1;
+		return;
+	}
 
-    if (goal == NULL || goal->areanum <= 0)
-    {
-        result->failure = 1;
-        result->type = RESULTTYPE_INSOLIDAREA;
-        return;
-    }
+	if (goal == NULL || goal->areanum <= 0)
+	{
+		result->failure = 1;
+		result->type = RESULTTYPE_INSOLIDAREA;
+		return;
+	}
 
-    BotMove_RefreshAvoidReach(ms);
+	BotMove_RefreshAvoidReach(ms);
 
-    ms->moveflags &= ~(MFL_SWIMMING | MFL_AGAINSTLADDER);
+	ms->moveflags &= ~(MFL_SWIMMING | MFL_AGAINSTLADDER);
 
-    if (BotMove_HandleGroundMover(ms, result))
-    {
-        ms->lastgoalareanum = goal->areanum;
-        ms->lastareanum = ms->areanum;
-        VectorCopy(ms->origin, ms->lastorigin);
-        return;
-    }
+	if (BotMove_HandleGroundMover(ms, result))
+	{
+		ms->lastgoalareanum = goal->areanum;
+		ms->lastareanum = ms->areanum;
+		VectorCopy(ms->origin, ms->lastorigin);
+		return;
+	}
 
-    if (ms->areanum == goal->areanum)
-    {
-        BotMove_DirectToGoal(ms, goal, result);
-        return;
-    }
+	if (ms->areanum == goal->areanum)
+	{
+		BotMove_DirectToGoal(ms, goal, result);
+		return;
+	}
 
-    aas_reachability_t reach;
-    int resultFlags = 0;
-    int reachIndex = BotGetReachabilityToGoal(ms, goal, travelflags, &reach, &resultFlags);
-    if (reachIndex <= 0)
-    {
-        BotMove_DirectToGoal(ms, goal, result);
-        ms->lastreachnum = 0;
-        ms->lastgoalareanum = goal->areanum;
-        VectorCopy(ms->origin, ms->lastorigin);
-        return;
-    }
+	aas_reachability_t reach;
+	int resultFlags = 0;
+	int reachIndex = BotGetReachabilityToGoal(ms, goal, travelflags, &reach, &resultFlags);
+	if (reachIndex <= 0)
+	{
+		BotMove_DirectToGoal(ms, goal, result);
+		ms->lastreachnum = 0;
+		ms->lastgoalareanum = goal->areanum;
+		VectorCopy(ms->origin, ms->lastorigin);
+		return;
+	}
 
-    BotMove_DispatchTravel(ms, &reach, result);
+	unsigned int mover_diagnostics = result->diagnostics;
+	BotMove_DispatchTravel(ms, &reach, result);
+	result->diagnostics |= mover_diagnostics;
 
-    int traveltype = reach.traveltype & TRAVELTYPE_MASK;
-    int finalReachIndex = reachIndex;
-    int finalReachArea = reach.areanum;
-    float finalReachabilityTime = aasworld.time + BotMove_TravelTimeout(traveltype);
+	int traveltype = reach.traveltype & TRAVELTYPE_MASK;
+	int finalReachIndex = reachIndex;
+	int finalReachArea = reach.areanum;
+	float finalReachabilityTime = aasworld.time + BotMove_TravelTimeout(traveltype);
 
-    BotMove_HandleMoverLanding(ms,
-                               reachIndex,
-                               &reach,
-                               result,
-                               &finalReachIndex,
-                               &finalReachArea,
-                               &finalReachabilityTime);
+	BotMove_HandleMoverLanding(ms,
+							   reachIndex,
+							   &reach,
+							   result,
+							   &finalReachIndex,
+							   &finalReachArea,
+							   &finalReachabilityTime);
 
-    result->flags |= resultFlags;
+	result->flags |= resultFlags;
 
-    if (result->blocked)
-    {
-        return;
-    }
+	if (result->blocked)
+	{
+		return;
+	}
 
-    ms->reachability_time = finalReachabilityTime;
-    ms->lastreachnum = finalReachIndex;
-    ms->reachareanum = finalReachArea;
-    ms->lastgoalareanum = goal->areanum;
-    ms->lastareanum = ms->areanum;
-    VectorCopy(ms->origin, ms->lastorigin);
+	ms->reachability_time = finalReachabilityTime;
+	ms->lastreachnum = finalReachIndex;
+	ms->reachareanum = finalReachArea;
+	ms->lastgoalareanum = goal->areanum;
+	ms->lastareanum = ms->areanum;
+	VectorCopy(ms->origin, ms->lastorigin);
 }
 
 int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type)
@@ -1718,21 +1735,95 @@ void BotMove_ResetAvoidReach(int movestate)
 
 /*
 =============
+<<<<<<< Updated upstream
 BotResetLastAvoidReach
 
 Clear the most recent avoid reach entry.
+=======
+BotMove_AddToTarget
+=============
+*/
+static bool BotMove_AddToTarget(const vec3_t start,
+								const vec3_t end,
+								float maxdist,
+								float *dist,
+								vec3_t target)
+{
+	if (dist == NULL || target == NULL)
+	{
+		return false;
+	}
+
+	vec3_t dir;
+	VectorSubtract(end, start, dir);
+	float curdist = VectorNormalizeInline(dir);
+	if (*dist + curdist < maxdist)
+	{
+		VectorCopy(end, target);
+		*dist += curdist;
+		return false;
+	}
+
+	VectorMA(start, maxdist - *dist, dir, target);
+	*dist = maxdist;
+	return true;
+}
+
+/*
+=============
+BotMove_Visible
+=============
+*/
+static bool BotMove_Visible(int ent, const vec3_t eye, const vec3_t target)
+{
+	vec3_t mins = {0.0f, 0.0f, 0.0f};
+	vec3_t maxs = {0.0f, 0.0f, 0.0f};
+	bsp_trace_t trace = Q2_Trace(eye, mins, maxs, target, ent, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+	return trace.fraction >= 1.0f;
+}
+
+/*
+=============
+BotMove_GetReachabilityFromArea
+=============
+*/
+static int BotMove_GetReachabilityFromArea(const bot_movestate_t *ms,
+										   int start_area,
+										   const bot_goal_t *goal,
+										   int travelflags,
+										   aas_reachability_t *out)
+{
+	if (ms == NULL || goal == NULL || out == NULL)
+	{
+		return 0;
+	}
+
+	bot_movestate_t temp = *ms;
+	temp.areanum = start_area;
+	return BotGetReachabilityToGoal(&temp, goal, travelflags, out, NULL);
+}
+
+/*
+=============
+BotResetLastAvoidReach
+>>>>>>> Stashed changes
 =============
 */
 void BotResetLastAvoidReach(int movestate)
 {
+<<<<<<< Updated upstream
 	bot_movestate_t *ms;
 
 	ms = BotMoveStateFromHandle(movestate);
+=======
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+>>>>>>> Stashed changes
 	if (ms == NULL)
 	{
 		return;
 	}
 
+<<<<<<< Updated upstream
 	if (ms->lastavoidreach > 0)
 	{
 		for (int i = 0; i < MAX_AVOIDREACH; i++)
@@ -1752,11 +1843,33 @@ void BotResetLastAvoidReach(int movestate)
 	ms->lastavoidreach = 0;
 	ms->lastavoidreachtime = 0.0f;
 	ms->lastavoidreachtries = 0;
+=======
+	int latest = 0;
+	float latesttime = 0.0f;
+	for (int i = 0; i < MAX_AVOIDREACH; ++i)
+	{
+		if (ms->avoidreachtimes[i] > latesttime)
+		{
+			latesttime = ms->avoidreachtimes[i];
+			latest = i;
+		}
+	}
+
+	if (latesttime > 0.0f)
+	{
+		ms->avoidreachtimes[latest] = 0.0f;
+		if (ms->avoidreachtries[latest] > 0)
+		{
+			ms->avoidreachtries[latest]--;
+		}
+	}
+>>>>>>> Stashed changes
 }
 
 /*
 =============
 BotReachabilityArea
+<<<<<<< Updated upstream
 
 Resolve the reachability area for an origin with mover/solid handling.
 =============
@@ -1827,13 +1940,45 @@ int BotReachabilityArea(const vec3_t origin, int client)
 	}
 
 	return BotMove_FuzzyPointReachabilityArea(start);
+=======
+=============
+*/
+int BotReachabilityArea(const vec3_t origin, int testground)
+{
+	int areanum = BotMove_FindAreaForPoint(origin);
+	if (areanum > 0)
+	{
+		return areanum;
+	}
+
+	if (!testground)
+	{
+		return areanum;
+	}
+
+	vec3_t mins = {0.0f, 0.0f, 0.0f};
+	vec3_t maxs = {0.0f, 0.0f, 0.0f};
+	vec3_t end;
+	VectorCopy(origin, end);
+	end[2] -= 800.0f;
+	bsp_trace_t trace = Q2_Trace(origin, mins, maxs, end, -1, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+	if (!trace.startsolid)
+	{
+		areanum = BotMove_FindAreaForPoint(trace.endpos);
+	}
+
+	return areanum;
+>>>>>>> Stashed changes
 }
 
 /*
 =============
 BotMovementViewTarget
+<<<<<<< Updated upstream
 
 Compute a lookahead target point along the current movement path.
+=======
+>>>>>>> Stashed changes
 =============
 */
 int BotMovementViewTarget(int movestate,
@@ -1842,6 +1987,7 @@ int BotMovementViewTarget(int movestate,
 						  float lookahead,
 						  vec3_t target)
 {
+<<<<<<< Updated upstream
 	aas_reachability_t reach;
 	aas_reachability_t next_reach;
 	int reachnum;
@@ -1875,6 +2021,28 @@ int BotMovementViewTarget(int movestate,
 	{
 		int traveltype;
 
+=======
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	if (ms == NULL || goal == NULL || target == NULL)
+	{
+		return 0;
+	}
+
+	if (ms->lastreachnum <= 0 || goal->areanum <= 0)
+	{
+		return 0;
+	}
+
+	int reachnum = ms->lastreachnum;
+	int lastareanum = ms->lastareanum;
+	vec3_t end;
+	VectorCopy(ms->origin, end);
+	float dist = 0.0f;
+
+	while (reachnum > 0 && dist < lookahead)
+	{
+		aas_reachability_t reach;
+>>>>>>> Stashed changes
 		if (!BotMove_LoadReachability(reachnum, &reach))
 		{
 			return 0;
@@ -1885,7 +2053,11 @@ int BotMovementViewTarget(int movestate,
 			return 1;
 		}
 
+<<<<<<< Updated upstream
 		traveltype = reach.traveltype & TRAVELTYPE_MASK;
+=======
+		int traveltype = reach.traveltype & TRAVELTYPE_MASK;
+>>>>>>> Stashed changes
 		if (traveltype == TRAVEL_TELEPORT ||
 			traveltype == TRAVEL_ROCKETJUMP ||
 			traveltype == TRAVEL_BFGJUMP)
@@ -1903,12 +2075,17 @@ int BotMovementViewTarget(int movestate,
 			}
 		}
 
+<<<<<<< Updated upstream
 		{
 			bot_movestate_t temp = *ms;
 			temp.areanum = reach.areanum;
 			reachnum = BotGetReachabilityToGoal(&temp, goal, travelflags, &next_reach, NULL);
 		}
 
+=======
+		aas_reachability_t next_reach;
+		reachnum = BotMove_GetReachabilityFromArea(ms, reach.areanum, goal, travelflags, &next_reach);
+>>>>>>> Stashed changes
 		VectorCopy(reach.end, end);
 		lastareanum = reach.areanum;
 		if (lastareanum == goal->areanum)
@@ -1923,6 +2100,7 @@ int BotMovementViewTarget(int movestate,
 
 /*
 =============
+<<<<<<< Updated upstream
 BotMove_Visible
 
 Check line of sight between two points for movement prediction.
@@ -1959,12 +2137,22 @@ Predict a reachable point that is visible from the goal.
 =============
 */
 int BotPredictVisiblePosition(const vec3_t origin,
+=======
+BotPredictVisiblePosition
+=============
+*/
+int BotPredictVisiblePosition(vec3_t origin,
+>>>>>>> Stashed changes
 							  int areanum,
 							  const bot_goal_t *goal,
 							  int travelflags,
 							  vec3_t target)
 {
+<<<<<<< Updated upstream
 	if (origin == NULL || target == NULL || goal == NULL)
+=======
+	if (goal == NULL || target == NULL)
+>>>>>>> Stashed changes
 	{
 		return 0;
 	}
@@ -1974,6 +2162,7 @@ int BotPredictVisiblePosition(const vec3_t origin,
 		return 0;
 	}
 
+<<<<<<< Updated upstream
 	bot_movestate_t temp;
 	memset(&temp, 0, sizeof(temp));
 	VectorCopy(origin, temp.origin);
@@ -1990,6 +2179,16 @@ int BotPredictVisiblePosition(const vec3_t origin,
 		VectorCopy(end, temp.origin);
 
 		int reachnum = BotGetReachabilityToGoal(&temp, goal, travelflags, &reach, NULL);
+=======
+	(void)origin;
+
+	bot_movestate_t temp;
+	memset(&temp, 0, sizeof(temp));
+	for (int i = 0; i < 20 && areanum != goal->areanum; ++i)
+	{
+		aas_reachability_t reach;
+		int reachnum = BotMove_GetReachabilityFromArea(&temp, areanum, goal, travelflags, &reach);
+>>>>>>> Stashed changes
 		if (reachnum <= 0)
 		{
 			return 0;
@@ -2014,8 +2213,45 @@ int BotPredictVisiblePosition(const vec3_t origin,
 		}
 
 		areanum = reach.areanum;
+<<<<<<< Updated upstream
 		VectorCopy(reach.end, end);
+=======
+>>>>>>> Stashed changes
 	}
 
 	return 0;
 }
+<<<<<<< Updated upstream
+=======
+
+/*
+=============
+BotAddAvoidSpot
+=============
+*/
+void BotAddAvoidSpot(int movestate, vec3_t origin, float radius, int type)
+{
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	if (ms == NULL)
+	{
+		return;
+	}
+
+	if (type == AVOID_CLEAR)
+	{
+		ms->numavoidspots = 0;
+		return;
+	}
+
+	if (ms->numavoidspots >= MAX_AVOIDSPOTS)
+	{
+		return;
+	}
+
+	VectorCopy(origin, ms->avoidspots[ms->numavoidspots].origin);
+	ms->avoidspots[ms->numavoidspots].radius = radius;
+	ms->avoidspots[ms->numavoidspots].type = type;
+	ms->numavoidspots++;
+}
+
+>>>>>>> Stashed changes

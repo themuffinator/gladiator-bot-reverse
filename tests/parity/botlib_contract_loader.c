@@ -1,13 +1,21 @@
 #include "botlib_contract_loader.h"
 
+#define JSMN_PARENT_LINKS
 #include "jsmn.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define FAILURE_SEVERITY_THRESHOLD 3
+#define CONTRACT_DEBUG_LOG(enabled, ...) \
+	do { \
+		if ((enabled)) { \
+			fprintf(stderr, __VA_ARGS__); \
+		} \
+	} while (0)
 
 static char *duplicate_string(const char *text)
 {
@@ -28,16 +36,108 @@ static char *duplicate_string(const char *text)
 
 static char *duplicate_range(const char *json, const jsmntok_t *token)
 {
-    size_t length = (size_t)(token->end - token->start);
-    char *copy = (char *)malloc(length + 1U);
-    if (copy == NULL)
-    {
-        return NULL;
-    }
+	size_t length = (size_t)(token->end - token->start);
+	char *copy = (char *)malloc(length + 1U);
+	if (copy == NULL)
+	{
+		return NULL;
+	}
 
-    memcpy(copy, json + token->start, length);
-    copy[length] = '\0';
-    return copy;
+	memcpy(copy, json + token->start, length);
+	copy[length] = '\0';
+
+	if (token->type != JSMN_STRING || length == 0U)
+	{
+		return copy;
+	}
+
+	size_t read_index = 0;
+	size_t write_index = 0;
+	while (read_index < length)
+	{
+		char ch = copy[read_index++];
+		if (ch == '\\' && read_index < length)
+		{
+			char esc = copy[read_index++];
+			switch (esc)
+			{
+				case 'n':
+					copy[write_index++] = '\n';
+					break;
+				case 'r':
+					copy[write_index++] = '\r';
+					break;
+				case 't':
+					copy[write_index++] = '\t';
+					break;
+				case 'b':
+					copy[write_index++] = '\b';
+					break;
+				case 'f':
+					copy[write_index++] = '\f';
+					break;
+				case '\\':
+					copy[write_index++] = '\\';
+					break;
+				case '/':
+					copy[write_index++] = '/';
+					break;
+				case '"':
+					copy[write_index++] = '"';
+					break;
+				case 'u':
+				{
+					unsigned int codepoint = 0U;
+					bool valid = true;
+					for (int i = 0; i < 4; ++i)
+					{
+						if (read_index >= length)
+						{
+							valid = false;
+							break;
+						}
+						char hex = copy[read_index++];
+						codepoint <<= 4;
+						if (hex >= '0' && hex <= '9')
+						{
+							codepoint |= (unsigned int)(hex - '0');
+						}
+						else if (hex >= 'a' && hex <= 'f')
+						{
+							codepoint |= (unsigned int)(hex - 'a' + 10U);
+						}
+						else if (hex >= 'A' && hex <= 'F')
+						{
+							codepoint |= (unsigned int)(hex - 'A' + 10U);
+						}
+						else
+						{
+							valid = false;
+							break;
+						}
+					}
+					if (valid && codepoint <= 0x7FU)
+					{
+						copy[write_index++] = (char)codepoint;
+					}
+					else
+					{
+						copy[write_index++] = '?';
+					}
+					break;
+				}
+				default:
+					copy[write_index++] = esc;
+					break;
+			}
+		}
+		else
+		{
+			copy[write_index++] = ch;
+		}
+	}
+	copy[write_index] = '\0';
+	return copy;
 }
 
 static bool token_equals(const char *json, const jsmntok_t *token, const char *text)
@@ -46,31 +146,48 @@ static bool token_equals(const char *json, const jsmntok_t *token, const char *t
     return (strlen(text) == length) && (strncmp(json + token->start, text, length) == 0);
 }
 
+/*
+=============
+skip_token
+=============
+*/
 static int skip_token(const jsmntok_t *tokens, int index)
 {
-    const jsmntok_t *token = &tokens[index];
-    int next = index + 1;
+	const jsmntok_t *token = &tokens[index];
+	const char *debug_env = getenv("BOTLIB_CONTRACT_DEBUG_TOKENS");
+	if (debug_env != NULL)
+	{
+		fprintf(stderr,
+		        "skip_token: index %d type %d size %d\n",
+		        index,
+		        token->type,
+		        token->size);
+	}
+	int next = index + 1;
 
-    switch (token->type)
-    {
-        case JSMN_OBJECT:
-            for (int i = 0; i < token->size; ++i)
-            {
-                next = skip_token(tokens, next);
-                next = skip_token(tokens, next);
-            }
-            break;
-        case JSMN_ARRAY:
-            for (int i = 0; i < token->size; ++i)
-            {
-                next = skip_token(tokens, next);
-            }
-            break;
-        default:
-            break;
-    }
+	switch (token->type)
+	{
+		case JSMN_OBJECT:
+		{
+			int pair_count = token->size / 2;
+			for (int i = 0; i < pair_count; ++i)
+			{
+				next = skip_token(tokens, next);
+				next = skip_token(tokens, next);
+			}
+			break;
+		}
+		case JSMN_ARRAY:
+			for (int i = 0; i < token->size; ++i)
+			{
+				next = skip_token(tokens, next);
+			}
+			break;
+		default:
+			break;
+	}
 
-    return next;
+	return next;
 }
 
 static int parse_int(const char *json, const jsmntok_t *token, int *out_value)
@@ -128,7 +245,8 @@ static int parse_messages(
         cursor += 1;
 
         botlib_contract_message_t *message = &messages[i];
-        for (int field = 0; field < object->size; ++field)
+		int field_count = object->size / 2;
+        for (int field = 0; field < field_count; ++field)
         {
             int key_index = cursor;
             cursor = skip_token(tokens, cursor);
@@ -202,7 +320,8 @@ static int parse_return_codes(
         cursor += 1;
 
         botlib_contract_return_code_t *record = &values[i];
-        for (int field = 0; field < object->size; ++field)
+		int field_count = object->size / 2;
+        for (int field = 0; field < field_count; ++field)
         {
             int key_index = cursor;
             cursor = skip_token(tokens, cursor);
@@ -256,23 +375,57 @@ static int build_scenarios(
         }
     }
 
-    size_t failure_returns = 0;
-    size_t success_returns = 0;
-    for (size_t i = 0; i < return_count; ++i)
-    {
-        if (returns[i].value == 0)
-        {
-            success_returns += 1U;
-        }
-        else
-        {
-            failure_returns += 1U;
-        }
-    }
+	size_t failure_returns = 0;
+	size_t success_returns = 0;
+	bool split_returns = false;
+	bool all_returns_failure = false;
+	bool all_returns_success = false;
+	if (return_count > 0U)
+	{
+		if (failure_messages > 0U && success_messages > 0U)
+		{
+			split_returns = true;
+		}
+		else if (failure_messages > 0U)
+		{
+			all_returns_failure = true;
+		}
+		else if (success_messages > 0U)
+		{
+			all_returns_success = true;
+		}
+		else
+		{
+			split_returns = true;
+		}
+
+		if (split_returns)
+		{
+			for (size_t i = 0; i < return_count; ++i)
+			{
+				if (returns[i].value == 0)
+				{
+					success_returns += 1U;
+				}
+				else
+				{
+					failure_returns += 1U;
+				}
+			}
+		}
+		else if (all_returns_failure)
+		{
+			failure_returns = return_count;
+		}
+		else if (all_returns_success)
+		{
+			success_returns = return_count;
+		}
+	}
 
     size_t scenario_count = 0;
-    bool has_failure = (failure_messages > 0U) || (failure_returns > 0U);
-    bool has_success = (success_messages > 0U) || (success_returns > 0U);
+	bool has_failure = (failure_messages > 0U) || (failure_returns > 0U);
+	bool has_success = (success_messages > 0U) || (success_returns > 0U);
 
     if (has_failure)
     {
@@ -337,13 +490,23 @@ static int build_scenarios(
                 goto cleanup;
             }
             size_t cursor = 0U;
-            for (size_t i = 0; i < return_count; ++i)
-            {
-                if (returns[i].value != 0)
-                {
-                    scenario->return_codes[cursor++] = returns[i];
-                }
-            }
+			if (all_returns_failure)
+			{
+				for (size_t i = 0; i < return_count; ++i)
+				{
+					scenario->return_codes[cursor++] = returns[i];
+				}
+			}
+			else
+			{
+				for (size_t i = 0; i < return_count; ++i)
+				{
+					if (returns[i].value != 0)
+					{
+						scenario->return_codes[cursor++] = returns[i];
+					}
+				}
+			}
         }
     }
 
@@ -387,13 +550,23 @@ static int build_scenarios(
                 goto cleanup;
             }
             size_t cursor = 0U;
-            for (size_t i = 0; i < return_count; ++i)
-            {
-                if (returns[i].value == 0)
-                {
-                    scenario->return_codes[cursor++] = returns[i];
-                }
-            }
+			if (all_returns_success)
+			{
+				for (size_t i = 0; i < return_count; ++i)
+				{
+					scenario->return_codes[cursor++] = returns[i];
+				}
+			}
+			else
+			{
+				for (size_t i = 0; i < return_count; ++i)
+				{
+					if (returns[i].value == 0)
+					{
+						scenario->return_codes[cursor++] = returns[i];
+					}
+				}
+			}
         }
     }
 
@@ -523,7 +696,8 @@ static int parse_exports(const char *json, jsmntok_t *tokens, int index, botlib_
         botlib_contract_return_code_t *returns = NULL;
         size_t return_count = 0U;
 
-        for (int field = 0; field < object->size; ++field)
+		int field_count = object->size / 2;
+        for (int field = 0; field < field_count; ++field)
         {
             int key_index = cursor;
             cursor = skip_token(tokens, cursor);
@@ -579,143 +753,247 @@ static int parse_exports(const char *json, jsmntok_t *tokens, int index, botlib_
     return 0;
 }
 
+/*
+=============
+BotlibContract_Load
+=============
+*/
 int BotlibContract_Load(const char *path, botlib_contract_catalogue_t *catalogue)
 {
-    if (catalogue == NULL)
-    {
-        return -1;
-    }
+	const bool debug_enabled = (getenv("BOTLIB_CONTRACT_DEBUG") != NULL);
+	CONTRACT_DEBUG_LOG(debug_enabled,
+	                   "BotlibContract_Load: begin '%s'\n",
+	                   path != NULL ? path : "(null)");
+	if (catalogue == NULL)
+	{
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: catalogue is NULL\n");
+		return -1;
+	}
 
-    memset(catalogue, 0, sizeof(*catalogue));
+	memset(catalogue, 0, sizeof(*catalogue));
 
-    FILE *file = fopen(path, "rb");
-    if (file == NULL)
-    {
-        return -1;
-    }
+	botlib_contract_catalogue_t helper_catalogue;
+	memset(&helper_catalogue, 0, sizeof(helper_catalogue));
 
-    if (fseek(file, 0, SEEK_END) != 0)
-    {
-        fclose(file);
-        return -1;
-    }
+	FILE *file = fopen(path, "rb");
+	if (file == NULL)
+	{
+		CONTRACT_DEBUG_LOG(debug_enabled,
+		                   "BotlibContract_Load: fopen failed for '%s' (errno %d)\n",
+		                   path != NULL ? path : "(null)",
+		                   errno);
+		return -1;
+	}
 
-    long length = ftell(file);
-    if (length < 0)
-    {
-        fclose(file);
-        return -1;
-    }
-    if (fseek(file, 0, SEEK_SET) != 0)
-    {
-        fclose(file);
-        return -1;
-    }
+	if (fseek(file, 0, SEEK_END) != 0)
+	{
+		fclose(file);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: fseek end failed\n");
+		return -1;
+	}
 
-    char *buffer = (char *)malloc((size_t)length + 1U);
-    if (buffer == NULL)
-    {
-        fclose(file);
-        return -1;
-    }
+	long length = ftell(file);
+	if (length < 0)
+	{
+		fclose(file);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: ftell failed\n");
+		return -1;
+	}
+	CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: file length %ld\n", length);
+	if (fseek(file, 0, SEEK_SET) != 0)
+	{
+		fclose(file);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: fseek set failed\n");
+		return -1;
+	}
 
-    size_t read_count = fread(buffer, 1U, (size_t)length, file);
-    fclose(file);
-    if (read_count != (size_t)length)
-    {
-        free(buffer);
-        return -1;
-    }
-    buffer[length] = '\0';
+	char *buffer = (char *)malloc((size_t)length + 1U);
+	if (buffer == NULL)
+	{
+		fclose(file);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: malloc failed for %ld bytes\n", length + 1L);
+		return -1;
+	}
 
-    jsmn_parser parser;
-    jsmn_init(&parser);
-    int token_count = jsmn_parse(&parser, buffer, (size_t)length, NULL, 0);
-    if (token_count < 0)
-    {
-        free(buffer);
-        return -1;
-    }
+	size_t read_count = fread(buffer, 1U, (size_t)length, file);
+	fclose(file);
+	if (read_count != (size_t)length)
+	{
+		free(buffer);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: fread failed (%zu/%ld)\n", read_count, length);
+		return -1;
+	}
+	buffer[length] = '\0';
 
-    jsmntok_t *tokens = (jsmntok_t *)calloc((size_t)token_count, sizeof(*tokens));
-    if (tokens == NULL)
-    {
-        free(buffer);
-        return -1;
-    }
+	jsmn_parser parser;
+	jsmn_init(&parser);
+	int token_count = jsmn_parse(&parser, buffer, (size_t)length, NULL, 0);
+	if (token_count < 0)
+	{
+		free(buffer);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: token count parse failed (%d)\n", token_count);
+		return -1;
+	}
+	CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: token count %d\n", token_count);
 
-    jsmn_init(&parser);
-    int parsed = jsmn_parse(&parser, buffer, (size_t)length, tokens, (unsigned int)token_count);
-    if (parsed < 0)
-    {
-        free(tokens);
-        free(buffer);
-        return -1;
-    }
+	jsmntok_t *tokens = (jsmntok_t *)calloc((size_t)token_count, sizeof(*tokens));
+	if (tokens == NULL)
+	{
+		free(buffer);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: token allocation failed (%d)\n", token_count);
+		return -1;
+	}
 
-    if (token_count < 1 || tokens[0].type != JSMN_OBJECT)
-    {
-        free(tokens);
-        free(buffer);
-        return -1;
-    }
+	jsmn_init(&parser);
+	int parsed = jsmn_parse(&parser, buffer, (size_t)length, tokens, (unsigned int)token_count);
+	if (parsed < 0)
+	{
+		free(tokens);
+		free(buffer);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: token parse failed (%d)\n", parsed);
+		return -1;
+	}
+	CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: token parse success (%d)\n", parsed);
 
-    int index = 1;
-    for (int i = 0; i < tokens[0].size; ++i)
-    {
-        int key_index = index;
-        index = skip_token(tokens, index);
-        int value_index = index;
-        index = skip_token(tokens, index);
+	if (token_count < 1 || tokens[0].type != JSMN_OBJECT)
+	{
+		free(tokens);
+		free(buffer);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: root is not object\n");
+		return -1;
+	}
+	CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: root size %d\n", tokens[0].size);
 
-        const jsmntok_t *key = &tokens[key_index];
-        const jsmntok_t *value = &tokens[value_index];
-        if (key->type != JSMN_STRING)
-        {
-            continue;
-        }
+	int index = 1;
+	int field_count = tokens[0].size / 2;
+	for (int i = 0; i < field_count; ++i)
+	{
+		int key_index = index;
+		index = skip_token(tokens, index);
+		int value_index = index;
+		index = skip_token(tokens, index);
 
-        if (token_equals(buffer, key, "exports") && value->type == JSMN_ARRAY)
-        {
-            if (parse_exports(buffer, tokens, value_index, catalogue) != 0)
-            {
-                free(tokens);
-                free(buffer);
-                BotlibContract_Free(catalogue);
-                return -1;
-            }
-        }
-    }
+		const jsmntok_t *key = &tokens[key_index];
+		const jsmntok_t *value = &tokens[value_index];
+		if (key->type != JSMN_STRING)
+		{
+			continue;
+		}
 
-    free(tokens);
-    free(buffer);
+		if (token_equals(buffer, key, "exports") && value->type == JSMN_ARRAY)
+		{
+			if (parse_exports(buffer, tokens, value_index, catalogue) != 0)
+			{
+				free(tokens);
+				free(buffer);
+				BotlibContract_Free(catalogue);
+				BotlibContract_Free(&helper_catalogue);
+				CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: export parse failed\n");
+				return -1;
+			}
+		}
+		else if (token_equals(buffer, key, "helpers") && value->type == JSMN_ARRAY)
+		{
+			if (parse_exports(buffer, tokens, value_index, &helper_catalogue) != 0)
+			{
+				free(tokens);
+				free(buffer);
+				BotlibContract_Free(catalogue);
+				BotlibContract_Free(&helper_catalogue);
+				CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: helper parse failed\n");
+				return -1;
+			}
+		}
+	}
 
-    if (catalogue->exports == NULL)
-    {
-        BotlibContract_Free(catalogue);
-        return -1;
-    }
+	if (helper_catalogue.exports != NULL)
+	{
+		size_t combined = catalogue->export_count + helper_catalogue.export_count;
+		botlib_contract_export_t *combined_exports =
+			(botlib_contract_export_t *)calloc(combined, sizeof(*combined_exports));
+		if (combined_exports == NULL)
+		{
+			free(tokens);
+			free(buffer);
+			BotlibContract_Free(catalogue);
+			BotlibContract_Free(&helper_catalogue);
+			CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: helper merge failed\n");
+			return -1;
+		}
 
-    return 0;
+		size_t cursor = 0U;
+		for (size_t i = 0; i < catalogue->export_count; ++i)
+		{
+			combined_exports[cursor++] = catalogue->exports[i];
+		}
+		for (size_t i = 0; i < helper_catalogue.export_count; ++i)
+		{
+			combined_exports[cursor++] = helper_catalogue.exports[i];
+		}
+
+		free(catalogue->exports);
+		free(helper_catalogue.exports);
+		helper_catalogue.exports = NULL;
+		helper_catalogue.export_count = 0U;
+		catalogue->exports = combined_exports;
+		catalogue->export_count = combined;
+	}
+
+	free(tokens);
+	free(buffer);
+
+	if (catalogue->exports == NULL)
+	{
+		BotlibContract_Free(catalogue);
+		CONTRACT_DEBUG_LOG(debug_enabled, "BotlibContract_Load: no exports found\n");
+		return -1;
+	}
+
+	CONTRACT_DEBUG_LOG(debug_enabled,
+	                   "BotlibContract_Load: loaded %zu exports\n",
+	                   catalogue->export_count);
+	return 0;
 }
 
+/*
+=============
+BotlibContract_FindExport
+=============
+*/
 const botlib_contract_export_t *BotlibContract_FindExport(const botlib_contract_catalogue_t *catalogue, const char *name)
 {
-    if (catalogue == NULL || name == NULL)
-    {
-        return NULL;
-    }
+	if (catalogue == NULL || name == NULL)
+	{
+		return NULL;
+	}
 
-    for (size_t i = 0; i < catalogue->export_count; ++i)
-    {
-        const botlib_contract_export_t *entry = &catalogue->exports[i];
-        if (entry->name != NULL && strcmp(entry->name, name) == 0)
-        {
-            return entry;
-        }
-    }
+	for (size_t i = 0; i < catalogue->export_count; ++i)
+	{
+		const botlib_contract_export_t *entry = &catalogue->exports[i];
+		if (entry->name != NULL && strcmp(entry->name, name) == 0)
+		{
+			return entry;
+		}
+	}
 
-    return NULL;
+	const char *debug_env = getenv("BOTLIB_CONTRACT_DEBUG_EXPORTS");
+	if (debug_env != NULL)
+	{
+		fprintf(stderr,
+		        "BotlibContract_FindExport: missing '%s' (have %zu exports)\n",
+		        name,
+		        catalogue->export_count);
+		for (size_t i = 0; i < catalogue->export_count; ++i)
+		{
+			const botlib_contract_export_t *entry = &catalogue->exports[i];
+			fprintf(stderr,
+			        "  export[%zu] = '%s'\n",
+			        i,
+			        entry->name != NULL ? entry->name : "(null)");
+		}
+	}
+
+	return NULL;
 }
 
 const botlib_contract_scenario_t *BotlibContract_FindScenario(const botlib_contract_export_t *entry, const char *scenario_name)

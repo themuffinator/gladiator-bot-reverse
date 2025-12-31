@@ -1,0 +1,26 @@
+parity_asset_verification 0 0
+botlib_parity_bot_interface 0 0
+botlib_parity_bot_move 0 0
+botlib_parity_precompiler_lexer 0 0
+botlib_parity_aas_debug 0 0
+botlib_parity_bridge 0 0
+botlib_parity_update_translator 0 0
+be_ai_parity_matrix 1 0.0663574
+headless_quake2_parity 0 0
+simple_test 0 0
+allocate_module_test 0 0
+assert_macro_test 0 0
+assert_module_test 0 0
+bot_chat 0 0
+ai_character 0 0
+ai_dm 0 0
+ai_move 0 0
+ea_tests 0 0
+aas_map 0 0
+bot_common 0 0
+bspc_filesystem 0 0
+bspc_cli_modes 0 0
+bspc_map_parser 0 0
+bspc_legacy 0 0
+bspc_world_loader 0 0
+---

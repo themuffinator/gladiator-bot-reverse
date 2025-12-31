@@ -317,3 +317,23 @@ void Characteristic_String(int handle, int index, char *buffer, int buffer_size)
     snprintf(buffer, (size_t)buffer_size, "%s", value);
 }
 
+/*
+=============
+BotShutdownCharacters
+=============
+*/
+void BotShutdownCharacters(void)
+{
+	for (int handle = 1; handle < BOT_CHARACTER_MAX_HANDLES; ++handle)
+	{
+		bot_character_cache_entry_t *entry = &g_bot_character_cache[handle];
+		if (entry->profile == NULL)
+		{
+			continue;
+		}
+
+		AI_FreeCharacter(entry->profile);
+		memset(entry, 0, sizeof(*entry));
+	}
+}
+

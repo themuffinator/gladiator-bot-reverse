@@ -68,6 +68,7 @@ typedef struct botinterface_entity_snapshot_s
 static botinterface_map_cache_t g_botInterfaceMapCache;
 static botinterface_entity_snapshot_t g_botInterfaceEntityCache[BOT_INTERFACE_MAX_ENTITIES];
 static float g_botInterfaceFrameTime = 0.0f;
+static float g_botInterfaceItemUpdateTime = -1.0f;
 static unsigned int g_botInterfaceFrameNumber = 0;
 static bool g_botInterfaceDebugDrawEnabled = false;
 
@@ -97,6 +98,11 @@ static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
     info->has_line_of_sight = false;
 }
 
+/*
+=============
+BotAI_MaxTrackedClients
+=============
+*/
 static int BotAI_MaxTrackedClients(void)
 {
     libvar_t *maxclients = Bridge_MaxClients();
@@ -1690,6 +1696,7 @@ static void BotInterface_InitialiseImportTable(bot_import_t *imports)
 {
 	g_botImport = imports;
 
+<<<<<<< Updated upstream
 	memset(&g_botlibImportTable, 0, sizeof(g_botlibImportTable));
 	g_botlibImportTable.Print = BotInterface_PrintShim;
 	g_botlibImportTable.DPrint = BotInterface_DPrintShim;
@@ -1699,6 +1706,18 @@ static void BotInterface_InitialiseImportTable(bot_import_t *imports)
 	g_botlibImportTable.RemoveCommand = NULL;
 	g_botlibImportTable.CmdArgc = NULL;
 	g_botlibImportTable.CmdArgv = NULL;
+=======
+    memset(&g_botlibImportTable, 0, sizeof(g_botlibImportTable));
+    g_botlibImportTable.Print = BotInterface_PrintShim;
+    g_botlibImportTable.BotLibVarGet = BotInterface_BotLibVarGetShim;
+    g_botlibImportTable.BotLibVarSet = NULL;
+	g_botlibImportTable.AddCommand = BotInterface_AddCommandWrapper;
+	g_botlibImportTable.RemoveCommand = BotInterface_RemoveCommandWrapper;
+	g_botlibImportTable.CmdArgc = BotInterface_CmdArgcWrapper;
+	g_botlibImportTable.CmdArgv = BotInterface_CmdArgvWrapper;
+
+    BotInterface_SetImportTable(&g_botlibImportTable);
+>>>>>>> Stashed changes
 }
 
 static void BotInterface_PrintBanner(int priority, const char *message)
@@ -1736,26 +1755,59 @@ static void BotInterface_Printf(int priority, const char *fmt, ...)
     g_botImport->Print(priority, "%s", buffer);
 }
 
+/*
+=============
+BotInterface_EnsureLibraryReady
+=============
+*/
 static bool BotInterface_EnsureLibraryReady(const char *function_name)
 {
-    if (g_botImport == NULL)
-    {
-        return false;
-    }
+	if (g_botImport == NULL)
+	{
+		return false;
+	}
 
-    if (!BotLibraryInitialized())
-    {
-        if (function_name != NULL)
-        {
-            BotInterface_Printf(PRT_ERROR,
-                                 "[bot_interface] %s: library not initialised\\n",
-                                 function_name);
-        }
-        return false;
-    }
+	if (!BotLibraryInitialized())
+	{
+		if (function_name != NULL)
+		{
+			BotInterface_Printf(PRT_ERROR,
+																"%s: bot library used before being setup\n",
+																function_name);
+		}
+		return false;
+	}
 
-    return true;
+	return true;
 }
+
+/*
+=============
+BotInterface_EnsureLibraryReadyLegacy
+=============
+*/
+static bool BotInterface_EnsureLibraryReadyLegacy(const char *function_name)
+{
+	if (g_botImport == NULL)
+	{
+		return false;
+	}
+
+	if (!BotLibraryInitialized())
+	{
+		if (function_name != NULL)
+		{
+			BotInterface_Printf(PRT_ERROR,
+																"[bot_interface] %s: library not initialised\n",
+																function_name);
+		}
+		return false;
+	}
+
+	return true;
+}
+
+
 
 static bot_chatstate_t *BotInterface_EnsureConsoleChatState(void)
 {
@@ -1942,6 +1994,11 @@ static int BotDefineWrapper(char *string)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotLoadMap
+=============
+*/
 static int BotLoadMap(char *mapname,
                       int modelindexes,
                       char *modelindex[],
@@ -1950,16 +2007,10 @@ static int BotLoadMap(char *mapname,
                       int imageindexes,
                       char *imageindex[])
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotLoadMap: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotLoadMap"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     if (mapname == NULL || *mapname == '\0')
     {
@@ -2006,6 +2057,10 @@ static int BotLoadMap(char *mapname,
                              mapname);
         return BLERR_INVALIDIMPORT;
     }
+
+	BotGoal_SetMapModels((const char **)g_botInterfaceMapCache.models.entries,
+	                     (int)g_botInterfaceMapCache.models.count);
+	BotInitLevelItems();
 
     TranslateEntity_SetWorldLoaded(qtrue);
     TranslateEntity_SetCurrentTime(0.0f);
@@ -2161,7 +2216,7 @@ Shuts down a bot client slot and clears the bridge cache.
 */
 static int BotShutdownClient(int client)
 {
-	if (!BotInterface_EnsureLibraryReady("BotShutdownClient"))
+	if (!BotInterface_EnsureLibraryReadyLegacy("BotShutdownClient"))
 	{
 		return BLERR_LIBRARYNOTSETUP;
 	}
@@ -2195,7 +2250,11 @@ Migrates an active bot client to a new slot and preserves bridge state.
 */
 static int BotMoveClient(int oldclnum, int newclnum)
 {
+<<<<<<< Updated upstream
 	if (g_botImport == NULL)
+=======
+	if (!BotInterface_EnsureLibraryReadyLegacy("BotMoveClient"))
+>>>>>>> Stashed changes
 	{
 		return BLERR_LIBRARYNOTSETUP;
 	}
@@ -2267,7 +2326,7 @@ Provides the stored client presentation state for an active bot.
 */
 static int BotClientSettings(int client, bot_clientsettings_t *settings)
 {
-	if (!BotInterface_EnsureLibraryReady("BotClientSettings"))
+	if (!BotInterface_EnsureLibraryReadyLegacy("BotClientSettings"))
 	{
 		return BLERR_LIBRARYNOTSETUP;
 	}
@@ -2299,7 +2358,7 @@ Returns the original bot setup configuration for an active client.
 */
 static int BotSettings(int client, bot_settings_t *settings)
 {
-	if (!BotInterface_EnsureLibraryReady("BotSettings"))
+	if (!BotInterface_EnsureLibraryReadyLegacy("BotSettings"))
 	{
 		return BLERR_LIBRARYNOTSETUP;
 	}
@@ -2322,20 +2381,20 @@ static int BotSettings(int client, bot_settings_t *settings)
 	return BLERR_NOERROR;
 }
 
+/*
+=============
+BotStartFrame
+=============
+*/
 static int BotStartFrame(float time)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotStartFrame: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotStartFrame"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     BotInterface_BeginFrame(time);
+	BotGoal_SetCurrentTime(time);
     AAS_FrameSynchronise(time);
     AAS_UnlinkInvalidEntities();
     AAS_InvalidateEntities();
@@ -2348,18 +2407,17 @@ static int BotStartFrame(float time)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotUpdateClient
+=============
+*/
 static int BotUpdateClient(int client, bot_updateclient_t *buc)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotUpdateClient: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotUpdateClient"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     bot_client_state_t *state = BotState_Get(client);
     if (state == NULL || !state->active)
@@ -2367,6 +2425,13 @@ static int BotUpdateClient(int client, bot_updateclient_t *buc)
         BotInterface_Printf(PRT_WARNING, "[bot_interface] BotUpdateClient: client %d inactive\n", client);
         return BLERR_AIUPDATEINACTIVECLIENT;
     }
+
+	if (g_botInterfaceItemUpdateTime != g_botInterfaceFrameTime)
+	{
+		BotGoal_SetCurrentTime(g_botInterfaceFrameTime);
+		BotUpdateEntityItems();
+		g_botInterfaceItemUpdateTime = g_botInterfaceFrameTime;
+	}
 
     int status = Bridge_UpdateClient(client, buc);
     if (status != BLERR_NOERROR)
@@ -2422,18 +2487,17 @@ static int BotUpdateClient(int client, bot_updateclient_t *buc)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotUpdateEntity
+=============
+*/
 static int BotUpdateEntity(int ent, bot_updateentity_t *bue)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotUpdateEntity: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotUpdateEntity"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     if (bue == NULL)
     {
@@ -2468,6 +2532,11 @@ static int BotUpdateEntity(int ent, bot_updateentity_t *bue)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotAddSound
+=============
+*/
 static int BotAddSound(vec3_t origin,
                        int ent,
                        int channel,
@@ -2476,16 +2545,10 @@ static int BotAddSound(vec3_t origin,
                        float attenuation,
                        float timeofs)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotAddSound: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotAddSound"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     if (soundindex < 0 || (size_t)soundindex >= g_botInterfaceMapCache.sounds.count)
     {
@@ -2500,6 +2563,11 @@ static int BotAddSound(vec3_t origin,
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotAddPointLight
+=============
+*/
 static int BotAddPointLight(vec3_t origin,
                             int ent,
                             float radius,
@@ -2509,16 +2577,10 @@ static int BotAddPointLight(vec3_t origin,
                             float time,
                             float decay)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotAddPointLight: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotAddPointLight"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     BotInterface_EnqueuePointLight(origin, ent, radius, r, g, b, time, decay);
     return BLERR_NOERROR;
@@ -2628,18 +2690,17 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotAI
+=============
+*/
 static int BotAI(int client, float thinktime)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotAI: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotAI"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     bot_client_state_t *state = BotState_Get(client);
     if (state == NULL || !state->active)
@@ -2651,18 +2712,17 @@ static int BotAI(int client, float thinktime)
     return BotAI_Think(state, thinktime);
 }
 
+/*
+=============
+BotConsoleMessage
+=============
+*/
 static int BotConsoleMessage(int client, int type, char *message)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotConsoleMessage: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotConsoleMessage"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     bot_client_state_t *state = BotState_Get(client);
     if (state == NULL || !state->active)
@@ -2687,18 +2747,17 @@ static int BotConsoleMessage(int client, int type, char *message)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotInterface_Test
+=============
+*/
 static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
-
-    if (!BotLibraryInitialized())
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] Test: library not initialised\n");
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("Test"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
     if (parm1 == NULL || *parm1 == '\0')
     {

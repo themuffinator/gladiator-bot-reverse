@@ -62,37 +62,46 @@ static bool Q2Bridge_ValidateClientNumber(const char *context, int client)
     return true;
 }
 
+/*
+=============
+Q2Bridge_FormatString
+=============
+*/
 static char *Q2Bridge_FormatString(const char *fmt, va_list args)
 {
-    if (fmt == NULL)
-    {
-        return NULL;
-    }
+	if (fmt == NULL)
+	{
+		return NULL;
+	}
 
-    va_list args_copy;
-    va_copy(args_copy, args);
-    int required = vsnprintf(NULL, 0, fmt, args_copy);
-    va_end(args_copy);
-    if (required < 0)
-    {
-        return NULL;
-    }
+	va_list args_copy;
+	va_copy(args_copy, args);
+#if defined(_WIN32)
+	int required = _vscprintf(fmt, args_copy);
+#else
+	int required = vsnprintf(NULL, 0, fmt, args_copy);
+#endif
+	va_end(args_copy);
+	if (required < 0)
+	{
+		return NULL;
+	}
 
-    size_t length = (size_t)required + 1U;
-    char *buffer = (char *)malloc(length);
-    if (buffer == NULL)
-    {
-        return NULL;
-    }
+	size_t length = (size_t)required + 1U;
+	char *buffer = (char *)malloc(length);
+	if (buffer == NULL)
+	{
+		return NULL;
+	}
 
-    int written = vsnprintf(buffer, length, fmt, args);
-    if (written < 0)
-    {
-        free(buffer);
-        return NULL;
-    }
+	int written = vsnprintf(buffer, length, fmt, args);
+	if (written < 0)
+	{
+		free(buffer);
+		return NULL;
+	}
 
-    return buffer;
+	return buffer;
 }
 
 static void Q2Bridge_OutputFallback(int type, const char *message)

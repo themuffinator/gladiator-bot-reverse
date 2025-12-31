@@ -242,83 +242,104 @@ void PS_FreeScript(pc_script_t *script)
 
 static int COM_Compress(char *data_p)
 {
-        if (data_p == NULL)
-        {
-                return 0;
-        }
+	if (data_p == NULL)
+	{
+		return 0;
+	}
 
-        char *in = data_p;
-        char *out = data_p;
-        qboolean newline = qfalse;
-        qboolean whitespace = qfalse;
+	char *in = data_p;
+	char *out = data_p;
+	qboolean whitespace = qfalse;
 
-        while (*in != '\0')
-        {
-                int c = *in;
-                if (c == '/' && in[1] == '/')
-                {
-                        while (*in != '\0' && *in != '\n')
-                        {
-                                in++;
-                        }
-                }
-                else if (c == '/' && in[1] == '*')
-                {
-                        in += 2;
-                        while (*in != '\0' && !(*in == '*' && in[1] == '/'))
-                        {
-                                in++;
-                        }
-                        if (*in == '*' && in[1] == '/')
-                        {
-                                in += 2;
-                        }
-                }
-                else if (c == '\n' || c == '\r')
-                {
-                        newline = qtrue;
-                        in++;
-                }
-                else if (c == ' ' || c == '\t')
-                {
-                        whitespace = qtrue;
-                        in++;
-                }
-                else
-                {
-                        if (newline)
-                        {
-                                *out++ = '\n';
-                                newline = qfalse;
-                                whitespace = qfalse;
-                        }
-                        else if (whitespace)
-                        {
-                                *out++ = ' ';
-                                whitespace = qfalse;
-                        }
+	while (*in != '\0')
+	{
+		int c = *in;
+		if (c == '/' && in[1] == '/')
+		{
+			in += 2;
+			while (*in != '\0' && *in != '\n' && *in != '\r')
+			{
+				in++;
+			}
+			continue;
+		}
+		else if (c == '/' && in[1] == '*')
+		{
+			in += 2;
+			while (*in != '\0' && !(*in == '*' && in[1] == '/'))
+			{
+				if (*in == '\n' || *in == '\r')
+				{
+					if (*in == '\r' && in[1] == '\n')
+					{
+						in++;
+					}
+					*out++ = '\n';
+					whitespace = qfalse;
+				}
+				in++;
+			}
+			if (*in == '*' && in[1] == '/')
+			{
+				in += 2;
+			}
+			continue;
+		}
+		else if (c == '\n' || c == '\r')
+		{
+			if (c == '\r' && in[1] == '\n')
+			{
+				in++;
+			}
+			*out++ = '\n';
+			whitespace = qfalse;
+			in++;
+			continue;
+		}
+		else if (c == ' ' || c == '\t')
+		{
+			whitespace = qtrue;
+			in++;
+			continue;
+		}
 
-                        if (c == '"')
-                        {
-                                *out++ = *in++;
-                                while (*in != '\0' && *in != '"')
-                                {
-                                        *out++ = *in++;
-                                }
-                                if (*in == '"')
-                                {
-                                        *out++ = *in++;
-                                }
-                        }
-                        else
-                        {
-                                *out++ = *in++;
-                        }
-                }
-        }
+		if (whitespace)
+		{
+			*out++ = ' ';
+			whitespace = qfalse;
+		}
 
-        *out = '\0';
-        return (int)(out - data_p);
+		if (c == '"')
+		{
+			*out++ = *in++;
+			while (*in != '\0' && *in != '"')
+			{
+				if (*in == '\n' || *in == '\r')
+				{
+					if (*in == '\r' && in[1] == '\n')
+					{
+						in++;
+					}
+					*out++ = '\n';
+					whitespace = qfalse;
+					in++;
+					continue;
+				}
+				*out++ = *in++;
+			}
+			if (*in == '"')
+			{
+				*out++ = *in++;
+			}
+		}
+		else
+		{
+			*out++ = *in++;
+		}
+	}
+
+	*out = '\0';
+	return (int)(out - data_p);
 }
 
 
@@ -756,8 +777,15 @@ int PS_ReadString(pc_script_t *script, pc_token_t *token, int quote)
 	token->string[len++] = quote;
 	//end string with a zero
 	token->string[len] = '\0';
-	//the sub type is the length of the string
-	token->subtype = len;
+	//the sub type is the length of the string without quotes
+	if (token->type == TT_STRING && len >= 2)
+	{
+		token->subtype = len - 2;
+	}
+	else
+	{
+		token->subtype = len;
+	}
 	return 1;
 } //end of the function PS_ReadString
 //============================================================================

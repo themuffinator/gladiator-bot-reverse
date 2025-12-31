@@ -95,35 +95,40 @@ void BotMove_MoverCatalogueReset(void)
     s_entry_capacity = 0U;
 }
 
+/*
+=============
+BotMove_MoverCatalogueInsert
+=============
+*/
 bool BotMove_MoverCatalogueInsert(const bot_mover_catalogue_entry_t *entry)
 {
-    BotMove_MoverCatalogueEnsureInit();
+	BotMove_MoverCatalogueEnsureInit();
 
-    if (entry == NULL)
-    {
-        return false;
-    }
+	if (entry == NULL)
+	{
+		return false;
+	}
 
-    bot_mover_catalogue_entry_t *existing =
-        BotMove_MoverCatalogueFindMutable(entry->modelnum);
-    if (existing != NULL)
-    {
-        *existing = *entry;
-        existing->modelindex = -1;
-        existing->ready = false;
-        return true;
-    }
+	bot_mover_catalogue_entry_t *existing =
+		BotMove_MoverCatalogueFindMutable(entry->modelnum);
+	if (existing != NULL)
+	{
+		*existing = *entry;
+		existing->modelindex = -1;
+		existing->ready = true;
+		return true;
+	}
 
-    if (!BotMove_MoverCatalogueGrow(s_entry_count + 1U))
-    {
-        return false;
-    }
+	if (!BotMove_MoverCatalogueGrow(s_entry_count + 1U))
+	{
+		return false;
+	}
 
-    s_entries[s_entry_count] = *entry;
-    s_entries[s_entry_count].modelindex = -1;
-    s_entries[s_entry_count].ready = false;
-    ++s_entry_count;
-    return true;
+	s_entries[s_entry_count] = *entry;
+	s_entries[s_entry_count].modelindex = -1;
+	s_entries[s_entry_count].ready = true;
+	++s_entry_count;
+	return true;
 }
 
 bool BotMove_MoverCatalogueFinalize(const botinterface_asset_list_t *models)

@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/CMakeFiles/cmocka-populate"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/CMakeFiles/cmocka-populate.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/CMakeFiles/cmocka-populate-complete.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-build.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-configure.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-download.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-install.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-mkdir.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-patch.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-test.rule"
+		},
+		{
+			"file" : "C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"cmocka-populate"
+		],
+		"name" : "cmocka-populate"
+	}
+}
