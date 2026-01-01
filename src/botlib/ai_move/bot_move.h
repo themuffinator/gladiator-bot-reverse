@@ -171,6 +171,7 @@ void BotMove_ResetAvoidReach(int movestate);
 void BotResetLastAvoidReach(int movestate);
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 int BotReachabilityArea(const vec3_t origin, int client);
 int BotMovementViewTarget(int movestate,
 						  const bot_goal_t *goal,
@@ -185,11 +186,16 @@ int BotPredictVisiblePosition(const vec3_t origin,
 =======
 =======
 >>>>>>> Stashed changes
+=======
+>>>>>>> Stashed changes
 int BotReachabilityArea(const vec3_t origin, int testground);
 int BotMovementViewTarget(int movestate, const bot_goal_t *goal, int travelflags, float lookahead, vec3_t target);
 int BotPredictVisiblePosition(vec3_t origin, int areanum, const bot_goal_t *goal, int travelflags, vec3_t target);
 void BotAddAvoidSpot(int movestate, vec3_t origin, float radius, int type);
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes

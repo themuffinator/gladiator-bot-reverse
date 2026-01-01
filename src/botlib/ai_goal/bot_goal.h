@@ -154,6 +154,20 @@ void BotMutateGoalFuzzyLogic(int goalstate, float range);
 int BotSetupGoalAI(void);
 void BotShutdownGoalAI(void);
 
+int BotItemGoalInVisButNotVisible(int viewer, vec3_t eye, vec3_t viewangles, bot_goal_t *goal);
+int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal);
+int BotGetNextCampSpotGoal(int num, bot_goal_t *goal);
+int BotGetMapLocationGoal(char *name, bot_goal_t *goal);
+
+void BotInitLevelItems(void);
+void BotUpdateEntityItems(void);
+void BotInterbreedGoalFuzzyLogic(int parent1, int parent2, int child);
+void BotSaveGoalFuzzyLogic(int goalstate, char *filename);
+void BotMutateGoalFuzzyLogic(int goalstate, float range);
+
+int BotSetupGoalAI(void);
+void BotShutdownGoalAI(void);
+
 void BotGoal_SetCurrentTime(float now);
 float BotGoal_CurrentTime(void);
 

@@ -1737,10 +1737,13 @@ void BotMove_ResetAvoidReach(int movestate)
 =============
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 BotResetLastAvoidReach
 
 Clear the most recent avoid reach entry.
 =======
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 BotMove_AddToTarget
@@ -1810,6 +1813,9 @@ static int BotMove_GetReachabilityFromArea(const bot_movestate_t *ms,
 =============
 BotResetLastAvoidReach
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -1817,6 +1823,7 @@ BotResetLastAvoidReach
 */
 void BotResetLastAvoidReach(int movestate)
 {
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 	bot_movestate_t *ms;
@@ -1828,11 +1835,15 @@ void BotResetLastAvoidReach(int movestate)
 =======
 	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
 >>>>>>> Stashed changes
+=======
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+>>>>>>> Stashed changes
 	if (ms == NULL)
 	{
 		return;
 	}
 
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 	if (ms->lastavoidreach > 0)
@@ -1857,6 +1868,8 @@ void BotResetLastAvoidReach(int movestate)
 =======
 =======
 >>>>>>> Stashed changes
+=======
+>>>>>>> Stashed changes
 	int latest = 0;
 	float latesttime = 0.0f;
 	for (int i = 0; i < MAX_AVOIDREACH; ++i)
@@ -1877,6 +1890,9 @@ void BotResetLastAvoidReach(int movestate)
 		}
 	}
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -1885,6 +1901,7 @@ void BotResetLastAvoidReach(int movestate)
 /*
 =============
 BotReachabilityArea
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 
@@ -1960,6 +1977,8 @@ int BotReachabilityArea(const vec3_t origin, int client)
 =======
 =======
 >>>>>>> Stashed changes
+=======
+>>>>>>> Stashed changes
 =============
 */
 int BotReachabilityArea(const vec3_t origin, int testground)
@@ -1988,6 +2007,9 @@ int BotReachabilityArea(const vec3_t origin, int testground)
 
 	return areanum;
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -1998,8 +2020,11 @@ int BotReachabilityArea(const vec3_t origin, int testground)
 BotMovementViewTarget
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 
 Compute a lookahead target point along the current movement path.
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 =======
@@ -2012,6 +2037,7 @@ int BotMovementViewTarget(int movestate,
 						  float lookahead,
 						  vec3_t target)
 {
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 	aas_reachability_t reach;
@@ -2050,6 +2076,8 @@ int BotMovementViewTarget(int movestate,
 =======
 =======
 >>>>>>> Stashed changes
+=======
+>>>>>>> Stashed changes
 	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
 	if (ms == NULL || goal == NULL || target == NULL)
 	{
@@ -2071,6 +2099,9 @@ int BotMovementViewTarget(int movestate,
 	{
 		aas_reachability_t reach;
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -2086,7 +2117,11 @@ int BotMovementViewTarget(int movestate,
 
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 		traveltype = reach.traveltype & TRAVELTYPE_MASK;
+=======
+		int traveltype = reach.traveltype & TRAVELTYPE_MASK;
+>>>>>>> Stashed changes
 =======
 		int traveltype = reach.traveltype & TRAVELTYPE_MASK;
 >>>>>>> Stashed changes
@@ -2112,12 +2147,17 @@ int BotMovementViewTarget(int movestate,
 
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 		{
 			bot_movestate_t temp = *ms;
 			temp.areanum = reach.areanum;
 			reachnum = BotGetReachabilityToGoal(&temp, goal, travelflags, &next_reach, NULL);
 		}
 
+=======
+		aas_reachability_t next_reach;
+		reachnum = BotMove_GetReachabilityFromArea(ms, reach.areanum, goal, travelflags, &next_reach);
+>>>>>>> Stashed changes
 =======
 		aas_reachability_t next_reach;
 		reachnum = BotMove_GetReachabilityFromArea(ms, reach.areanum, goal, travelflags, &next_reach);
@@ -2140,6 +2180,7 @@ int BotMovementViewTarget(int movestate,
 
 /*
 =============
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 BotMove_Visible
@@ -2181,11 +2222,16 @@ int BotPredictVisiblePosition(const vec3_t origin,
 =======
 =======
 >>>>>>> Stashed changes
+=======
+>>>>>>> Stashed changes
 BotPredictVisiblePosition
 =============
 */
 int BotPredictVisiblePosition(vec3_t origin,
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -2196,7 +2242,11 @@ int BotPredictVisiblePosition(vec3_t origin,
 {
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 	if (origin == NULL || target == NULL || goal == NULL)
+=======
+	if (goal == NULL || target == NULL)
+>>>>>>> Stashed changes
 =======
 	if (goal == NULL || target == NULL)
 >>>>>>> Stashed changes
@@ -2212,6 +2262,7 @@ int BotPredictVisiblePosition(vec3_t origin,
 		return 0;
 	}
 
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 	bot_movestate_t temp;
@@ -2233,6 +2284,8 @@ int BotPredictVisiblePosition(vec3_t origin,
 =======
 =======
 >>>>>>> Stashed changes
+=======
+>>>>>>> Stashed changes
 	(void)origin;
 
 	bot_movestate_t temp;
@@ -2242,6 +2295,9 @@ int BotPredictVisiblePosition(vec3_t origin,
 		aas_reachability_t reach;
 		int reachnum = BotMove_GetReachabilityFromArea(&temp, areanum, goal, travelflags, &reach);
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -2271,7 +2327,10 @@ int BotPredictVisiblePosition(vec3_t origin,
 		areanum = reach.areanum;
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 		VectorCopy(reach.end, end);
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 =======
@@ -2282,7 +2341,10 @@ int BotPredictVisiblePosition(vec3_t origin,
 }
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 =======
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 
@@ -2317,6 +2379,9 @@ void BotAddAvoidSpot(int movestate, vec3_t origin, float radius, int type)
 }
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
