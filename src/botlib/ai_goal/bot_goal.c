@@ -18,9 +18,12 @@
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 =======
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 =======
@@ -31,6 +34,9 @@
 #include "q2bridge/botlib.h"
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -538,6 +544,7 @@ int BotLoadItemWeights(int handle, const char *filename)
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 		BotLib_Print(PRT_ERROR, "BotLoadItemWeights: invalid goal state %d\n", handle);
 		return 0;
 	}
@@ -658,12 +665,39 @@ int BotLoadItemWeights(int handle, const char *filename)
 	}
 
 >>>>>>> Stashed changes
+=======
+		return BLERR_CANNOTLOADITEMWEIGHTS;
+	}
+
+	bot_weight_config_t *config = ReadWeightConfig(filename);
+	if (config == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "couldn't load weights\n");
+		return BLERR_CANNOTLOADITEMWEIGHTS;
+	}
+
+	if (g_itemconfig == NULL)
+	{
+		return BLERR_CANNOTLOADITEMWEIGHTS;
+	}
+
+	int *index = BotGoal_BuildItemWeightIndex(config);
+	if (index == NULL)
+	{
+		FreeWeightConfig(config);
+		return BLERR_CANNOTLOADITEMWEIGHTS;
+	}
+
+>>>>>>> Stashed changes
 	gs->itemweightconfig = config;
 	gs->itemweightindex = index;
 	gs->itemweightcount = g_itemconfig->numiteminfo;
 	return BLERR_NOERROR;
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
