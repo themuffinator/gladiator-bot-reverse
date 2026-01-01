@@ -242,6 +242,7 @@ Botlib_ShutdownAISubsystem
 static void Botlib_ShutdownAISubsystem(void)
 {
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 	if (g_weapon_library != NULL) {
 		AI_UnloadWeaponLibrary(g_weapon_library);
 		g_weapon_library = NULL;
@@ -261,6 +262,17 @@ static void Botlib_ShutdownAISubsystem(void)
 	BotShutdownCharacters();
 >>>>>>> Stashed changes
 
+=======
+	if (!g_subsystem_state.ai_initialised) {
+		return;
+	}
+
+	BotShutdownGoalAI();
+	BotShutdownWeaponAI();
+	BotShutdownWeights();
+	BotShutdownCharacters();
+
+>>>>>>> Stashed changes
 	g_subsystem_state.ai_initialised = false;
 }
 
@@ -307,6 +319,7 @@ const botlib_import_table_t *BotInterface_GetImportTable(void)
 /*
 =============
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 BotInterface_SetImportCapture
 
 Registers optional capture hooks for shimmed import callbacks.
@@ -329,6 +342,11 @@ const botlib_import_capture_t *BotInterface_GetImportCapture(void)
 	return g_import_capture;
 }
 
+=======
+BotSetupLibrary
+=============
+*/
+>>>>>>> Stashed changes
 =======
 BotSetupLibrary
 =============

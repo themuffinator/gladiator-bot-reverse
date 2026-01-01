@@ -2251,7 +2251,11 @@ Migrates an active bot client to a new slot and preserves bridge state.
 static int BotMoveClient(int oldclnum, int newclnum)
 {
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 	if (g_botImport == NULL)
+=======
+	if (!BotInterface_EnsureLibraryReadyLegacy("BotMoveClient"))
+>>>>>>> Stashed changes
 =======
 	if (!BotInterface_EnsureLibraryReadyLegacy("BotMoveClient"))
 >>>>>>> Stashed changes

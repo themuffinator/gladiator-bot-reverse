@@ -472,3 +472,20 @@ void BotShutdownWeights(void)
 		g_weight_handles[i] = NULL;
 	}
 }
+
+/*
+=============
+BotShutdownWeights
+=============
+*/
+void BotShutdownWeights(void)
+{
+	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
+		if (g_weight_handles[i] == NULL) {
+			continue;
+		}
+
+		BotWeight_DestroyHandle(g_weight_handles[i]);
+		g_weight_handles[i] = NULL;
+	}
+}
