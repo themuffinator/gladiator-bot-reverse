@@ -30,6 +30,9 @@ find_package(Python3 COMPONENTS Interpreter)
 
 if(BOTLIB_PARITY_FRAMEWORK STREQUAL "cmocka")
     include(FetchContent)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+    set(WITH_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
+    set(UNIT_TESTING OFF CACHE BOOL "Build with unit testing" FORCE)
     # The original cmocka repository lives on git.cryptomilk.org, but that host
     # frequently blocks automated fetches that originate from CI environments.
     # Mirror the release tag from GitLab so contributors behind corporate
@@ -64,7 +67,8 @@ execute_process(COMMAND cmake -E create_symlink
         add_library(cmocka INTERFACE)
         target_include_directories(cmocka INTERFACE ${cmocka_SOURCE_DIR}/include)
     endif()
-    set(BOTLIB_PARITY_TEST_LIBRARIES cmocka::cmocka cmocka)
+    add_compile_definitions(_USE_MATH_DEFINES)
+    set(BOTLIB_PARITY_TEST_LIBRARIES cmocka::cmocka)
 elseif(BOTLIB_PARITY_FRAMEWORK STREQUAL "none")
     set(BOTLIB_PARITY_TEST_LIBRARIES "")
 else()

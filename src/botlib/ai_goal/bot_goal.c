@@ -1,11 +1,12 @@
 #include "bot_goal.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <float.h>
+#include <limits.h>
 #include <math.h>
-#include <stddef.h>
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -15,40 +16,24 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 #include "botlib/interface/botlib_interface.h"
-#include "q2bridge/bridge.h"
-=======
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-#include "botlib/common/l_precomp.h"
-#include "botlib/common/l_struct.h"
+#include "botlib/precomp/l_script.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/botlib.h"
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
 
 #define BOT_GOAL_MAX_LEVELITEMS 512
+#define BOT_GOAL_MAX_MAPLOCATIONS 256
+#define BOT_GOAL_MAX_CAMPSPOTS 256
+#define BOT_GOAL_MAX_ITEMDEFS 512
 #define BOT_GOAL_TRAVELTIME_SCALE 0.01f
 #define BOT_GOAL_ASSET_MAX_PATH 512
+#define BOT_GOAL_DEFAULT_RESPAWN_TIME 30.0f
+#define BOT_GOAL_DEFAULT_ITEM_HALF_EXTENT 15.0f
 
-void StripDoubleQuotes(char *string);
-void SourceError(pc_source_t *source, char *str, ...);
+#define BOT_GOAL_ITEMFLAG_NOTFREE	(1 << 0)
+#define BOT_GOAL_ITEMFLAG_NOTTEAM	(1 << 1)
+#define BOT_GOAL_ITEMFLAG_NOTSINGLE	(1 << 2)
+#define BOT_GOAL_ITEMFLAG_NOTBOT	(1 << 3)
 
 static bot_goalstate_t *g_goalstates[MAX_CLIENTS + 1];
 
@@ -56,71 +41,91 @@ static float g_goal_current_time = 0.0f;
 
 typedef struct bot_levelitem_s
 {
-    bot_goal_t goal;
-    char classname[64];
-    float base_weight;
-    float respawntime;
-    float next_respawn_time;
-    float timeout;
-    int flags;
-    bool valid;
+	bot_goal_t goal;
+	char classname[64];
+	float base_weight;
+	float respawntime;
+	float next_respawn_time;
+	float timeout;
+	int flags;
+	bool valid;
 } bot_levelitem_t;
 
-typedef struct bot_iteminfo_s
+typedef struct bot_maplocation_s
 {
-	char name[MAX_STRINGFIELD];
-	char classname[MAX_STRINGFIELD];
-	char model[MAX_STRINGFIELD];
-	int modelindex;
-	int type;
-	int index;
-	float respawntime;
+	vec3_t origin;
+	int areanum;
+	char name[64];
+	bool valid;
+} bot_maplocation_t;
+
+typedef struct bot_campspot_s
+{
+	vec3_t origin;
+	int areanum;
+	char name[64];
+	float range;
+	float weight;
+	float wait;
+	float random;
+	bool valid;
+} bot_campspot_t;
+
+typedef struct bot_itemdef_s
+{
+	char classname[64];
+	char name[64];
 	vec3_t mins;
 	vec3_t maxs;
-	int number;
-} bot_iteminfo_t;
+	float respawntime;
+	bool valid;
+} bot_itemdef_t;
 
-typedef struct bot_itemconfig_s
+typedef struct bot_goal_parsed_entity_s
 {
-	int numiteminfo;
-	bot_iteminfo_t *iteminfo;
-} bot_itemconfig_t;
-
-#define BOT_ITEMINFO_OFS(x) ((int)(offsetof(bot_iteminfo_t, x)))
-
-static fielddef_t g_iteminfo_fields[] = {
-	{"name", BOT_ITEMINFO_OFS(name), FT_STRING},
-	{"model", BOT_ITEMINFO_OFS(model), FT_STRING},
-	{"modelindex", BOT_ITEMINFO_OFS(modelindex), FT_INT},
-	{"type", BOT_ITEMINFO_OFS(type), FT_INT},
-	{"index", BOT_ITEMINFO_OFS(index), FT_INT},
-	{"respawntime", BOT_ITEMINFO_OFS(respawntime), FT_FLOAT},
-	{"mins", BOT_ITEMINFO_OFS(mins), FT_FLOAT | FT_ARRAY, 3},
-	{"maxs", BOT_ITEMINFO_OFS(maxs), FT_FLOAT | FT_ARRAY, 3},
-	{NULL, 0, 0}
-};
-
-static structdef_t g_iteminfo_struct = {
-	sizeof(bot_iteminfo_t), g_iteminfo_fields
-};
+	char classname[64];
+	bool has_classname;
+	char message[64];
+	vec3_t origin;
+	bool has_origin;
+	int spawnflags;
+	bool has_spawnflags;
+	int notfree;
+	bool has_notfree;
+	int notteam;
+	bool has_notteam;
+	int notsingle;
+	bool has_notsingle;
+	int notbot;
+	bool has_notbot;
+	float range;
+	bool has_range;
+	float weight;
+	bool has_weight;
+	float wait;
+	bool has_wait;
+	float random;
+	bool has_random;
+} bot_goal_parsed_entity_t;
 
 static bot_levelitem_t g_levelitems[BOT_GOAL_MAX_LEVELITEMS];
 static int g_levelitem_count = 0;
-static int g_levelitem_limit = BOT_GOAL_MAX_LEVELITEMS;
-static int g_levelitem_static_count = 0;
+static int g_next_levelitem_number = 1;
 
-static const char **g_goal_map_models = NULL;
-static int g_goal_map_model_count = 0;
-
-static char g_iteminfo_names[BOT_GOAL_MAX_LEVELITEMS][MAX_STRINGFIELD];
+static char g_iteminfo_names[BOT_GOAL_MAX_LEVELITEMS][64];
 static int g_iteminfo_count = 0;
-static bot_itemconfig_t *g_itemconfig = NULL;
+
+static bot_maplocation_t g_maplocations[BOT_GOAL_MAX_MAPLOCATIONS];
+static int g_maplocation_count = 0;
+
+static bot_campspot_t g_campspots[BOT_GOAL_MAX_CAMPSPOTS];
+static int g_campspot_count = 0;
+
+static bot_itemdef_t g_itemdefs[BOT_GOAL_MAX_ITEMDEFS];
+static int g_itemdef_count = 0;
 
 static int BotGoal_PointAreaNum(const vec3_t origin);
 static bot_goalstate_t *BotGoalStateFromHandle(int handle);
-static bot_itemconfig_t *BotGoal_ParseItemConfig(const char *filename);
-static void BotGoal_StoreItemInfoNames(const bot_itemconfig_t *config);
-static int *BotGoal_BuildItemWeightIndex(const bot_weight_config_t *config);
 static bool BotGoal_EnsureWeightCapacity(bot_goalstate_t *gs);
 static float BotGoal_EvaluateItemWeight(const bot_goalstate_t *gs,
                                         const int *inventory,
@@ -129,16 +134,32 @@ static bool BotGoal_IsAvoided(const bot_goalstate_t *gs, int number);
 static bot_levelitem_t *BotGoal_FindLevelItem(int number);
 static int BotGoal_FindItemInfoIndex(const char *classname);
 static int BotGoal_RegisterItemInfo(const char *classname);
-static int BotGoal_FindItemInfoByModelIndex(int modelindex);
-static bool BotGoal_EntityIsStationary(const aas_entity_t *entity);
+static bool BotGoal_BuildWeightPath(const char *filename, char *buffer, size_t size);
+static void BotGoal_RebuildWeightIndices(bot_goalstate_t *gs);
+static float BotGoal_RandomScale(float range);
+static int BotGoal_StrIcmp(const char *lhs, const char *rhs);
+static bool BotGoal_LevelItemAllowed(const bot_levelitem_t *item);
+static bool BotGoal_ReadSignedFloat(pc_source_t *source, float *out);
+static bool BotGoal_ReadVector(pc_source_t *source, vec3_t out);
+static bool BotGoal_SkipValue(pc_source_t *source);
+static bot_itemdef_t *BotGoal_FindItemDef(const char *classname);
+static bot_itemdef_t *BotGoal_RegisterItemDef(const char *classname);
+static bool BotGoal_ParseItemInfoBlock(pc_source_t *source, bot_itemdef_t *itemdef);
+static void BotGoal_LoadItemDefs(void);
+static bool BotGoal_ParseFloatString(const char *value, float *out);
+static bool BotGoal_ParseIntString(const char *value, int *out);
+static bool BotGoal_ParseVectorString(const char *value, vec3_t out);
+static bool BotGoal_ParseQuotedToken(const char **cursor, const char *end, char **out_token);
+static void BotGoal_SkipMalformedEntity(const char **cursor, const char *end);
 static int32_t BotGoal_LittleLong(int32_t value);
-static bool BotGoal_StringEndsWithIgnoreCase(const char *value, const char *suffix);
-static bool BotGoal_BuildMapPath(char *buffer, size_t bufferSize, const char *mapname, const char *extension);
-static bool BotGoal_LoadEntityLump(char **data, size_t *length);
-static bool BotGoal_ParseVector(const char *value, vec3_t out);
-static bool BotGoal_ParseIntValue(const char *value, int *out);
-static bool BotGoal_DropToFloor(vec3_t origin, const vec3_t mins, const vec3_t maxs);
-static void BotGoal_ClearLevelItems(void);
+static bool BotGoal_BuildMapPath(char *buffer, size_t size, const char *mapname, const char *extension);
+static bool BotGoal_LoadEntityLump(char **out_data, size_t *out_length);
+static bool BotGoal_IsLikelyItemClassname(const char *classname);
+static void BotGoal_AddMapLocation(const bot_goal_parsed_entity_t *entity);
+static void BotGoal_AddCampSpot(const bot_goal_parsed_entity_t *entity);
+static void BotGoal_AddLevelItemFromEntity(const bot_goal_parsed_entity_t *entity);
+static void BotGoal_RegisterParsedEntity(const bot_goal_parsed_entity_t *entity);
+static void BotGoal_ParseEntityLump(const char *data, size_t length);
 
 void BotGoal_SetCurrentTime(float now)
 {
@@ -235,249 +256,25 @@ void BotResetGoalState(int handle)
     memset(gs->avoidreachtimes, 0, sizeof(gs->avoidreachtimes));
 }
 
-/*
-=============
-BotGoal_ParseItemConfig
-=============
-*/
-static bot_itemconfig_t *BotGoal_ParseItemConfig(const char *filename)
+static bool BotGoal_BuildWeightPath(const char *filename, char *buffer, size_t size)
 {
-	if (filename == NULL || filename[0] == '\0')
-	{
-		return NULL;
-	}
+    if (buffer == NULL || size == 0)
+    {
+        return false;
+    }
 
-	int max_iteminfo = (int)LibVarValue("max_iteminfo", "256");
-	if (max_iteminfo < 0)
-	{
-		BotLib_Print(PRT_ERROR, "max_iteminfo = %d\n", max_iteminfo);
-		max_iteminfo = 256;
-		LibVarSet("max_iteminfo", "256");
-	}
+    const char *requested = filename;
+    if (requested == NULL || requested[0] == '\0')
+    {
+        requested = LibVarString("itemconfig", "items.c");
+    }
 
-	char path[BOT_GOAL_ASSET_MAX_PATH];
-	if (!BotLib_ResolveAssetPath(filename, "itemconfig", path, sizeof(path)))
-	{
-		BotLib_Print(PRT_ERROR, "couldn't find %s\n", filename);
-		return NULL;
-	}
+    if (requested == NULL || requested[0] == '\0')
+    {
+        return false;
+    }
 
-	pc_source_t *source = PC_LoadSourceFile(path);
-	if (source == NULL)
-	{
-		BotLib_Print(PRT_ERROR, "counldn't load %s\n", path);
-		return NULL;
-	}
-
-	bot_itemconfig_t *config =
-		(bot_itemconfig_t *)GetClearedMemory(sizeof(bot_itemconfig_t)
-		                                     + (size_t)max_iteminfo * sizeof(bot_iteminfo_t));
-	if (config == NULL)
-	{
-		PC_FreeSource(source);
-		return NULL;
-	}
-
-	config->numiteminfo = 0;
-	config->iteminfo = (bot_iteminfo_t *)((char *)config + sizeof(bot_itemconfig_t));
-
-	pc_token_t token;
-	while (PC_ReadToken(source, &token))
-	{
-		if (strcmp(token.string, "iteminfo") != 0)
-		{
-			SourceError(source, "unknown definition %s\n", token.string);
-			PC_FreeSource(source);
-			FreeMemory(config);
-			return NULL;
-		}
-
-		if (config->numiteminfo >= max_iteminfo)
-		{
-			SourceError(source, "more than %d item info defined\n", max_iteminfo);
-			PC_FreeSource(source);
-			FreeMemory(config);
-			return NULL;
-		}
-
-		bot_iteminfo_t *info = &config->iteminfo[config->numiteminfo];
-		memset(info, 0, sizeof(*info));
-
-		if (!PC_ExpectTokenType(source, TT_STRING, 0, &token))
-		{
-			PC_FreeSource(source);
-			FreeMemory(config);
-			return NULL;
-		}
-
-		StripDoubleQuotes(token.string);
-		strncpy(info->classname, token.string, sizeof(info->classname) - 1);
-		info->classname[sizeof(info->classname) - 1] = '\0';
-
-		if (!ReadStructure(source, &g_iteminfo_struct, info))
-		{
-			PC_FreeSource(source);
-			FreeMemory(config);
-			return NULL;
-		}
-
-		info->number = config->numiteminfo;
-		config->numiteminfo++;
-	}
-
-	PC_FreeSource(source);
-
-	if (config->numiteminfo == 0)
-	{
-		BotLib_Print(PRT_WARNING, "no item info loaded\n");
-	}
-
-	BotLib_Print(PRT_MESSAGE, "loaded %s\n", path);
-	return config;
-}
-
-/*
-=============
-BotGoal_StoreItemInfoNames
-=============
-*/
-static void BotGoal_StoreItemInfoNames(const bot_itemconfig_t *config)
-{
-	g_iteminfo_count = 0;
-	if (config == NULL || config->numiteminfo <= 0)
-	{
-		return;
-	}
-
-	int limit = config->numiteminfo;
-	if (limit > BOT_GOAL_MAX_LEVELITEMS)
-	{
-		limit = BOT_GOAL_MAX_LEVELITEMS;
-	}
-
-	for (int i = 0; i < limit; ++i)
-	{
-		strncpy(g_iteminfo_names[i],
-		        config->iteminfo[i].classname,
-		        sizeof(g_iteminfo_names[i]) - 1);
-		g_iteminfo_names[i][sizeof(g_iteminfo_names[i]) - 1] = '\0';
-	}
-
-	g_iteminfo_count = limit;
-}
-
-/*
-=============
-BotGoal_LoadItemConfig
-=============
-*/
-int BotGoal_LoadItemConfig(void)
-{
-	const char *filename = LibVarString("itemconfig", "items.c");
-	bot_itemconfig_t *config = BotGoal_ParseItemConfig(filename);
-	if (config == NULL)
-	{
-		BotLib_Print(PRT_FATAL, "couldn't load item config\n");
-		return BLERR_CANNOTLOADITEMCONFIG;
-	}
-
-	if (g_itemconfig != NULL)
-	{
-		FreeMemory(g_itemconfig);
-	}
-
-	g_itemconfig = config;
-	BotGoal_StoreItemInfoNames(config);
-	return BLERR_NOERROR;
-}
-
-/*
-=============
-BotGoal_ShutdownItemConfig
-=============
-*/
-void BotGoal_ShutdownItemConfig(void)
-{
-	if (g_itemconfig != NULL)
-	{
-		FreeMemory(g_itemconfig);
-		g_itemconfig = NULL;
-	}
-
-	g_iteminfo_count = 0;
-}
-
-/*
-=============
-BotGoal_SetMapModels
-=============
-*/
-void BotGoal_SetMapModels(const char **models, int count)
-{
-	g_goal_map_models = models;
-	g_goal_map_model_count = (models != NULL && count > 0) ? count : 0;
-
-	if (g_itemconfig == NULL || g_itemconfig->numiteminfo <= 0)
-	{
-		return;
-	}
-
-	for (int i = 0; i < g_itemconfig->numiteminfo; ++i)
-	{
-		int modelindex = 0;
-		const char *model = g_itemconfig->iteminfo[i].model;
-
-		if (model != NULL && model[0] != '\0' && g_goal_map_models != NULL)
-		{
-			for (int j = 0; j < g_goal_map_model_count; ++j)
-			{
-				const char *entry = g_goal_map_models[j];
-				if (entry == NULL || entry[0] == '\0')
-				{
-					continue;
-				}
-				if (Q_stricmp(entry, model) == 0)
-				{
-					modelindex = j;
-					break;
-				}
-			}
-		}
-
-		g_itemconfig->iteminfo[i].modelindex = modelindex;
-	}
-}
-
-/*
-=============
-BotGoal_BuildItemWeightIndex
-=============
-*/
-static int *BotGoal_BuildItemWeightIndex(const bot_weight_config_t *config)
-{
-	if (config == NULL || g_itemconfig == NULL || g_itemconfig->numiteminfo <= 0)
-	{
-		return NULL;
-	}
-
-	int *index = (int *)GetClearedMemory(sizeof(int) * (size_t)g_itemconfig->numiteminfo);
-	if (index == NULL)
-	{
-		return NULL;
-	}
-
-	for (int i = 0; i < g_itemconfig->numiteminfo; ++i)
-	{
-		index[i] = BotWeight_FindIndex(config, g_itemconfig->iteminfo[i].classname);
-		if (index[i] < 0)
-		{
-			BotLib_LogWrite("item info %d \"%s\" has no fuzzy weight\r\n",
-			                i,
-			                g_itemconfig->iteminfo[i].classname);
-		}
-	}
-
-	return index;
+    return BotLib_ResolveAssetPath(requested, "itemconfig", buffer, size);
 }
 
 static bool BotGoal_EnsureWeightCapacity(bot_goalstate_t *gs)
@@ -531,20 +328,11 @@ static bool BotGoal_EnsureWeightCapacity(bot_goalstate_t *gs)
     return true;
 }
 
-/*
-=============
-BotLoadItemWeights
-=============
-*/
 int BotLoadItemWeights(int handle, const char *filename)
 {
 	bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
 	if (gs == NULL)
 	{
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 		BotLib_Print(PRT_ERROR, "BotLoadItemWeights: invalid goal state %d\n", handle);
 		return 0;
 	}
@@ -594,115 +382,6 @@ int BotLoadItemWeights(int handle, const char *filename)
 	}
 
 	return 1;
-=======
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	bot_weight_config_t *config = ReadWeightConfig(filename);
-	if (config == NULL)
-	{
-		BotLib_Print(PRT_FATAL, "couldn't load weights\n");
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	if (g_itemconfig == NULL)
-	{
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	int *index = BotGoal_BuildItemWeightIndex(config);
-	if (index == NULL)
-	{
-		FreeWeightConfig(config);
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-=======
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	bot_weight_config_t *config = ReadWeightConfig(filename);
-	if (config == NULL)
-	{
-		BotLib_Print(PRT_FATAL, "couldn't load weights\n");
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	if (g_itemconfig == NULL)
-	{
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	int *index = BotGoal_BuildItemWeightIndex(config);
-	if (index == NULL)
-	{
-		FreeWeightConfig(config);
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
->>>>>>> Stashed changes
-=======
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	bot_weight_config_t *config = ReadWeightConfig(filename);
-	if (config == NULL)
-	{
-		BotLib_Print(PRT_FATAL, "couldn't load weights\n");
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	if (g_itemconfig == NULL)
-	{
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	int *index = BotGoal_BuildItemWeightIndex(config);
-	if (index == NULL)
-	{
-		FreeWeightConfig(config);
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
->>>>>>> Stashed changes
-=======
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	bot_weight_config_t *config = ReadWeightConfig(filename);
-	if (config == NULL)
-	{
-		BotLib_Print(PRT_FATAL, "couldn't load weights\n");
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	if (g_itemconfig == NULL)
-	{
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
-	int *index = BotGoal_BuildItemWeightIndex(config);
-	if (index == NULL)
-	{
-		FreeWeightConfig(config);
-		return BLERR_CANNOTLOADITEMWEIGHTS;
-	}
-
->>>>>>> Stashed changes
-	gs->itemweightconfig = config;
-	gs->itemweightindex = index;
-	gs->itemweightcount = g_itemconfig->numiteminfo;
-	return BLERR_NOERROR;
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
 }
 
 void BotFreeItemWeights(int handle)
@@ -1085,34 +764,6 @@ static int BotGoal_FindItemInfoIndex(const char *classname)
     return -1;
 }
 
-/*
-=============
-BotGoal_FindItemInfoByModelIndex
-=============
-*/
-static int BotGoal_FindItemInfoByModelIndex(int modelindex)
-{
-	if (g_itemconfig == NULL || g_itemconfig->numiteminfo <= 0)
-	{
-		return -1;
-	}
-
-	if (modelindex <= 0)
-	{
-		return -1;
-	}
-
-	for (int i = 0; i < g_itemconfig->numiteminfo; ++i)
-	{
-		if (g_itemconfig->iteminfo[i].modelindex == modelindex)
-		{
-			return i;
-		}
-	}
-
-	return -1;
-}
-
 static int BotGoal_RegisterItemInfo(const char *classname)
 {
     if (classname == NULL || classname[0] == '\0')
@@ -1155,49 +806,35 @@ static int BotGoal_RegisterItemInfo(const char *classname)
     return index;
 }
 
-/*
-=============
-BotGoal_EntityIsStationary
-=============
-*/
-static bool BotGoal_EntityIsStationary(const aas_entity_t *entity)
-{
-	if (entity == NULL)
-	{
-		return false;
-	}
-
-	const float epsilon = 0.01f;
-	for (int axis = 0; axis < 3; ++axis)
-	{
-		if (fabsf(entity->origin[axis] - entity->old_origin[axis]) > epsilon)
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
 int BotGoal_RegisterLevelItem(const bot_levelitem_setup_t *setup)
 {
-    if (setup == NULL || setup->classname == NULL || setup->classname[0] == '\0')
-    {
-        return 0;
-    }
+	if (setup == NULL || setup->classname == NULL || setup->classname[0] == '\0')
+	{
+		return 0;
+	}
 
-    int iteminfo = BotGoal_RegisterItemInfo(setup->classname);
-    if (iteminfo < 0)
-    {
-        return 0;
-    }
+	int number = setup->goal.number;
+	if (number <= 0)
+	{
+		number = g_next_levelitem_number++;
+	}
+	else if (number >= g_next_levelitem_number)
+	{
+		g_next_levelitem_number = number + 1;
+	}
 
-    bot_levelitem_t *existing = BotGoal_FindLevelItem(setup->goal.number);
-    bot_levelitem_t *slot = existing;
-    if (slot == NULL)
-    {
-        for (int i = 0; i < g_levelitem_count; ++i)
-        {
+	int iteminfo = BotGoal_RegisterItemInfo(setup->classname);
+	if (iteminfo < 0)
+	{
+		return 0;
+	}
+
+	bot_levelitem_t *existing = BotGoal_FindLevelItem(number);
+	bot_levelitem_t *slot = existing;
+	if (slot == NULL)
+	{
+		for (int i = 0; i < g_levelitem_count; ++i)
+		{
             if (!g_levelitems[i].valid)
             {
                 slot = &g_levelitems[i];
@@ -1213,14 +850,15 @@ int BotGoal_RegisterLevelItem(const bot_levelitem_setup_t *setup)
             }
             slot = &g_levelitems[g_levelitem_count++];
         }
-    }
+	}
 
-    slot->goal = setup->goal;
-    slot->goal.iteminfo = iteminfo;
-    slot->goal.flags = setup->flags;
-    if (!(slot->goal.flags & (GFL_ITEM | GFL_ROAM | GFL_DROPPED)))
-    {
-        slot->goal.flags |= GFL_ITEM;
+	slot->goal = setup->goal;
+	slot->goal.number = number;
+	slot->goal.iteminfo = iteminfo;
+	slot->goal.flags = setup->flags;
+	if (!(slot->goal.flags & (GFL_ITEM | GFL_ROAM | GFL_DROPPED)))
+	{
+		slot->goal.flags |= GFL_ITEM;
     }
 
     if (slot->goal.areanum <= 0)
@@ -1238,9 +876,9 @@ int BotGoal_RegisterLevelItem(const bot_levelitem_setup_t *setup)
 	{
 		slot->timeout = BotGoal_CurrentTime() + setup->respawntime;
 	}
-    slot->flags = setup->flags;
-    slot->valid = true;
-    return slot->goal.number;
+	slot->flags = setup->itemflags;
+	slot->valid = true;
+	return slot->goal.number;
 }
 
 void BotGoal_UnregisterLevelItem(int number)
@@ -1345,6 +983,11 @@ static float BotGoal_LevelItemScore(bot_goalstate_t *gs,
                                     int *travel_time)
 {
     if (item == NULL || !item->valid)
+    {
+        return -FLT_MAX;
+    }
+
+    if (!BotGoal_LevelItemAllowed(item))
     {
         return -FLT_MAX;
     }
@@ -1597,7 +1240,7 @@ BotItemGoalInVisButNotVisible
 Checks for item goals that are in AAS visibility but blocked by a trace.
 =============
 */
-int BotItemGoalInVisButNotVisible(int viewer, const vec3_t eye, const vec3_t viewangles, const bot_goal_t *goal)
+int BotItemGoalInVisButNotVisible(int viewer, vec3_t eye, vec3_t viewangles, bot_goal_t *goal)
 {
 	if (goal == NULL || eye == NULL)
 	{
@@ -1611,27 +1254,1268 @@ int BotItemGoalInVisButNotVisible(int viewer, const vec3_t eye, const vec3_t vie
 
 	vec3_t middle;
 	VectorAdd(goal->mins, goal->maxs, middle);
-	VectorScale(middle, 0.5f, middle);
+	middle[0] *= 0.5f;
+	middle[1] *= 0.5f;
+	middle[2] *= 0.5f;
 	VectorAdd(goal->origin, middle, middle);
 
-	vec3_t start;
-	VectorCopy(eye, start);
 	vec3_t mins = {0.0f, 0.0f, 0.0f};
 	vec3_t maxs = {0.0f, 0.0f, 0.0f};
-	bsp_trace_t aas_trace = Q2_Trace(start, mins, maxs, middle, viewer, CONTENTS_SOLID);
-	if (aas_trace.fraction < 1.0f)
+	bsp_trace_t trace = Q2_Trace(eye, mins, maxs, middle, viewer, CONTENTS_SOLID);
+	if (trace.fraction >= 1.0f)
 	{
-		return 0;
-	}
+		int entnum = goal->entitynum;
+		if (entnum <= 0 || aasworld.entities == NULL || entnum >= aasworld.maxEntities)
+		{
+			return 0;
+		}
 
-	bsp_trace_t trace = Q2_Trace(start, mins, maxs, middle, viewer, MASK_SHOT);
-	if (trace.fraction < 1.0f)
-	{
-		return 1;
+		const aas_entity_t *entity = &aasworld.entities[entnum];
+		if (entity->lastUpdateTime < aasworld.time - 0.5f)
+		{
+			return 1;
+		}
 	}
 
 	(void)viewangles;
 	return 0;
+}
+
+/*
+=============
+BotGoal_StrIcmp
+=============
+*/
+static int BotGoal_StrIcmp(const char *lhs, const char *rhs)
+{
+	if (lhs == rhs)
+	{
+		return 0;
+	}
+	if (lhs == NULL)
+	{
+		return -1;
+	}
+	if (rhs == NULL)
+	{
+		return 1;
+	}
+
+	while (*lhs != '\0' && *rhs != '\0')
+	{
+		int lc = tolower((unsigned char)*lhs);
+		int rc = tolower((unsigned char)*rhs);
+		if (lc != rc)
+		{
+			return lc - rc;
+		}
+		++lhs;
+		++rhs;
+	}
+
+	return tolower((unsigned char)*lhs) - tolower((unsigned char)*rhs);
+}
+
+/*
+=============
+BotGoal_CurrentGameType
+=============
+*/
+static int BotGoal_CurrentGameType(void)
+{
+	float value = LibVarValue("g_gametype", "");
+	if (value == 0.0f)
+	{
+		value = LibVarValue("gametype", "0");
+	}
+	return (int)value;
+}
+
+/*
+=============
+BotGoal_LevelItemAllowed
+=============
+*/
+static bool BotGoal_LevelItemAllowed(const bot_levelitem_t *item)
+{
+	if (item == NULL || !item->valid)
+	{
+		return false;
+	}
+
+	if (item->flags & BOT_GOAL_ITEMFLAG_NOTBOT)
+	{
+		return false;
+	}
+
+	int gametype = BotGoal_CurrentGameType();
+	if (gametype == 2)
+	{
+		if (item->flags & BOT_GOAL_ITEMFLAG_NOTSINGLE)
+		{
+			return false;
+		}
+	}
+	else if (gametype >= 3)
+	{
+		if (item->flags & BOT_GOAL_ITEMFLAG_NOTTEAM)
+		{
+			return false;
+		}
+	}
+	else
+	{
+		if (item->flags & BOT_GOAL_ITEMFLAG_NOTFREE)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/*
+=============
+BotGoal_ReadSignedFloat
+=============
+*/
+static bool BotGoal_ReadSignedFloat(pc_source_t *source, float *out)
+{
+	pc_token_t token;
+	bool negative = false;
+
+	if (source == NULL || out == NULL)
+	{
+		return false;
+	}
+
+	if (!PC_ReadToken(source, &token))
+	{
+		return false;
+	}
+
+	if (token.type == TT_PUNCTUATION && token.subtype == P_SUB)
+	{
+		negative = true;
+		if (!PC_ReadToken(source, &token))
+		{
+			return false;
+		}
+	}
+
+	if (token.type != TT_NUMBER)
+	{
+		return false;
+	}
+
+	float value = (token.subtype & TT_FLOAT) ? (float)token.floatvalue : (float)token.intvalue;
+	*out = negative ? -value : value;
+	return true;
+}
+
+/*
+=============
+BotGoal_ReadVector
+=============
+*/
+static bool BotGoal_ReadVector(pc_source_t *source, vec3_t out)
+{
+	pc_token_t token;
+
+	if (source == NULL || out == NULL)
+	{
+		return false;
+	}
+
+	if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_BRACEOPEN, &token))
+	{
+		return false;
+	}
+
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		if (!BotGoal_ReadSignedFloat(source, &out[axis]))
+		{
+			return false;
+		}
+
+		if (axis < 2)
+		{
+			if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_COMMA, &token))
+			{
+				return false;
+			}
+		}
+	}
+
+	if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_BRACECLOSE, &token))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+/*
+=============
+BotGoal_SkipValue
+=============
+*/
+static bool BotGoal_SkipValue(pc_source_t *source)
+{
+	pc_token_t token;
+	if (source == NULL)
+	{
+		return false;
+	}
+
+	if (!PC_ReadToken(source, &token))
+	{
+		return false;
+	}
+
+	if (token.type == TT_PUNCTUATION && token.subtype == P_BRACEOPEN)
+	{
+		int depth = 1;
+		while (depth > 0)
+		{
+			if (!PC_ReadToken(source, &token))
+			{
+				return false;
+			}
+
+			if (token.type != TT_PUNCTUATION)
+			{
+				continue;
+			}
+
+			if (token.subtype == P_BRACEOPEN)
+			{
+				++depth;
+			}
+			else if (token.subtype == P_BRACECLOSE)
+			{
+				--depth;
+			}
+		}
+	}
+
+	return true;
+}
+
+/*
+=============
+BotGoal_FindItemDef
+=============
+*/
+static bot_itemdef_t *BotGoal_FindItemDef(const char *classname)
+{
+	if (classname == NULL || classname[0] == '\0')
+	{
+		return NULL;
+	}
+
+	for (int i = 0; i < g_itemdef_count; ++i)
+	{
+		if (!g_itemdefs[i].valid)
+		{
+			continue;
+		}
+		if (BotGoal_StrIcmp(g_itemdefs[i].classname, classname) == 0)
+		{
+			return &g_itemdefs[i];
+		}
+	}
+
+	return NULL;
+}
+
+/*
+=============
+BotGoal_RegisterItemDef
+=============
+*/
+static bot_itemdef_t *BotGoal_RegisterItemDef(const char *classname)
+{
+	if (classname == NULL || classname[0] == '\0')
+	{
+		return NULL;
+	}
+
+	bot_itemdef_t *existing = BotGoal_FindItemDef(classname);
+	if (existing != NULL)
+	{
+		return existing;
+	}
+
+	if (g_itemdef_count >= BOT_GOAL_MAX_ITEMDEFS)
+	{
+		return NULL;
+	}
+
+	bot_itemdef_t *itemdef = &g_itemdefs[g_itemdef_count++];
+	memset(itemdef, 0, sizeof(*itemdef));
+	strncpy(itemdef->classname, classname, sizeof(itemdef->classname) - 1);
+	itemdef->classname[sizeof(itemdef->classname) - 1] = '\0';
+	strncpy(itemdef->name, classname, sizeof(itemdef->name) - 1);
+	itemdef->name[sizeof(itemdef->name) - 1] = '\0';
+	VectorSet(itemdef->mins,
+			  -BOT_GOAL_DEFAULT_ITEM_HALF_EXTENT,
+			  -BOT_GOAL_DEFAULT_ITEM_HALF_EXTENT,
+			  -BOT_GOAL_DEFAULT_ITEM_HALF_EXTENT);
+	VectorSet(itemdef->maxs,
+			  BOT_GOAL_DEFAULT_ITEM_HALF_EXTENT,
+			  BOT_GOAL_DEFAULT_ITEM_HALF_EXTENT,
+			  BOT_GOAL_DEFAULT_ITEM_HALF_EXTENT);
+	itemdef->respawntime = BOT_GOAL_DEFAULT_RESPAWN_TIME;
+	itemdef->valid = true;
+	return itemdef;
+}
+
+/*
+=============
+BotGoal_ParseItemInfoBlock
+=============
+*/
+static bool BotGoal_ParseItemInfoBlock(pc_source_t *source, bot_itemdef_t *itemdef)
+{
+	pc_token_t token;
+
+	if (source == NULL || itemdef == NULL)
+	{
+		return false;
+	}
+
+	if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_BRACEOPEN, &token))
+	{
+		return false;
+	}
+
+	while (PC_ReadToken(source, &token))
+	{
+		if (token.type == TT_PUNCTUATION && token.subtype == P_BRACECLOSE)
+		{
+			return true;
+		}
+
+		if (token.type != TT_NAME)
+		{
+			if (!BotGoal_SkipValue(source))
+			{
+				return false;
+			}
+			continue;
+		}
+
+		if (strcmp(token.string, "respawntime") == 0)
+		{
+			float value = 0.0f;
+			if (BotGoal_ReadSignedFloat(source, &value))
+			{
+				itemdef->respawntime = value;
+			}
+			continue;
+		}
+
+		if (strcmp(token.string, "name") == 0)
+		{
+			pc_token_t value_token;
+			if (PC_ReadToken(source, &value_token))
+			{
+				if (value_token.type == TT_STRING || value_token.type == TT_NAME)
+				{
+					strncpy(itemdef->name, value_token.string, sizeof(itemdef->name) - 1);
+					itemdef->name[sizeof(itemdef->name) - 1] = '\0';
+				}
+			}
+			continue;
+		}
+
+		if (strcmp(token.string, "mins") == 0)
+		{
+			BotGoal_ReadVector(source, itemdef->mins);
+			continue;
+		}
+
+		if (strcmp(token.string, "maxs") == 0)
+		{
+			BotGoal_ReadVector(source, itemdef->maxs);
+			continue;
+		}
+
+		if (!BotGoal_SkipValue(source))
+		{
+			return false;
+		}
+	}
+
+	return false;
+}
+
+/*
+=============
+BotGoal_LoadItemDefs
+=============
+*/
+static void BotGoal_LoadItemDefs(void)
+{
+	g_itemdef_count = 0;
+	memset(g_itemdefs, 0, sizeof(g_itemdefs));
+
+	char itemconfig_path[BOT_GOAL_ASSET_MAX_PATH];
+	if (!BotGoal_BuildWeightPath(NULL, itemconfig_path, sizeof(itemconfig_path)))
+	{
+		return;
+	}
+
+	pc_source_t *source = PC_LoadSourceFile(itemconfig_path);
+	if (source == NULL)
+	{
+		return;
+	}
+
+	pc_token_t token;
+	while (PC_ReadToken(source, &token))
+	{
+		if (token.type != TT_NAME || strcmp(token.string, "iteminfo") != 0)
+		{
+			continue;
+		}
+
+		pc_token_t classname_token;
+		if (!PC_ReadToken(source, &classname_token))
+		{
+			break;
+		}
+		if (classname_token.type != TT_STRING && classname_token.type != TT_NAME)
+		{
+			break;
+		}
+
+		bot_itemdef_t *itemdef = BotGoal_RegisterItemDef(classname_token.string);
+		if (itemdef == NULL)
+		{
+			BotGoal_SkipValue(source);
+			continue;
+		}
+
+		BotGoal_ParseItemInfoBlock(source, itemdef);
+	}
+
+	PC_FreeSource(source);
+}
+
+/*
+=============
+BotGoal_ParseFloatString
+=============
+*/
+static bool BotGoal_ParseFloatString(const char *value, float *out)
+{
+	if (value == NULL || out == NULL)
+	{
+		return false;
+	}
+
+	errno = 0;
+	char *endptr = NULL;
+	float parsed = strtof(value, &endptr);
+	if (endptr == value || errno == ERANGE)
+	{
+		return false;
+	}
+
+	while (endptr != NULL && *endptr != '\0' && isspace((unsigned char)*endptr))
+	{
+		++endptr;
+	}
+
+	if (endptr != NULL && *endptr != '\0')
+	{
+		return false;
+	}
+
+	*out = parsed;
+	return true;
+}
+
+/*
+=============
+BotGoal_ParseIntString
+=============
+*/
+static bool BotGoal_ParseIntString(const char *value, int *out)
+{
+	if (value == NULL || out == NULL)
+	{
+		return false;
+	}
+
+	errno = 0;
+	char *endptr = NULL;
+	long parsed = strtol(value, &endptr, 10);
+	if (endptr == value || errno == ERANGE || parsed > INT_MAX || parsed < INT_MIN)
+	{
+		return false;
+	}
+
+	while (endptr != NULL && *endptr != '\0' && isspace((unsigned char)*endptr))
+	{
+		++endptr;
+	}
+
+	if (endptr != NULL && *endptr != '\0')
+	{
+		return false;
+	}
+
+	*out = (int)parsed;
+	return true;
+}
+
+/*
+=============
+BotGoal_ParseVectorString
+=============
+*/
+static bool BotGoal_ParseVectorString(const char *value, vec3_t out)
+{
+	if (value == NULL || out == NULL)
+	{
+		return false;
+	}
+
+	float x = 0.0f;
+	float y = 0.0f;
+	float z = 0.0f;
+	if (sscanf(value, "%f %f %f", &x, &y, &z) != 3)
+	{
+		return false;
+	}
+
+	out[0] = x;
+	out[1] = y;
+	out[2] = z;
+	return true;
+}
+
+/*
+=============
+BotGoal_ParseQuotedToken
+=============
+*/
+static bool BotGoal_ParseQuotedToken(const char **cursor, const char *end, char **out_token)
+{
+	if (cursor == NULL || *cursor == NULL || out_token == NULL)
+	{
+		return false;
+	}
+
+	const char *position = *cursor;
+	while (position < end && isspace((unsigned char)*position))
+	{
+		++position;
+	}
+
+	if (position >= end || *position != '"')
+	{
+		*cursor = position;
+		return false;
+	}
+
+	++position;
+	const char *start = position;
+	bool escape = false;
+	while (position < end)
+	{
+		char ch = *position;
+		if (!escape && ch == '\\')
+		{
+			escape = true;
+			++position;
+			continue;
+		}
+
+		if (!escape && ch == '"')
+		{
+			size_t raw_length = (size_t)(position - start);
+			char *token = (char *)malloc(raw_length + 1U);
+			if (token == NULL)
+			{
+				BotLib_Print(PRT_WARNING,
+							 "BotGoal_ParseEntityLump: out of memory parsing token\n");
+				*cursor = position;
+				return false;
+			}
+
+			const char *reader = start;
+			char *writer = token;
+			escape = false;
+			while (reader < position)
+			{
+				char rc = *reader++;
+				if (!escape && rc == '\\')
+				{
+					escape = true;
+					continue;
+				}
+
+				*writer++ = rc;
+				escape = false;
+			}
+			*writer = '\0';
+
+			++position;
+			*cursor = position;
+			*out_token = token;
+			return true;
+		}
+
+		escape = false;
+		++position;
+	}
+
+	BotLib_Print(PRT_WARNING,
+				 "BotGoal_ParseEntityLump: unterminated quoted token in entity lump\n");
+	*cursor = position;
+	return false;
+}
+
+/*
+=============
+BotGoal_SkipMalformedEntity
+=============
+*/
+static void BotGoal_SkipMalformedEntity(const char **cursor, const char *end)
+{
+	if (cursor == NULL || *cursor == NULL)
+	{
+		return;
+	}
+
+	const char *position = *cursor;
+	while (position < end)
+	{
+		if (*position == '}')
+		{
+			++position;
+			break;
+		}
+		++position;
+	}
+
+	*cursor = position;
+}
+
+/*
+=============
+BotGoal_LittleLong
+=============
+*/
+static int32_t BotGoal_LittleLong(int32_t value)
+{
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+	return value;
+#else
+	uint32_t u = (uint32_t)value;
+	return (int32_t)((u >> 24)
+					 | ((u >> 8) & 0x0000FF00U)
+					 | ((u << 8) & 0x00FF0000U)
+					 | (u << 24));
+#endif
+}
+
+/*
+=============
+BotGoal_StringEndsWithIgnoreCase
+=============
+*/
+static bool BotGoal_StringEndsWithIgnoreCase(const char *value, const char *suffix)
+{
+	if (value == NULL || suffix == NULL)
+	{
+		return false;
+	}
+
+	size_t value_length = strlen(value);
+	size_t suffix_length = strlen(suffix);
+	if (suffix_length == 0U)
+	{
+		return true;
+	}
+	if (suffix_length > value_length)
+	{
+		return false;
+	}
+
+	const char *tail = value + (value_length - suffix_length);
+	for (size_t i = 0U; i < suffix_length; ++i)
+	{
+		char lhs = (char)tolower((unsigned char)tail[i]);
+		char rhs = (char)tolower((unsigned char)suffix[i]);
+		if (lhs != rhs)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+/*
+=============
+BotGoal_BuildMapPath
+=============
+*/
+static bool BotGoal_BuildMapPath(char *buffer, size_t size, const char *mapname, const char *extension)
+{
+	if (buffer == NULL || size == 0U || mapname == NULL || mapname[0] == '\0')
+	{
+		return false;
+	}
+
+	buffer[0] = '\0';
+
+	int prefix_needed = 1;
+	if (strncmp(mapname, "maps/", 5) == 0 || strncmp(mapname, "maps\\", 5) == 0)
+	{
+		prefix_needed = 0;
+	}
+
+	int written = 0;
+	if (prefix_needed)
+	{
+		written = snprintf(buffer, size, "maps/%s", mapname);
+	}
+	else
+	{
+		written = snprintf(buffer, size, "%s", mapname);
+	}
+
+	if (written < 0 || (size_t)written >= size)
+	{
+		buffer[0] = '\0';
+		return false;
+	}
+
+	if (extension != NULL && extension[0] != '\0'
+		&& !BotGoal_StringEndsWithIgnoreCase(buffer, extension))
+	{
+		size_t current_length = (size_t)written;
+		size_t extension_length = strlen(extension);
+		if (current_length + extension_length + 1U > size)
+		{
+			buffer[0] = '\0';
+			return false;
+		}
+
+		strncat(buffer, extension, size - current_length - 1U);
+	}
+
+	return true;
+}
+
+/*
+=============
+BotGoal_LoadEntityLump
+=============
+*/
+static bool BotGoal_LoadEntityLump(char **out_data, size_t *out_length)
+{
+	if (out_data == NULL || out_length == NULL)
+	{
+		return false;
+	}
+
+	*out_data = NULL;
+	*out_length = 0U;
+
+	if (!aasworld.loaded || aasworld.mapName[0] == '\0')
+	{
+		return false;
+	}
+
+	char bsp_path[MAX_FILEPATH];
+	if (!BotGoal_BuildMapPath(bsp_path, sizeof(bsp_path), aasworld.mapName, ".bsp"))
+	{
+		return false;
+	}
+
+	FILE *bsp_file = fopen(bsp_path, "rb");
+	if (bsp_file == NULL)
+	{
+		return false;
+	}
+
+	q2_bsp_header_t bsp_header;
+	if (fread(&bsp_header, sizeof(bsp_header), 1U, bsp_file) != 1U)
+	{
+		fclose(bsp_file);
+		return false;
+	}
+
+	bsp_header.ident = BotGoal_LittleLong(bsp_header.ident);
+	bsp_header.version = BotGoal_LittleLong(bsp_header.version);
+	for (int i = 0; i < Q2_BSP_LUMP_MAX; ++i)
+	{
+		bsp_header.lumps[i].offset = BotGoal_LittleLong(bsp_header.lumps[i].offset);
+		bsp_header.lumps[i].length = BotGoal_LittleLong(bsp_header.lumps[i].length);
+	}
+
+	if (bsp_header.ident != Q2_BSP_IDENT || bsp_header.version != Q2_BSP_VERSION)
+	{
+		fclose(bsp_file);
+		return false;
+	}
+
+	const q2_lump_t *entities_lump = &bsp_header.lumps[Q2_BSP_LUMP_ENTITIES];
+	if (entities_lump->length <= 0 || entities_lump->offset < 0)
+	{
+		fclose(bsp_file);
+		return false;
+	}
+
+	if (fseek(bsp_file, entities_lump->offset, SEEK_SET) != 0)
+	{
+		fclose(bsp_file);
+		return false;
+	}
+
+	size_t lump_length = (size_t)entities_lump->length;
+	char *data = (char *)malloc(lump_length + 1U);
+	if (data == NULL)
+	{
+		fclose(bsp_file);
+		return false;
+	}
+
+	size_t read_length = fread(data, 1U, lump_length, bsp_file);
+	fclose(bsp_file);
+
+	if (read_length != lump_length)
+	{
+		free(data);
+		return false;
+	}
+
+	data[lump_length] = '\0';
+	*out_data = data;
+	*out_length = lump_length;
+	return true;
+}
+
+/*
+=============
+BotGoal_IsLikelyItemClassname
+=============
+*/
+static bool BotGoal_IsLikelyItemClassname(const char *classname)
+{
+	if (classname == NULL || classname[0] == '\0')
+	{
+		return false;
+	}
+
+	if (BotGoal_FindItemDef(classname) != NULL)
+	{
+		return true;
+	}
+
+	if (BotGoal_StrIcmp(classname, "item_botroam") == 0)
+	{
+		return true;
+	}
+
+	if (strncmp(classname, "item_", 5) == 0
+		|| strncmp(classname, "weapon_", 7) == 0
+		|| strncmp(classname, "ammo_", 5) == 0
+		|| strncmp(classname, "key_", 4) == 0)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+/*
+=============
+BotGoal_AddMapLocation
+=============
+*/
+static void BotGoal_AddMapLocation(const bot_goal_parsed_entity_t *entity)
+{
+	if (entity == NULL || !entity->has_origin)
+	{
+		return;
+	}
+
+	if (g_maplocation_count >= BOT_GOAL_MAX_MAPLOCATIONS)
+	{
+		return;
+	}
+
+	bot_maplocation_t *location = &g_maplocations[g_maplocation_count++];
+	memset(location, 0, sizeof(*location));
+	VectorCopy(entity->origin, location->origin);
+	location->areanum = BotGoal_PointAreaNum(location->origin);
+	if (entity->message[0] != '\0')
+	{
+		strncpy(location->name, entity->message, sizeof(location->name) - 1);
+		location->name[sizeof(location->name) - 1] = '\0';
+	}
+	location->valid = true;
+}
+
+/*
+=============
+BotGoal_AddCampSpot
+=============
+*/
+static void BotGoal_AddCampSpot(const bot_goal_parsed_entity_t *entity)
+{
+	if (entity == NULL || !entity->has_origin)
+	{
+		return;
+	}
+
+	if (g_campspot_count >= BOT_GOAL_MAX_CAMPSPOTS)
+	{
+		return;
+	}
+
+	bot_campspot_t *spot = &g_campspots[g_campspot_count++];
+	memset(spot, 0, sizeof(*spot));
+	VectorCopy(entity->origin, spot->origin);
+	spot->areanum = BotGoal_PointAreaNum(spot->origin);
+	if (spot->areanum <= 0)
+	{
+		g_campspot_count--;
+		return;
+	}
+
+	if (entity->message[0] != '\0')
+	{
+		strncpy(spot->name, entity->message, sizeof(spot->name) - 1);
+		spot->name[sizeof(spot->name) - 1] = '\0';
+	}
+	if (entity->has_range)
+	{
+		spot->range = entity->range;
+	}
+	if (entity->has_weight)
+	{
+		spot->weight = entity->weight;
+	}
+	if (entity->has_wait)
+	{
+		spot->wait = entity->wait;
+	}
+	if (entity->has_random)
+	{
+		spot->random = entity->random;
+	}
+	spot->valid = true;
+}
+
+/*
+=============
+BotGoal_AddLevelItemFromEntity
+=============
+*/
+static void BotGoal_AddLevelItemFromEntity(const bot_goal_parsed_entity_t *entity)
+{
+	if (entity == NULL || !entity->has_classname || !entity->has_origin)
+	{
+		return;
+	}
+
+	bot_itemdef_t *itemdef = BotGoal_FindItemDef(entity->classname);
+	if (itemdef == NULL)
+	{
+		return;
+	}
+
+	int itemflags = 0;
+	if (entity->has_notfree && entity->notfree != 0)
+	{
+		itemflags |= BOT_GOAL_ITEMFLAG_NOTFREE;
+	}
+	if (entity->has_notteam && entity->notteam != 0)
+	{
+		itemflags |= BOT_GOAL_ITEMFLAG_NOTTEAM;
+	}
+	if (entity->has_notsingle && entity->notsingle != 0)
+	{
+		itemflags |= BOT_GOAL_ITEMFLAG_NOTSINGLE;
+	}
+	if (entity->has_notbot && entity->notbot != 0)
+	{
+		itemflags |= BOT_GOAL_ITEMFLAG_NOTBOT;
+	}
+
+	bot_levelitem_setup_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.classname = entity->classname;
+	setup.flags = GFL_ITEM;
+	setup.itemflags = itemflags;
+	setup.respawntime = itemdef->respawntime;
+	setup.weight = 0.0f;
+
+	if (BotGoal_StrIcmp(entity->classname, "item_botroam") == 0)
+	{
+		setup.flags |= GFL_ROAM;
+		setup.weight = entity->has_weight ? entity->weight : 1.0f;
+	}
+
+	VectorCopy(entity->origin, setup.goal.origin);
+	VectorCopy(itemdef->mins, setup.goal.mins);
+	VectorCopy(itemdef->maxs, setup.goal.maxs);
+	setup.goal.areanum = BotGoal_PointAreaNum(setup.goal.origin);
+	setup.goal.entitynum = 0;
+	setup.goal.number = 0;
+
+	BotGoal_RegisterLevelItem(&setup);
+}
+
+/*
+=============
+BotGoal_RegisterParsedEntity
+=============
+*/
+static void BotGoal_RegisterParsedEntity(const bot_goal_parsed_entity_t *entity)
+{
+	if (entity == NULL || !entity->has_classname)
+	{
+		return;
+	}
+
+	if (BotGoal_StrIcmp(entity->classname, "target_location") == 0)
+	{
+		BotGoal_AddMapLocation(entity);
+		return;
+	}
+
+	if (BotGoal_StrIcmp(entity->classname, "info_camp") == 0)
+	{
+		BotGoal_AddCampSpot(entity);
+		return;
+	}
+
+	if (BotGoal_IsLikelyItemClassname(entity->classname))
+	{
+		BotGoal_AddLevelItemFromEntity(entity);
+	}
+}
+
+/*
+=============
+BotGoal_ParseEntityLump
+=============
+*/
+static void BotGoal_ParseEntityLump(const char *data, size_t length)
+{
+	if (data == NULL || length == 0U)
+	{
+		return;
+	}
+
+	const char *cursor = data;
+	const char *end = data + length;
+
+	while (cursor < end)
+	{
+		while (cursor < end && isspace((unsigned char)*cursor))
+		{
+			++cursor;
+		}
+
+		if (cursor >= end)
+		{
+			break;
+		}
+
+		if (*cursor != '{')
+		{
+			++cursor;
+			continue;
+		}
+
+		++cursor;
+		bot_goal_parsed_entity_t entity;
+		memset(&entity, 0, sizeof(entity));
+		bool malformed = false;
+
+		while (cursor < end)
+		{
+			while (cursor < end && isspace((unsigned char)*cursor))
+			{
+				++cursor;
+			}
+
+			if (cursor >= end)
+			{
+				malformed = true;
+				break;
+			}
+
+			if (*cursor == '}')
+			{
+				++cursor;
+				break;
+			}
+
+			char *key = NULL;
+			if (!BotGoal_ParseQuotedToken(&cursor, end, &key))
+			{
+				if (key != NULL)
+				{
+					free(key);
+				}
+				malformed = true;
+				BotGoal_SkipMalformedEntity(&cursor, end);
+				break;
+			}
+
+			while (cursor < end && isspace((unsigned char)*cursor))
+			{
+				++cursor;
+			}
+
+			char *value = NULL;
+			if (!BotGoal_ParseQuotedToken(&cursor, end, &value))
+			{
+				if (key != NULL)
+				{
+					free(key);
+				}
+				if (value != NULL)
+				{
+					free(value);
+				}
+				malformed = true;
+				BotGoal_SkipMalformedEntity(&cursor, end);
+				break;
+			}
+
+			if (key != NULL && value != NULL)
+			{
+				if (strcmp(key, "classname") == 0)
+				{
+					strncpy(entity.classname, value, sizeof(entity.classname) - 1);
+					entity.classname[sizeof(entity.classname) - 1] = '\0';
+					entity.has_classname = true;
+				}
+				else if (strcmp(key, "message") == 0)
+				{
+					strncpy(entity.message, value, sizeof(entity.message) - 1);
+					entity.message[sizeof(entity.message) - 1] = '\0';
+				}
+				else if (strcmp(key, "origin") == 0)
+				{
+					vec3_t parsed_origin;
+					if (BotGoal_ParseVectorString(value, parsed_origin))
+					{
+						VectorCopy(parsed_origin, entity.origin);
+						entity.has_origin = true;
+					}
+				}
+				else if (strcmp(key, "spawnflags") == 0)
+				{
+					int parsed = 0;
+					if (BotGoal_ParseIntString(value, &parsed))
+					{
+						entity.spawnflags = parsed;
+						entity.has_spawnflags = true;
+					}
+				}
+				else if (strcmp(key, "notfree") == 0)
+				{
+					int parsed = 0;
+					if (BotGoal_ParseIntString(value, &parsed))
+					{
+						entity.notfree = parsed;
+						entity.has_notfree = true;
+					}
+				}
+				else if (strcmp(key, "notteam") == 0)
+				{
+					int parsed = 0;
+					if (BotGoal_ParseIntString(value, &parsed))
+					{
+						entity.notteam = parsed;
+						entity.has_notteam = true;
+					}
+				}
+				else if (strcmp(key, "notsingle") == 0)
+				{
+					int parsed = 0;
+					if (BotGoal_ParseIntString(value, &parsed))
+					{
+						entity.notsingle = parsed;
+						entity.has_notsingle = true;
+					}
+				}
+				else if (strcmp(key, "notbot") == 0)
+				{
+					int parsed = 0;
+					if (BotGoal_ParseIntString(value, &parsed))
+					{
+						entity.notbot = parsed;
+						entity.has_notbot = true;
+					}
+				}
+				else if (strcmp(key, "range") == 0)
+				{
+					float parsed = 0.0f;
+					if (BotGoal_ParseFloatString(value, &parsed))
+					{
+						entity.range = parsed;
+						entity.has_range = true;
+					}
+				}
+				else if (strcmp(key, "weight") == 0)
+				{
+					float parsed = 0.0f;
+					if (BotGoal_ParseFloatString(value, &parsed))
+					{
+						entity.weight = parsed;
+						entity.has_weight = true;
+					}
+				}
+				else if (strcmp(key, "wait") == 0)
+				{
+					float parsed = 0.0f;
+					if (BotGoal_ParseFloatString(value, &parsed))
+					{
+						entity.wait = parsed;
+						entity.has_wait = true;
+					}
+				}
+				else if (strcmp(key, "random") == 0)
+				{
+					float parsed = 0.0f;
+					if (BotGoal_ParseFloatString(value, &parsed))
+					{
+						entity.random = parsed;
+						entity.has_random = true;
+					}
+				}
+			}
+
+			if (key != NULL)
+			{
+				free(key);
+			}
+			if (value != NULL)
+			{
+				free(value);
+			}
+		}
+
+		if (!malformed)
+		{
+			BotGoal_RegisterParsedEntity(&entity);
+		}
+	}
 }
 
 void BotGoalName(int number, char *name, int size)
@@ -1647,6 +2531,13 @@ void BotGoalName(int number, char *name, int size)
         snprintf(name, (size_t)size, "%d", number);
         return;
     }
+
+	const bot_itemdef_t *itemdef = BotGoal_FindItemDef(item->classname);
+	if (itemdef != NULL && itemdef->name[0] != '\0')
+	{
+		snprintf(name, (size_t)size, "%s", itemdef->name);
+		return;
+	}
 
     snprintf(name, (size_t)size, "%s", item->classname);
 }
@@ -1698,297 +2589,52 @@ void BotDumpGoalStack(int handle)
 
 /*
 =============
-BotGoal_LittleLong
+BotGoal_RebuildWeightIndices
 =============
 */
-static int32_t BotGoal_LittleLong(int32_t value)
+static void BotGoal_RebuildWeightIndices(bot_goalstate_t *gs)
 {
-#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
-	return value;
-#else
-	uint32_t u = (uint32_t)value;
-	return (int32_t)((u >> 24)
-	                 | ((u >> 8) & 0x0000FF00U)
-	                 | ((u << 8) & 0x00FF0000U)
-	                 | (u << 24));
-#endif
+	if (gs == NULL)
+	{
+		return;
+	}
+
+	if (!BotGoal_EnsureWeightCapacity(gs))
+	{
+		return;
+	}
+
+	if (gs->itemweightconfig == NULL || gs->itemweightindex == NULL)
+	{
+		return;
+	}
+
+	for (int i = 0; i < gs->itemweightcount; ++i)
+	{
+		gs->itemweightindex[i] = BotWeight_FindIndex(gs->itemweightconfig, g_iteminfo_names[i]);
+	}
 }
 
 /*
 =============
-BotGoal_StringEndsWithIgnoreCase
+BotGoal_RandomScale
 =============
 */
-static bool BotGoal_StringEndsWithIgnoreCase(const char *value, const char *suffix)
+static float BotGoal_RandomScale(float range)
 {
-	if (value == NULL || suffix == NULL)
+	if (range <= 0.0f)
 	{
-		return false;
+		return 1.0f;
 	}
 
-	size_t valueLength = strlen(value);
-	size_t suffixLength = strlen(suffix);
-	if (suffixLength == 0)
+	float unit = (float)rand() / (float)RAND_MAX;
+	float centered = (unit * 2.0f) - 1.0f;
+	float scale = 1.0f + (centered * range);
+	if (scale < 0.01f)
 	{
-		return true;
+		scale = 0.01f;
 	}
-
-	if (suffixLength > valueLength)
-	{
-		return false;
-	}
-
-	const char *valueSuffix = value + valueLength - suffixLength;
-	for (size_t index = 0; index < suffixLength; ++index)
-	{
-		char lhs = (char)tolower((unsigned char)valueSuffix[index]);
-		char rhs = (char)tolower((unsigned char)suffix[index]);
-		if (lhs != rhs)
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
-/*
-=============
-BotGoal_BuildMapPath
-=============
-*/
-static bool BotGoal_BuildMapPath(char *buffer, size_t bufferSize, const char *mapname, const char *extension)
-{
-	if (buffer == NULL || bufferSize == 0U)
-	{
-		return false;
-	}
-
-	buffer[0] = '\0';
-
-	if (mapname == NULL || *mapname == '\0')
-	{
-		return false;
-	}
-
-	int prefixNeeded = 1;
-	if (strncmp(mapname, "maps/", 5) == 0 || strncmp(mapname, "maps\\", 5) == 0)
-	{
-		prefixNeeded = 0;
-	}
-
-	int written;
-	if (prefixNeeded)
-	{
-		written = snprintf(buffer, bufferSize, "maps/%s", mapname);
-	}
-	else
-	{
-		written = snprintf(buffer, bufferSize, "%s", mapname);
-	}
-
-	if (written < 0 || (size_t)written >= bufferSize)
-	{
-		buffer[0] = '\0';
-		return false;
-	}
-
-	if (extension != NULL && *extension != '\0'
-	    && !BotGoal_StringEndsWithIgnoreCase(buffer, extension))
-	{
-		size_t currentLength = (size_t)written;
-		if (currentLength + strlen(extension) + 1U > bufferSize)
-		{
-			buffer[0] = '\0';
-			return false;
-		}
-
-		strncat(buffer, extension, bufferSize - currentLength - 1U);
-	}
-
-	return true;
-}
-
-/*
-=============
-BotGoal_LoadEntityLump
-=============
-*/
-static bool BotGoal_LoadEntityLump(char **data, size_t *length)
-{
-	if (data == NULL || length == NULL)
-	{
-		return false;
-	}
-
-	*data = NULL;
-	*length = 0U;
-
-	if (!aasworld.loaded || aasworld.mapName[0] == '\0')
-	{
-		return false;
-	}
-
-	char relative[BOT_GOAL_ASSET_MAX_PATH];
-	if (!BotGoal_BuildMapPath(relative, sizeof(relative), aasworld.mapName, ".bsp"))
-	{
-		return false;
-	}
-
-	char path[BOT_GOAL_ASSET_MAX_PATH];
-	if (!BotLib_ResolveAssetPath(relative, "maps", path, sizeof(path)))
-	{
-		return false;
-	}
-
-	FILE *file = fopen(path, "rb");
-	if (file == NULL)
-	{
-		return false;
-	}
-
-	q2_bsp_header_t header;
-	if (fread(&header, sizeof(header), 1U, file) != 1U)
-	{
-		fclose(file);
-		return false;
-	}
-
-	header.ident = BotGoal_LittleLong(header.ident);
-	header.version = BotGoal_LittleLong(header.version);
-	for (int index = 0; index < Q2_BSP_LUMP_MAX; ++index)
-	{
-		header.lumps[index].offset = BotGoal_LittleLong(header.lumps[index].offset);
-		header.lumps[index].length = BotGoal_LittleLong(header.lumps[index].length);
-	}
-
-	if (header.ident != Q2_BSP_IDENT || header.version != Q2_BSP_VERSION)
-	{
-		fclose(file);
-		return false;
-	}
-
-	const q2_lump_t *entitiesLump = &header.lumps[Q2_BSP_LUMP_ENTITIES];
-	if (entitiesLump->length <= 0 || entitiesLump->offset < 0)
-	{
-		fclose(file);
-		return false;
-	}
-
-	if (fseek(file, entitiesLump->offset, SEEK_SET) != 0)
-	{
-		fclose(file);
-		return false;
-	}
-
-	size_t lumpLength = (size_t)entitiesLump->length;
-	char *buffer = (char *)malloc(lumpLength + 1U);
-	if (buffer == NULL)
-	{
-		fclose(file);
-		return false;
-	}
-
-	size_t readLength = fread(buffer, 1U, lumpLength, file);
-	fclose(file);
-	if (readLength != lumpLength)
-	{
-		free(buffer);
-		return false;
-	}
-
-	buffer[lumpLength] = '\0';
-	*data = buffer;
-	*length = lumpLength;
-	return true;
-}
-
-/*
-=============
-BotGoal_ParseVector
-=============
-*/
-static bool BotGoal_ParseVector(const char *value, vec3_t out)
-{
-	if (value == NULL || out == NULL)
-	{
-		return false;
-	}
-
-	float x = 0.0f;
-	float y = 0.0f;
-	float z = 0.0f;
-	if (sscanf(value, "%f %f %f", &x, &y, &z) != 3)
-	{
-		return false;
-	}
-
-	out[0] = x;
-	out[1] = y;
-	out[2] = z;
-	return true;
-}
-
-/*
-=============
-BotGoal_ParseIntValue
-=============
-*/
-static bool BotGoal_ParseIntValue(const char *value, int *out)
-{
-	if (value == NULL || out == NULL)
-	{
-		return false;
-	}
-
-	char *end = NULL;
-	long parsed = strtol(value, &end, 10);
-	if (end == value)
-	{
-		return false;
-	}
-
-	*out = (int)parsed;
-	return true;
-}
-
-/*
-=============
-BotGoal_DropToFloor
-=============
-*/
-static bool BotGoal_DropToFloor(vec3_t origin, const vec3_t mins, const vec3_t maxs)
-{
-	vec3_t end;
-	vec3_t minsCopy;
-	vec3_t maxsCopy;
-
-	VectorCopy(origin, end);
-	end[2] -= 100.0f;
-
-	VectorCopy(mins, minsCopy);
-	VectorCopy(maxs, maxsCopy);
-
-	bsp_trace_t trace = Q2_Trace(origin, minsCopy, maxsCopy, end, -1, CONTENTS_SOLID);
-	if (trace.startsolid)
-	{
-		return false;
-	}
-
-	VectorCopy(trace.endpos, origin);
-	return true;
-}
-
-/*
-=============
-BotGoal_ClearLevelItems
-=============
-*/
-static void BotGoal_ClearLevelItems(void)
-{
-	memset(g_levelitems, 0, sizeof(g_levelitems));
-	g_levelitem_count = 0;
-	g_levelitem_static_count = 0;
+	return scale;
 }
 
 /*
@@ -1998,403 +2644,35 @@ BotInitLevelItems
 */
 void BotInitLevelItems(void)
 {
-	BotGoal_ClearLevelItems();
+	memset(g_levelitems, 0, sizeof(g_levelitems));
+	g_levelitem_count = 0;
+	g_next_levelitem_number = 1;
 
-	int max_levelitems = (int)LibVarValue("max_levelitems", "512");
-	if (max_levelitems <= 0)
-	{
-		max_levelitems = BOT_GOAL_MAX_LEVELITEMS;
-	}
-	if (max_levelitems > BOT_GOAL_MAX_LEVELITEMS)
-	{
-		max_levelitems = BOT_GOAL_MAX_LEVELITEMS;
-	}
-	g_levelitem_limit = max_levelitems;
+	memset(g_iteminfo_names, 0, sizeof(g_iteminfo_names));
+	g_iteminfo_count = 0;
+	memset(g_maplocations, 0, sizeof(g_maplocations));
+	g_maplocation_count = 0;
+	memset(g_campspots, 0, sizeof(g_campspots));
+	g_campspot_count = 0;
 
-	if (g_itemconfig == NULL || g_itemconfig->numiteminfo <= 0)
-	{
-		return;
-	}
+	BotGoal_LoadItemDefs();
 
-	if (!aasworld.loaded)
+	char *entity_lump = NULL;
+	size_t entity_lump_length = 0U;
+	if (BotGoal_LoadEntityLump(&entity_lump, &entity_lump_length))
 	{
-		return;
+		BotGoal_ParseEntityLump(entity_lump, entity_lump_length);
+		free(entity_lump);
 	}
 
-	for (int i = 0; i < g_itemconfig->numiteminfo; ++i)
+	for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
 	{
-		if (g_itemconfig->iteminfo[i].modelindex == 0)
-		{
-			BotLib_LogWrite("item %s has modelindex 0", g_itemconfig->iteminfo[i].classname);
-		}
-	}
-
-	char *entityData = NULL;
-	size_t entityLength = 0U;
-	if (!BotGoal_LoadEntityLump(&entityData, &entityLength))
-	{
-		return;
-	}
-
-	pc_source_t *source = PC_LoadSourceMemory("bot_goal_entities", entityData, entityLength);
-	if (source == NULL)
-	{
-		free(entityData);
-		return;
-	}
-
-	int notspawnflags = (int)LibVarValue("notspawnflags", "2048");
-
-	pc_token_t token;
-	while (PC_ReadToken(source, &token))
-	{
-		if (strcmp(token.string, "{") != 0)
+		bot_goalstate_t *gs = g_goalstates[handle];
+		if (gs == NULL)
 		{
 			continue;
 		}
-
-		char classname[MAX_STRINGFIELD] = {0};
-		vec3_t origin = {0.0f, 0.0f, 0.0f};
-		int spawnflags = 0;
-		bool hasClassname = false;
-		bool hasOrigin = false;
-
-		while (PC_ReadToken(source, &token))
-		{
-			if (strcmp(token.string, "}") == 0)
-			{
-				break;
-			}
-
-			if (token.type != TT_STRING)
-			{
-				continue;
-			}
-
-			StripDoubleQuotes(token.string);
-			char key[MAX_STRINGFIELD];
-			strncpy(key, token.string, sizeof(key) - 1U);
-			key[sizeof(key) - 1U] = '\0';
-
-			if (!PC_ReadToken(source, &token))
-			{
-				break;
-			}
-
-			if (token.type != TT_STRING)
-			{
-				continue;
-			}
-
-			StripDoubleQuotes(token.string);
-
-			if (strcmp(key, "classname") == 0)
-			{
-				strncpy(classname, token.string, sizeof(classname) - 1U);
-				classname[sizeof(classname) - 1U] = '\0';
-				hasClassname = true;
-			}
-			else if (strcmp(key, "origin") == 0)
-			{
-				if (BotGoal_ParseVector(token.string, origin))
-				{
-					hasOrigin = true;
-				}
-			}
-			else if (strcmp(key, "spawnflags") == 0)
-			{
-				BotGoal_ParseIntValue(token.string, &spawnflags);
-			}
-		}
-
-		if (!hasClassname)
-		{
-			continue;
-		}
-
-		if ((spawnflags & notspawnflags) != 0)
-		{
-			continue;
-		}
-
-		int iteminfo_index = -1;
-		for (int i = 0; i < g_itemconfig->numiteminfo; ++i)
-		{
-			if (strcmp(classname, g_itemconfig->iteminfo[i].classname) == 0)
-			{
-				iteminfo_index = i;
-				break;
-			}
-		}
-
-		if (iteminfo_index < 0)
-		{
-			BotLib_LogWrite("entity %s unkown item", classname);
-			continue;
-		}
-
-		if (!hasOrigin)
-		{
-			BotLib_Print(PRT_ERROR, "item %s without origin\n", classname);
-			continue;
-		}
-
-		const bot_iteminfo_t *iteminfo = &g_itemconfig->iteminfo[iteminfo_index];
-		vec3_t itemOrigin;
-		VectorCopy(origin, itemOrigin);
-
-		if (!(spawnflags & 1))
-		{
-			if (!BotGoal_DropToFloor(itemOrigin, iteminfo->mins, iteminfo->maxs))
-			{
-				BotLib_Print(PRT_MESSAGE,
-				             "%s in solid at (%1.1f %1.1f %1.1f)\n",
-				             classname,
-				             itemOrigin[0],
-				             itemOrigin[1],
-				             itemOrigin[2]);
-			}
-		}
-
-		if (g_levelitem_count >= g_levelitem_limit)
-		{
-			BotLib_Print(PRT_FATAL, "out of level items\n");
-			break;
-		}
-
-		bot_levelitem_setup_t setup = {0};
-		setup.classname = iteminfo->classname;
-		setup.goal.number = g_levelitem_count + 1;
-		VectorCopy(itemOrigin, setup.goal.origin);
-		VectorCopy(iteminfo->mins, setup.goal.mins);
-		VectorCopy(iteminfo->maxs, setup.goal.maxs);
-		setup.goal.areanum = 0;
-		setup.goal.entitynum = 0;
-		setup.flags = 0;
-		setup.respawntime = iteminfo->respawntime;
-		setup.weight = 0.0f;
-
-		BotGoal_RegisterLevelItem(&setup);
-	}
-
-	PC_FreeSource(source);
-	free(entityData);
-
-	g_levelitem_static_count = g_levelitem_count;
-	BotLib_Print(PRT_MESSAGE, "found %d level items\n", g_levelitem_count);
-}
-
-/*
-=============
-BotUpdateEntityItems
-=============
-*/
-void BotUpdateEntityItems(void)
-{
-	float now = BotGoal_CurrentTime();
-	const float dropped_timeout = 30.0f;
-
-	for (int i = 0; i < g_levelitem_count; ++i)
-	{
-		bot_levelitem_t *item = &g_levelitems[i];
-		if (!item->valid)
-		{
-			continue;
-		}
-
-		if ((item->goal.flags & GFL_DROPPED) == 0)
-		{
-			continue;
-		}
-
-		if (item->next_respawn_time > 0.0f && item->next_respawn_time <= now)
-		{
-			item->valid = false;
-			item->goal.entitynum = 0;
-			continue;
-		}
-
-		int entnum = item->goal.entitynum;
-		if (entnum <= 0)
-		{
-			continue;
-		}
-
-		if (aasworld.entities != NULL && aasworld.maxEntities > 0)
-		{
-			if (entnum >= aasworld.maxEntities || !aasworld.entities[entnum].inuse)
-			{
-				item->valid = false;
-				item->goal.entitynum = 0;
-				continue;
-			}
-
-			if (g_itemconfig != NULL
-			    && item->goal.iteminfo >= 0
-			    && item->goal.iteminfo < g_itemconfig->numiteminfo)
-			{
-				int expected_model = g_itemconfig->iteminfo[item->goal.iteminfo].modelindex;
-				if (expected_model > 0 && aasworld.entities[entnum].modelindex != expected_model)
-				{
-					item->valid = false;
-					item->goal.entitynum = 0;
-					continue;
-				}
-			}
-		}
-	}
-
-	if (g_itemconfig == NULL || g_itemconfig->numiteminfo <= 0)
-	{
-		return;
-	}
-
-	if (aasworld.entities == NULL || aasworld.maxEntities <= 0)
-	{
-		return;
-	}
-
-	for (int ent = 1; ent < aasworld.maxEntities; ++ent)
-	{
-		const aas_entity_t *entity = &aasworld.entities[ent];
-		if (!entity->inuse)
-		{
-			continue;
-		}
-
-		if (entity->solid != SOLID_TRIGGER)
-		{
-			continue;
-		}
-
-		int modelindex = entity->modelindex;
-		if (modelindex <= 0)
-		{
-			continue;
-		}
-
-		int iteminfo_index = BotGoal_FindItemInfoByModelIndex(modelindex);
-		if (iteminfo_index < 0)
-		{
-			continue;
-		}
-
-		if (!BotGoal_EntityIsStationary(entity))
-		{
-			continue;
-		}
-
-		bot_levelitem_t *linked = NULL;
-		for (int i = 0; i < g_levelitem_count; ++i)
-		{
-			bot_levelitem_t *item = &g_levelitems[i];
-			if (!item->valid)
-			{
-				continue;
-			}
-			if (item->goal.entitynum == ent)
-			{
-				linked = item;
-				break;
-			}
-		}
-
-		if (linked != NULL)
-		{
-			if (linked->goal.iteminfo != iteminfo_index)
-			{
-				if (linked->goal.flags & GFL_DROPPED)
-				{
-					linked->valid = false;
-				}
-				else
-				{
-					linked->goal.entitynum = 0;
-				}
-				linked = NULL;
-			}
-			else
-			{
-				VectorCopy(entity->origin, linked->goal.origin);
-				int area = BotGoal_PointAreaNum(linked->goal.origin);
-				if (area > 0)
-				{
-					linked->goal.areanum = area;
-				}
-				continue;
-			}
-		}
-
-		for (int i = 0; i < g_levelitem_count; ++i)
-		{
-			bot_levelitem_t *item = &g_levelitems[i];
-			if (!item->valid)
-			{
-				continue;
-			}
-			if (item->goal.entitynum != 0)
-			{
-				continue;
-			}
-			if (item->goal.flags & GFL_DROPPED)
-			{
-				continue;
-			}
-			if (item->goal.iteminfo != iteminfo_index)
-			{
-				continue;
-			}
-
-			vec3_t dir;
-			VectorSubtract(item->goal.origin, entity->origin, dir);
-			float dist2 = DotProduct(dir, dir);
-			if (dist2 < 900.0f)
-			{
-				item->goal.entitynum = ent;
-				VectorCopy(entity->origin, item->goal.origin);
-				int area = BotGoal_PointAreaNum(item->goal.origin);
-				if (area > 0)
-				{
-					item->goal.areanum = area;
-				}
-				linked = item;
-				break;
-			}
-		}
-
-		if (linked != NULL)
-		{
-			continue;
-		}
-
-		if (g_levelitem_count >= g_levelitem_limit)
-		{
-			BotLib_Print(PRT_FATAL, "out of level items\n");
-			return;
-		}
-
-		const bot_iteminfo_t *iteminfo = &g_itemconfig->iteminfo[iteminfo_index];
-		bot_levelitem_setup_t setup = {0};
-		setup.classname = iteminfo->classname;
-		setup.goal.number = g_levelitem_static_count + ent;
-		VectorCopy(entity->origin, setup.goal.origin);
-		VectorCopy(iteminfo->mins, setup.goal.mins);
-		VectorCopy(iteminfo->maxs, setup.goal.maxs);
-		setup.goal.areanum = 0;
-		setup.goal.entitynum = ent;
-		setup.flags = GFL_ITEM | GFL_DROPPED;
-		setup.respawntime = 0.0f;
-		setup.weight = 0.0f;
-
-		int number = BotGoal_RegisterLevelItem(&setup);
-		if (number != 0)
-		{
-			bot_levelitem_t *item = BotGoal_FindLevelItem(number);
-			if (item != NULL)
-			{
-				item->next_respawn_time = now + dropped_timeout;
-			}
-		}
+		BotGoal_EnsureWeightCapacity(gs);
 	}
 }
 
@@ -2405,7 +2683,7 @@ BotGetLevelItemGoal
 */
 int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal)
 {
-	if (g_itemconfig == NULL || classname == NULL || goal == NULL)
+	if (goal == NULL)
 	{
 		return -1;
 	}
@@ -2415,7 +2693,12 @@ int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal)
 	{
 		for (int i = 0; i < g_levelitem_count; ++i)
 		{
-			if (g_levelitems[i].valid && g_levelitems[i].goal.number == index)
+			const bot_levelitem_t *item = &g_levelitems[i];
+			if (!item->valid)
+			{
+				continue;
+			}
+			if (item->goal.number == index)
 			{
 				start = i + 1;
 				break;
@@ -2430,57 +2713,39 @@ int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal)
 		{
 			continue;
 		}
-
-		if (Q_stricmp(classname, item->classname) != 0)
+		if (!BotGoal_LevelItemAllowed(item))
 		{
 			continue;
 		}
 
-		*goal = item->goal;
+		if (classname != NULL && classname[0] != '\0')
+		{
+			bool matched = false;
+			if (BotGoal_StrIcmp(item->classname, classname) == 0)
+			{
+				matched = true;
+			}
+			else
+			{
+				const bot_itemdef_t *itemdef = BotGoal_FindItemDef(item->classname);
+				if (itemdef != NULL && itemdef->name[0] != '\0'
+					&& BotGoal_StrIcmp(itemdef->name, classname) == 0)
+				{
+					matched = true;
+				}
+			}
+
+			if (!matched)
+			{
+				continue;
+			}
+		}
+
+		memcpy(goal, &item->goal, sizeof(*goal));
 		return item->goal.number;
 	}
 
 	return -1;
-}
-
-/*
-=============
-BotItemGoalInVisButNotVisible
-=============
-*/
-int BotItemGoalInVisButNotVisible(int viewer, vec3_t eye, vec3_t viewangles, bot_goal_t *goal)
-{
-	(void)viewangles;
-
-	if (goal == NULL || (goal->flags & GFL_ITEM) == 0)
-	{
-		return 0;
-	}
-
-	vec3_t middle;
-	VectorAdd(goal->mins, goal->mins, middle);
-	VectorScale(middle, 0.5f, middle);
-	VectorAdd(goal->origin, middle, middle);
-
-	bsp_trace_t trace = Q2_Trace(eye, NULL, NULL, middle, viewer, CONTENTS_SOLID);
-	if (trace.fraction >= 1.0f)
-	{
-		if (goal->entitynum <= 0)
-		{
-			return 0;
-		}
-
-		if (goal->entitynum >= 0 && goal->entitynum < aasworld.maxEntities && aasworld.entities != NULL)
-		{
-			const aas_entity_t *entity = &aasworld.entities[goal->entitynum];
-			if (entity->lastUpdateTime < aasworld.time - 0.5f)
-			{
-				return 1;
-			}
-		}
-	}
-
-	return 0;
 }
 
 /*
@@ -2490,8 +2755,39 @@ BotGetNextCampSpotGoal
 */
 int BotGetNextCampSpotGoal(int num, bot_goal_t *goal)
 {
-	(void)num;
-	(void)goal;
+	if (goal == NULL)
+	{
+		return 0;
+	}
+
+	if (num < 0)
+	{
+		num = 0;
+	}
+
+	int index = num;
+	for (int i = 0; i < g_campspot_count; ++i)
+	{
+		const bot_campspot_t *spot = &g_campspots[i];
+		if (!spot->valid)
+		{
+			continue;
+		}
+
+		if (--index >= 0)
+		{
+			continue;
+		}
+
+		memset(goal, 0, sizeof(*goal));
+		goal->areanum = spot->areanum;
+		VectorCopy(spot->origin, goal->origin);
+		goal->entitynum = 0;
+		VectorSet(goal->mins, -8.0f, -8.0f, -8.0f);
+		VectorSet(goal->maxs, 8.0f, 8.0f, 8.0f);
+		return num + 1;
+	}
+
 	return 0;
 }
 
@@ -2502,8 +2798,33 @@ BotGetMapLocationGoal
 */
 int BotGetMapLocationGoal(char *name, bot_goal_t *goal)
 {
-	(void)name;
-	(void)goal;
+	if (name == NULL || name[0] == '\0' || goal == NULL)
+	{
+		return 0;
+	}
+
+	for (int i = 0; i < g_maplocation_count; ++i)
+	{
+		const bot_maplocation_t *location = &g_maplocations[i];
+		if (!location->valid)
+		{
+			continue;
+		}
+
+		if (BotGoal_StrIcmp(location->name, name) != 0)
+		{
+			continue;
+		}
+
+		memset(goal, 0, sizeof(*goal));
+		goal->areanum = location->areanum;
+		VectorCopy(location->origin, goal->origin);
+		goal->entitynum = 0;
+		VectorSet(goal->mins, -8.0f, -8.0f, -8.0f);
+		VectorSet(goal->maxs, 8.0f, 8.0f, 8.0f);
+		return 1;
+	}
+
 	return 0;
 }
 
@@ -2514,9 +2835,48 @@ BotInterbreedGoalFuzzyLogic
 */
 void BotInterbreedGoalFuzzyLogic(int parent1, int parent2, int child)
 {
-	(void)parent1;
-	(void)parent2;
-	(void)child;
+	bot_goalstate_t *first = BotGoalStateFromHandle(parent1);
+	bot_goalstate_t *second = BotGoalStateFromHandle(parent2);
+	bot_goalstate_t *out = BotGoalStateFromHandle(child);
+	bot_weight_config_t *child_config;
+	const char *source_path;
+
+	if (first == NULL || second == NULL || out == NULL)
+	{
+		return;
+	}
+
+	if (first->itemweightconfig == NULL || second->itemweightconfig == NULL)
+	{
+		return;
+	}
+
+	source_path = first->itemweightconfig->source_file;
+	if (source_path == NULL || source_path[0] == '\0')
+	{
+		source_path = second->itemweightconfig->source_file;
+	}
+	if (source_path == NULL || source_path[0] == '\0')
+	{
+		BotLib_Print(PRT_ERROR, "BotInterbreedGoalFuzzyLogic: parent configs have no source path\n");
+		return;
+	}
+
+	child_config = ReadWeightConfig(source_path);
+	if (child_config == NULL)
+	{
+		BotLib_Print(PRT_ERROR, "BotInterbreedGoalFuzzyLogic: couldn't clone %s\n", source_path);
+		return;
+	}
+
+	InterbreedWeightConfigs(first->itemweightconfig, second->itemweightconfig, child_config);
+
+	if (out->itemweightconfig != NULL)
+	{
+		FreeWeightConfig(out->itemweightconfig);
+	}
+	out->itemweightconfig = child_config;
+	BotGoal_RebuildWeightIndices(out);
 }
 
 /*
@@ -2526,8 +2886,13 @@ BotSaveGoalFuzzyLogic
 */
 void BotSaveGoalFuzzyLogic(int goalstate, char *filename)
 {
-	(void)goalstate;
-	(void)filename;
+	bot_goalstate_t *gs = BotGoalStateFromHandle(goalstate);
+	if (gs == NULL || filename == NULL || filename[0] == '\0' || gs->itemweightconfig == NULL)
+	{
+		return;
+	}
+
+	WriteWeightConfig(filename, gs->itemweightconfig);
 }
 
 /*
@@ -2537,8 +2902,31 @@ BotMutateGoalFuzzyLogic
 */
 void BotMutateGoalFuzzyLogic(int goalstate, float range)
 {
-	(void)goalstate;
-	(void)range;
+	bot_goalstate_t *gs = BotGoalStateFromHandle(goalstate);
+	if (gs == NULL || gs->itemweightconfig == NULL)
+	{
+		return;
+	}
+
+	if (range <= 0.0f)
+	{
+		EvolveWeightConfig(gs->itemweightconfig);
+		BotGoal_RebuildWeightIndices(gs);
+		return;
+	}
+
+	for (int i = 0; i < gs->itemweightconfig->num_weights; ++i)
+	{
+		const char *name = gs->itemweightconfig->weights[i].name;
+		if (name == NULL || name[0] == '\0')
+		{
+			continue;
+		}
+		ScaleWeight(gs->itemweightconfig, name, BotGoal_RandomScale(range));
+	}
+
+	ScaleBalanceRange(gs->itemweightconfig, BotGoal_RandomScale(range));
+	BotGoal_RebuildWeightIndices(gs);
 }
 
 /*
@@ -2548,7 +2936,8 @@ BotSetupGoalAI
 */
 int BotSetupGoalAI(void)
 {
-	return BotGoal_LoadItemConfig();
+	BotInitLevelItems();
+	return BLERR_NOERROR;
 }
 
 /*
@@ -2558,10 +2947,6 @@ BotShutdownGoalAI
 */
 void BotShutdownGoalAI(void)
 {
-	BotGoal_ClearLevelItems();
-	BotGoal_ShutdownItemConfig();
-	g_levelitem_limit = BOT_GOAL_MAX_LEVELITEMS;
-
 	for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
 	{
 		if (g_goalstates[handle] != NULL)
@@ -2569,4 +2954,6 @@ void BotShutdownGoalAI(void)
 			BotFreeGoalState(handle);
 		}
 	}
+
+	BotInitLevelItems();
 }

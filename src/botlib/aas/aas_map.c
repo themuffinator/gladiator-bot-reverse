@@ -47,7 +47,7 @@ int AAS_Init(void)
     }
 
     AAS_ClearWorld();
-    aasworld.initialized = qfalse;
+    aasworld.initialized = qtrue;
     g_aasLibraryInitialized = qtrue;
 	BotLib_Print(PRT_MESSAGE, "AAS initialized.\n");
     return BLERR_NOERROR;

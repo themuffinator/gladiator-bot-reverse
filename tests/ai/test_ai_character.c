@@ -10,6 +10,10 @@
 
 #include <math.h>
 
+#ifndef cmocka_skip
+#define cmocka_skip(...) skip()
+#endif
+
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -31,7 +35,7 @@
 #error "PROJECT_SOURCE_DIR must be defined so regression tests can resolve asset paths."
 #endif
 
-#define TEST_BOTLIB_HEAP_SIZE (1u << 20)
+#define TEST_BOTLIB_HEAP_SIZE (8u << 20)
 #define TEST_MAX_LOG_MESSAGES 64
 
 typedef struct test_log_message_s {
@@ -49,17 +53,6 @@ typedef struct test_environment_s {
     ai_weapon_library_t *weapon_library;
     bot_export_t *exports;
 } test_environment_t;
-
-typedef struct ai_character_definition_s ai_character_definition_t;
-
-struct ai_character_profile_s {
-    char character_filename[128];
-    float requested_skill;
-    bot_weight_config_t *item_weights;
-    ai_weapon_weights_t *weapon_weights;
-    void *chat_state;
-    ai_character_definition_t *definition_blob;
-};
 
 static struct {
     test_log_message_t entries[TEST_MAX_LOG_MESSAGES];

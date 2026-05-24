@@ -44,17 +44,21 @@ def _parse_table(lines: Sequence[str]) -> List[Dict[str, str]]:
     return entries
 
 
-def _parse_schedule(lines: Sequence[str]) -> List[str]:
+def _parse_schedule(lines: Sequence[str]) -> tuple[bool, List[str]]:
+    found_header = False
     schedule: List[str] = []
     capture = False
     for line in lines:
         if line.startswith("## Remediation schedule"):
             capture = True
+            found_header = True
             continue
         if capture:
-            if line.strip().startswith("- [ ]"):
+            if line.startswith("## "):
+                break
+            if line.strip().startswith("- ["):
                 schedule.append(line.strip())
-    return schedule
+    return found_header, schedule
 
 
 def _normalise_function_names(name: str) -> List[str]:
@@ -76,7 +80,7 @@ def main() -> int:
 
     lines = DOC_PATH.read_text(encoding="utf-8").splitlines()
     entries = _parse_table(lines)
-    schedule = _parse_schedule(lines)
+    has_schedule_section, schedule = _parse_schedule(lines)
 
     errors: List[str] = []
     for entry in entries:
@@ -87,7 +91,7 @@ def main() -> int:
         if not entry["acceptance"] or entry["acceptance"].lower() == "tbd":
             errors.append(f"Acceptance criteria missing for {entry['function']}")
 
-    if schedule:
+    if has_schedule_section:
         schedule_text = " ".join(schedule).lower()
         for entry in entries:
             if entry["status"] == "implemented":

@@ -71,15 +71,12 @@ typedef struct bot_levelitem_setup_s
     float respawntime;
     float weight;
     int flags;
+    int itemflags;
 } bot_levelitem_setup_t;
 
 int BotAllocGoalState(int client);
 void BotFreeGoalState(int handle);
 void BotResetGoalState(int handle);
-
-int BotGoal_LoadItemConfig(void);
-void BotGoal_ShutdownItemConfig(void);
-void BotGoal_SetMapModels(const char **models, int count);
 
 int BotLoadItemWeights(int handle, const char *filename);
 void BotFreeItemWeights(int handle);
@@ -116,7 +113,7 @@ float BotGoal_EvaluateStackGoal(int handle,
                                 int *travel_time);
 
 int BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal);
-int BotItemGoalInVisButNotVisible(int viewer, const vec3_t eye, const vec3_t viewangles, const bot_goal_t *goal);
+int BotItemGoalInVisButNotVisible(int viewer, vec3_t eye, vec3_t viewangles, bot_goal_t *goal);
 void BotGoalName(int number, char *name, int size);
 void BotDumpAvoidGoals(int handle);
 void BotDumpGoalStack(int handle);
@@ -124,61 +121,14 @@ void BotDumpGoalStack(int handle);
 int BotGoal_RegisterLevelItem(const bot_levelitem_setup_t *setup);
 void BotGoal_UnregisterLevelItem(int number);
 void BotGoal_MarkItemTaken(int number, float respawn_delay);
-void BotUpdateEntityItems(void);
-
-int BotItemGoalInVisButNotVisible(int viewer, vec3_t eye, vec3_t viewangles, bot_goal_t *goal);
 int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal);
 int BotGetNextCampSpotGoal(int num, bot_goal_t *goal);
 int BotGetMapLocationGoal(char *name, bot_goal_t *goal);
-
 void BotInitLevelItems(void);
 void BotUpdateEntityItems(void);
 void BotInterbreedGoalFuzzyLogic(int parent1, int parent2, int child);
 void BotSaveGoalFuzzyLogic(int goalstate, char *filename);
 void BotMutateGoalFuzzyLogic(int goalstate, float range);
-
-int BotSetupGoalAI(void);
-void BotShutdownGoalAI(void);
-
-int BotItemGoalInVisButNotVisible(int viewer, vec3_t eye, vec3_t viewangles, bot_goal_t *goal);
-int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal);
-int BotGetNextCampSpotGoal(int num, bot_goal_t *goal);
-int BotGetMapLocationGoal(char *name, bot_goal_t *goal);
-
-void BotInitLevelItems(void);
-void BotUpdateEntityItems(void);
-void BotInterbreedGoalFuzzyLogic(int parent1, int parent2, int child);
-void BotSaveGoalFuzzyLogic(int goalstate, char *filename);
-void BotMutateGoalFuzzyLogic(int goalstate, float range);
-
-int BotSetupGoalAI(void);
-void BotShutdownGoalAI(void);
-
-int BotItemGoalInVisButNotVisible(int viewer, vec3_t eye, vec3_t viewangles, bot_goal_t *goal);
-int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal);
-int BotGetNextCampSpotGoal(int num, bot_goal_t *goal);
-int BotGetMapLocationGoal(char *name, bot_goal_t *goal);
-
-void BotInitLevelItems(void);
-void BotUpdateEntityItems(void);
-void BotInterbreedGoalFuzzyLogic(int parent1, int parent2, int child);
-void BotSaveGoalFuzzyLogic(int goalstate, char *filename);
-void BotMutateGoalFuzzyLogic(int goalstate, float range);
-
-int BotSetupGoalAI(void);
-void BotShutdownGoalAI(void);
-
-int BotItemGoalInVisButNotVisible(int viewer, vec3_t eye, vec3_t viewangles, bot_goal_t *goal);
-int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal);
-int BotGetNextCampSpotGoal(int num, bot_goal_t *goal);
-int BotGetMapLocationGoal(char *name, bot_goal_t *goal);
-
-void BotInitLevelItems(void);
-void BotUpdateEntityItems(void);
-void BotInterbreedGoalFuzzyLogic(int parent1, int parent2, int child);
-void BotSaveGoalFuzzyLogic(int goalstate, char *filename);
-void BotMutateGoalFuzzyLogic(int goalstate, float range);
-
 int BotSetupGoalAI(void);
 void BotShutdownGoalAI(void);
 

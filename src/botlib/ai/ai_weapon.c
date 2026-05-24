@@ -10,6 +10,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define AI_WEAPON_DEFAULT_CONFIG "weapons.c"
@@ -21,46 +22,88 @@ static const char *AI_Weapon_LogPath(const char *path)
     return (path != NULL && path[0] != '\0') ? path : AI_WEAPON_DEFAULT_CONFIG;
 }
 
+/*
+=============
+AI_Weapon_TokenToFloat
+=============
+*/
 static float AI_Weapon_TokenToFloat(const pc_token_t *token)
 {
-    if (token == NULL)
-    {
-        return 0.0f;
-    }
+	if (token == NULL)
+	{
+		return 0.0f;
+	}
 
-    if (token->type == TT_NUMBER && (token->subtype & TT_FLOAT))
-    {
-        return (float)token->floatvalue;
-    }
+	if (token->type == TT_NUMBER)
+	{
+		char *end = NULL;
+		double parsed = strtod(token->string, &end);
+		if (end != token->string && (end == NULL || *end == '\0'))
+		{
+			return (float)parsed;
+		}
+	}
 
-    return (float)token->intvalue;
+	if (token->type == TT_NUMBER && (token->subtype & TT_FLOAT))
+	{
+		return (float)token->floatvalue;
+	}
+
+	return (float)token->intvalue;
 }
 
+/*
+=============
+AI_Weapon_TokenToInt
+=============
+*/
 static int AI_Weapon_TokenToInt(const pc_token_t *token)
 {
-    if (token == NULL)
-    {
-        return 0;
-    }
+	if (token == NULL)
+	{
+		return 0;
+	}
 
-    if (token->type == TT_NUMBER && (token->subtype & TT_FLOAT))
-    {
-        return (int)token->floatvalue;
-    }
+	if (token->type == TT_NUMBER)
+	{
+		char *end = NULL;
+		long parsed = strtol(token->string, &end, 0);
+		if (end != token->string && (end == NULL || *end == '\0'))
+		{
+			return (int)parsed;
+		}
+	}
 
-    return (int)token->intvalue;
+	if (token->type == TT_NUMBER && (token->subtype & TT_FLOAT))
+	{
+		return (int)token->floatvalue;
+	}
+
+	return (int)token->intvalue;
 }
 
+/*
+=============
+AI_Weapon_CopyTokenString
+=============
+*/
 static void AI_Weapon_CopyTokenString(char *dest, size_t dest_size, const pc_token_t *token)
 {
-    if (dest == NULL || dest_size == 0 || token == NULL)
-    {
-        return;
-    }
+	if (dest == NULL || dest_size == 0 || token == NULL)
+	{
+		return;
+	}
 
-    dest[0] = '\0';
-    strncpy(dest, token->string, dest_size - 1);
-    dest[dest_size - 1] = '\0';
+	dest[0] = '\0';
+	strncpy(dest, token->string, dest_size - 1);
+	dest[dest_size - 1] = '\0';
+
+	size_t length = strlen(dest);
+	if (length >= 2 && dest[0] == '"' && dest[length - 1] == '"')
+	{
+		memmove(dest, dest + 1, length - 2);
+		dest[length - 2] = '\0';
+	}
 }
 
 /*
@@ -805,6 +848,37 @@ const bot_weapon_config_t *AI_GetWeaponConfig(const ai_weapon_library_t *library
     return (library != NULL) ? library->config : NULL;
 }
 
+/*
+=============
+AI_Weapon_FindWeightIndex
+=============
+*/
+static int AI_Weapon_FindWeightIndex(const bot_weight_config_t *config, const bot_weapon_info_t *weapon)
+{
+	if (config == NULL || weapon == NULL)
+	{
+		return -1;
+	}
+
+	int index = BotWeight_FindIndex(config, weapon->name);
+	if (index >= 0)
+	{
+		return index;
+	}
+
+	if (strcmp(weapon->name, "grenades") == 0)
+	{
+		index = BotWeight_FindIndex(config, "Grenades");
+	}
+
+	return index;
+}
+
+/*
+=============
+AI_LoadWeaponWeights
+=============
+*/
 ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 {
 	char resolved_path[AI_WEAPON_MAX_PATH];
@@ -857,7 +931,7 @@ ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 		for (int i = 0; i < weights->index_count; ++i)
 		{
 			const bot_weapon_info_t *weapon = &definitions->weapons[i];
-			int weight_index = BotWeight_FindIndex(config, weapon->name);
+			int weight_index = AI_Weapon_FindWeightIndex(config, weapon);
 			if (weight_index < 0)
 			{
 				BotLib_Print(PRT_WARNING,
@@ -906,37 +980,75 @@ void AI_FreeWeaponWeights(ai_weapon_weights_t *weights)
     FreeMemory(weights);
 }
 
+/*
+=============
+AI_Weapon_BuildReferenceInventory
+=============
+*/
+static void AI_Weapon_BuildReferenceInventory(const bot_weapon_info_t *weapon, int *inventory, size_t inventory_count)
+{
+	if (weapon == NULL || inventory == NULL)
+	{
+		return;
+	}
+
+	memset(inventory, 0, sizeof(int) * inventory_count);
+
+	if (weapon->weaponindex > 0 && (size_t)weapon->weaponindex < inventory_count)
+	{
+		inventory[weapon->weaponindex] = 1;
+	}
+
+	if (weapon->ammoindex > 0 && (size_t)weapon->ammoindex < inventory_count)
+	{
+		inventory[weapon->ammoindex] = (weapon->ammoamount > 0) ? weapon->ammoamount : 1;
+	}
+}
+
+/*
+=============
+AI_WeaponWeightForClient
+=============
+*/
 float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_index)
 {
-    if (weights == NULL || weights->config == NULL)
-    {
-        return 0.0f;
-    }
+	if (weights == NULL || weights->config == NULL)
+	{
+		return 0.0f;
+	}
 
-    if (weapon_index < 0 || weapon_index >= weights->index_count || weights->index_by_weapon == NULL)
-    {
-        return 0.0f;
-    }
+	if (weapon_index < 0 || weapon_index >= weights->index_count || weights->index_by_weapon == NULL)
+	{
+		return 0.0f;
+	}
 
-    int weight_index = weights->index_by_weapon[weapon_index];
-    if (weight_index < 0)
-    {
-        if (weights->definitions != NULL && weapon_index < weights->definitions->num_weapons)
-        {
-            const bot_weapon_info_t *weapon = &weights->definitions->weapons[weapon_index];
-            BotLib_Print(PRT_WARNING,
-                         "item info %d \"%s\" has no fuzzy weight\n",
-                         weapon->number,
-                         weapon->name);
-        }
-        else
-        {
-            BotLib_Print(PRT_WARNING,
-                         "[ai_weapon] weapon slot %d missing fuzzy weight binding\n",
-                         weapon_index);
-        }
-        return 0.0f;
-    }
+	int weight_index = weights->index_by_weapon[weapon_index];
+	if (weight_index < 0)
+	{
+		if (weights->definitions != NULL && weapon_index < weights->definitions->num_weapons)
+		{
+			const bot_weapon_info_t *weapon = &weights->definitions->weapons[weapon_index];
+			BotLib_Print(PRT_WARNING,
+						 "item info %d \"%s\" has no fuzzy weight\n",
+						 weapon->number,
+						 weapon->name);
+		}
+		else
+		{
+			BotLib_Print(PRT_WARNING,
+						 "[ai_weapon] weapon slot %d missing fuzzy weight binding\n",
+						 weapon_index);
+		}
+		return 0.0f;
+	}
 
-    return FuzzyWeight(NULL, weights->config, weight_index);
+	int reference_inventory[MAX_ITEMS];
+	if (weights->definitions != NULL && weapon_index < weights->definitions->num_weapons)
+	{
+		const bot_weapon_info_t *weapon = &weights->definitions->weapons[weapon_index];
+		AI_Weapon_BuildReferenceInventory(weapon, reference_inventory, MAX_ITEMS);
+		return FuzzyWeight(reference_inventory, weights->config, weight_index);
+	}
+
+	return FuzzyWeight(NULL, weights->config, weight_index);
 }

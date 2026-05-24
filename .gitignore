@@ -1,2 +1,13 @@
 # CMake build trees
 build/
+/.audit-build-full
+/.audit-build
+/.vscode-build
+/.audit-build-full
+/.audit-build-full
+/.audit-build-full
+/.audit-build-notests
+/build-codex-notests
+/build-codex
+/build-final
+/build-parity-all

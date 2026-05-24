@@ -12,9 +12,8 @@ extern "C" {
 typedef struct bot_chatstate_s bot_chatstate_t;
 
 /**
- * Allocates a lightweight chat state that owns the currently loaded chat file
- * and a FIFO queue of console messages. Real implementations will add match
- * contexts, per-event cooldowns, and gender lookups derived from the HLIL.
+ * Allocates a chat state that owns parsed chat templates, reply tables,
+ * random-string tables, cooldown state, and the diagnostic FIFO queue.
  */
 bot_chatstate_t *BotAllocChatState(void);
 
@@ -22,19 +21,23 @@ bot_chatstate_t *BotAllocChatState(void);
 void BotFreeChatState(bot_chatstate_t *state);
 
 /**
- * Loads a chat script using the precompiler wrappers. The TODO path will grow
- * into the HLIL-observed two-pass loader that builds reply tables before
- * exposing them to BotChat_EnterGame/BotChat_Kill style helpers.
+ * Loads a chat script through the precompiler wrappers, including retail named
+ * initial-chat blocks and sibling random/synonym/match assets when present.
  */
 int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *chatname);
+
+/** Loads the shared retail chat AI assets selected by chat-related libvars. */
+int BotSetupChatAI(void);
+
+/** Releases shared chat AI setup assets. */
+void BotShutdownChatAI(void);
 
 /** Unloads the active chat file without destroying the chat state. */
 void BotFreeChatFile(bot_chatstate_t *state);
 
 /**
  * Enqueues a console message for later inspection. The queue lets the interface
- * stubs surface messages during development even before full chat dispatch is
- * available.
+ * and regression tests observe diagnostics and constructed chat output.
  */
 void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message);
 
@@ -61,12 +64,20 @@ void BotChat_SetContextCooldown(bot_chatstate_t *state,
 unsigned long context,
 double cooldown_seconds);
 
-/**
- * Placeholder for routing text to clients when BotChat_EnterGame and friends
- * eventually transition out of stub form. The TODO captures the HLIL event
- * flow for later implementation.
- */
+/** Builds and dispatches the MSG_ENTERGAME chat event for the supplied client. */
 void BotEnterChat(bot_chatstate_t *state, int client, int sendto);
+
+/** Returns the number of loaded retail initial chats for a type name. */
+int BotNumInitialChats(const bot_chatstate_t *state, const char *type);
+
+/**
+ * Constructs one retail initial chat line for a type name. Variable arguments
+ * are optional string replacements and must end with NULL.
+ */
+int BotInitialChat(bot_chatstate_t *state,
+	const char *type,
+	unsigned long context,
+	...);
 
 int BotChat_EnterGame(bot_chatstate_t *state, int client, int sendto);
 int BotChat_Kill(bot_chatstate_t *state, int client, int sendto);
@@ -80,8 +91,8 @@ int BotChat_Insult(bot_chatstate_t *state, int client, int sendto);
 int BotChat_Praise(bot_chatstate_t *state, int client, int sendto);
 
 /**
- * Placeholder for scripted replies. The return value mirrors Quake III's API:
- * non-zero indicates a reply was constructed.
+ * Constructs a scripted reply. The return value mirrors Quake III's API:
+ * non-zero indicates a reply was constructed and dispatched.
  */
 int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context);
 

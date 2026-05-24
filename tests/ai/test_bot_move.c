@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 
 #include <cmocka.h>
 
@@ -165,20 +166,6 @@ static botlib_import_table_t g_test_lib_imports = {
     .BotLibVarGet = test_botlib_var_get,
     .BotLibVarSet = test_botlib_var_set,
 };
-
-static const botlib_import_table_t *g_active_lib_imports = NULL;
-
-void BotInterface_SetImportTable(const botlib_import_table_t *import_table)
-{
-    g_active_lib_imports = import_table;
-}
-
-const botlib_import_table_t *BotInterface_GetImportTable(void)
-{
-    return g_active_lib_imports;
-}
-
-aas_world_t aasworld = {0};
 
 static int test_setup(void **state)
 {

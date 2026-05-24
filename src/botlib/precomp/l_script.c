@@ -82,6 +82,8 @@ extern int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_tok
 extern int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token);
 
 extern pc_punctuation_t default_punctuations[];
+static int COM_Compress(char *data_p);
+void SetScriptPunctuations(pc_script_t *script, pc_punctuation_t *p);
 void FreeScript(pc_script_t *script);
 int EndOfScript(pc_script_t *script);
 
@@ -182,6 +184,226 @@ static void PS_SyncDiagnosticsFromSource(pc_script_t *script)
         script->line = saved_line;
 }
 
+/*
+=============
+PS_AppendSerializedText
+
+Appends text to a growable preprocessed script snapshot.
+=============
+*/
+static int PS_AppendSerializedText(char **buffer,
+	size_t *length,
+	size_t *capacity,
+	const char *text)
+{
+	if (buffer == NULL || length == NULL || capacity == NULL || text == NULL)
+	{
+		return 0;
+	}
+
+	const size_t text_length = strlen(text);
+	if (text_length == 0)
+	{
+		return 1;
+	}
+
+	if (*length + text_length + 1 > *capacity)
+	{
+		size_t new_capacity = (*capacity == 0) ? 4096 : *capacity;
+		while (*length + text_length + 1 > new_capacity)
+		{
+			new_capacity *= 2;
+		}
+
+		char *new_buffer = (char *)realloc(*buffer, new_capacity);
+		if (new_buffer == NULL)
+		{
+			return 0;
+		}
+
+		*buffer = new_buffer;
+		*capacity = new_capacity;
+	}
+
+	memcpy(*buffer + *length, text, text_length);
+	*length += text_length;
+	(*buffer)[*length] = '\0';
+	return 1;
+}
+
+/*
+=============
+PS_AppendSerializedQuotedSpan
+
+Appends a token span as a quoted script string, escaping bytes that would be
+parsed as punctuation or escape markers on the replay pass.
+=============
+*/
+static int PS_AppendSerializedQuotedSpan(char **buffer,
+	size_t *length,
+	size_t *capacity,
+	const char *text,
+	size_t text_length)
+{
+	if (!PS_AppendSerializedText(buffer, length, capacity, "\""))
+	{
+		return 0;
+	}
+
+	for (size_t index = 0; text != NULL && index < text_length; ++index)
+	{
+		char out[3] = {'\0', '\0', '\0'};
+		const char character = text[index];
+		if (character == '"' || character == '\\')
+		{
+			out[0] = '\\';
+			out[1] = character;
+		}
+		else if (character == '\n')
+		{
+			out[0] = '\\';
+			out[1] = 'n';
+		}
+		else if (character == '\r')
+		{
+			out[0] = '\\';
+			out[1] = 'r';
+		}
+		else if (character == '\t')
+		{
+			out[0] = '\\';
+			out[1] = 't';
+		}
+		else
+		{
+			out[0] = character;
+		}
+
+		if (!PS_AppendSerializedText(buffer, length, capacity, out))
+		{
+			return 0;
+		}
+	}
+
+	return PS_AppendSerializedText(buffer, length, capacity, "\"");
+}
+
+/*
+=============
+PS_AppendSerializedQuotedText
+
+Appends a token as a quoted script string, preserving the token payload.
+=============
+*/
+static int PS_AppendSerializedQuotedText(char **buffer,
+	size_t *length,
+	size_t *capacity,
+	const pc_token_t *token)
+{
+	const char *text = (token != NULL) ? token->string : "";
+	size_t text_length = strlen(text);
+
+	if (token != NULL
+		&& (token->type == TT_STRING || token->type == TT_LITERAL)
+		&& text_length >= 2)
+	{
+		const char quote = text[0];
+		if ((quote == '"' || quote == '\'') && text[text_length - 1] == quote)
+		{
+			++text;
+			text_length -= 2;
+		}
+	}
+
+	return PS_AppendSerializedQuotedSpan(buffer,
+		length,
+		capacity,
+		text,
+		text_length);
+}
+
+/*
+=============
+PS_AppendSerializedToken
+
+Appends a precompiler token in a form the script lexer can read back.
+=============
+*/
+static int PS_AppendSerializedToken(char **buffer,
+	size_t *length,
+	size_t *capacity,
+	const pc_token_t *token)
+{
+	if (token == NULL)
+	{
+		return 0;
+	}
+
+	if (token->type == TT_STRING || token->type == TT_LITERAL)
+	{
+		return PS_AppendSerializedQuotedText(buffer,
+			length,
+			capacity,
+			token);
+	}
+
+	return PS_AppendSerializedText(buffer, length, capacity, token->string);
+}
+
+/*
+=============
+PS_SerializeSourceTokens
+
+Materializes the one-shot precompiler cursor into a rewindable script buffer.
+=============
+*/
+static char *PS_SerializeSourceTokens(pc_source_t *source, size_t *out_length)
+{
+	if (out_length != NULL)
+	{
+		*out_length = 0;
+	}
+	if (source == NULL)
+	{
+		return NULL;
+	}
+
+	char *buffer = NULL;
+	size_t length = 0;
+	size_t capacity = 0;
+	pc_token_t token;
+	while (PC_ReadToken(source, &token))
+	{
+		if (length > 0)
+		{
+			const char *separator = (token.linescrossed > 0) ? "\n" : " ";
+			if (!PS_AppendSerializedText(&buffer, &length, &capacity, separator))
+			{
+				free(buffer);
+				return NULL;
+			}
+		}
+
+		if (!PS_AppendSerializedToken(&buffer, &length, &capacity, &token)
+			|| !PS_AppendSerializedText(&buffer, &length, &capacity, " "))
+		{
+			free(buffer);
+			return NULL;
+		}
+	}
+
+	if (!PS_AppendSerializedText(&buffer, &length, &capacity, "\n"))
+	{
+		free(buffer);
+		return NULL;
+	}
+	if (out_length != NULL)
+	{
+		*out_length = length;
+	}
+	return buffer;
+}
+
 pc_script_t *PS_CreateScriptFromSource(pc_source_t *source)
 {
 	if (source == NULL)
@@ -197,23 +419,41 @@ pc_script_t *PS_CreateScriptFromSource(pc_source_t *source)
 	}
 #endif
 
-pc_script_t *script = (pc_script_t *)calloc(1, sizeof(pc_script_t));
+	size_t snapshot_length = 0;
+	char *snapshot = PS_SerializeSourceTokens(source, &snapshot_length);
+	if (snapshot == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "PS_CreateScriptFromSource: failed to serialize source tokens\n");
+		return NULL;
+	}
+
+	pc_script_t *script = (pc_script_t *)calloc(1, sizeof(pc_script_t) + snapshot_length + 1);
         if (script == NULL)
         {
+                free(snapshot);
                 BotLib_Print(PRT_FATAL, "PS_CreateScriptFromSource: out of memory\n");
                 return NULL;
         }
 
+        snprintf(script->filename, sizeof(script->filename), "%s", "precompiled-source");
         script->source = source;
+        script->buffer = (char *)script + sizeof(pc_script_t);
+        memcpy(script->buffer, snapshot, snapshot_length + 1);
+        free(snapshot);
+        script->length = COM_Compress(script->buffer);
+        script->script_p = script->buffer;
+        script->lastscript_p = script->buffer;
+        script->end_p = script->buffer + script->length;
         script->line = 1;
         script->lastline = 1;
         script->tokenavailable = 0;
         script->diagnostics = NULL;
         script->diagnostics_tail = NULL;
         script->last_source_diagnostic = NULL;
-        script->punctuations = default_punctuations;
+        SetScriptPunctuations(script, NULL);
 
         PS_SyncDiagnosticsFromSource(script);
+        script->source = NULL;
 
         return script;
 }
@@ -1706,6 +1946,30 @@ static long PS_FileLength(FILE *fp)
 
     return end_pos;
 }
+
+/*
+=============
+PS_PathIsAbsolute
+
+Checks whether a script path is already absolute before applying basefolder.
+=============
+*/
+static int PS_PathIsAbsolute(const char *path)
+{
+	if (path == NULL || path[0] == '\0')
+	{
+		return 0;
+	}
+	if (path[0] == '/' || path[0] == '\\')
+	{
+		return 1;
+	}
+	if (isalpha((unsigned char)path[0]) && path[1] == ':')
+	{
+		return 1;
+	}
+	return 0;
+}
 //============================================================================
 //
 // Parameter:                           -
@@ -1721,7 +1985,7 @@ pc_script_t *LoadScriptFile(const char *filename)
 
     char pathname[MAX_PATH];
     int composed_length;
-    if (basefolder[0] != '\0')
+    if (basefolder[0] != '\0' && !PS_PathIsAbsolute(filename))
     {
         composed_length = snprintf(pathname, sizeof(pathname), "%s/%s", basefolder, filename);
     }

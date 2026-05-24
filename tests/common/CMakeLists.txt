@@ -24,7 +24,7 @@ target_compile_definitions(bot_common_tests PRIVATE PROJECT_SOURCE_DIR="${PROJEC
 
 target_compile_features(bot_common_tests PRIVATE c_std_11)
 
-if(NOT MSVC)
+if(UNIX AND NOT APPLE)
     target_link_libraries(bot_common_tests PRIVATE m)
 endif()
 

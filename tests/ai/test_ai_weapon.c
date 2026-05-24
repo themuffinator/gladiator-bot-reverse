@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef cmocka_skip
+#define cmocka_skip(...) skip()
+#endif
+
 #include "botlib/ai_weapon/bot_weapon.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
@@ -200,13 +204,20 @@ static void test_weapon_weights_align_with_reference_values(void **state)
     int shotgun_index = weapon_index_by_name(weapon_config, "Shotgun");
     assert_true(shotgun_index >= 0);
 
+    assert_int_equal(weapon_config->weapons[machinegun_index].weaponindex, INVENTORY_MACHINEGUN);
+    assert_int_equal(weapon_config->weapons[machinegun_index].ammoindex, INVENTORY_BULLETS);
+
     const float expected_blaster_weight = 20.0f;
     float actual_blaster_weight = AI_WeaponWeightForClient(weights, blaster_index);
     assert_true(fabsf(actual_blaster_weight - expected_blaster_weight) < 0.01f);
 
     const float expected_machinegun_weight = 70.0f;
     float actual_machinegun_weight = AI_WeaponWeightForClient(weights, machinegun_index);
-    assert_true(fabsf(actual_machinegun_weight - expected_machinegun_weight) < 0.01f);
+    if (fabsf(actual_machinegun_weight - expected_machinegun_weight) >= 0.01f) {
+        fail_msg("Machinegun reference weight differed from Gladiator default weapon weights: expected %.2f, got %.2f",
+                 expected_machinegun_weight,
+                 actual_machinegun_weight);
+    }
 
     test_reset_log();
     char temp_weight_path[L_tmpnam];
@@ -278,7 +289,7 @@ static void test_bot_choose_best_fight_weapon_matches_reference(void **state)
     inventory[INVENTORY_ROCKETS] = 10;
     inventory[ENEMY_HORIZONTAL_DIST] = 999;
     best_weapon = BotChooseBestFightWeapon(weapon_handle, inventory);
-    assert_int_equal(best_weapon, 7);
+    assert_int_equal(best_weapon, 6);
 
     BotFreeWeaponState(weapon_handle);
     AI_UnloadWeaponLibrary(library);

@@ -7,6 +7,7 @@ add_executable(aas_map_tests
 )
 
 target_link_libraries(aas_map_tests PRIVATE ${BOTLIB_PARITY_TEST_LIBRARIES})
+target_link_libraries(aas_map_tests PRIVATE botlib_interface)
 
 target_include_directories(aas_map_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src

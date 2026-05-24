@@ -152,8 +152,7 @@ static int test_setup(void **state)
     VectorSet(aasworld.reachability[2].end, 128.0f, 0.0f, 64.0f);
 
     memset(aasworld.travelflagfortype, 0, sizeof(aasworld.travelflagfortype));
-    aasworld.travelflagfortype[TRAVEL_WALK] = TFL_WALK;
-    aasworld.travelflagfortype[TRAVEL_LADDER] = TFL_LADDER;
+    AAS_InitTravelFlagFromType();
 
     static const botlib_import_table_t imports = {
         .Print = test_log_print,
@@ -244,7 +243,7 @@ static void test_bot_move_unknown_travel_logs_warning(void **state)
     bot_moveresult_t result;
     BotClearMoveResult(&result);
 
-    BotMoveToGoal(&result, movestate, &goal, TFL_DEFAULT);
+    BotMoveToGoal(&result, movestate, &goal, TFL_DEFAULT | TFL_DOUBLEJUMP);
 
     assert_true(result.failure);
     assert_int_equal(g_test_log.count, 1);

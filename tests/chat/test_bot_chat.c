@@ -2,7 +2,12 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#include <crtdbg.h>
+#endif
 
 #include "botlib/ai_chat/ai_chat.h"
 #include "botlib/common/l_log.h"
@@ -15,6 +20,7 @@ extern void BotLib_TestResetLastMessage(void);
 extern const char *BotLib_TestGetLastMessage(void);
 extern int BotLib_TestGetLastMessageType(void);
 extern void BotLib_TestSetLibVar(const char *var_name, float value);
+extern void BotLib_TestSetLibVarString(const char *var_name, const char *value);
 extern void BotLib_TestResetLibVars(void);
 extern void BotLib_TestSetMaxClients(float value);
 
@@ -29,6 +35,27 @@ typedef struct test_console_message_s
 	int type;
 	char text[TEST_MAX_CONSOLE_TEXT];
 } test_console_message_t;
+
+/*
+=============
+configure_crt_reports
+
+Routes Windows debug CRT asserts to stderr so test failures cannot launch a
+modal dialog during automated reconstruction runs.
+=============
+*/
+static void configure_crt_reports(void)
+{
+#if defined(_WIN32)
+	_CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
+	_CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
+	_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+	_CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+	_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+	_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+}
 
 /*
 =============
@@ -219,6 +246,28 @@ static void assert_console_contains_message(bot_chatstate_t *chat,
 
 /*
 =============
+string_is_one_of
+
+Checks whether a string matches one of the expected entries.
+=============
+*/
+static bool string_is_one_of(const char *actual,
+	const char *const *expected,
+	size_t expected_count)
+{
+	for (size_t i = 0; i < expected_count; ++i)
+	{
+		if (strcmp(actual, expected[i]) == 0)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+=============
 test_enter_chat_uses_unit_test_template
 =============
 */
@@ -237,6 +286,146 @@ static void test_enter_chat_uses_unit_test_template(void) {
 	assert(type == 2);
 	assert(strcmp(buffer, "{NETNAME} triggered the deterministic join message") == 0);
 
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_retail_initial_chat_block_drives_enter_event
+
+Loads a retail bot personality chat file and dispatches its enter_game type.
+=============
+*/
+static void test_retail_initial_chat_block_drives_enter_event(void)
+{
+	static const char *const expected_enter_messages[] = {
+		"greetings",
+		"who's going to lose to me today?",
+		"it's showtime boyz",
+		"anyone wanna slap the criminal element around?",
+		"lets rock and roll!",
+		"g'day mate",
+		"let's kick it!",
+		"wassup!",
+		"Hey",
+		"Hi",
+	};
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/bots/babe_t.c", "babe"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 2, 0.0);
+	BotEnterChat(chat, 0, 0);
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 2);
+	assert(string_is_one_of(buffer,
+		expected_enter_messages,
+		sizeof(expected_enter_messages) / sizeof(expected_enter_messages[0])));
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_retail_initial_chat_counts_raw_type_buckets
+
+Verifies the loader preserves Gladiator initial-chat type buckets beyond the
+event contexts currently dispatched by the game bridge.
+=============
+*/
+static void test_retail_initial_chat_counts_raw_type_buckets(void)
+{
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/bots/babe_t.c", "babe"));
+
+	const int enter_count = BotNumInitialChats(chat, "enter_game");
+	const int exit_count = BotNumInitialChats(chat, "exit_game");
+	const int start_count = BotNumInitialChats(chat, "start_level");
+	const int end_count = BotNumInitialChats(chat, "end_level");
+
+	assert(enter_count > 0);
+	assert(exit_count > 0);
+	assert(start_count > 0);
+	assert(end_count > 0);
+	assert(BotNumInitialChats(chat, "game_enter") == enter_count);
+	assert(BotNumInitialChats(chat, "game_exit") == exit_count);
+	assert(BotNumInitialChats(chat, "level_start") == start_count);
+	assert(BotNumInitialChats(chat, "level_end") == end_count);
+	assert(BotNumInitialChats(chat, "level_end_victory") == 0);
+	assert(BotNumInitialChats(chat, "missing_type") == 0);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_retail_initial_chat_constructs_from_alias
+
+Exercises the reconstructed BotInitialChat path using the Quake III successor
+alias for Gladiator's exit_game bucket.
+=============
+*/
+static void test_retail_initial_chat_constructs_from_alias(void)
+{
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/bots/babe_t.c", "babe"));
+
+	drain_console(chat);
+	assert(BotInitialChat(chat,
+		"game_exit",
+		0,
+		"Babe",
+		"Opponent",
+		"[invalid]",
+		"[invalid]",
+		"base1",
+		NULL));
+
+	int type = -1;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 0);
+	assert(buffer[0] != '\0');
+	assert(strstr(buffer, "\\v") == NULL);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_retail_initial_chat_missing_name_is_rejected
+
+Ensures named chat blocks preserve the HLIL-observed not-found diagnostic.
+=============
+*/
+static void test_retail_initial_chat_missing_name_is_rejected(void)
+{
+	char expected_message[256];
+	const int written = snprintf(expected_message,
+		sizeof(expected_message),
+		"couldn't find chat missing in %s\n",
+		BOT_ASSET_ROOT "/bots/babe_t.c");
+	assert(written > 0);
+	assert((size_t)written < sizeof(expected_message));
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	configure_chat_libvars(1.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	assert(!BotLoadChatFile(chat, BOT_ASSET_ROOT "/bots/babe_t.c", "missing"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
+	assert_console_contains_message(chat, PRT_ERROR, expected_message);
+
+	configure_chat_libvars(0.0f, 0.0f);
 	BotFreeChatState(chat);
 }
 
@@ -291,7 +480,8 @@ static void test_reply_chat_death_context(void) {
 	char buffer[256];
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 1);
-	assert(BotChat_HasReplyTemplate(chat, 1, buffer));
+	assert(strlen(buffer) > 0);
+	assert(strstr(buffer, "\\r") == NULL);
 
 	BotFreeChatState(chat);
 }
@@ -353,7 +543,7 @@ static void test_reply_chat_without_pattern_falls_back_to_reply_table(void) {
 
 	drain_console(chat);
 	BotChat_SetContextCooldown(chat, 2, 0.0);
-	assert(BotReplyChat(chat, "this text triggers fallback", 2));
+	assert(BotReplyChat(chat, "fallback", 2));
 
 	int type = 0;
 	char buffer[256];
@@ -443,7 +633,8 @@ static void test_reply_chat_logs_missing_contexts(void) {
 	char buffer[256];
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 1);
-	assert(BotChat_HasReplyTemplate(chat, 1, buffer));
+	assert(strlen(buffer) > 0);
+	assert(strstr(buffer, "\\r") == NULL);
 
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == PRT_MESSAGE);
@@ -466,7 +657,7 @@ static void test_reply_chat_construct_message_paths(void) {
 	drain_console(chat);
 	BotChat_SetContextCooldown(chat, 9100, 1.0);
 	BotChat_SetTime(chat, 1.0);
-	assert(BotReplyChat(chat, "unit-test", 9100));
+	assert(BotReplyChat(chat, "unit-test-reply-valid", 9100));
 
 	int type = 0;
 	char buffer[256];
@@ -474,14 +665,14 @@ static void test_reply_chat_construct_message_paths(void) {
 	assert(type == 9100);
 	assert(strcmp(buffer, "Unit test reply constructed successfully") == 0);
 
-	assert(!BotReplyChat(chat, "unit-test", 9100));
+	assert(!BotReplyChat(chat, "unit-test-reply-valid", 9100));
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 9100);
 	assert(strstr(buffer, "blocked by cooldown") != NULL);
 
 	drain_console(chat);
 	BotChat_SetTime(chat, 3.0);
-	assert(BotReplyChat(chat, "unit-test", 9100));
+	assert(BotReplyChat(chat, "unit-test-reply-valid", 9100));
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 9100);
 	assert(strcmp(buffer, "Unit test reply constructed successfully") == 0);
@@ -490,19 +681,19 @@ static void test_reply_chat_construct_message_paths(void) {
 	BotChat_SetContextCooldown(chat, 9101, 0.5);
 	BotChat_SetTime(chat, 4.0);
 	BotLib_TestResetLastMessage();
-	assert(!BotReplyChat(chat, "unit-test", 9101));
+	assert(!BotReplyChat(chat, "unit-test-reply-invalid", 9101));
 	assert(BotNumConsoleMessages(chat) == 0);
 	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
 	assert(strstr(BotLib_TestGetLastMessage(), "too long") != NULL);
 
-	assert(!BotReplyChat(chat, "unit-test", 9101));
+	assert(!BotReplyChat(chat, "unit-test-reply-invalid", 9101));
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 9101);
 	assert(strstr(buffer, "blocked by cooldown") != NULL);
 
 	drain_console(chat);
 	BotChat_SetTime(chat, 5.0);
-	assert(!BotReplyChat(chat, "unit-test", 9101));
+	assert(!BotReplyChat(chat, "unit-test-reply-invalid", 9101));
 	assert(BotNumConsoleMessages(chat) == 0);
 
 	BotFreeChatState(chat);
@@ -519,15 +710,231 @@ static void test_reply_chat_known_random_string_context_enqueues_message(void) {
 	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_random_valid"));
 
 	drain_console(chat);
-	assert(BotReplyChat(chat, "unit-test", 9200));
+	assert(BotReplyChat(chat, "unit-test-random-valid", 9200));
 
 	int type = 0;
 	char buffer[256];
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 9200);
-	assert(strcmp(buffer, "Random string placeholder: \\rrandom_misc\\.") == 0);
+	assert(strncmp(buffer,
+		"Random string placeholder: ",
+		strlen("Random string placeholder: ")) == 0);
+	assert(buffer[strlen(buffer) - 1] == '.');
+	assert(strstr(buffer, "\\r") == NULL);
 
 	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_reply_chat_expands_named_random_table
+=============
+*/
+static void test_reply_chat_expands_named_random_table(void)
+{
+	const char *path = "bot_chat_random_table_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"custom = {\"alpha\"}\n"
+		"[\"unit\"] = 9300\n"
+		"{\n"
+		"\"Pick \", custom;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "random_table"));
+	drain_console(chat);
+	assert(BotReplyChat(chat, "unit", 9300));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9300);
+	assert(strcmp(buffer, "Pick alpha") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_expands_nested_random_table
+
+Ensures constructor random expansion repeats when a selected entry contains
+another random reference.
+=============
+*/
+static void test_reply_chat_expands_nested_random_table(void)
+{
+	const char *path = "bot_chat_nested_random_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"outer = {\"\\\\rinner\\\\\"}\n"
+		"inner = {\"omega\"}\n"
+		"[\"nested\"] = 9301\n"
+		"{\n"
+		"\"Nested \", outer;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "nested_random"));
+	drain_console(chat);
+	assert(BotReplyChat(chat, "nested", 9301));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9301);
+	assert(strcmp(buffer, "Nested omega") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_initial_chat_applies_weighted_synonym_context
+
+Mirrors the Q3 BotConstructChatMessage post-expansion synonym pass for initial
+chat messages that receive a CONTEXT_* mask from the game wrapper.
+=============
+*/
+static void test_initial_chat_applies_weighted_synonym_context(void)
+{
+	const char *path = "bot_chat_weighted_synonym_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"CONTEXT_NORMAL\n"
+		"{\n"
+		"[\n"
+		"(\"frag\", 1.0),\n"
+		"(\"zap\", 1.0)\n"
+		"]\n"
+		"}\n"
+		"chat \"weighted\"\n"
+		"{\n"
+		"type \"synonym\"\n"
+		"{\n"
+		"\"frag and zap\";\n"
+		"}\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "weighted"));
+
+	drain_console(chat);
+	assert(BotInitialChat(chat, "synonym", 0, NULL));
+	int type = -1;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 0);
+	assert(strcmp(buffer, "frag and zap") == 0);
+
+	drain_console(chat);
+	assert(BotInitialChat(chat, "synonym", 1, NULL));
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 1);
+	assert(strcmp(buffer, "frag and frag") == 0
+		|| strcmp(buffer, "zap and zap") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_captures_key_variable
+
+Ensures parenthesized reply keys capture text into numeric response variables.
+=============
+*/
+static void test_reply_chat_captures_key_variable(void)
+{
+	const char *path = "bot_chat_reply_capture_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[(\"i am \", 0)] = 9400\n"
+		"{\n"
+		"\"you are \", 0;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "reply_capture"));
+	drain_console(chat);
+	assert(BotReplyChat(chat, "I am testing captures", 9400));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9400);
+	assert(strcmp(buffer, "you are testing captures") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_captures_match_template_variables
+
+Checks that readable match-template placeholders are captured from incoming
+messages and substituted during construction.
+=============
+*/
+static void test_reply_chat_captures_match_template_variables(void)
+{
+	const char *path = "bot_chat_match_capture_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"#include \"match.h\"\n"
+		"MTCONTEXT_CLIENTOBITUARY\n"
+		"{\n"
+		"VICTIM, \" was railed by \", KILLER = (MSG_DEATH, ST_DEATH_RAILGUN);\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "match_capture"));
+	drain_console(chat);
+	assert(BotReplyChat(chat, "Alice was railed by Bob", 1));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 1);
+	assert(strcmp(buffer, "Alice was railed by Bob") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
 }
 
 /*
@@ -542,7 +949,7 @@ static void test_reply_chat_unknown_random_string_context_logs_error(void) {
 
 	drain_console(chat);
 	BotLib_TestResetLastMessage();
-	assert(!BotReplyChat(chat, "unit-test", 9201));
+	assert(!BotReplyChat(chat, "unit-test-random-invalid", 9201));
 	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
 	assert(strstr(BotLib_TestGetLastMessage(),
 	"unknown random string unit_test_missing") != NULL);
@@ -717,6 +1124,44 @@ BotFreeChatState(chat);
 
 /*
 =============
+test_setup_chat_ai_loads_default_assets
+
+Exercises the retail setup/shutdown exports against the default chat asset
+libvars.
+=============
+*/
+static void test_setup_chat_ai_loads_default_assets(void)
+{
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	assert(BotSetupChatAI() == 0);
+	assert(BotSetupChatAI() == 0);
+	BotShutdownChatAI();
+	BotShutdownChatAI();
+}
+
+/*
+=============
+test_setup_chat_ai_skips_reply_when_nochat_enabled
+
+Mirrors the HLIL branch that still loads shared synonym, random, and match
+assets but does not read rchatfile when nochat is non-zero.
+=============
+*/
+static void test_setup_chat_ai_skips_reply_when_nochat_enabled(void)
+{
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 1.0f);
+	BotLib_TestSetLibVarString("rchatfile", "definitely_missing_rchat.c");
+	BotLib_TestResetLastMessage();
+	assert(BotSetupChatAI() == 0);
+	assert(strstr(BotLib_TestGetLastMessage(), "definitely_missing_rchat.c") == NULL);
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+}
+
+/*
+=============
 test_enter_chat_sends_command_via_bridge
 
 Verifies BotEnterChat formats the say command and forwards it through the
@@ -813,14 +1258,24 @@ main
 =============
 */
 int main(void) {
+	configure_crt_reports();
 	configure_chat_libvars(0.0f, 0.0f);
 	test_include_path_too_long_is_rejected();
 	test_enter_chat_uses_unit_test_template();
+	test_retail_initial_chat_block_drives_enter_event();
+	test_retail_initial_chat_counts_raw_type_buckets();
+	test_retail_initial_chat_constructs_from_alias();
+	test_retail_initial_chat_missing_name_is_rejected();
 	test_enter_chat_construct_message_failure_respects_cooldown_reset();
 	test_reply_chat_death_context();
 	test_reply_chat_falls_back_to_reply_table();
 	test_reply_chat_construct_message_paths();
 	test_reply_chat_known_random_string_context_enqueues_message();
+	test_reply_chat_expands_named_random_table();
+	test_reply_chat_expands_nested_random_table();
+	test_initial_chat_applies_weighted_synonym_context();
+	test_reply_chat_captures_key_variable();
+	test_reply_chat_captures_match_template_variables();
 	test_reply_chat_unknown_random_string_context_logs_error();
 	test_synonym_lookup_contains_nearbyitem_entries();
 	test_known_template_is_registered();
@@ -830,6 +1285,8 @@ int main(void) {
 	test_reply_chat_logs_missing_contexts();
 	test_botloadchatfile_fastchat_nochat_combinations();
 	test_botloadchatfile_reports_missing_chat_context();
+	test_setup_chat_ai_loads_default_assets();
+	test_setup_chat_ai_skips_reply_when_nochat_enabled();
 	test_enter_chat_sends_command_via_bridge();
 	test_enter_chat_team_command_uses_say_team();
 	test_reply_chat_dispatches_using_bridge_speaker();

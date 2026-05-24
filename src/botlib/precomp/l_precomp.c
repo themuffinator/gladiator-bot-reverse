@@ -431,6 +431,88 @@ static qboolean PC_BuildAssetRelativePath(const char *requested,
     return qfalse;
 }
 
+/*
+=============
+PC_BuildAssetRelativePathForAbsolute
+
+Converts an absolute path under the asset root back to a package-relative path.
+=============
+*/
+static qboolean PC_BuildAssetRelativePathForAbsolute(const char *requested,
+	const char *asset_root,
+	char *relative,
+	size_t relative_size,
+	char *absolute,
+	size_t absolute_size)
+{
+	char normalized_requested[BOTLIB_ASSET_MAX_PATH];
+	char normalized_root[BOTLIB_ASSET_MAX_PATH];
+	size_t root_length;
+	const char *segment;
+	int written;
+
+	if (requested == NULL || asset_root == NULL || asset_root[0] == '\0')
+	{
+		return qfalse;
+	}
+
+	written = snprintf(normalized_requested, sizeof(normalized_requested), "%s", requested);
+	if (written < 0 || (size_t)written >= sizeof(normalized_requested))
+	{
+		return qfalse;
+	}
+	written = snprintf(normalized_root, sizeof(normalized_root), "%s", asset_root);
+	if (written < 0 || (size_t)written >= sizeof(normalized_root))
+	{
+		return qfalse;
+	}
+
+	PC_NormalizeSlashes(normalized_requested);
+	PC_NormalizeSlashes(normalized_root);
+
+	root_length = strlen(normalized_root);
+	while (root_length > 0 && normalized_root[root_length - 1] == '/')
+	{
+		normalized_root[--root_length] = '\0';
+	}
+	if (root_length == 0
+		|| strncmp(normalized_requested, normalized_root, root_length) != 0
+		|| (normalized_requested[root_length] != '/'
+			&& normalized_requested[root_length] != '\0'))
+	{
+		return qfalse;
+	}
+
+	segment = normalized_requested + root_length;
+	while (*segment == '/')
+	{
+		++segment;
+	}
+	if (*segment == '\0')
+	{
+		return qfalse;
+	}
+
+	if (relative != NULL && relative_size > 0)
+	{
+		written = snprintf(relative, relative_size, "%s", segment);
+		if (written < 0 || (size_t)written >= relative_size)
+		{
+			return qfalse;
+		}
+	}
+	if (absolute != NULL && absolute_size > 0)
+	{
+		written = snprintf(absolute, absolute_size, "%s/%s", asset_root, segment);
+		if (written < 0 || (size_t)written >= absolute_size)
+		{
+			return qfalse;
+		}
+	}
+
+	return qtrue;
+}
+
 static void PC_SetSourceIncludePath(pc_source_t *source, const char *absolute_path)
 {
     char directory[MAX_PATH];
@@ -1488,6 +1570,15 @@ int PC_Directive_include(pc_source_t *source)
                         }
 
                         script = LoadScriptFile(path);
+                        if (!script)
+                        {
+                                char asset_root[BOTLIB_ASSET_MAX_PATH];
+                                if (BotLib_LocateAssetRoot(asset_root, sizeof(asset_root)))
+                                {
+                                        PS_SetBaseFolder(asset_root);
+                                        script = LoadScriptFile(token.string);
+                                }
+                        }
                 } //end if
         } //end if
         else if (token.type == TT_PUNCTUATION && *token.string == '<')
@@ -3176,6 +3267,60 @@ int PC_ReadDollarDirective(pc_source_t *source)
 #ifndef BOTLIB_PRECOMP_MTCONTEXT_PREFIX
 #define BOTLIB_PRECOMP_MTCONTEXT_PREFIX "MTCONTEXT_"
 #endif
+
+/*
+=============
+PC_ShouldPreserveChatDefine
+
+Keeps chat match placeholders symbolic for the reconstructed chat builder.
+=============
+*/
+static qboolean PC_ShouldPreserveChatDefine(const char *name)
+{
+	static const char *const preserve_names[] = {
+		"VICTIM",
+		"KILLER",
+		"GENDER_HE",
+		"GENDER_HIS",
+		"GENDER_HIM",
+		"GENDER_GOD",
+		"THE_ENEMY",
+		"THE_TEAM",
+		"TEAM",
+		"NETNAME",
+		"ADDRESSEE",
+		"ITEM",
+		"TEAMMATE",
+		"TEAMNAME",
+		"KEYAREA",
+		"FORMATION",
+		"POSITION",
+		"NUMBER",
+		"TIME",
+		"NAME",
+		"MORE"
+	};
+
+	if (name == NULL)
+	{
+		return qfalse;
+	}
+
+	if (!strncmp(name, "MSG_", 4))
+	{
+		return qtrue;
+	}
+
+	for (size_t i = 0; i < sizeof(preserve_names) / sizeof(preserve_names[0]); ++i)
+	{
+		if (!strcmp(name, preserve_names[i]))
+		{
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
 //============================================================================
 //
 // Parameter:				-
@@ -3195,6 +3340,11 @@ static qboolean PC_ShouldExpandDefine(const char *name)
 	}
 
 	if (!strncmp(name, BOTLIB_PRECOMP_MTCONTEXT_PREFIX, strlen(BOTLIB_PRECOMP_MTCONTEXT_PREFIX)))
+	{
+		return qfalse;
+	}
+
+	if (PC_ShouldPreserveChatDefine(name))
 	{
 		return qfalse;
 	}
@@ -3629,7 +3779,18 @@ pc_source_t *PC_LoadSourceFile(const char *filename)
 
         have_asset_root = BotLib_LocateAssetRoot(asset_root, sizeof(asset_root));
 
-        if (have_asset_root && !PC_PathIsAbsolute(filename) &&
+        if (have_asset_root && PC_PathIsAbsolute(filename) &&
+            PC_BuildAssetRelativePathForAbsolute(filename,
+                                                asset_root,
+                                                relative,
+                                                sizeof(relative),
+                                                absolute,
+                                                sizeof(absolute)))
+        {
+                snprintf(base_folder, sizeof(base_folder), "%s", asset_root);
+                load_name = relative;
+        }
+        else if (have_asset_root && !PC_PathIsAbsolute(filename) &&
             PC_BuildAssetRelativePath(filename,
                                       asset_root,
                                       relative,

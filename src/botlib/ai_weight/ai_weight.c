@@ -46,6 +46,8 @@ static bool BotWeight_PushGlobalDefines(const char *const *defines,
 static void BotWeight_PopGlobalDefines(bot_weight_define_scope_t *scope);
 static void BotWeight_FreeFuzzySeperators(bot_fuzzy_seperator_t *fs);
 static void BotWeight_FreeConfig(bot_weight_config_t *config);
+static bool BotWeight_ParseFloatToken(const pc_token_t *token, float *value);
+static bool BotWeight_ParseIntegerToken(const pc_token_t *token, int *value);
 static bool BotWeight_ReadValue(pc_source_t *source, float *value);
 static bool BotWeight_ReadFuzzyWeight(pc_source_t *source, bot_fuzzy_seperator_t *fs);
 static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source);
@@ -201,29 +203,94 @@ static void BotWeight_FreeConfig(bot_weight_config_t *config)
     FreeMemory(config);
 }
 
+/*
+=============
+BotWeight_ParseFloatToken
+
+Converts a numeric precompiler token to a float without relying on NUMBERVALUE.
+=============
+*/
+static bool BotWeight_ParseFloatToken(const pc_token_t *token, float *value)
+{
+	if (token == NULL || token->type != TT_NUMBER) {
+		return false;
+	}
+
+	char *end = NULL;
+	double parsed = strtod(token->string, &end);
+	if (end == token->string || (end != NULL && *end != '\0')) {
+		return false;
+	}
+
+	if (value != NULL) {
+		*value = (float)parsed;
+	}
+	return true;
+}
+
+/*
+=============
+BotWeight_ParseIntegerToken
+
+Converts a numeric precompiler token to an int without relying on NUMBERVALUE.
+=============
+*/
+static bool BotWeight_ParseIntegerToken(const pc_token_t *token, int *value)
+{
+	if (token == NULL || token->type != TT_NUMBER) {
+		return false;
+	}
+
+	char *end = NULL;
+	long parsed = strtol(token->string, &end, 0);
+	if (end == token->string || (end != NULL && *end != '\0')) {
+		return false;
+	}
+
+	if (value != NULL) {
+		*value = (int)parsed;
+	}
+	return true;
+}
+
+/*
+=============
+BotWeight_ReadValue
+
+Reads the numeric value used by fuzzy weights, preserving integer tokens that
+the reconstructed lexer does not always mirror into floatvalue.
+=============
+*/
 static bool BotWeight_ReadValue(pc_source_t *source, float *value)
 {
-    pc_token_t token;
-    if (!PC_ExpectAnyToken(source, &token)) {
-        return false;
-    }
+	pc_token_t token;
+	bool negative = false;
+	if (!PC_ExpectAnyToken(source, &token)) {
+		return false;
+	}
 
-    if (strcmp(token.string, "-") == 0) {
-        BotLib_Print(PRT_WARNING, "negative value set to zero\n");
-        if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &token)) {
-            return false;
-        }
-    }
+	if (strcmp(token.string, "-") == 0) {
+		negative = true;
+		BotLib_Print(PRT_WARNING, "negative value set to zero\n");
+		if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &token)) {
+			return false;
+		}
+	}
 
-    if (token.type != TT_NUMBER) {
-        BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
-        return false;
-    }
+	if (token.type != TT_NUMBER) {
+		BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
+		return false;
+	}
 
-    if (value != NULL) {
-        *value = (float)token.floatvalue;
-    }
-    return true;
+	if (value != NULL) {
+		if (negative) {
+			*value = 0.0f;
+		} else if (!BotWeight_ParseFloatToken(&token, value)) {
+			BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
+			return false;
+		}
+	}
+	return true;
 }
 
 static bool BotWeight_ReadFuzzyWeight(pc_source_t *source, bot_fuzzy_seperator_t *fs)
@@ -267,6 +334,11 @@ static bool BotWeight_ReadFuzzyWeight(pc_source_t *source, bot_fuzzy_seperator_t
     return true;
 }
 
+/*
+=============
+BotWeight_ReadFuzzySeperators
+=============
+*/
 static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
 {
     if (!PC_ExpectTokenString(source, "(")) {
@@ -277,7 +349,11 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
     if (!PC_ExpectTokenType(source, TT_NUMBER, TT_INTEGER, &token)) {
         return NULL;
     }
-    int index = (int)token.intvalue;
+    int index;
+    if (!BotWeight_ParseIntegerToken(&token, &index)) {
+        BotLib_Print(PRT_ERROR, "invalid switch index %s\n", token.string);
+        return NULL;
+    }
 
     if (!PC_ExpectTokenString(source, ")")) {
         return NULL;
@@ -328,7 +404,11 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
                 BotWeight_FreeFuzzySeperators(first);
                 return NULL;
             }
-            fs->value = (int)token.intvalue;
+            if (!BotWeight_ParseIntegerToken(&token, &fs->value)) {
+                BotLib_Print(PRT_ERROR, "invalid switch case %s\n", token.string);
+                BotWeight_FreeFuzzySeperators(first);
+                return NULL;
+            }
         }
 
         if (!PC_ExpectTokenString(source, ":")) {
@@ -486,6 +566,11 @@ static bool BotWeight_ParseWeights(pc_source_t *source, bot_weight_config_t *con
     return true;
 }
 
+/*
+=============
+ReadWeightConfigWithDefines
+=============
+*/
 bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
                                                  const char *const *global_defines,
                                                  size_t global_define_count)
@@ -513,16 +598,8 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
         return NULL;
     }
 
-    pc_script_t *script = PS_CreateScriptFromSource(source);
-    if (script == NULL) {
-        BotLib_Print(PRT_ERROR, "script wrapper failed for %s\n", filename);
-        PC_FreeSource(source);
-        return NULL;
-    }
-
     bot_weight_config_t *config = GetClearedMemory(sizeof(bot_weight_config_t));
     if (config == NULL) {
-        PS_FreeScript(script);
         PC_FreeSource(source);
         return NULL;
     }
@@ -532,7 +609,6 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
 
     bool parsed = BotWeight_ParseWeights(source, config);
 
-    PS_FreeScript(script);
     PC_FreeSource(source);
 
     if (!parsed) {
@@ -553,44 +629,49 @@ void FreeWeightConfig(bot_weight_config_t *config)
     BotWeight_FreeConfig(config);
 }
 
+/*
+=============
+BotWeight_FuzzyWeightRecursive
+=============
+*/
 static float BotWeight_FuzzyWeightRecursive(const int *inventory, const bot_fuzzy_seperator_t *fs)
 {
-    if (fs == NULL) {
-        return 0.0f;
-    }
+	if (fs == NULL) {
+		return 0.0f;
+	}
 
-    int inventory_value = 0;
-    if (inventory != NULL) {
-        inventory_value = inventory[fs->index];
-    }
+	int inventory_value = 0;
+	if (inventory != NULL) {
+		inventory_value = inventory[fs->index];
+	}
 
-    if (inventory_value < fs->value) {
-        if (fs->child != NULL) {
-            return BotWeight_FuzzyWeightRecursive(inventory, fs->child);
-        }
-        return fs->weight;
-    }
+	if (inventory_value < fs->value) {
+		if (fs->child != NULL) {
+			return BotWeight_FuzzyWeightRecursive(inventory, fs->child);
+		}
+		return fs->weight;
+	}
 
-    if (fs->next != NULL) {
-        if (inventory_value < fs->next->value) {
-            float w1 = fs->child ? BotWeight_FuzzyWeightRecursive(inventory, fs->child) : fs->weight;
-            float w2 = fs->next->child ? BotWeight_FuzzyWeightRecursive(inventory, fs->next->child) : fs->next->weight;
-            float denominator = (float)(fs->next->value - fs->value);
-            if (denominator <= 0.0f) {
-                return w2;
-            }
-            float scale = (float)(inventory_value - fs->value) / denominator;
-            if (scale < 0.0f) {
-                scale = 0.0f;
-            } else if (scale > 1.0f) {
-                scale = 1.0f;
-            }
-            return scale * w2 + (1.0f - scale) * w1;
-        }
-        return BotWeight_FuzzyWeightRecursive(inventory, fs->next);
-    }
+	if (fs->next != NULL) {
+		if (inventory_value < fs->next->value) {
+			float w1 = fs->child ? BotWeight_FuzzyWeightRecursive(inventory, fs->child) : fs->weight;
+			float w2 = fs->next->child ? BotWeight_FuzzyWeightRecursive(inventory, fs->next->child) : fs->next->weight;
+			float denominator = (float)(fs->next->value - fs->value);
+			if (denominator <= 0.0f) {
+				return w2;
+			}
+			float scale = (float)(inventory_value - fs->value) / denominator;
+			if (scale < 0.0f) {
+				scale = 0.0f;
+			} else if (scale > 1.0f) {
+				scale = 1.0f;
+			}
+			return scale * w1 + (1.0f - scale) * w2;
+		}
+		return BotWeight_FuzzyWeightRecursive(inventory, fs->next);
+	}
 
-    return fs->weight;
+	return fs->weight;
 }
 
 /*
@@ -654,7 +735,7 @@ static float BotWeight_FuzzyWeightUndecidedRecursive(const int *inventory, const
 			} else if (scale > 1.0f) {
 				scale = 1.0f;
 			}
-			return scale * w2 + (1.0f - scale) * w1;
+			return scale * w1 + (1.0f - scale) * w2;
 		}
 		return BotWeight_FuzzyWeightUndecidedRecursive(inventory, fs->next);
 	}
@@ -662,18 +743,23 @@ static float BotWeight_FuzzyWeightUndecidedRecursive(const int *inventory, const
 	return fs->weight;
 }
 
+/*
+=============
+FuzzyWeight
+=============
+*/
 float FuzzyWeight(const int *inventory, const bot_weight_config_t *config, int weight_index)
 {
-    if (config == NULL || weight_index < 0 || weight_index >= config->num_weights) {
-        return 0.0f;
-    }
+	if (config == NULL || weight_index < 0 || weight_index >= config->num_weights) {
+		return 0.0f;
+	}
 
-    const bot_fuzzy_seperator_t *fs = config->weights[weight_index].first_seperator;
-    if (fs == NULL) {
-        return 0.0f;
-    }
+	const bot_fuzzy_seperator_t *fs = config->weights[weight_index].first_seperator;
+	if (fs == NULL) {
+		return 0.0f;
+	}
 
-    return BotWeight_FuzzyWeightRecursive(inventory, fs);
+	return BotWeight_FuzzyWeightRecursive(inventory, fs);
 }
 
 /*
@@ -695,20 +781,25 @@ float FuzzyWeightUndecided(const int *inventory, const bot_weight_config_t *conf
 	return BotWeight_FuzzyWeightUndecidedRecursive(inventory, fs);
 }
 
+/*
+=============
+BotWeight_FindIndex
+=============
+*/
 int BotWeight_FindIndex(const bot_weight_config_t *config, const char *name)
 {
-    if (config == NULL || name == NULL || name[0] == '\0') {
-        return -1;
-    }
+	if (config == NULL || name == NULL || name[0] == '\0') {
+		return -1;
+	}
 
-    for (int i = 0; i < config->num_weights; ++i) {
-        const char *entry_name = config->weights[i].name;
-        if (entry_name != NULL && strcmp(entry_name, name) == 0) {
-            return i;
-        }
-    }
+	for (int i = 0; i < config->num_weights; ++i) {
+		const char *entry_name = config->weights[i].name;
+		if (entry_name != NULL && strcmp(entry_name, name) == 0) {
+			return i;
+		}
+	}
 
-    return -1;
+	return -1;
 }
 
 /*

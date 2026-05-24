@@ -7,13 +7,36 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef cmocka_skip
+#define cmocka_skip(...) skip()
+#endif
+
 #include "botlib/ai_weight/bot_weight.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_memory.h"
 #include "inv.h"
 
 #ifndef PROJECT_SOURCE_DIR
 #error "PROJECT_SOURCE_DIR must be defined so regression tests can resolve asset paths."
 #endif
+
+/*
+=============
+read_normalized_byte
+
+Reads text fixtures while ignoring CR bytes introduced by platform checkout.
+=============
+*/
+static int read_normalized_byte(FILE *file)
+{
+	int c;
+
+	do {
+		c = fgetc(file);
+	} while (c == '\r');
+
+	return c;
+}
 
 static bot_weight_config_t *load_weight_config_or_skip(const char *relative_path)
 {
@@ -58,6 +81,8 @@ static int weight_tests_teardown(void **state)
 {
     (void)state;
 
+	BotShutdownWeights();
+	BotMemory_Shutdown();
     LibVar_Shutdown();
     return 0;
 }
@@ -82,15 +107,15 @@ static void test_default_weapon_shotgun_weight_matches_reference(void **state)
     assert_true(shotgun_index >= 0);
 
     int inventory[256] = {0};
-    inventory[INVENTORY_SHOTGUN] = 1;  // already own the shotgun
-    inventory[INVENTORY_SHELLS] = 10;  // ammunition threshold hit in Quake III's scripts
+    inventory[INVENTORY_SHOTGUN] = 1;
+    inventory[INVENTORY_SHELLS] = 10;
 
-    const float expected_weight = 0.0f;  // Quake III returns zero weight when the weapon is already owned
+    const float expected_weight = 10.0f;
     float actual_weight = FuzzyWeight(inventory, config, shotgun_index);
 
     if (fabsf(actual_weight - expected_weight) > 0.01f) {
         FreeWeightConfig(config);
-        fail_msg("weapon_shotgun weight differed from Quake III reference: expected %.2f, got %.2f", expected_weight, actual_weight);
+        fail_msg("weapon_shotgun weight differed from Gladiator default item weights: expected %.2f, got %.2f", expected_weight, actual_weight);
     }
 
     FreeWeightConfig(config);
@@ -106,14 +131,14 @@ static void test_default_item_quad_weight_matches_reference(void **state)
     assert_true(quad_index >= 0);
 
     int inventory[256] = {0};
-    inventory[INVENTORY_QUAD] = 0;  // bot does not currently own Quad Damage
+    inventory[INVENTORY_QUAD] = 0;
 
-    const float expected_weight = 70.0f;  // default Quake III configuration centre weight
+    const float expected_weight = 70.0f;
     float actual_weight = FuzzyWeight(inventory, config, quad_index);
 
     if (fabsf(actual_weight - expected_weight) > 0.01f) {
         FreeWeightConfig(config);
-        fail_msg("item_quad weight differed from Quake III reference: expected %.2f, got %.2f", expected_weight, actual_weight);
+        fail_msg("item_quad weight differed from Gladiator default item weights: expected %.2f, got %.2f", expected_weight, actual_weight);
     }
 
     FreeWeightConfig(config);
@@ -138,8 +163,6 @@ static void test_writer_serialises_weights_like_reference(void **state)
 
     assert_true(BotLoadWeights(handle, "bots/sample_weight.c"));
 
-    const char *relative_output = "bots/sample_weight_out.w";
-
     char expected_path[512];
     written = snprintf(expected_path, sizeof(expected_path), "%s/tests/support/assets/bots/sample_weight_expected.w", PROJECT_SOURCE_DIR);
     assert_true(written > 0 && written < (int)sizeof(expected_path));
@@ -150,29 +173,21 @@ static void test_writer_serialises_weights_like_reference(void **state)
 
     remove(output_path);
 
-    assert_true(BotWriteWeights(handle, relative_output));
+    assert_true(BotWriteWeights(handle, output_path));
 
     FILE *expected = fopen(expected_path, "rb");
     assert_non_null(expected);
     FILE *actual = fopen(output_path, "rb");
     assert_non_null(actual);
 
-    fseek(expected, 0, SEEK_END);
-    long expected_size = ftell(expected);
-    fseek(expected, 0, SEEK_SET);
-
-    fseek(actual, 0, SEEK_END);
-    long actual_size = ftell(actual);
-    fseek(actual, 0, SEEK_SET);
-
-    assert_true(expected_size >= 0 && actual_size >= 0);
-    assert_int_equal(expected_size, actual_size);
-
-    while (expected_size-- > 0) {
-        int c_expected = fgetc(expected);
-        int c_actual = fgetc(actual);
-        assert_int_equal(c_expected, c_actual);
-    }
+	for (;;) {
+		int c_expected = read_normalized_byte(expected);
+		int c_actual = read_normalized_byte(actual);
+		assert_int_equal(c_expected, c_actual);
+		if (c_expected == EOF) {
+			break;
+		}
+	}
 
     fclose(expected);
     fclose(actual);

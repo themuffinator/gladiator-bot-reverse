@@ -89,78 +89,105 @@ static bool BotLib_IsStringEmpty(const char *text)
     return text == NULL || text[0] == '\0';
 }
 
+/*
+=============
+BotLib_AddRootCandidate
+
+Adds a search root while preserving override semantics when a later source
+aliases an already-registered directory.
+=============
+*/
 static bool BotLib_AddRootCandidate(const char *candidate,
-                                    bool is_override,
-                                    const char **roots,
-                                    bool *override_flags,
-                                    size_t *root_count,
-                                    size_t max_roots)
+									bool is_override,
+									const char **roots,
+									bool *override_flags,
+									size_t *root_count,
+									size_t max_roots)
 {
-    if (BotLib_IsStringEmpty(candidate) || roots == NULL || root_count == NULL
-        || override_flags == NULL) {
-        return false;
-    }
+	if (BotLib_IsStringEmpty(candidate) || roots == NULL || root_count == NULL
+		|| override_flags == NULL) {
+		return false;
+	}
 
-    if (*root_count >= max_roots) {
-        return false;
-    }
+	for (size_t i = 0; i < *root_count; ++i) {
+		if (BotLib_StringEquals(roots[i], candidate)) {
+			if (is_override) {
+				override_flags[i] = true;
+			}
+			return false;
+		}
+	}
 
-    for (size_t i = 0; i < *root_count; ++i) {
-        if (BotLib_StringEquals(roots[i], candidate)) {
-            return false;
-        }
-    }
+	if (*root_count >= max_roots) {
+		return false;
+	}
 
-    roots[*root_count] = candidate;
-    override_flags[*root_count] = is_override;
-    *root_count += 1;
-    return true;
+	roots[*root_count] = candidate;
+	override_flags[*root_count] = is_override;
+	*root_count += 1;
+	return true;
 }
 
+/*
+=============
+BotLib_AddCompoundRoot
+
+Builds combined legacy roots and upgrades duplicate entries when an override
+path resolves to the same directory.
+=============
+*/
 static bool BotLib_AddCompoundRoot(const char *lhs,
-                                   const char *rhs,
-                                   bool is_override,
-                                   char legacy_storage[][BOTLIB_ASSET_MAX_PATH],
-                                   size_t legacy_capacity,
-                                   size_t *legacy_count,
-                                   const char **roots,
-                                   bool *override_flags,
-                                   size_t *root_count,
-                                   size_t max_roots)
+								   const char *rhs,
+								   bool is_override,
+								   char legacy_storage[][BOTLIB_ASSET_MAX_PATH],
+								   size_t legacy_capacity,
+								   size_t *legacy_count,
+								   const char **roots,
+								   bool *override_flags,
+								   size_t *root_count,
+								   size_t max_roots)
 {
-    if (BotLib_IsStringEmpty(lhs) || BotLib_IsStringEmpty(rhs) || legacy_storage == NULL ||
-        legacy_count == NULL || override_flags == NULL) {
-        return false;
-    }
+	if (BotLib_IsStringEmpty(lhs) || BotLib_IsStringEmpty(rhs) || legacy_storage == NULL ||
+		legacy_count == NULL || override_flags == NULL) {
+		return false;
+	}
 
-    char scratch[BOTLIB_ASSET_MAX_PATH];
-    int written = snprintf(scratch, sizeof(scratch), "%s/%s", lhs, rhs);
-    if (written < 0 || (size_t)written >= sizeof(scratch)) {
-        return false;
-    }
+	char scratch[BOTLIB_ASSET_MAX_PATH];
+	int written = snprintf(scratch, sizeof(scratch), "%s/%s", lhs, rhs);
+	if (written < 0 || (size_t)written >= sizeof(scratch)) {
+		return false;
+	}
 
-    if (roots == NULL || root_count == NULL || *root_count >= max_roots) {
-        return false;
-    }
+	if (roots == NULL || root_count == NULL) {
+		return false;
+	}
 
-    for (size_t i = 0; i < *root_count; ++i) {
-        if (BotLib_StringEquals(roots[i], scratch)) {
-            return false;
-        }
-    }
+	for (size_t i = 0; i < *root_count; ++i) {
+		if (BotLib_StringEquals(roots[i], scratch)) {
+			if (is_override) {
+				override_flags[i] = true;
+			}
+			return false;
+		}
+	}
 
-    if (*legacy_count >= legacy_capacity) {
-        return false;
-    }
+	if (*root_count >= max_roots || *legacy_count >= legacy_capacity) {
+		return false;
+	}
 
-    snprintf(legacy_storage[*legacy_count], BOTLIB_ASSET_MAX_PATH, "%s", scratch);
-    roots[*root_count] = legacy_storage[*legacy_count];
-    override_flags[*root_count] = is_override;
-    *root_count += 1;
-    *legacy_count += 1;
-    return true;
+	snprintf(legacy_storage[*legacy_count], BOTLIB_ASSET_MAX_PATH, "%s", scratch);
+	roots[*root_count] = legacy_storage[*legacy_count];
+	override_flags[*root_count] = is_override;
+	*root_count += 1;
+	*legacy_count += 1;
+	return true;
 }
 
+/*
+=============
+BotLib_BuildSearchRoots
+=============
+*/
 static size_t BotLib_BuildSearchRoots(const char **roots,
                                       bool *override_flags,
                                       size_t max_roots,
@@ -213,7 +240,7 @@ static size_t BotLib_BuildSearchRoots(const char **roots,
     };
 
     for (size_t i = 0; i < sizeof(fallbacks) / sizeof(fallbacks[0]); ++i) {
-        BotLib_AddRootCandidate(fallbacks[i], true, roots, override_flags, &root_count, max_roots);
+        BotLib_AddRootCandidate(fallbacks[i], false, roots, override_flags, &root_count, max_roots);
     }
 
     return root_count;
@@ -873,6 +900,17 @@ bool BotLib_ResolveAssetPath(const char *requested,
         }
 
         if (!override_flags[i]) {
+            if (BotLib_CheckFilesystemPaths(root,
+                                            requested,
+                                            bare_name,
+                                            preferred_subdir,
+                                            buffer,
+                                            size,
+                                            last_candidate,
+                                            sizeof(last_candidate))) {
+                return true;
+            }
+
             if (BotLib_CheckPakPaths(root,
                                      requested,
                                      bare_name,
@@ -882,17 +920,6 @@ bool BotLib_ResolveAssetPath(const char *requested,
                                      last_candidate,
                                      sizeof(last_candidate))) {
                 BotLib_CopyPath(buffer, size, resolved_from_pak);
-                return true;
-            }
-
-            if (BotLib_CheckFilesystemPaths(root,
-                                            requested,
-                                            bare_name,
-                                            preferred_subdir,
-                                            buffer,
-                                            size,
-                                            last_candidate,
-                                            sizeof(last_candidate))) {
                 return true;
             }
         } else {

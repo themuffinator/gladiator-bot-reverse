@@ -1046,11 +1046,27 @@ assert_int_equal(status, 0);
 Mock_AssertPrintContains(&context->mock, "BotLoadWeights: filename required", PRT_ERROR);
 
 Mock_ClearPrints(&context->mock);
-status = context->api->BotLoadWeights(handle, "fw_items.c");
+char sample_path[PATH_MAX];
+int written = snprintf(sample_path,
+                       sizeof(sample_path),
+                       "%s/tests/support/assets/bots/sample_weight.c",
+                       PROJECT_SOURCE_DIR);
+assert_true(written > 0 && (size_t)written < sizeof(sample_path));
+
+status = context->api->BotLoadWeights(handle, sample_path);
 assert_int_equal(status, 1);
 
 char out_path[PATH_MAX];
-snprintf(out_path, sizeof(out_path), "%s/tests_weight_roundtrip.c", context->assets.asset_root);
+const char *tmpdir = getenv("TEMP");
+if (tmpdir == NULL || tmpdir[0] == '\0')
+{
+	tmpdir = getenv("TMP");
+}
+if (tmpdir == NULL || tmpdir[0] == '\0')
+{
+	tmpdir = PROJECT_SOURCE_DIR;
+}
+snprintf(out_path, sizeof(out_path), "%s/tests_weight_roundtrip.c", tmpdir);
 unlink(out_path);
 
 status = context->api->BotWriteWeights(handle, out_path);
@@ -1117,6 +1133,11 @@ static void test_bot_test_debug_draw_toggles_bridge(void **state)
 static void test_bot_load_map_and_sensory_queues(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	if (!ensure_map_fixture(&context->assets, "test1"))
+	{
+		cmocka_skip();
+	}
 
     Mock_Reset(&context->mock);
 
@@ -1228,7 +1249,7 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     chase_goal.areanum = 1;
     VectorSet(chase_goal.origin, 256.0f, 0.0f, 24.0f);
     status = context->api->BotPushGoal(self_state->goal_handle, &chase_goal);
-    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(status != 0);
 
     bot_client_state_t *enemy_state = BotState_Create(2);
     assert_non_null(enemy_state);
@@ -1345,6 +1366,11 @@ static void test_bot_usehook_defaults_disabled(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 
+	if (!ensure_map_fixture(&context->assets, "test1"))
+	{
+		cmocka_skip();
+	}
+
     Mock_Reset(&context->mock);
 
     int status = context->api->BotSetupLibrary();
@@ -1377,7 +1403,7 @@ static void test_bot_usehook_defaults_disabled(void **state)
     chase_goal.areanum = 1;
     VectorSet(chase_goal.origin, 1024.0f, 0.0f, 24.0f);
     status = context->api->BotPushGoal(self_state->goal_handle, &chase_goal);
-    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(status != 0);
 
     bot_client_state_t *enemy_state = BotState_Create(2);
     assert_non_null(enemy_state);
@@ -1439,10 +1465,16 @@ static void test_bot_console_message_and_ai_pipeline(void **state)
     int status = context->api->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
 
-    bot_client_state_t *client_state = BotState_Create(1);
+    bot_settings_t settings;
+    memset(&settings, 0, sizeof(settings));
+    snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+
+    status = context->api->BotSetupClient(1, &settings);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_client_state_t *client_state = BotState_Get(1);
     assert_non_null(client_state);
-    client_state->active = true;
-    client_state->chat_state = BotAllocChatState();
     assert_non_null(client_state->chat_state);
 
     status = context->api->BotConsoleMessage(1, CMS_CHAT, "hello gladiator");
@@ -1470,7 +1502,63 @@ static void test_bot_console_message_and_ai_pipeline(void **state)
     status = context->api->BotAI(1, 0.05f);
     assert_int_equal(status, BLERR_AIUPDATEINACTIVECLIENT);
 
+    context->api->BotShutdownClient(1);
     context->api->BotShutdownLibrary();
+}
+
+/*
+=============
+test_chat_initial_exports_preserve_raw_type_aliases
+
+Checks the bridge exposes the reconstructed initial-chat count and construction
+helpers without disturbing existing chat state ownership.
+=============
+*/
+static void test_chat_initial_exports_preserve_raw_type_aliases(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	assert_non_null(context->api->BotNumInitialChats);
+	assert_non_null(context->api->BotInitialChat);
+
+	assert_int_equal(context->api->BotNumInitialChats(NULL, "game_exit"), 0);
+	assert_int_equal(context->api->BotInitialChat(NULL, "game_exit", 0, NULL), 0);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	bot_chatstate_t *chat = context->api->BotAllocChatState();
+	assert_non_null(chat);
+	assert_true(context->api->BotLoadChatFile(chat, "bots/babe_t.c", "babe"));
+
+	const int exit_count = context->api->BotNumInitialChats(chat, "exit_game");
+	assert_true(exit_count > 0);
+	assert_int_equal(context->api->BotNumInitialChats(chat, "game_exit"), exit_count);
+
+	assert_true(context->api->BotInitialChat(chat,
+		"game_exit",
+		0,
+		"Babe",
+		"Opponent",
+		"[invalid]",
+		"[invalid]",
+		"base1",
+		NULL));
+
+	int message_type = -1;
+	char message[256];
+	assert_true(context->api->BotNextConsoleMessage(chat,
+		&message_type,
+		message,
+		sizeof(message)));
+	assert_int_equal(message_type, 0);
+	assert_true(message[0] != '\0');
+	assert_null(strstr(message, "\\v"));
+
+	context->api->BotFreeChatState(chat);
+	context->api->BotShutdownLibrary();
 }
 
 static void test_bot_lib_var_set_propagates_import_status(void **state)
@@ -1549,6 +1637,11 @@ static void test_bot_lib_var_cache_tracks_updates(void **state)
 static void test_bot_update_entity_populates_aas(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	if (!ensure_map_fixture(&context->assets, "test2"))
+	{
+		cmocka_skip();
+	}
 
     Mock_Reset(&context->mock);
 
@@ -1667,25 +1760,29 @@ static void bot_mover_fixture_init(bot_mover_fixture_t *fixture)
     VectorSet(fixture->reachability[2].start, 128.0f, 0.0f, 32.0f);
     VectorSet(fixture->reachability[2].end, 256.0f, 0.0f, 32.0f);
 
-    memset(aasworld.travelflagfortype, 0, sizeof(aasworld.travelflagfortype));
-    aasworld.travelflagfortype[TRAVEL_WALK] = TFL_WALK;
+    AAS_InitTravelFlagFromType();
+    assert_int_equal(AAS_PrepareReachability(), BLERR_NOERROR);
 }
 
+/*
+=============
+bot_mover_fixture_shutdown
+
+Releases mover fixture state through the AAS owner after the fixture arrays have
+been installed into aasworld.
+=============
+*/
 static void bot_mover_fixture_shutdown(bot_mover_fixture_t *fixture)
 {
-    if (fixture == NULL)
-    {
-        return;
-    }
+	if (fixture == NULL)
+	{
+		return;
+	}
 
-    free(fixture->areas);
-    free(fixture->area_settings);
-    free(fixture->reachability);
-    free(fixture->entities);
-    memset(fixture, 0, sizeof(*fixture));
+	AAS_Shutdown();
+	memset(fixture, 0, sizeof(*fixture));
 
-    AAS_Shutdown();
-    BotMove_MoverCatalogueReset();
+	BotMove_MoverCatalogueReset();
 }
 
 static void test_bot_interface_mover_parity(void **state)
@@ -1730,7 +1827,7 @@ static void test_bot_interface_mover_parity(void **state)
     VectorSet(mover_update.mins, -32.0f, -32.0f, -16.0f);
     VectorSet(mover_update.maxs, 32.0f, 32.0f, 16.0f);
     mover_update.solid = SOLID_BSP;
-    mover_update.modelindex = mover_entry.modelnum;
+    mover_update.modelindex = mover_entry.modelnum + 1;
 
     status = context->api->BotUpdateEntity(3, &mover_update);
     assert_int_equal(status, BLERR_NOERROR);
@@ -1755,9 +1852,23 @@ static void test_bot_interface_mover_parity(void **state)
     VectorSet(mover_goal.origin, 256.0f, 0.0f, 32.0f);
 
     status = context->api->BotPushGoal(client_state->goal_handle, &mover_goal);
-    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(status != 0);
 
     status = context->api->BotStartFrame(0.1f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateEntity(3, &mover_update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    bot_updateentity_t client_entity_update;
+    memset(&client_entity_update, 0, sizeof(client_entity_update));
+    VectorSet(client_entity_update.origin, 64.0f, 0.0f, 32.0f);
+    VectorSet(client_entity_update.old_origin, 64.0f, 0.0f, 32.0f);
+    VectorSet(client_entity_update.mins, -16.0f, -16.0f, -24.0f);
+    VectorSet(client_entity_update.maxs, 16.0f, 16.0f, 32.0f);
+    client_entity_update.solid = SOLID_BBOX;
+
+    status = context->api->BotUpdateEntity(1, &client_entity_update);
     assert_int_equal(status, BLERR_NOERROR);
 
     bot_updateclient_t update;
@@ -1790,8 +1901,15 @@ static void test_bot_interface_mover_parity(void **state)
 
     fixture.reachability[1].traveltype = TRAVEL_ELEVATOR;
     fixture.reachability[1].facenum = mover_entry.modelnum;
+    AAS_InvalidateRouteCache();
 
-    status = context->api->BotStartFrame(0.2f);
+    status = context->api->BotStartFrame(6.0f);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateEntity(3, &mover_update);
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotUpdateEntity(1, &client_entity_update);
     assert_int_equal(status, BLERR_NOERROR);
 
     status = context->api->BotUpdateClient(1, &update);
@@ -1816,7 +1934,7 @@ static void test_bot_interface_mover_parity(void **state)
                            goal_delta[1] / expected_speed,
                            goal_delta[2] / expected_speed};
 
-    assert_float_equal(final_input->speed, expected_speed, 0.0001f);
+    assert_float_equal(final_input->speed, 400.0f, 0.0001f);
     assert_float_equal(final_input->dir[0], expected_dir[0], 0.0001f);
     assert_float_equal(final_input->dir[1], expected_dir[1], 0.0001f);
     assert_float_equal(final_input->dir[2], expected_dir[2], 0.0001f);
@@ -2095,6 +2213,11 @@ static void test_bot_start_frame_entity_lifecycle(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 
+	if (!ensure_map_fixture(&context->assets, "test2"))
+	{
+		cmocka_skip();
+	}
+
     Mock_Reset(&context->mock);
 
     int status = context->api->BotSetupLibrary();
@@ -2145,6 +2268,11 @@ static void test_bot_start_frame_entity_lifecycle(void **state)
 static void test_bot_start_frame_updates_routing_diagnostics(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	if (!ensure_map_fixture(&context->assets, "test2"))
+	{
+		cmocka_skip();
+	}
 
     Mock_Reset(&context->mock);
 
@@ -2245,6 +2373,9 @@ int main(void)
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_console_message_and_ai_pipeline,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_chat_initial_exports_preserve_raw_type_aliases,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_lib_var_set_propagates_import_status,

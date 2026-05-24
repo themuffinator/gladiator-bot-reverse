@@ -10,6 +10,10 @@
 
 #include <stdbool.h>
 
+#ifndef cmocka_skip
+#define cmocka_skip(...) skip()
+#endif
+
 #ifdef _WIN32
 #include <direct.h>
 #define chdir _chdir
@@ -376,7 +380,7 @@ static void test_aas_entity_linking_and_reachability(void **state)
 
     aasworld.time = 1.0f;
     AASEntityFrame translated = {0};
-    status = TranslateEntityUpdate(1, &fixtures[0], aasworld.time, &translated);
+    status = TranslateEntityUpdate(1, &fixtures[0], &translated);
     assert_int_equal(status, BLERR_NOERROR);
     status = AAS_UpdateEntity(1, &translated);
     assert_int_equal(status, BLERR_NOERROR);
@@ -389,7 +393,7 @@ static void test_aas_entity_linking_and_reachability(void **state)
     assert_area_entity_list_contains(1, 1);
 
     aasworld.time = 2.0f;
-    status = TranslateEntityUpdate(1, &fixtures[1], aasworld.time, &translated);
+    status = TranslateEntityUpdate(1, &fixtures[1], &translated);
     assert_int_equal(status, BLERR_NOERROR);
     status = AAS_UpdateEntity(1, &translated);
     assert_int_equal(status, BLERR_NOERROR);
@@ -401,7 +405,7 @@ static void test_aas_entity_linking_and_reachability(void **state)
     assert_area_entity_list_contains(2, 1);
 
     aasworld.time = 3.0f;
-    status = TranslateEntityUpdate(1, &fixtures[2], aasworld.time, &translated);
+    status = TranslateEntityUpdate(1, &fixtures[2], &translated);
     assert_int_equal(status, BLERR_NOERROR);
     status = AAS_UpdateEntity(1, &translated);
     assert_int_equal(status, BLERR_NOERROR);

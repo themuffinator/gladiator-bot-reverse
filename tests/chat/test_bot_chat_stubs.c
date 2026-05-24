@@ -14,6 +14,7 @@ static int g_last_botlib_message_type = 0;
 static char g_last_botlib_message[1024];
 typedef struct botlib_test_libvar_s {
         char name[64];
+        char string[128];
         float value;
 } botlib_test_libvar_t;
 
@@ -22,6 +23,44 @@ static size_t g_botlib_test_libvar_count = 0;
 static char g_bridge_maxclients_name[32] = "maxclients";
 static char g_bridge_maxclients_string[32] = "4";
 static libvar_t g_bridge_maxclients;
+
+/*
+=============
+BotLib_TestFindLibVar
+
+Finds or creates a mocked libvar entry for chat tests.
+=============
+*/
+static botlib_test_libvar_t *BotLib_TestFindLibVar(const char *var_name,
+	bool create)
+{
+	if (var_name == NULL)
+	{
+		return NULL;
+	}
+
+	for (size_t index = 0; index < g_botlib_test_libvar_count; ++index)
+	{
+		if (strcmp(g_botlib_test_libvars[index].name, var_name) == 0)
+		{
+			return &g_botlib_test_libvars[index];
+		}
+	}
+
+	if (!create
+		|| g_botlib_test_libvar_count >=
+			(sizeof(g_botlib_test_libvars) /
+				sizeof(g_botlib_test_libvars[0])))
+	{
+		return NULL;
+	}
+
+	botlib_test_libvar_t *var =
+		&g_botlib_test_libvars[g_botlib_test_libvar_count++];
+	memset(var, 0, sizeof(*var));
+	snprintf(var->name, sizeof(var->name), "%s", var_name);
+	return var;
+}
 
 /*
 =============
@@ -77,29 +116,32 @@ Overrides the specified libvar for LibVarValue queries in tests.
 =============
 */
 void BotLib_TestSetLibVar(const char *var_name, float value) {
-	if (var_name == NULL) {
+	botlib_test_libvar_t *var = BotLib_TestFindLibVar(var_name, true);
+	if (var == NULL) {
 		return;
 	}
 
-	for (size_t index = 0; index < g_botlib_test_libvar_count; ++index) {
-		if (strcmp(g_botlib_test_libvars[index].name, var_name) == 0) {
-			g_botlib_test_libvars[index].value = value;
-			return;
-		}
-	}
+	var->value = value;
+	snprintf(var->string, sizeof(var->string), "%g", value);
+}
 
-	if (g_botlib_test_libvar_count >=
-		(sizeof(g_botlib_test_libvars) / sizeof(g_botlib_test_libvars[0]))) {
+/*
+=============
+BotLib_TestSetLibVarString
+
+Overrides a mocked libvar string and keeps its numeric value in sync.
+=============
+*/
+void BotLib_TestSetLibVarString(const char *var_name, const char *value)
+{
+	botlib_test_libvar_t *var = BotLib_TestFindLibVar(var_name, true);
+	if (var == NULL)
+	{
 		return;
 	}
 
-	strncpy(g_botlib_test_libvars[g_botlib_test_libvar_count].name, var_name,
-			sizeof(g_botlib_test_libvars[g_botlib_test_libvar_count].name) - 1);
-	g_botlib_test_libvars[g_botlib_test_libvar_count]
-		.name[sizeof(g_botlib_test_libvars[g_botlib_test_libvar_count].name) -
-			  1] = '\0';
-	g_botlib_test_libvars[g_botlib_test_libvar_count].value = value;
-	++g_botlib_test_libvar_count;
+	snprintf(var->string, sizeof(var->string), "%s", value != NULL ? value : "");
+	var->value = strtof(var->string, NULL);
 }
 
 /*
@@ -197,6 +239,16 @@ const botlib_import_table_t *BotInterface_GetImportTable(void)
 
 /*
 =============
+BotLibraryInitialized
+=============
+*/
+bool BotLibraryInitialized(void)
+{
+	return true;
+}
+
+/*
+=============
 LibVarValue
 
 Returns the overridden libvar value for tests, or the provided default.
@@ -204,10 +256,12 @@ Returns the overridden libvar value for tests, or the provided default.
 */
 float LibVarValue(const char *var_name, const char *default_value) {
 	if (var_name != NULL) {
-		for (size_t index = 0; index < g_botlib_test_libvar_count; ++index) {
-			if (strcmp(g_botlib_test_libvars[index].name, var_name) == 0) {
-				return g_botlib_test_libvars[index].value;
-			}
+		botlib_test_libvar_t *var = BotLib_TestFindLibVar(var_name, false);
+		if (var != NULL) {
+			return var->value;
+		}
+		if (strcmp(var_name, "maxclients") == 0) {
+			return g_bridge_maxclients.value;
 		}
 	}
 
@@ -216,6 +270,31 @@ float LibVarValue(const char *var_name, const char *default_value) {
 	}
 
 	return strtof(default_value, NULL);
+}
+
+/*
+=============
+LibVarString
+
+Returns the overridden libvar string for tests, or the provided default.
+=============
+*/
+const char *LibVarString(const char *var_name, const char *default_value)
+{
+	if (var_name != NULL)
+	{
+		botlib_test_libvar_t *var = BotLib_TestFindLibVar(var_name, false);
+		if (var != NULL)
+		{
+			return var->string;
+		}
+		if (strcmp(var_name, "maxclients") == 0)
+		{
+			return g_bridge_maxclients_string;
+		}
+	}
+
+	return default_value != NULL ? default_value : "";
 }
 
 /*
@@ -254,7 +333,22 @@ BotLib_LocateAssetRoot
 =============
 */
 bool BotLib_LocateAssetRoot(char *buffer, size_t size) {
-	(void)buffer;
-	(void)size;
+#ifdef BOT_ASSET_ROOT
+	if (buffer == NULL || size == 0) {
+		return false;
+	}
+
+	int written = snprintf(buffer, size, "%s", BOT_ASSET_ROOT);
+	if (written < 0 || (size_t)written >= size) {
+		buffer[0] = '\0';
+		return false;
+	}
+
+	return true;
+#else
+	if (buffer != NULL && size > 0) {
+		buffer[0] = '\0';
+	}
 	return false;
+#endif
 }

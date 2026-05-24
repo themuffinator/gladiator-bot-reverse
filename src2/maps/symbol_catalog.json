@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-05-24",
+  "generation_mode": "manual_review",
+  "raw_export_status": "pending_raw_export",
+  "symbols": [
+    {"address": "0x1002b110", "kind": "FUN", "name": "BotLoadSynonyms", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002b990", "kind": "FUN", "name": "BotLoadRandomStrings", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002bdd0", "kind": "FUN", "name": "RandomString", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002c410", "kind": "FUN", "name": "BotLoadMatchTemplates", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002d1b0", "kind": "FUN", "name": "BotFreeReplyChat", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002d270", "kind": "FUN", "name": "BotLoadReplyChat", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002d8a0", "kind": "FUN", "name": "BotLoadInitialChat", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002df70", "kind": "FUN", "name": "BotFreeChatFile", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002dff0", "kind": "FUN", "name": "BotLoadChatFile", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002e060", "kind": "FUN", "name": "BotConstructChatMessage", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002e7d0", "kind": "FUN", "name": "BotReplyChat", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002ea50", "kind": "FUN", "name": "BotChatLength", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002ebb0", "kind": "FUN", "name": "BotSetupChatAI", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"},
+    {"address": "0x1002ec80", "kind": "FUN", "name": "BotShutdownChatAI", "category": "helper", "module": "ai_chat", "promotion_status": "address_backed_helper"}
+  ]
+}

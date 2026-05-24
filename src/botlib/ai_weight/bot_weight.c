@@ -1,10 +1,8 @@
 #include "bot_weight.h"
 
-#include "botlib/common/l_assets.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_struct.h"
-#include "botlib/interface/botlib_interface.h"
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -60,10 +58,6 @@ BotAllocWeightConfig
 */
 int BotAllocWeightConfig(void)
 {
-	if (!BotLibraryEnsureSetup("BotAllocWeightConfig")) {
-		return 0;
-	}
-
 	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
 		if (g_weight_handles[i] != NULL) {
 			continue;
@@ -90,10 +84,6 @@ BotFreeWeightConfig
 */
 void BotFreeWeightConfig(int handle)
 {
-	if (!BotLibraryEnsureSetup("BotFreeWeightConfig")) {
-		return;
-	}
-
 	if (!BotWeight_HandleInRange(handle)) {
 		BotWeight_LogHandleError("BotFreeWeightConfig", handle);
 		return;
@@ -285,49 +275,7 @@ static bool BotWeight_WriteConfig(FILE *fp, const bot_weight_config_t *config)
         }
     }
 
-    return true;
-}
-
-int BotWriteWeights(int handle, const char *filename)
-{
-    if (filename == NULL || filename[0] == '\0') {
-        BotLib_Print(PRT_ERROR, "BotWriteWeights: filename required\n");
-        return 0;
-    }
-
-    bot_weight_handle_t *entry = BotWeight_ResolveHandle("BotWriteWeights", handle);
-    if (entry == NULL) {
-        return 0;
-    }
-
-    if (entry->config == NULL) {
-        BotLib_Print(PRT_ERROR, "BotWriteWeights: handle %d has no configuration\n", handle);
-        return 0;
-    }
-
-    char resolved_path[BOTLIB_ASSET_MAX_PATH];
-    BotLib_ResolveAssetPath(filename, NULL, resolved_path, sizeof(resolved_path));
-
-    const char *target_path = resolved_path[0] != '\0' ? resolved_path : filename;
-
-    FILE *fp = fopen(target_path, "wb");
-    if (fp == NULL) {
-        BotLib_Print(PRT_ERROR, "couldn't write %s\n", target_path);
-        return 0;
-    }
-
-    bool wrote = BotWeight_WriteConfig(fp, entry->config);
-    if (fclose(fp) != 0) {
-        wrote = false;
-    }
-
-    if (!wrote) {
-        BotLib_Print(PRT_ERROR, "couldn't write %s\n", target_path);
-        return 0;
-    }
-
-    BotLib_Print(PRT_MESSAGE, "%s written succesfully\n", target_path);
-    return 1;
+	return true;
 }
 
 /*
@@ -337,21 +285,52 @@ WriteWeightConfig
 */
 int WriteWeightConfig(const char *filename, bot_weight_config_t *config)
 {
-	if (filename == NULL || filename[0] == '\0' || config == NULL) {
+	if (filename == NULL || filename[0] == '\0' || config == NULL)
+	{
 		return 0;
 	}
 
 	FILE *fp = fopen(filename, "wb");
-	if (fp == NULL) {
+	if (fp == NULL)
+	{
+		BotLib_Print(PRT_ERROR, "couldn't write %s\n", filename);
 		return 0;
 	}
 
 	bool wrote = BotWeight_WriteConfig(fp, config);
-	if (fclose(fp) != 0) {
+	if (fclose(fp) != 0)
+	{
 		wrote = false;
 	}
 
-	return wrote ? 1 : 0;
+	if (!wrote)
+	{
+		BotLib_Print(PRT_ERROR, "couldn't write %s\n", filename);
+		return 0;
+	}
+
+	BotLib_Print(PRT_MESSAGE, "%s written succesfully\n", filename);
+	return 1;
+}
+
+int BotWriteWeights(int handle, const char *filename)
+{
+	if (filename == NULL || filename[0] == '\0') {
+        BotLib_Print(PRT_ERROR, "BotWriteWeights: filename required\n");
+        return 0;
+    }
+
+    bot_weight_handle_t *entry = BotWeight_ResolveHandle("BotWriteWeights", handle);
+    if (entry == NULL) {
+        return 0;
+    }
+
+	if (entry->config == NULL) {
+		BotLib_Print(PRT_ERROR, "BotWriteWeights: handle %d has no configuration\n", handle);
+		return 0;
+	}
+
+	return WriteWeightConfig(filename, entry->config);
 }
 
 static void BotWeight_AssignValue(bot_fuzzy_seperator_t *fs, float value)
@@ -375,10 +354,6 @@ BotSetWeight
 */
 int BotSetWeight(int handle, const char *name, float value)
 {
-	if (!BotLibraryEnsureSetup("BotSetWeight")) {
-		return 0;
-	}
-
 	if (name == NULL || name[0] == '\0') {
 		BotLib_Print(PRT_ERROR, "BotSetWeight: name required\n");
 		return 0;
@@ -449,10 +424,6 @@ BotReadWeightsFile
 */
 bot_weight_config_t *BotReadWeightsFile(const char *filename)
 {
-	if (!BotLibraryEnsureSetup("BotReadWeightsFile")) {
-		return NULL;
-	}
-
 	return ReadWeightConfig(filename);
 }
 
@@ -463,59 +434,10 @@ BotShutdownWeights
 */
 void BotShutdownWeights(void)
 {
-	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
-		if (g_weight_handles[i] == NULL) {
-			continue;
-		}
-
-		BotWeight_DestroyHandle(g_weight_handles[i]);
-		g_weight_handles[i] = NULL;
-	}
-}
-
-/*
-=============
-BotShutdownWeights
-=============
-*/
-void BotShutdownWeights(void)
-{
-	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
-		if (g_weight_handles[i] == NULL) {
-			continue;
-		}
-
-		BotWeight_DestroyHandle(g_weight_handles[i]);
-		g_weight_handles[i] = NULL;
-	}
-}
-
-/*
-=============
-BotShutdownWeights
-=============
-*/
-void BotShutdownWeights(void)
-{
-	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
-		if (g_weight_handles[i] == NULL) {
-			continue;
-		}
-
-		BotWeight_DestroyHandle(g_weight_handles[i]);
-		g_weight_handles[i] = NULL;
-	}
-}
-
-/*
-=============
-BotShutdownWeights
-=============
-*/
-void BotShutdownWeights(void)
-{
-	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i) {
-		if (g_weight_handles[i] == NULL) {
+	for (int i = 0; i < BOT_WEIGHT_MAX_HANDLES; ++i)
+	{
+		if (g_weight_handles[i] == NULL)
+		{
 			continue;
 		}
 

@@ -7,7 +7,7 @@ set(EA_TEST_SOURCES
 )
 
 add_executable(ea_tests ${EA_TEST_SOURCES})
-target_link_libraries(ea_tests PRIVATE botlib_ea ${BOTLIB_PARITY_TEST_LIBRARIES})
+target_link_libraries(ea_tests PRIVATE botlib_ea botlib_interface ${BOTLIB_PARITY_TEST_LIBRARIES})
 target_include_directories(ea_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )

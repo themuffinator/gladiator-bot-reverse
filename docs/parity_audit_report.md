@@ -10,60 +10,33 @@ Based on the detailed analysis of the parity matrix:
 
 | Module    | Implemented | Divergent | Missing | Total | Parity % |
 |-----------|-------------|-----------|---------|-------|----------|
-| Goal      | 12          | 0         | 9       | 21    | 57.1%    |
-| Weight    | 4           | 1         | 5       | 10    | 40.0%    |
-| Move      | 5           | 0         | 7       | 12    | 41.7%    |
-| Weapon    | 4           | 0         | 1       | 5     | 80.0%    |
-| Character | 3           | 0         | 1       | 4     | 75.0%    |
-| **Total** | **28**      | **1**     | **23**  | **52**| **53.8%**|
+| Goal      | 21          | 0         | 0       | 21    | 100.0%   |
+| Weight    | 10          | 0         | 0       | 10    | 100.0%   |
+| Move      | 12          | 0         | 0       | 12    | 100.0%   |
+| Weapon    | 5           | 0         | 0       | 5     | 100.0%   |
+| Character | 4           | 0         | 0       | 4     | 100.0%   |
+| Chat      | 11          | 3         | 0       | 14    | 78.6%    |
+| **Total** | **63**      | **3**     | **0**   | **66**| **95.5%**|
 
 *Note: "Divergent" items are considered not fully implemented for the purpose of strict parity calculation.*
 
-**Overall Parity: 53.8%**
+**Overall Tracked Parity: 95.5%**
 
 ## Remediation Tasks
 
-To accurately and elegantly narrow the parity gap, the following 10 tasks have been identified. These are prioritized based on gameplay impact, focusing first on movement perception and goal/item lifecycle, which are critical for bot agency.
+The previously divergent goal-module items have been closed:
 
-### High Priority: Movement Perception
-1.  **Implement `BotMovementViewTarget`**
-    *   **Goal:** Restore lookahead target logic.
-    *   **Reasoning:** Essential for smooth navigation and realistic aiming while moving. Without it, bots lack predictive looking.
+1.  `BotInitLevelItems` now performs item-def loading and BSP entity-lump parsing for level items, map locations, and camp spots.
+2.  `BotItemGoalInVisButNotVisible` now follows the retail stale-entity visibility gate logic.
+3.  `BotGetMapLocationGoal` now resolves parsed `target_location` records with retail-style bounds.
 
-2.  **Implement `BotPredictVisiblePosition`**
-    *   **Goal:** Enable opponent position prediction.
-    *   **Reasoning:** Critical for combat effectiveness. Bots need to know where an enemy *will be* to intercept or evade effectively.
-
-3.  **Implement `BotReachabilityArea`**
-    *   **Goal:** Provide accurate area probing.
-    *   **Reasoning:** Fundamental for AAS (Area Awareness System) interaction. Ensures bots correctly identify navigable areas vs. solid geometry.
-
-4.  **Implement `BotResetLastAvoidReach`**
-    *   **Goal:** Properly track and reset reachability avoidance.
-    *   **Reasoning:** Prevents bots from getting stuck in loops avoiding valid paths due to stale data.
-
-5.  **Implement `BotAddAvoidSpot`**
-    *   **Goal:** Allow dynamic addition of avoidance spots.
-    *   **Reasoning:** Needed for reacting to dynamic dangers (grenades, temporary hazards).
-
-### High Priority: Goal & Item Lifecycle
-6.  **Implement `BotInitLevelItems`**
-    *   **Goal:** Parse map entities into internal item tables.
-    *   **Reasoning:** The foundation of the goal system. Without this, bots are blind to the level's resources (weapons, health).
-
-7.  **Implement `BotUpdateEntityItems`**
-    *   **Goal:** Handle dynamic updates for dropped/respawning items.
-    *   **Reasoning:** Ensures bots react to the changing state of the world (e.g., picking up a dropped weapon).
-
-8.  **Implement `BotGetLevelItemGoal`**
-    *   **Goal:** Enable classname-indexed search for items.
-    *   **Reasoning:** Allows efficient querying of specific item types, essential for "need-based" goal selection.
-
-### Medium Priority: Vision & Camp Support
-9.  **Implement `BotItemGoalInVisButNotVisible`**
-    *   **Goal:** Refine visibility checks (AAS vs. Trace).
-    *   **Reasoning:** Resolves edge cases where an item is theoretically visible by area but blocked by geometry, preventing false positives in goal selection.
-
-10. **Implement `BotGetNextCampSpotGoal`**
-    *   **Goal:** Enable strategic camping.
-    *   **Reasoning:** Adds tactical depth by allowing bots to utilize designated camp spots defined in the map.
+This round also promoted the chat subsystem into the tracked matrix and closed
+the global setup/shutdown gap. The chat work now covers sibling
+`rnd.c`/`syn.c`/`match.c` loading, setup-time `synfile`, `rndfile`,
+`matchfile`, and `rchatfile` libvars, random-string expansion with repeated
+constructor passes,
+match-template registration,
+reply-key parsing, captured variable substitution, reply construction, and
+HLIL-backed symbol staging. Remaining chat gaps are stricter match parser
+decomposition, the separate Q3 reply `mcontext`/`vcontext` synonym split, and
+retail reply priority/time scoring.

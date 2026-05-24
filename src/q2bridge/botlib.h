@@ -296,6 +296,8 @@ typedef struct bot_export_s {
     void (*BotEnterChat)(bot_chatstate_t *state, int client, int sendto);
     int (*BotReplyChat)(bot_chatstate_t *state, const char *message, unsigned long context);
     int (*BotChatLength)(const char *message);
+	int (*BotNumInitialChats)(const bot_chatstate_t *state, const char *type);
+	int (*BotInitialChat)(bot_chatstate_t *state, const char *type, unsigned long context, ...);
 } bot_export_t;
 
 // Bot library imported functions
