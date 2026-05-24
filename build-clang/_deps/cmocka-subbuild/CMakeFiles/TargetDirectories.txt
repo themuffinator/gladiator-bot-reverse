@@ -1,3 +1,0 @@
-C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/CMakeFiles/cmocka-populate.dir
-C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/CMakeFiles/edit_cache.dir
-C:/Users/djdac/source/repos/gladiator-bot-reverse/build-clang/_deps/cmocka-subbuild/CMakeFiles/rebuild_cache.dir
