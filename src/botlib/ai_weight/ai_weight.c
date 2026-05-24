@@ -1,6 +1,7 @@
 #include "bot_weight.h"
 
 #include "botlib/common/l_assets.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/precomp/l_precomp.h"
@@ -13,6 +14,9 @@
 
 #define WEIGHT_MAX_VALUE 999999
 #define WEIGHT_TYPE_BALANCE 1
+#define BOT_WEIGHT_MAX_CACHE_FILES 128
+
+static bot_weight_config_t *g_weight_file_list[BOT_WEIGHT_MAX_CACHE_FILES];
 
 // -----------------------------------------------------------------------------
 //  Forward declarations for precompiler helpers that have not been surfaced
@@ -40,6 +44,13 @@ typedef struct bot_weight_define_scope_s {
 // -----------------------------------------------------------------------------
 
 static bool BotWeight_ParseDefineName(const char *define, char *out_name, size_t out_size);
+static bool BotWeight_ShouldReloadCharacters(void);
+static int BotWeight_FindCachedSlot(const char *source_file);
+static int BotWeight_FindFreeCachedSlot(void);
+static bot_weight_config_t *BotWeight_FindCachedConfig(const char *source_file);
+static bool BotWeight_ConfigIsCached(const bot_weight_config_t *config);
+static void BotWeight_RemoveCachedConfig(const bot_weight_config_t *config);
+static bool BotWeight_CacheConfig(bot_weight_config_t *config, const char *source_file);
 static bool BotWeight_PushGlobalDefines(const char *const *defines,
                                         size_t count,
                                         bot_weight_define_scope_t *scope);
@@ -101,6 +112,149 @@ static bool BotWeight_ParseDefineName(const char *define, char *out_name, size_t
 
     out_name[length] = '\0';
     return true;
+}
+
+/*
+=============
+BotWeight_ShouldReloadCharacters
+
+Returns whether weight configs should bypass the retail cache.
+=============
+*/
+static bool BotWeight_ShouldReloadCharacters(void)
+{
+	return LibVarGetValue("bot_reloadcharacters") != 0.0f;
+}
+
+/*
+=============
+BotWeight_FindCachedSlot
+
+Finds a cached config by the resolved source path used as the local cache key.
+=============
+*/
+static int BotWeight_FindCachedSlot(const char *source_file)
+{
+	if (source_file == NULL || source_file[0] == '\0') {
+		return -1;
+	}
+
+	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
+		const bot_weight_config_t *config = g_weight_file_list[i];
+		if (config == NULL) {
+			continue;
+		}
+		if (strcmp(config->source_file, source_file) == 0) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+/*
+=============
+BotWeight_FindFreeCachedSlot
+
+Finds the first unused retail weight cache slot.
+=============
+*/
+static int BotWeight_FindFreeCachedSlot(void)
+{
+	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
+		if (g_weight_file_list[i] == NULL) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+/*
+=============
+BotWeight_FindCachedConfig
+
+Returns the cached config for a resolved source path when present.
+=============
+*/
+static bot_weight_config_t *BotWeight_FindCachedConfig(const char *source_file)
+{
+	int slot = BotWeight_FindCachedSlot(source_file);
+	if (slot < 0) {
+		return NULL;
+	}
+
+	return g_weight_file_list[slot];
+}
+
+/*
+=============
+BotWeight_ConfigIsCached
+
+Checks whether a config pointer is owned by the retail cache.
+=============
+*/
+static bool BotWeight_ConfigIsCached(const bot_weight_config_t *config)
+{
+	if (config == NULL) {
+		return false;
+	}
+
+	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
+		if (g_weight_file_list[i] == config) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+=============
+BotWeight_RemoveCachedConfig
+
+Unlinks a config from the cache before a forced free.
+=============
+*/
+static void BotWeight_RemoveCachedConfig(const bot_weight_config_t *config)
+{
+	if (config == NULL) {
+		return;
+	}
+
+	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
+		if (g_weight_file_list[i] == config) {
+			g_weight_file_list[i] = NULL;
+		}
+	}
+}
+
+/*
+=============
+BotWeight_CacheConfig
+
+Stores a freshly parsed config in the retail cache.
+=============
+*/
+static bool BotWeight_CacheConfig(bot_weight_config_t *config, const char *source_file)
+{
+	if (config == NULL || source_file == NULL || source_file[0] == '\0') {
+		return false;
+	}
+
+	int slot = BotWeight_FindCachedSlot(source_file);
+	if (slot >= 0) {
+		return true;
+	}
+
+	slot = BotWeight_FindFreeCachedSlot();
+	if (slot < 0) {
+		BotLib_Print(PRT_ERROR, "weightFileList was full trying to load %s\n", source_file);
+		return false;
+	}
+
+	g_weight_file_list[slot] = config;
+	return true;
 }
 
 static bool BotWeight_PushGlobalDefines(const char *const *defines,
@@ -264,13 +418,11 @@ the reconstructed lexer does not always mirror into floatvalue.
 static bool BotWeight_ReadValue(pc_source_t *source, float *value)
 {
 	pc_token_t token;
-	bool negative = false;
 	if (!PC_ExpectAnyToken(source, &token)) {
 		return false;
 	}
 
 	if (strcmp(token.string, "-") == 0) {
-		negative = true;
 		BotLib_Print(PRT_WARNING, "negative value set to zero\n");
 		if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &token)) {
 			return false;
@@ -282,13 +434,14 @@ static bool BotWeight_ReadValue(pc_source_t *source, float *value)
 		return false;
 	}
 
+	float parsed_value;
+	if (!BotWeight_ParseFloatToken(&token, &parsed_value)) {
+		BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
+		return false;
+	}
+
 	if (value != NULL) {
-		if (negative) {
-			*value = 0.0f;
-		} else if (!BotWeight_ParseFloatToken(&token, value)) {
-			BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
-			return false;
-		}
+		*value = parsed_value;
 	}
 	return true;
 }
@@ -591,6 +744,21 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
         return NULL;
     }
 
+	bool cacheable = global_define_count == 0 && global_defines == NULL && !BotWeight_ShouldReloadCharacters();
+	if (cacheable) {
+		bot_weight_config_t *cached_config = BotWeight_FindCachedConfig(resolved_path);
+		if (cached_config != NULL) {
+			BotWeight_PopGlobalDefines(&define_scope);
+			return cached_config;
+		}
+
+		if (BotWeight_FindFreeCachedSlot() < 0) {
+			BotWeight_PopGlobalDefines(&define_scope);
+			BotLib_Print(PRT_ERROR, "weightFileList was full trying to load %s\n", resolved_path);
+			return NULL;
+		}
+	}
+
     pc_source_t *source = PC_LoadSourceFile(resolved_path);
     BotWeight_PopGlobalDefines(&define_scope);
     if (source == NULL) {
@@ -616,17 +784,75 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
         return NULL;
     }
 
+	BotLib_Print(PRT_MESSAGE, "loaded %s\n", resolved_path);
+
+	if (cacheable && !BotWeight_CacheConfig(config, resolved_path)) {
+		BotWeight_FreeConfig(config);
+		return NULL;
+	}
+
     return config;
 }
 
+/*
+=============
+ReadWeightConfig
+=============
+*/
 bot_weight_config_t *ReadWeightConfig(const char *filename)
 {
-    return ReadWeightConfigWithDefines(filename, NULL, 0);
+	return ReadWeightConfigWithDefines(filename, NULL, 0);
 }
 
+/*
+=============
+FreeWeightConfig
+=============
+*/
 void FreeWeightConfig(bot_weight_config_t *config)
 {
-    BotWeight_FreeConfig(config);
+	if (config == NULL) {
+		return;
+	}
+
+	if (!BotWeight_ShouldReloadCharacters() && BotWeight_ConfigIsCached(config)) {
+		return;
+	}
+
+	FreeWeightConfig2(config);
+}
+
+/*
+=============
+FreeWeightConfig2
+=============
+*/
+void FreeWeightConfig2(bot_weight_config_t *config)
+{
+	if (config == NULL) {
+		return;
+	}
+
+	BotWeight_RemoveCachedConfig(config);
+	BotWeight_FreeConfig(config);
+}
+
+/*
+=============
+BotWeight_ShutdownCachedConfigs
+=============
+*/
+void BotWeight_ShutdownCachedConfigs(void)
+{
+	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
+		bot_weight_config_t *config = g_weight_file_list[i];
+		if (config == NULL) {
+			continue;
+		}
+
+		g_weight_file_list[i] = NULL;
+		BotWeight_FreeConfig(config);
+	}
 }
 
 /*
@@ -656,16 +882,7 @@ static float BotWeight_FuzzyWeightRecursive(const int *inventory, const bot_fuzz
 		if (inventory_value < fs->next->value) {
 			float w1 = fs->child ? BotWeight_FuzzyWeightRecursive(inventory, fs->child) : fs->weight;
 			float w2 = fs->next->child ? BotWeight_FuzzyWeightRecursive(inventory, fs->next->child) : fs->next->weight;
-			float denominator = (float)(fs->next->value - fs->value);
-			if (denominator <= 0.0f) {
-				return w2;
-			}
-			float scale = (float)(inventory_value - fs->value) / denominator;
-			if (scale < 0.0f) {
-				scale = 0.0f;
-			} else if (scale > 1.0f) {
-				scale = 1.0f;
-			}
+			float scale = (float)((inventory_value - fs->value) / (fs->next->value - fs->value));
 			return scale * w1 + (1.0f - scale) * w2;
 		}
 		return BotWeight_FuzzyWeightRecursive(inventory, fs->next);
@@ -725,16 +942,7 @@ static float BotWeight_FuzzyWeightUndecidedRecursive(const int *inventory, const
 			float w2 = fs->next->child
 				? BotWeight_FuzzyWeightRecursive(inventory, fs->next->child)
 				: fs->next->min_weight + BotWeight_RandomFloat() * (fs->next->max_weight - fs->next->min_weight);
-			float denominator = (float)(fs->next->value - fs->value);
-			if (denominator <= 0.0f) {
-				return w2;
-			}
-			float scale = (float)(inventory_value - fs->value) / denominator;
-			if (scale < 0.0f) {
-				scale = 0.0f;
-			} else if (scale > 1.0f) {
-				scale = 1.0f;
-			}
+			float scale = (float)((inventory_value - fs->value) / (fs->next->value - fs->value));
 			return scale * w1 + (1.0f - scale) * w2;
 		}
 		return BotWeight_FuzzyWeightUndecidedRecursive(inventory, fs->next);
@@ -800,6 +1008,16 @@ int BotWeight_FindIndex(const bot_weight_config_t *config, const char *name)
 	}
 
 	return -1;
+}
+
+/*
+=============
+FindFuzzyWeight
+=============
+*/
+int FindFuzzyWeight(bot_weight_config_t *config, const char *name)
+{
+	return BotWeight_FindIndex(config, name);
 }
 
 /*
@@ -954,6 +1172,73 @@ void ScaleBalanceRange(bot_weight_config_t *config, float scale)
 	for (int i = 0; i < config->num_weights; ++i) {
 		BotWeight_ScaleFuzzyBalanceRange(config->weights[i].first_seperator, scale);
 	}
+}
+
+/*
+=============
+BotWeight_MergeFuzzySeperator
+=============
+*/
+static bool BotWeight_MergeFuzzySeperator(bot_fuzzy_seperator_t *fs1,
+										  bot_fuzzy_seperator_t *fs2)
+{
+	if (fs1 == NULL || fs2 == NULL) {
+		BotLib_Print(PRT_ERROR, "can't merge weight configs\n");
+		return false;
+	}
+
+	for (;;) {
+		if (fs1->child != NULL) {
+			if (fs2->child == NULL) {
+				BotLib_Print(PRT_ERROR, "can't merge weight configs\n");
+				return false;
+			}
+			if (!BotWeight_MergeFuzzySeperator(fs2->child, fs2->child)) {
+				return false;
+			}
+		} else if (fs1->type == WEIGHT_TYPE_BALANCE) {
+			if (fs2->type != WEIGHT_TYPE_BALANCE) {
+				BotLib_Print(PRT_ERROR, "can't merge weight configs\n");
+				return false;
+			}
+			fs1->weight = (fs2->weight + fs1->weight) * 0.5f;
+		}
+
+		fs1 = fs1->next;
+		if (fs1 == NULL) {
+			return true;
+		}
+		if (fs2->next == NULL) {
+			BotLib_Print(PRT_ERROR, "can't merge weight configs\n");
+			return false;
+		}
+		fs2 = fs2->next;
+	}
+}
+
+/*
+=============
+MergeWeightConfigs
+=============
+*/
+int MergeWeightConfigs(bot_weight_config_t *config1, bot_weight_config_t *config2)
+{
+	if (config1 == NULL || config2 == NULL) {
+		BotLib_Print(PRT_ERROR, "can't merge weight configs\n");
+		return 0;
+	}
+
+	if (config1->num_weights != config2->num_weights) {
+		BotLib_Print(PRT_ERROR, "can't merge weight configs\n");
+		return 0;
+	}
+
+	for (int i = 0; i < config1->num_weights; ++i) {
+		BotWeight_MergeFuzzySeperator(config1->weights[i].first_seperator,
+									   config2->weights[i].first_seperator);
+	}
+
+	return config1->num_weights;
 }
 
 /*

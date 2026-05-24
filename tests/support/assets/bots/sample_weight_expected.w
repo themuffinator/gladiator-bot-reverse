@@ -2,7 +2,7 @@
 weight "single_value"
 {
 	 return 42;
-} //end weight
+} //end itemweight
 
 weight "switch_tree"
 {
@@ -19,4 +19,4 @@ weight "switch_tree"
 		} //end case
 		default: return 9;
 	} //end switch
-} //end weight
+} //end itemweight

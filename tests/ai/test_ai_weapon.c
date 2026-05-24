@@ -13,9 +13,11 @@
 #endif
 
 #include "botlib/ai_weapon/bot_weapon.h"
+#include "botlib/ea/ea_local.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
+#include "q2bridge/bridge.h"
 #include "q2bridge/botlib.h"
 
 #include "inv.h"
@@ -30,16 +32,27 @@
 
 #define TEST_BOTLIB_HEAP_SIZE (1u << 20)
 #define TEST_MAX_LOG_MESSAGES 32
+#define TEST_MAX_CLIENT_COMMANDS 8
 
 typedef struct test_log_message_s {
     int priority;
     char text[256];
 } test_log_message_t;
 
+typedef struct test_client_command_s {
+	int client;
+	char text[256];
+} test_client_command_t;
+
 static struct {
     test_log_message_t entries[TEST_MAX_LOG_MESSAGES];
     int count;
 } g_test_log;
+
+static struct {
+	test_client_command_t entries[TEST_MAX_CLIENT_COMMANDS];
+	int count;
+} g_test_client_commands;
 
 static void test_reset_log(void)
 {
@@ -48,6 +61,15 @@ static void test_reset_log(void)
         g_test_log.entries[i].priority = 0;
         g_test_log.entries[i].text[0] = '\0';
     }
+}
+
+static void test_reset_client_commands(void)
+{
+	g_test_client_commands.count = 0;
+	for (int i = 0; i < TEST_MAX_CLIENT_COMMANDS; ++i) {
+		g_test_client_commands.entries[i].client = -1;
+		g_test_client_commands.entries[i].text[0] = '\0';
+	}
 }
 
 static void test_capture_print(int priority, const char *fmt, ...)
@@ -62,6 +84,23 @@ static void test_capture_print(int priority, const char *fmt, ...)
     slot->priority = priority;
     vsnprintf(slot->text, sizeof(slot->text), fmt, args);
     va_end(args);
+}
+
+static void test_capture_client_command(int client, char *fmt, ...)
+{
+	if (fmt == NULL || g_test_client_commands.count >= TEST_MAX_CLIENT_COMMANDS) {
+		return;
+	}
+
+	va_list args;
+	va_start(args, fmt);
+
+	test_client_command_t *slot = &g_test_client_commands.entries[g_test_client_commands.count++];
+	slot->client = client;
+	vsnprintf(slot->text, sizeof(slot->text), fmt, args);
+	slot->text[sizeof(slot->text) - 1] = '\0';
+
+	va_end(args);
 }
 
 static void test_capture_dprint(const char *fmt, ...)
@@ -93,6 +132,10 @@ static const botlib_import_table_t g_test_imports = {
     .BotLibVarSet = test_libvar_set,
 };
 
+static bot_import_t g_test_q2_imports = {
+	.BotClientCommand = test_capture_client_command,
+};
+
 static void configure_asset_libvars(void)
 {
     char asset_root[PATH_MAX];
@@ -112,6 +155,7 @@ static void configure_asset_libvars(void)
 static void setup_botlib_environment(void)
 {
     test_reset_log();
+	test_reset_client_commands();
     BotInterface_SetImportTable(&g_test_imports);
     LibVar_Init();
     configure_asset_libvars();
@@ -120,6 +164,8 @@ static void setup_botlib_environment(void)
 
 static void teardown_botlib_environment(void)
 {
+	Q2Bridge_ClearImportTable();
+	BotShutdownWeights();
     LibVar_Shutdown();
     BotMemory_Shutdown();
     BotInterface_SetImportTable(NULL);
@@ -145,7 +191,7 @@ static int weapon_index_by_name(const bot_weapon_config_t *config, const char *n
     }
 
     for (int i = 0; i < config->num_weapons; ++i) {
-        if (config->weapons[i].name != NULL && strcmp(config->weapons[i].name, name) == 0) {
+        if (strcmp(config->weapons[i].name, name) == 0) {
             return i;
         }
     }
@@ -170,6 +216,12 @@ static void test_weapon_library_reports_expected_counts(void **state)
 
     assert_int_equal(config->num_weapons, 20);
     assert_int_equal(config->num_projectiles, 20);
+
+    assert_int_equal(config->weapons[0].number, 0);
+    assert_string_equal(config->weapons[0].name, "Blaster");
+    assert_non_null(config->weapons[0].projectileinfo);
+    assert_ptr_equal(config->weapons[0].projectileinfo, &config->projectiles[0]);
+    assert_string_equal(config->weapons[0].projectileinfo->name, "blasterbolt");
 
     AI_UnloadWeaponLibrary(library);
     teardown_botlib_environment();
@@ -229,20 +281,55 @@ static void test_weapon_weights_align_with_reference_values(void **state)
     fclose(temp_file);
 
     ai_weapon_weights_t *missing_weights = AI_LoadWeaponWeights(temp_weight_path);
-    assert_null(missing_weights);
-    assert_true(g_test_log.count > 0);
-
-    char expected_warning[256];
-    snprintf(expected_warning,
-             sizeof(expected_warning),
-             "item info %d \"%s\" has no fuzzy weight\n",
-             weapon_config->weapons[shotgun_index].number,
-             weapon_config->weapons[shotgun_index].name);
-    assert_string_equal(g_test_log.entries[g_test_log.count - 1].text, expected_warning);
+    assert_non_null(missing_weights);
+    for (int i = 0; i < g_test_log.count; ++i) {
+        assert_true(g_test_log.entries[i].priority != PRT_ERROR);
+        assert_true(g_test_log.entries[i].priority != PRT_FATAL);
+    }
+    assert_float_equal(AI_WeaponWeightForClient(missing_weights, blaster_index), 20.0f, 0.01f);
+    assert_float_equal(AI_WeaponWeightForClient(missing_weights, shotgun_index), 0.0f, 0.01f);
 
     remove(temp_weight_path);
 
+    AI_FreeWeaponWeights(missing_weights);
     AI_FreeWeaponWeights(weights);
+    AI_UnloadWeaponLibrary(library);
+    teardown_botlib_environment();
+}
+
+static void test_weapon_model_lookup_and_info_copy_match_hlil_helpers(void **state)
+{
+    (void)state;
+
+    char weapon_config_path[512];
+    asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
+
+    setup_botlib_environment();
+    ai_weapon_library_t *library = AI_LoadWeaponLibrary(NULL);
+    assert_non_null(library);
+
+    const bot_weapon_config_t *weapon_config = AI_GetWeaponConfig(library);
+    assert_non_null(weapon_config);
+
+    int rocket_index = weapon_index_by_name(weapon_config, "Rocket Launcher");
+    assert_true(rocket_index >= 0);
+
+    const char *rocket_model = weapon_config->weapons[rocket_index].model;
+    assert_int_equal(AI_WeaponNumberForModel(rocket_model), rocket_index);
+    assert_string_equal(AI_WeaponNameForModel(rocket_model), "Rocket Launcher");
+    assert_int_equal(AI_WeaponNumberForModel("models/weapons/not_real/tris.md2"), -1);
+    assert_string_equal(AI_WeaponNameForModel("models/weapons/not_real/tris.md2"), "unknown weapon");
+
+    int weapon_handle = BotAllocWeaponState();
+    assert_true(weapon_handle > 0);
+
+    bot_weapon_info_t copied;
+    BotGetWeaponInfo(weapon_handle, rocket_index, &copied);
+    assert_int_equal(copied.number, rocket_index);
+    assert_string_equal(copied.name, "Rocket Launcher");
+    assert_ptr_equal(copied.projectileinfo, weapon_config->weapons[rocket_index].projectileinfo);
+
+    BotFreeWeaponState(weapon_handle);
     AI_UnloadWeaponLibrary(library);
     teardown_botlib_environment();
 }
@@ -296,12 +383,72 @@ static void test_bot_choose_best_fight_weapon_matches_reference(void **state)
     teardown_botlib_environment();
 }
 
+static void test_weapon_selector_queues_use_command_like_hlil(void **state)
+{
+	(void)state;
+
+	char weapon_config_path[512];
+	char weight_config_path[512];
+	asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
+	asset_path_or_skip("dev_tools/assets/default/defaul_w.c", weight_config_path, sizeof(weight_config_path));
+
+	setup_botlib_environment();
+	Q2Bridge_SetImportTable(&g_test_q2_imports);
+	assert_int_equal(EA_Init(MAX_CLIENTS), BLERR_NOERROR);
+
+	ai_weapon_library_t *library = AI_LoadWeaponLibrary(NULL);
+	assert_non_null(library);
+
+	int weapon_handle = BotAllocWeaponState();
+	assert_true(weapon_handle > 0);
+	assert_int_equal(BotLoadWeaponWeights(weapon_handle, "default/defaul_w.c"), BLERR_NOERROR);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	inventory[INVENTORY_BLASTER] = 1;
+	inventory[INVENTORY_MACHINEGUN] = 1;
+	inventory[INVENTORY_BULLETS] = 50;
+
+	test_reset_client_commands();
+	int best_weapon = BotSelectBestFightWeapon(2, weapon_handle, inventory, 1.0f);
+	assert_int_equal(best_weapon, 3);
+
+	bot_input_t input = {0};
+	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(g_test_client_commands.count, 1);
+	assert_int_equal(g_test_client_commands.entries[0].client, 2);
+	assert_string_equal(g_test_client_commands.entries[0].text, "use Machinegun");
+
+	test_reset_client_commands();
+	best_weapon = BotSelectBestFightWeapon(2, weapon_handle, inventory, 2.0f);
+	assert_int_equal(best_weapon, 3);
+	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(g_test_client_commands.count, 0);
+
+	inventory[INVENTORY_ROCKETLAUNCHER] = 1;
+	inventory[INVENTORY_ROCKETS] = 10;
+	inventory[ENEMY_HORIZONTAL_DIST] = 999;
+
+	best_weapon = BotSelectBestFightWeapon(2, weapon_handle, inventory, 6.0f);
+	assert_int_equal(best_weapon, 6);
+	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(g_test_client_commands.count, 1);
+	assert_string_equal(g_test_client_commands.entries[0].text, "use Rocket Launcher");
+
+	BotFreeWeaponState(weapon_handle);
+	AI_UnloadWeaponLibrary(library);
+	EA_Shutdown();
+	teardown_botlib_environment();
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_weapon_library_reports_expected_counts),
         cmocka_unit_test(test_weapon_weights_align_with_reference_values),
+        cmocka_unit_test(test_weapon_model_lookup_and_info_copy_match_hlil_helpers),
         cmocka_unit_test(test_bot_choose_best_fight_weapon_matches_reference),
+        cmocka_unit_test(test_weapon_selector_queues_use_command_like_hlil),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -113,6 +113,16 @@ extern "C" {
 #define BLERR_INVALIDIMPORT              100
 #define BLERR_INVALIDSOUNDINDEX          32
 
+#ifndef CHAT_GENDERLESS
+#define CHAT_GENDERLESS                  0
+#endif
+#ifndef CHAT_GENDERFEMALE
+#define CHAT_GENDERFEMALE                1
+#endif
+#ifndef CHAT_GENDERMALE
+#define CHAT_GENDERMALE                  2
+#endif
+
 // BSP surface description returned by traces
 typedef struct bsp_surface_s {
     char name[16];
@@ -256,6 +266,8 @@ typedef struct bot_export_s {
     int (*BotLoadWeights)(int handle, const char *filename);
     int (*BotWriteWeights)(int handle, const char *filename);
     int (*BotSetWeight)(int handle, const char *name, float value);
+    int (*BotFindFuzzyWeight)(int handle, const char *name);
+    float (*BotFuzzyWeightHandle)(int handle, const int *inventory, int weight_index);
     bot_weight_config_t *(*BotReadWeightsFile)(const char *filename);
     int (*BotAllocMoveState)(void);
     void (*BotFreeMoveState)(int handle);
@@ -266,8 +278,9 @@ typedef struct bot_export_s {
     void (*BotResetAvoidReach)(int movestate);
 	void (*BotResetLastAvoidReach)(int movestate);
     int (*BotReachabilityArea)(vec3_t origin, int client);
-	int (*BotMovementViewTarget)(int movestate, const bot_goal_t *goal, int travelflags, float lookahead, vec3_t target);
+    int (*BotMovementViewTarget)(int movestate, const bot_goal_t *goal, int travelflags, float lookahead, vec3_t target);
 	int (*BotPredictVisiblePosition)(vec3_t origin, int areanum, const bot_goal_t *goal, int travelflags, vec3_t target);
+	void (*BotAddAvoidSpot)(int movestate, vec3_t origin, float radius, int type);
     int (*BotLoadCharacter)(const char *character_file, float skill);
     void (*BotFreeCharacter)(int handle);
     int (*BotLoadCharacterSkill)(const char *character_file, float skill);
@@ -295,9 +308,25 @@ typedef struct bot_export_s {
     size_t (*BotNumConsoleMessages)(const bot_chatstate_t *state);
     void (*BotEnterChat)(bot_chatstate_t *state, int client, int sendto);
     int (*BotReplyChat)(bot_chatstate_t *state, const char *message, unsigned long context);
-    int (*BotChatLength)(const char *message);
+    int (*BotChatLength)(const bot_chatstate_t *state);
 	int (*BotNumInitialChats)(const bot_chatstate_t *state, const char *type);
 	int (*BotInitialChat)(bot_chatstate_t *state, const char *type, unsigned long context, ...);
+    void (*BotGetChatMessage)(bot_chatstate_t *state, char *buffer, int buffer_size);
+    void (*BotSetChatGender)(bot_chatstate_t *state, int gender);
+    void (*BotSetChatName)(bot_chatstate_t *state, const char *name, int client);
+    void (*BotEmptyGoalStack)(int handle);
+    void (*BotRemoveFromAvoidGoals)(int handle, int number);
+    float (*BotAvoidGoalTime)(int handle, int number);
+    void (*BotSetAvoidGoalTime)(int handle, int number, float avoidtime);
+    void (*BotDumpAvoidGoals)(int handle);
+    void (*BotDumpGoalStack)(int handle);
+    void (*BotGoalName)(int number, char *name, int size);
+    int (*BotGetLevelItemGoal)(int index, char *classname, bot_goal_t *goal);
+    int (*BotGetNextCampSpotGoal)(int num, bot_goal_t *goal);
+    int (*BotGetMapLocationGoal)(char *name, bot_goal_t *goal);
+    void (*BotInterbreedGoalFuzzyLogic)(int parent1, int parent2, int child);
+    void (*BotSaveGoalFuzzyLogic)(int goalstate, char *filename);
+    void (*BotMutateGoalFuzzyLogic)(int goalstate, float range);
 } bot_export_t;
 
 // Bot library imported functions

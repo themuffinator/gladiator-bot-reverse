@@ -1,851 +1,561 @@
 #include "botlib/ai_weapon/bot_weapon.h"
 
+#include "botlib/ai_weight/bot_weight.h"
 #include "botlib/common/l_assets.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/common/l_struct.h"
 #include "botlib/precomp/l_precomp.h"
-#include "botlib/precomp/l_script.h"
-#include "botlib/ai_weight/bot_weight.h"
 
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 
 #define AI_WEAPON_DEFAULT_CONFIG "weapons.c"
+#define AI_WEAPON_UNKNOWN_NAME "unknown weapon"
+
+#define AI_WEAPON_OFS(x) ((int)offsetof(bot_weapon_info_t, x))
+#define AI_PROJECTILE_OFS(x) ((int)offsetof(bot_weapon_projectile_t, x))
 
 static const bot_weapon_config_t *g_active_weapon_config = NULL;
 
+static const fielddef_t g_weaponinfo_fields[] = {
+	{"name", AI_WEAPON_OFS(name), FT_STRING},
+	{"level", AI_WEAPON_OFS(level), FT_INT},
+	{"model", AI_WEAPON_OFS(model), FT_STRING},
+	{"weaponindex", AI_WEAPON_OFS(weaponindex), FT_INT},
+	{"flags", AI_WEAPON_OFS(flags), FT_INT},
+	{"projectile", AI_WEAPON_OFS(projectile), FT_STRING},
+	{"numprojectiles", AI_WEAPON_OFS(numprojectiles), FT_INT},
+	{"hspread", AI_WEAPON_OFS(hspread), FT_FLOAT},
+	{"vspread", AI_WEAPON_OFS(vspread), FT_FLOAT},
+	{"speed", AI_WEAPON_OFS(speed), FT_FLOAT},
+	{"acceleration", AI_WEAPON_OFS(acceleration), FT_FLOAT},
+	{"recoil", AI_WEAPON_OFS(recoil), FT_FLOAT | FT_ARRAY, 3},
+	{"offset", AI_WEAPON_OFS(offset), FT_FLOAT | FT_ARRAY, 3},
+	{"angleoffset", AI_WEAPON_OFS(angleoffset), FT_FLOAT | FT_ARRAY, 3},
+	{"extrazvelocity", AI_WEAPON_OFS(extrazvelocity), FT_FLOAT},
+	{"ammoamount", AI_WEAPON_OFS(ammoamount), FT_INT},
+	{"ammoindex", AI_WEAPON_OFS(ammoindex), FT_INT},
+	{"activate", AI_WEAPON_OFS(activate), FT_FLOAT},
+	{"reload", AI_WEAPON_OFS(reload), FT_FLOAT},
+	{"spinup", AI_WEAPON_OFS(spinup), FT_FLOAT},
+	{"spindown", AI_WEAPON_OFS(spindown), FT_FLOAT},
+	{NULL, 0, 0, 0},
+};
+
+static const fielddef_t g_projectileinfo_fields[] = {
+	{"name", AI_PROJECTILE_OFS(name), FT_STRING},
+	{"model", AI_PROJECTILE_OFS(model), FT_STRING},
+	{"flags", AI_PROJECTILE_OFS(flags), FT_INT},
+	{"gravity", AI_PROJECTILE_OFS(gravity), FT_FLOAT},
+	{"damage", AI_PROJECTILE_OFS(damage), FT_INT},
+	{"radius", AI_PROJECTILE_OFS(radius), FT_FLOAT},
+	{"visdamage", AI_PROJECTILE_OFS(visdamage), FT_INT},
+	{"damagetype", AI_PROJECTILE_OFS(damagetype), FT_INT},
+	{"healthinc", AI_PROJECTILE_OFS(healthinc), FT_INT},
+	{"push", AI_PROJECTILE_OFS(push), FT_FLOAT},
+	{"detonation", AI_PROJECTILE_OFS(detonation), FT_FLOAT},
+	{"bounce", AI_PROJECTILE_OFS(bounce), FT_FLOAT},
+	{"bouncefric", AI_PROJECTILE_OFS(bouncefric), FT_FLOAT},
+	{"bouncestop", AI_PROJECTILE_OFS(bouncestop), FT_FLOAT},
+	{NULL, 0, 0, 0},
+};
+
+static const structdef_t g_weaponinfo_struct = {
+	(int)sizeof(bot_weapon_info_t),
+	g_weaponinfo_fields,
+};
+
+static const structdef_t g_projectileinfo_struct = {
+	(int)sizeof(bot_weapon_projectile_t),
+	g_projectileinfo_fields,
+};
+
+/*
+=============
+AI_Weapon_LogPath
+
+Returns the path used in diagnostics, falling back to the retail default.
+=============
+*/
 static const char *AI_Weapon_LogPath(const char *path)
 {
-    return (path != NULL && path[0] != '\0') ? path : AI_WEAPON_DEFAULT_CONFIG;
+	return (path != NULL && path[0] != '\0') ? path : AI_WEAPON_DEFAULT_CONFIG;
 }
 
 /*
 =============
-AI_Weapon_TokenToFloat
+AI_Weapon_OpenSource
+
+Resolves and opens a weapon configuration through the shared asset search path.
 =============
 */
-static float AI_Weapon_TokenToFloat(const pc_token_t *token)
+static pc_source_t *AI_Weapon_OpenSource(const char *requested,
+										 char *resolved_path,
+										 size_t resolved_size)
 {
-	if (token == NULL)
+	if (resolved_path != NULL && resolved_size > 0)
 	{
-		return 0.0f;
+		resolved_path[0] = '\0';
 	}
 
-	if (token->type == TT_NUMBER)
+	if (requested == NULL || requested[0] == '\0')
 	{
-		char *end = NULL;
-		double parsed = strtod(token->string, &end);
-		if (end != token->string && (end == NULL || *end == '\0'))
+		requested = AI_WEAPON_DEFAULT_CONFIG;
+	}
+
+	char candidate[AI_WEAPON_MAX_PATH];
+	if (!BotLib_ResolveAssetPath(requested, NULL, candidate, sizeof(candidate)))
+	{
+		if (resolved_path != NULL && resolved_size > 0)
 		{
-			return (float)parsed;
+			strncpy(resolved_path, candidate, resolved_size - 1);
+			resolved_path[resolved_size - 1] = '\0';
 		}
+		return NULL;
 	}
 
-	if (token->type == TT_NUMBER && (token->subtype & TT_FLOAT))
+	pc_source_t *source = PC_LoadSourceFile(candidate);
+	if (resolved_path != NULL && resolved_size > 0)
 	{
-		return (float)token->floatvalue;
+		strncpy(resolved_path, candidate, resolved_size - 1);
+		resolved_path[resolved_size - 1] = '\0';
 	}
 
-	return (float)token->intvalue;
+	return source;
 }
 
 /*
 =============
-AI_Weapon_TokenToInt
+AI_Weapon_AllocateConfig
+
+Allocates one Gladiator weaponconfig block with weapon and projectile arrays.
 =============
 */
-static int AI_Weapon_TokenToInt(const pc_token_t *token)
+static bot_weapon_config_t *AI_Weapon_AllocateConfig(int max_weaponinfo,
+													 int max_projectileinfo)
 {
-	if (token == NULL)
+	size_t weapon_bytes = (size_t)max_weaponinfo * sizeof(bot_weapon_info_t);
+	size_t projectile_bytes = (size_t)max_projectileinfo * sizeof(bot_weapon_projectile_t);
+	size_t allocation_size = sizeof(bot_weapon_config_t) + weapon_bytes + projectile_bytes;
+
+	bot_weapon_config_t *config = (bot_weapon_config_t *)GetClearedMemory(allocation_size);
+	if (config == NULL)
 	{
-		return 0;
+		BotLib_Print(PRT_ERROR,
+					 "[ai_weapon] failed to allocate weapon configuration (%zu bytes)\n",
+					 allocation_size);
+		return NULL;
 	}
 
-	if (token->type == TT_NUMBER)
-	{
-		char *end = NULL;
-		long parsed = strtol(token->string, &end, 0);
-		if (end != token->string && (end == NULL || *end == '\0'))
-		{
-			return (int)parsed;
-		}
-	}
+	bot_weapon_info_t *weapon_array = (bot_weapon_info_t *)(config + 1);
+	bot_weapon_projectile_t *projectile_array =
+		(bot_weapon_projectile_t *)(weapon_array + max_weaponinfo);
 
-	if (token->type == TT_NUMBER && (token->subtype & TT_FLOAT))
-	{
-		return (int)token->floatvalue;
-	}
-
-	return (int)token->intvalue;
+	config->num_weapons = 0;
+	config->num_projectiles = 0;
+	config->projectiles = projectile_array;
+	config->weapons = weapon_array;
+	return config;
 }
 
 /*
 =============
-AI_Weapon_CopyTokenString
+AI_Weapon_FreeLoadArtifacts
+
+Releases parser state and the partially built weapon config after a load error.
 =============
 */
-static void AI_Weapon_CopyTokenString(char *dest, size_t dest_size, const pc_token_t *token)
+static void AI_Weapon_FreeLoadArtifacts(pc_source_t *source, bot_weapon_config_t *config)
 {
-	if (dest == NULL || dest_size == 0 || token == NULL)
+	if (source != NULL)
 	{
-		return;
+		PC_FreeSource(source);
 	}
-
-	dest[0] = '\0';
-	strncpy(dest, token->string, dest_size - 1);
-	dest[dest_size - 1] = '\0';
-
-	size_t length = strlen(dest);
-	if (length >= 2 && dest[0] == '"' && dest[length - 1] == '"')
+	if (config != NULL)
 	{
-		memmove(dest, dest + 1, length - 2);
-		dest[length - 2] = '\0';
+		FreeMemory(config);
 	}
 }
 
 /*
 =============
-AI_Weapon_ReadSignedFloat
+AI_Weapon_LoadFailed
+
+Common failure path that matches the retail cascaded load diagnostic.
 =============
 */
-static bool AI_Weapon_ReadSignedFloat(pc_source_t *source, float *out)
+static ai_weapon_library_t *AI_Weapon_LoadFailed(pc_source_t *source,
+												 bot_weapon_config_t *config,
+												 const char *requested)
+{
+	AI_Weapon_FreeLoadArtifacts(source, config);
+	BotLib_Print(PRT_ERROR,
+				 "couldn't load weapon config %s\n",
+				 AI_Weapon_LogPath(requested));
+	return NULL;
+}
+
+/*
+=============
+AI_Weapon_NormalizeMaxLibvar
+
+Reads a max_* libvar and applies the original negative-value fallback.
+=============
+*/
+static int AI_Weapon_NormalizeMaxLibvar(const char *name)
+{
+	int value = (int)LibVarValue(name, "32");
+	if (value < 0)
+	{
+		BotLib_Print(PRT_ERROR, "%s = %d\n", name, value);
+		LibVarSet(name, "32");
+		value = 32;
+	}
+	return value;
+}
+
+/*
+=============
+AI_Weapon_ReadConfigDefinitions
+
+Parses top-level weaponinfo and projectileinfo blocks in Gladiator order.
+=============
+*/
+static bool AI_Weapon_ReadConfigDefinitions(pc_source_t *source,
+											bot_weapon_config_t *config,
+											int max_weaponinfo,
+											int max_projectileinfo,
+											const char *log_path)
 {
 	pc_token_t token;
-	bool negative = false;
-
-	if (source == NULL || out == NULL)
+	while (PC_ReadToken(source, &token))
 	{
-		return false;
-	}
-
-	if (!PC_ReadToken(source, &token))
-	{
-		return false;
-	}
-
-	if (token.type == TT_PUNCTUATION)
-	{
-		if (token.subtype == P_SUB)
+		if (token.type != TT_NAME)
 		{
-			negative = true;
-			if (!PC_ReadToken(source, &token))
+			BotLib_Print(PRT_ERROR,
+						 "unknown definition %s in %s\n",
+						 token.string,
+						 log_path);
+			return false;
+		}
+
+		if (strcmp(token.string, "weaponinfo") == 0)
+		{
+			if (config->num_weapons >= max_weaponinfo)
+			{
+				BotLib_Print(PRT_ERROR,
+							 "more than %d weapons defined in %s\n",
+							 max_weaponinfo,
+							 log_path);
+				return false;
+			}
+
+			bot_weapon_info_t *weapon = &config->weapons[config->num_weapons];
+			memset(weapon, 0, sizeof(*weapon));
+			if (!ReadStructure(source, &g_weaponinfo_struct, weapon))
 			{
 				return false;
 			}
+			config->num_weapons += 1;
+			continue;
 		}
-		else if (token.subtype == P_ADD)
+
+		if (strcmp(token.string, "projectileinfo") == 0)
 		{
-			if (!PC_ReadToken(source, &token))
+			if (config->num_projectiles >= max_projectileinfo)
+			{
+				BotLib_Print(PRT_ERROR,
+							 "more than %d projectiles defined in %s\n",
+							 max_projectileinfo,
+							 log_path);
+				return false;
+			}
+
+			bot_weapon_projectile_t *projectile = &config->projectiles[config->num_projectiles];
+			memset(projectile, 0, sizeof(*projectile));
+			if (!ReadStructure(source, &g_projectileinfo_struct, projectile))
 			{
 				return false;
 			}
+			config->num_projectiles += 1;
+			continue;
 		}
-	}
 
-	if (token.type != TT_NUMBER)
-	{
+		BotLib_Print(PRT_ERROR,
+					 "unknown definition %s in %s\n",
+					 token.string,
+					 log_path);
 		return false;
 	}
 
-	float value = AI_Weapon_TokenToFloat(&token);
-	*out = negative ? -value : value;
 	return true;
 }
 
 /*
 =============
-AI_Weapon_ReadVector
+AI_Weapon_FindProjectile
+
+Finds a projectile definition by name in the parsed configuration.
 =============
 */
-static bool AI_Weapon_ReadVector(pc_source_t *source, vec3_t out)
+static const bot_weapon_projectile_t *AI_Weapon_FindProjectile(const bot_weapon_config_t *config,
+															   const char *name)
 {
-    if (source == NULL || out == NULL)
-    {
-        return false;
-    }
+	if (config == NULL || name == NULL || name[0] == '\0')
+	{
+		return NULL;
+	}
 
-    pc_token_t punctuation;
-    if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_BRACEOPEN, &punctuation))
-    {
-        return false;
-    }
-
-    for (int i = 0; i < 3; ++i)
-    {
-		float value = 0.0f;
-		if (!AI_Weapon_ReadSignedFloat(source, &value))
+	for (int index = 0; index < config->num_projectiles; ++index)
+	{
+		const bot_weapon_projectile_t *projectile = &config->projectiles[index];
+		if (strcmp(projectile->name, name) == 0)
 		{
+			return projectile;
+		}
+	}
+
+	return NULL;
+}
+
+/*
+=============
+AI_Weapon_FixupDefinitions
+
+Generates weapon numbers and links each weapon to its projectile definition.
+=============
+*/
+static bool AI_Weapon_FixupDefinitions(bot_weapon_config_t *config, const char *log_path)
+{
+	for (int index = 0; index < config->num_weapons; ++index)
+	{
+		bot_weapon_info_t *weapon = &config->weapons[index];
+
+		if (weapon->name[0] == '\0')
+		{
+			BotLib_Print(PRT_ERROR,
+						 "weapon %d has no name in %s\n",
+						 index,
+						 log_path);
 			return false;
 		}
-		out[i] = value;
 
-        if (i < 2)
-        {
-            if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_COMMA, &punctuation))
-            {
-                return false;
-            }
-        }
-    }
+		if (weapon->projectile[0] == '\0')
+		{
+			BotLib_Print(PRT_ERROR,
+						 "weapon %s has no projectile in %s\n",
+						 weapon->name,
+						 log_path);
+			return false;
+		}
 
-    if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_BRACECLOSE, &punctuation))
-    {
-        return false;
-    }
+		const bot_weapon_projectile_t *projectile =
+			AI_Weapon_FindProjectile(config, weapon->projectile);
+		if (projectile == NULL)
+		{
+			BotLib_Print(PRT_ERROR,
+						 "weapon %s uses undefined projectile in %s\n",
+						 weapon->name,
+						 log_path);
+			return false;
+		}
 
-    return true;
+		weapon->number = index;
+		weapon->projectileinfo = projectile;
+	}
+
+	if (config->num_weapons == 0)
+	{
+		BotLib_Print(PRT_WARNING, "no weapon info loaded\n");
+	}
+
+	return true;
 }
 
-static bool AI_Weapon_ParseProjectile(pc_source_t *source,
-                                      bot_weapon_projectile_t *projectile,
-                                      const char *source_path)
-{
-    const char *log_path = AI_Weapon_LogPath(source_path);
-
-    pc_token_t punctuation;
-    if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_BRACEOPEN, &punctuation))
-    {
-        BotLib_Print(PRT_ERROR, "projectileinfo missing opening brace in %s\n", log_path);
-        return false;
-    }
-
-    pc_token_t token;
-    while (PC_ReadToken(source, &token))
-    {
-        if (token.type == TT_PUNCTUATION && token.subtype == P_BRACECLOSE)
-        {
-            return true;
-        }
-
-        if (token.type != TT_NAME)
-        {
-            BotLib_Print(PRT_ERROR, "unknown projectile field token %s in %s\n", token.string, log_path);
-            return false;
-        }
-
-        if (strcmp(token.string, "name") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_STRING, 0, &value))
-            {
-                return false;
-            }
-            AI_Weapon_CopyTokenString(projectile->name, sizeof(projectile->name), &value);
-        }
-        else if (strcmp(token.string, "model") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_STRING, 0, &value))
-            {
-                return false;
-            }
-            AI_Weapon_CopyTokenString(projectile->model, sizeof(projectile->model), &value);
-        }
-        else if (strcmp(token.string, "flags") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->flags = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "gravity") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->gravity = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "damage") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->damage = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "radius") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->radius = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "visdamage") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->visdamage = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "damagetype") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->damagetype = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "healthinc") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->healthinc = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "push") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->push = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "detonation") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->detonation = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "bounce") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->bounce = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "bouncefric") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->bouncefric = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "bouncestop") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            projectile->bouncestop = AI_Weapon_TokenToFloat(&value);
-        }
-        else
-        {
-            BotLib_Print(PRT_ERROR, "unknown projectile field %s in %s\n", token.string, log_path);
-            return false;
-        }
-    }
-
-    BotLib_Print(PRT_ERROR, "projectileinfo missing closing brace in %s\n", log_path);
-    return false;
-}
-
-static bool AI_Weapon_ParseWeapon(pc_source_t *source,
-                                  bot_weapon_info_t *weapon,
-                                  const char *source_path)
-{
-    const char *log_path = AI_Weapon_LogPath(source_path);
-
-    pc_token_t punctuation;
-    if (!PC_ExpectTokenType(source, TT_PUNCTUATION, P_BRACEOPEN, &punctuation))
-    {
-        BotLib_Print(PRT_ERROR, "weaponinfo missing opening brace in %s\n", log_path);
-        return false;
-    }
-
-    pc_token_t token;
-    while (PC_ReadToken(source, &token))
-    {
-        if (token.type == TT_PUNCTUATION && token.subtype == P_BRACECLOSE)
-        {
-            return true;
-        }
-
-        if (token.type != TT_NAME)
-        {
-            BotLib_Print(PRT_ERROR, "unknown weapon field token %s in %s\n", token.string, log_path);
-            return false;
-        }
-
-        if (strcmp(token.string, "name") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_STRING, 0, &value))
-            {
-                return false;
-            }
-            AI_Weapon_CopyTokenString(weapon->name, sizeof(weapon->name), &value);
-        }
-        else if (strcmp(token.string, "model") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_STRING, 0, &value))
-            {
-                return false;
-            }
-            AI_Weapon_CopyTokenString(weapon->model, sizeof(weapon->model), &value);
-        }
-        else if (strcmp(token.string, "level") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->level = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "weaponindex") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->weaponindex = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "flags") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->flags = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "projectile") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_STRING, 0, &value))
-            {
-                return false;
-            }
-            AI_Weapon_CopyTokenString(weapon->projectile, sizeof(weapon->projectile), &value);
-        }
-        else if (strcmp(token.string, "numprojectiles") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->numprojectiles = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "hspread") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->hspread = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "vspread") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->vspread = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "speed") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->speed = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "acceleration") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->acceleration = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "recoil") == 0)
-        {
-            if (!AI_Weapon_ReadVector(source, weapon->recoil))
-            {
-                return false;
-            }
-        }
-        else if (strcmp(token.string, "offset") == 0)
-        {
-            if (!AI_Weapon_ReadVector(source, weapon->offset))
-            {
-                return false;
-            }
-        }
-        else if (strcmp(token.string, "angleoffset") == 0)
-        {
-            if (!AI_Weapon_ReadVector(source, weapon->angleoffset))
-            {
-                return false;
-            }
-        }
-        else if (strcmp(token.string, "extrazvelocity") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->extrazvelocity = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "ammoamount") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->ammoamount = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "ammoindex") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->ammoindex = AI_Weapon_TokenToInt(&value);
-        }
-        else if (strcmp(token.string, "activate") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->activate = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "reload") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->reload = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "spinup") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->spinup = AI_Weapon_TokenToFloat(&value);
-        }
-        else if (strcmp(token.string, "spindown") == 0)
-        {
-            pc_token_t value;
-            if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &value))
-            {
-                return false;
-            }
-            weapon->spindown = AI_Weapon_TokenToFloat(&value);
-        }
-        else
-        {
-            BotLib_Print(PRT_ERROR, "unknown weapon field %s in %s\n", token.string, log_path);
-            return false;
-        }
-    }
-
-    BotLib_Print(PRT_ERROR, "weaponinfo missing closing brace in %s\n", log_path);
-    return false;
-}
-
-static pc_source_t *AI_Weapon_OpenSource(const char *requested,
-                                         char *resolved_path,
-                                         size_t resolved_size)
-{
-    if (resolved_path != NULL && resolved_size > 0)
-    {
-        resolved_path[0] = '\0';
-    }
-
-    if (requested == NULL || requested[0] == '\0')
-    {
-        requested = AI_WEAPON_DEFAULT_CONFIG;
-    }
-
-    char candidate[AI_WEAPON_MAX_PATH];
-    if (!BotLib_ResolveAssetPath(requested, NULL, candidate, sizeof(candidate)))
-    {
-        if (resolved_path != NULL && resolved_size > 0)
-        {
-            strncpy(resolved_path, candidate, resolved_size - 1);
-            resolved_path[resolved_size - 1] = '\0';
-        }
-        return NULL;
-    }
-
-    pc_source_t *source = PC_LoadSourceFile(candidate);
-    if (source != NULL)
-    {
-        if (resolved_path != NULL && resolved_size > 0)
-        {
-            strncpy(resolved_path, candidate, resolved_size - 1);
-            resolved_path[resolved_size - 1] = '\0';
-        }
-        return source;
-    }
-
-    if (resolved_path != NULL && resolved_size > 0)
-    {
-        strncpy(resolved_path, candidate, resolved_size - 1);
-        resolved_path[resolved_size - 1] = '\0';
-    }
-
-    return NULL;
-}
-
+/*
+=============
+AI_LoadWeaponLibrary
+=============
+*/
 ai_weapon_library_t *AI_LoadWeaponLibrary(const char *filename)
 {
-    const char *config_name = LibVarString("weaponconfig", AI_WEAPON_DEFAULT_CONFIG);
-    const char *requested = (filename != NULL && filename[0] != '\0') ? filename : config_name;
-    if (requested == NULL || requested[0] == '\0')
-    {
-        requested = AI_WEAPON_DEFAULT_CONFIG;
-    }
+	const char *config_name = LibVarString("weaponconfig", AI_WEAPON_DEFAULT_CONFIG);
+	const char *requested = (filename != NULL && filename[0] != '\0') ? filename : config_name;
+	if (requested == NULL || requested[0] == '\0')
+	{
+		requested = AI_WEAPON_DEFAULT_CONFIG;
+	}
 
-    int max_weaponinfo = (int)LibVarValue("max_weaponinfo", "32");
-    if (max_weaponinfo < 0)
-    {
-        BotLib_Print(PRT_ERROR, "max_weaponinfo = %d\n", max_weaponinfo);
-        LibVarSet("max_weaponinfo", "32");
-        max_weaponinfo = 32;
-    }
+	int max_weaponinfo = AI_Weapon_NormalizeMaxLibvar("max_weaponinfo");
+	int max_projectileinfo = AI_Weapon_NormalizeMaxLibvar("max_projectileinfo");
 
-    int max_projectileinfo = (int)LibVarValue("max_projectileinfo", "32");
-    if (max_projectileinfo < 0)
-    {
-        BotLib_Print(PRT_ERROR, "max_projectileinfo = %d\n", max_projectileinfo);
-        LibVarSet("max_projectileinfo", "32");
-        max_projectileinfo = 32;
-    }
+	bot_weapon_config_t *config =
+		AI_Weapon_AllocateConfig(max_weaponinfo, max_projectileinfo);
+	if (config == NULL)
+	{
+		BotLib_Print(PRT_ERROR,
+					 "couldn't load weapon config %s\n",
+					 AI_Weapon_LogPath(requested));
+		return NULL;
+	}
 
-    size_t weapon_bytes = (size_t)max_weaponinfo * sizeof(bot_weapon_info_t);
-    size_t projectile_bytes = (size_t)max_projectileinfo * sizeof(bot_weapon_projectile_t);
-    size_t allocation_size = sizeof(bot_weapon_config_t) + weapon_bytes + projectile_bytes;
+	char resolved_path[AI_WEAPON_MAX_PATH];
+	pc_source_t *source = AI_Weapon_OpenSource(requested,
+											   resolved_path,
+											   sizeof(resolved_path));
+	if (source == NULL)
+	{
+		const char *failed_path = (resolved_path[0] != '\0') ? resolved_path : requested;
+		BotLib_Print(PRT_ERROR, "couldn't load %s\n", AI_Weapon_LogPath(failed_path));
+		return AI_Weapon_LoadFailed(NULL, config, requested);
+	}
 
-    bot_weapon_config_t *config = (bot_weapon_config_t *)GetClearedMemory(allocation_size);
-    if (config == NULL)
-    {
-        BotLib_Print(PRT_ERROR, "[ai_weapon] failed to allocate weapon configuration (%zu bytes)\n", allocation_size);
-        BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-        return NULL;
-    }
+	const char *log_path = AI_Weapon_LogPath(resolved_path);
+	if (!AI_Weapon_ReadConfigDefinitions(source,
+										 config,
+										 max_weaponinfo,
+										 max_projectileinfo,
+										 log_path))
+	{
+		return AI_Weapon_LoadFailed(source, config, requested);
+	}
 
-    bot_weapon_info_t *weapon_array = (bot_weapon_info_t *)(config + 1);
-    bot_weapon_projectile_t *projectile_array = (bot_weapon_projectile_t *)(weapon_array + max_weaponinfo);
+	PC_FreeSource(source);
+	source = NULL;
 
-    config->weapons = weapon_array;
-    config->projectiles = projectile_array;
-    config->num_weapons = 0;
-    config->num_projectiles = 0;
+	if (!AI_Weapon_FixupDefinitions(config, log_path))
+	{
+		return AI_Weapon_LoadFailed(NULL, config, requested);
+	}
 
-    char resolved_path[AI_WEAPON_MAX_PATH];
-    pc_source_t *source = AI_Weapon_OpenSource(requested, resolved_path, sizeof(resolved_path));
-    if (source == NULL)
-    {
-        BotLib_Print(PRT_ERROR, "couldn't load %s\n", AI_Weapon_LogPath(resolved_path[0] != '\0' ? resolved_path : requested));
-        BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-        FreeMemory(config);
-        return NULL;
-    }
+	ai_weapon_library_t *library = (ai_weapon_library_t *)GetClearedMemory(sizeof(*library));
+	if (library == NULL)
+	{
+		BotLib_Print(PRT_ERROR, "[ai_weapon] failed to allocate library wrapper\n");
+		return AI_Weapon_LoadFailed(NULL, config, requested);
+	}
 
-    const char *log_path = AI_Weapon_LogPath(resolved_path);
+	library->config = config;
+	strncpy(library->source_path, log_path, sizeof(library->source_path) - 1);
+	library->source_path[sizeof(library->source_path) - 1] = '\0';
+	g_active_weapon_config = config;
 
-    pc_token_t token;
-    while (PC_ReadToken(source, &token))
-    {
-        if (token.type != TT_NAME)
-        {
-            BotLib_Print(PRT_ERROR, "unknown definition %s in %s\n", token.string, log_path);
-            PC_FreeSource(source);
-            FreeMemory(config);
-            BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-            return NULL;
-        }
-
-        if (strcmp(token.string, "weaponinfo") == 0)
-        {
-            if (config->num_weapons >= max_weaponinfo)
-            {
-                BotLib_Print(PRT_ERROR, "more than %d weapons defined in %s\n", max_weaponinfo, log_path);
-                PC_FreeSource(source);
-                FreeMemory(config);
-                BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-                return NULL;
-            }
-
-            bot_weapon_info_t *weapon = &config->weapons[config->num_weapons];
-            memset(weapon, 0, sizeof(*weapon));
-            if (!AI_Weapon_ParseWeapon(source, weapon, log_path))
-            {
-                PC_FreeSource(source);
-                FreeMemory(config);
-                BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-                return NULL;
-            }
-
-            weapon->number = (int)config->num_weapons;
-            weapon->valid = 1;
-            config->num_weapons += 1;
-        }
-        else if (strcmp(token.string, "projectileinfo") == 0)
-        {
-            if (config->num_projectiles >= max_projectileinfo)
-            {
-                BotLib_Print(PRT_ERROR, "more than %d projectiles defined in %s\n", max_projectileinfo, log_path);
-                PC_FreeSource(source);
-                FreeMemory(config);
-                BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-                return NULL;
-            }
-
-            bot_weapon_projectile_t *projectile = &config->projectiles[config->num_projectiles];
-            memset(projectile, 0, sizeof(*projectile));
-            if (!AI_Weapon_ParseProjectile(source, projectile, log_path))
-            {
-                PC_FreeSource(source);
-                FreeMemory(config);
-                BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-                return NULL;
-            }
-
-            config->num_projectiles += 1;
-        }
-        else
-        {
-            BotLib_Print(PRT_ERROR, "unknown definition %s in %s\n", token.string, log_path);
-            PC_FreeSource(source);
-            FreeMemory(config);
-            BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-            return NULL;
-        }
-    }
-
-    PC_FreeSource(source);
-
-    for (int i = 0; i < config->num_weapons; ++i)
-    {
-        bot_weapon_info_t *weapon = &config->weapons[i];
-        weapon->number = i;
-
-        if (weapon->name[0] == '\0')
-        {
-            BotLib_Print(PRT_ERROR, "weapon %d has no name in %s\n", i, log_path);
-            FreeMemory(config);
-            BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-            return NULL;
-        }
-
-        if (weapon->projectile[0] == '\0')
-        {
-            BotLib_Print(PRT_ERROR, "weapon %s has no projectile in %s\n", weapon->name, log_path);
-            FreeMemory(config);
-            BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-            return NULL;
-        }
-
-        bool found_projectile = false;
-        for (int j = 0; j < config->num_projectiles; ++j)
-        {
-            bot_weapon_projectile_t *projectile = &config->projectiles[j];
-            if (strcmp(projectile->name, weapon->projectile) == 0)
-            {
-                memcpy(&weapon->projectileinfo, projectile, sizeof(*projectile));
-                found_projectile = true;
-                break;
-            }
-        }
-
-        if (!found_projectile)
-        {
-            BotLib_Print(PRT_ERROR, "weapon %s uses undefined projectile in %s\n", weapon->name, log_path);
-            FreeMemory(config);
-            BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-            return NULL;
-        }
-    }
-
-    if (config->num_weapons == 0)
-    {
-        BotLib_Print(PRT_WARNING, "no weapon info loaded\n");
-    }
-
-    ai_weapon_library_t *library = (ai_weapon_library_t *)GetClearedMemory(sizeof(ai_weapon_library_t));
-    if (library == NULL)
-    {
-        BotLib_Print(PRT_ERROR, "[ai_weapon] failed to allocate library wrapper\n");
-        FreeMemory(config);
-        BotLib_Print(PRT_ERROR, "couldn't load weapon config %s\n", AI_Weapon_LogPath(requested));
-        return NULL;
-    }
-
-    library->config = config;
-    g_active_weapon_config = config;
-    strncpy(library->source_path, log_path, sizeof(library->source_path) - 1);
-    library->source_path[sizeof(library->source_path) - 1] = '\0';
-
-    BotLib_Print(PRT_MESSAGE, "loaded %s\n", library->source_path);
-    return library;
+	BotLib_Print(PRT_MESSAGE, "loaded %s\n", library->source_path);
+	return library;
 }
 
+/*
+=============
+AI_UnloadWeaponLibrary
+=============
+*/
 void AI_UnloadWeaponLibrary(ai_weapon_library_t *library)
 {
-    if (library == NULL)
-    {
-        return;
-    }
+	if (library == NULL)
+	{
+		return;
+	}
 
-    if (library->config != NULL)
-    {
-        if (g_active_weapon_config == library->config)
-        {
-            g_active_weapon_config = NULL;
-        }
-        FreeMemory(library->config);
-        library->config = NULL;
-    }
+	if (library->config != NULL)
+	{
+		if (g_active_weapon_config == library->config)
+		{
+			g_active_weapon_config = NULL;
+		}
+		FreeMemory(library->config);
+		library->config = NULL;
+	}
 
-    FreeMemory(library);
+	FreeMemory(library);
 }
 
+/*
+=============
+AI_GetWeaponConfig
+=============
+*/
 const bot_weapon_config_t *AI_GetWeaponConfig(const ai_weapon_library_t *library)
 {
-    return (library != NULL) ? library->config : NULL;
+	return (library != NULL) ? library->config : NULL;
+}
+
+/*
+=============
+AI_GetActiveWeaponConfig
+=============
+*/
+const bot_weapon_config_t *AI_GetActiveWeaponConfig(void)
+{
+	return g_active_weapon_config;
+}
+
+/*
+=============
+AI_GetWeaponInfoByNumber
+=============
+*/
+const bot_weapon_info_t *AI_GetWeaponInfoByNumber(int weapon)
+{
+	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
+	if (config == NULL || weapon < 0 || weapon >= config->num_weapons)
+	{
+		return NULL;
+	}
+
+	return &config->weapons[weapon];
+}
+
+/*
+=============
+AI_WeaponNumberForModel
+=============
+*/
+int AI_WeaponNumberForModel(const char *model)
+{
+	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
+	if (config == NULL || model == NULL)
+	{
+		return -1;
+	}
+
+	for (int index = 0; index < config->num_weapons; ++index)
+	{
+		const bot_weapon_info_t *weapon = &config->weapons[index];
+		if (strcmp(weapon->model, model) == 0)
+		{
+			return weapon->number;
+		}
+	}
+
+	return -1;
+}
+
+/*
+=============
+AI_WeaponNameForModel
+=============
+*/
+const char *AI_WeaponNameForModel(const char *model)
+{
+	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
+	if (config == NULL || model == NULL)
+	{
+		return AI_WEAPON_UNKNOWN_NAME;
+	}
+
+	for (int index = 0; index < config->num_weapons; ++index)
+	{
+		const bot_weapon_info_t *weapon = &config->weapons[index];
+		if (strcmp(weapon->model, model) == 0)
+		{
+			return weapon->name;
+		}
+	}
+
+	return AI_WEAPON_UNKNOWN_NAME;
 }
 
 /*
@@ -853,25 +563,15 @@ const bot_weapon_config_t *AI_GetWeaponConfig(const ai_weapon_library_t *library
 AI_Weapon_FindWeightIndex
 =============
 */
-static int AI_Weapon_FindWeightIndex(const bot_weight_config_t *config, const bot_weapon_info_t *weapon)
+static int AI_Weapon_FindWeightIndex(const bot_weight_config_t *config,
+									 const bot_weapon_info_t *weapon)
 {
 	if (config == NULL || weapon == NULL)
 	{
 		return -1;
 	}
 
-	int index = BotWeight_FindIndex(config, weapon->name);
-	if (index >= 0)
-	{
-		return index;
-	}
-
-	if (strcmp(weapon->name, "grenades") == 0)
-	{
-		index = BotWeight_FindIndex(config, "Grenades");
-	}
-
-	return index;
+	return BotWeight_FindIndex(config, weapon->name);
 }
 
 /*
@@ -896,19 +596,21 @@ ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 		return NULL;
 	}
 
-	const bot_weapon_config_t *definitions = g_active_weapon_config;
+	const bot_weapon_config_t *definitions = AI_GetActiveWeaponConfig();
 	if (definitions == NULL)
 	{
 		BotLib_Print(PRT_ERROR,
 					 "[ai_weapon] unable to compile weapon weights without an active weapon config (%s)\n",
-					 (filename != NULL) ? filename : "<null>");
-		goto cleanup_config;
+					 filename != NULL ? filename : "<null>");
+		FreeWeightConfig(config);
+		return NULL;
 	}
 
-	ai_weapon_weights_t *weights = (ai_weapon_weights_t *)GetClearedMemory(sizeof(ai_weapon_weights_t));
+	ai_weapon_weights_t *weights = (ai_weapon_weights_t *)GetClearedMemory(sizeof(*weights));
 	if (weights == NULL)
 	{
-		goto cleanup_config;
+		FreeWeightConfig(config);
+		return NULL;
 	}
 
 	weights->config = config;
@@ -917,67 +619,52 @@ ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 
 	if (weights->index_count > 0)
 	{
-		weights->index_by_weapon = (int *)GetClearedMemory(sizeof(int) * (size_t)weights->index_count);
+		weights->index_by_weapon =
+			(int *)GetClearedMemory(sizeof(int) * (size_t)weights->index_count);
 		if (weights->index_by_weapon == NULL)
 		{
-			goto cleanup_weights;
+			AI_FreeWeaponWeights(weights);
+			return NULL;
 		}
 
-		for (int i = 0; i < weights->index_count; ++i)
+		for (int index = 0; index < weights->index_count; ++index)
 		{
-			weights->index_by_weapon[i] = -1;
-		}
-
-		for (int i = 0; i < weights->index_count; ++i)
-		{
-			const bot_weapon_info_t *weapon = &definitions->weapons[i];
-			int weight_index = AI_Weapon_FindWeightIndex(config, weapon);
-			if (weight_index < 0)
-			{
-				BotLib_Print(PRT_WARNING,
-							 "item info %d \"%s\" has no fuzzy weight\n",
-							 weapon->number,
-							 weapon->name);
-				goto cleanup_weights;
-			}
-
-			weights->index_by_weapon[i] = weight_index;
+			const bot_weapon_info_t *weapon = &definitions->weapons[index];
+			weights->index_by_weapon[index] =
+				AI_Weapon_FindWeightIndex(config, weapon);
 		}
 	}
 
 	return weights;
-
-cleanup_weights:
-	AI_FreeWeaponWeights(weights);
-	return NULL;
-
-cleanup_config:
-	FreeWeightConfig(config);
-	return NULL;
 }
 
+/*
+=============
+AI_FreeWeaponWeights
+=============
+*/
 void AI_FreeWeaponWeights(ai_weapon_weights_t *weights)
 {
-    if (weights == NULL)
-    {
-        return;
-    }
+	if (weights == NULL)
+	{
+		return;
+	}
 
-    if (weights->index_by_weapon != NULL)
-    {
-        FreeMemory(weights->index_by_weapon);
-        weights->index_by_weapon = NULL;
-    }
+	if (weights->index_by_weapon != NULL)
+	{
+		FreeMemory(weights->index_by_weapon);
+		weights->index_by_weapon = NULL;
+	}
 
-    if (weights->config != NULL)
-    {
-        FreeWeightConfig(weights->config);
-        weights->config = NULL;
-    }
+	if (weights->config != NULL)
+	{
+		FreeWeightConfig(weights->config);
+		weights->config = NULL;
+	}
 
-    weights->definitions = NULL;
-    weights->index_count = 0;
-    FreeMemory(weights);
+	weights->definitions = NULL;
+	weights->index_count = 0;
+	FreeMemory(weights);
 }
 
 /*
@@ -985,7 +672,9 @@ void AI_FreeWeaponWeights(ai_weapon_weights_t *weights)
 AI_Weapon_BuildReferenceInventory
 =============
 */
-static void AI_Weapon_BuildReferenceInventory(const bot_weapon_info_t *weapon, int *inventory, size_t inventory_count)
+static void AI_Weapon_BuildReferenceInventory(const bot_weapon_info_t *weapon,
+											  int *inventory,
+											  size_t inventory_count)
 {
 	if (weapon == NULL || inventory == NULL)
 	{
@@ -1017,7 +706,9 @@ float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_in
 		return 0.0f;
 	}
 
-	if (weapon_index < 0 || weapon_index >= weights->index_count || weights->index_by_weapon == NULL)
+	if (weapon_index < 0 ||
+		weapon_index >= weights->index_count ||
+		weights->index_by_weapon == NULL)
 	{
 		return 0.0f;
 	}
@@ -1025,26 +716,12 @@ float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_in
 	int weight_index = weights->index_by_weapon[weapon_index];
 	if (weight_index < 0)
 	{
-		if (weights->definitions != NULL && weapon_index < weights->definitions->num_weapons)
-		{
-			const bot_weapon_info_t *weapon = &weights->definitions->weapons[weapon_index];
-			BotLib_Print(PRT_WARNING,
-						 "item info %d \"%s\" has no fuzzy weight\n",
-						 weapon->number,
-						 weapon->name);
-		}
-		else
-		{
-			BotLib_Print(PRT_WARNING,
-						 "[ai_weapon] weapon slot %d missing fuzzy weight binding\n",
-						 weapon_index);
-		}
 		return 0.0f;
 	}
 
-	int reference_inventory[MAX_ITEMS];
 	if (weights->definitions != NULL && weapon_index < weights->definitions->num_weapons)
 	{
+		int reference_inventory[MAX_ITEMS];
 		const bot_weapon_info_t *weapon = &weights->definitions->weapons[weapon_index];
 		AI_Weapon_BuildReferenceInventory(weapon, reference_inventory, MAX_ITEMS);
 		return FuzzyWeight(reference_inventory, weights->config, weight_index);

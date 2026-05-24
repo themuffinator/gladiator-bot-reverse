@@ -8,17 +8,36 @@ can be checked against the retail module boundaries.
 | Module | Source Reference | Key Functions Expected by Exports | Notes |
 | --- | --- | --- | --- |
 | Goal Management | `code/botlib/be_ai_goal.c` | `BotAllocGoalState`, `BotFreeGoalState`, `BotResetGoalState`, `BotLoadItemWeights`, `BotFreeItemWeights`, `BotWeightIndex`, `BotPushGoal`, `BotPopGoal`, `BotGetTopGoal`, `BotChooseLTGItem`, `BotChooseNBGItem`, `BotTouchingGoal` | Provides item weight driven long-term and nearby goal selection along with avoid-goal bookkeeping. |
-| Weight Configurations | `code/botlib/be_ai_weight.c` | `BotAllocWeightConfig`, `BotFreeWeightConfig`, `BotLoadWeights`, `BotWriteWeights`, `BotFreeWeightConfig2`, `BotReadWeightsFile`, `BotSetWeight` | Parses `*.w` files, exposes indexed weight lookups, and serialises adjustments back to disk. The low-level weight helpers remain callable by the botlib setup path, while the public interface wrappers enforce setup guards. |
-| Movement | `code/botlib/be_ai_move.c` | `BotAllocMoveState`, `BotFreeMoveState`, `BotInitMoveState`, `BotResetMoveState`, `BotMoveToGoal`, `BotMoveInDirection`, `BotPredictVisiblePosition`, `BotResetAvoidReach`, `BotResetLastAvoidReach`, `BotReachabilityArea`, `BotMovementViewTarget` | Handles reachability analysis, path advancement, and avoidance heuristics for navigation. Dispatch preserves Gladiator's unsupported successor travel warnings for types 15-17 and merges pre-dispatch mover diagnostics back into the copied move result. |
-| Weapon Selection | `code/botlib/be_ai_weapon.c` | `BotAllocWeaponState`, `BotFreeWeaponState`, `BotResetWeaponState`, `BotLoadWeaponWeights`, `BotFreeWeaponWeights`, `BotChooseBestFightWeapon`, `BotGetWeaponInfo`, `BotGetTopRankedWeapon` | Evaluates weapon weightings per opponent context and tracks per-client weapon state. |
-| Character Profiles | `code/botlib/be_ai_char.c` | `BotLoadCharacter`, `BotFreeCharacter`, `BotLoadCharacterSkill`, `BotFreeCharacterStrings`, `BotInterbreedCharacters`, `BotDefaultCharacteristic`, `Characteristic_Float` | Loads `.chr` definitions, exposes characteristic lookups, and supports bot evolution utilities. |
-| Chat System | `code/botlib/be_ai_chat.c`, `code/game/ai_chat.c` | `BotAllocChatState`, `BotFreeChatState`, `BotLoadChatFile`, `BotFreeChatFile`, `BotQueueConsoleMessage`, `BotRemoveConsoleMessage`, `BotNextConsoleMessage`, `BotEnterChat`, `BotNumInitialChats`, `BotInitialChat`, `BotReplyChat`, `BotChatLength`, `BotNumConsoleMessages` | Manages per-bot chat states, script selection, initial-chat buckets, and queued console messages for in-game dialogue. |
+| Weight Configurations | `code/botlib/be_ai_weight.c` | `BotAllocWeightConfig`, `BotFreeWeightConfig`, `BotLoadWeights`, `BotWriteWeights`, `BotFreeWeightConfig2`, `BotReadWeightsFile`, `BotSetWeight`, `BotFindFuzzyWeight`, `BotFuzzyWeightHandle`, `MergeWeightConfigs` | Parses and caches `*.w` files, exposes indexed fuzzy lookup/evaluation through the handle and q2bridge surfaces, reconstructs Gladiator's two-config merge helper, and serialises adjustments back to disk. The low-level weight helpers remain callable by the botlib setup path, while the public interface wrappers enforce setup guards. |
+| Movement | `code/botlib/be_ai_move.c` | `BotAllocMoveState`, `BotFreeMoveState`, `BotInitMoveState`, `BotResetMoveState`, `BotMoveToGoal`, `BotMoveInDirection`, `BotPredictVisiblePosition`, `BotResetAvoidReach`, `BotResetLastAvoidReach`, `BotReachabilityArea`, `BotMovementViewTarget`, `BotAddAvoidSpot` | Handles reachability analysis, path advancement, and avoidance heuristics for navigation. Dispatch preserves Gladiator's unsupported successor travel warnings for types 15-17, merges pre-dispatch mover diagnostics back into the copied move result, and now wires the retail avoid-spot export through the bridge/interface table. |
+| Weapon Selection | Gladiator `ai_weapon` HLIL / Q3 `code/botlib/be_ai_weap.c` | `AI_LoadWeaponLibrary`, `AI_WeaponNumberForModel`, `AI_WeaponNameForModel`, `BotAllocWeaponState`, `BotFreeWeaponState`, `BotResetWeaponState`, `BotLoadWeaponWeights`, `BotFreeWeaponWeights`, `BotChooseBestFightWeapon`, `BotSelectBestFightWeapon`, `BotGetWeaponInfo`, `BotGetTopRankedWeapon` | Parses Gladiator's compact weapon records, links projectile pointers, builds fuzzy-weight index tables, and tracks selected weapon state through the HLIL-style model-change `use` command gate. |
+| Character Profiles | Gladiator `sub_10029eb0` / Q3 `code/botlib/be_ai_char.c` | `AI_LoadCharacterNamed`, `BotLoadNamedCharacter`, `BotLoadCharacter`, `BotFreeCharacter`, `BotLoadCharacterSkill`, `BotFreeCharacterStrings`, `Characteristic_Float` | Loads named Gladiator `character "name"` definitions through the precompiler, wires item/weapon/chat resources, and exposes characteristic lookups through Q3-compatible helper exports. |
+| Chat System | `code/botlib/be_ai_chat.c`, `code/game/ai_chat.c` | `BotAllocChatState`, `BotFreeChatState`, `BotLoadChatFile`, `BotFreeChatFile`, `BotQueueConsoleMessage`, `BotRemoveConsoleMessage`, `BotNextConsoleMessage`, `BotEnterChat`, `BotNumInitialChats`, `BotInitialChat`, `BotGetChatMessage`, `BotSetChatGender`, `BotSetChatName`, `BotReplyChat`, `BotChatLength`, `BotNumConsoleMessages` | Manages per-bot chat states, script selection, initial-chat buckets, pending message handoff, reply metadata, and queued console messages for in-game dialogue. |
 
 These names reflect the interfaces invoked by `GetBotLibAPI` when the engine
 binds botlib exports (see `botlib_export_t` in the Quake III Arena source). As
 reconstruction progresses, ensure the same signatures exist under the
 `src/botlib/ai*` directories so downstream modules can link without
 modification.
+
+## Current Movement Reconstruction Notes
+
+- `BotInitMoveState` is treated as the retail per-frame input refresh, not as a
+  full reset. It updates origin, velocity, view state, entity/client fields, and
+  the selected `or_moveflags` bits while preserving current reachability and
+  retry timers.
+- `BotGetReachabilityToGoal` follows the Q3/Gladiator routing shape: enumerate
+  outgoing area reachabilities, suppress stale backtracking when the goal did
+  not change, validate travel flags and area contents, apply avoid-reach retry
+  state, reject avoid-spot collisions, then score by route travel time plus the
+  reachability's local travel time.
+- `BotMoveToGoal` now performs the HLIL-observed travel dispatch after
+  environment classification, mover diagnostics, route reselection, and
+  reachability timeout bookkeeping. Unsupported successor travel types still use
+  the retail warning path.
+- `BotMoveInDirection` now emits EA movement/action input for direct movement,
+  including jump/crouch/grapple flags, so callers receive behavior rather than a
+  passive normalized direction.
 
 ## Chat HLIL String Mapping
 
@@ -35,8 +54,10 @@ of the full translation.
 | `"couldn't load chat %s from %s\n"` | Final failure path after attempting to load and cache a chat file.| `BotLoadChatFile` export, propagating loader errors up to the engine. | HLIL `sub_1002dff0` reports the error; Quake III signals it from `BotLoadChatFile`.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36258-L36268】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2226-L2239】 |
 | `"BotConstructChat: message ..."` family | String assembly helper validates message length, random string tables, repeated random expansion, weighted synonym replacement, and variable expansion.| `BotConstructChatMessage`, used by in-game events such as `BotChat_EnterGame`, `BotChat_Kill`, and other response helpers.| HLIL `sub_1002e060` enforces length/random string checks; Quake III's `BotConstructChatMessage` performs the same validations and repeats expansion for up to ten passes before dispatching event-specific chats.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36290-L36374】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2289-L2399】 |
 | `"enter_game"`, `"exit_game"`, `"start_level"`, `"end_level"` | Event helper strings are passed into the initial-chat constructor from Gladiator game-side chat triggers.| `BotNumInitialChats`, `BotInitialChat`, and the raw initial type storage used by event wrappers. | Gladiator uses these pre-Q3 names in HLIL (`sub_10021e90`, `sub_10021f80`, `sub_10022070`), while Quake III probes successor aliases such as `game_exit` and `level_start` through `BotNumInitialChats`.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27648-L27767】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2407-L2566】 |
+| Pending chat message buffer | The game computes chat timing from the constructed message length before entering it into chat output, and later drains the pending text into `say`, `say_team`, or `tell` commands.| `BotInitialChat`, `BotChatLength`, `BotGetChatMessage`, `BotEnterChat`. | Gladiator game-side code calls the message-length helper after `sub_1002e510`, while the botlib path matches Quake III's split between `BotInitialChat`, `BotChatLength`, `BotEnterChat`, and `BotGetChatMessage`.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36701-L36968】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2407-L2566】 |
 | Parenthesized reply keys such as `("i am ", 0)` | Reply keys capture the span matched by numeric variables and response messages substitute that span through `\vN\` construction.| `BotChat_ParseReplyKeys`, `BotChat_ReplyRuleMatches`, `BotConstructChatMessage`. | Quake III's `StringsMatch` fills `bot_match_t.variables[]`; Gladiator HLIL passes the match table into `BotConstructChatMessage` before dispatch.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1434-L1490】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36701-L36968】 |
 | `synfile`, `rndfile`, `matchfile`, `rchatfile` | Setup reads the same libvar-selected asset names as Quake III and skips `rchatfile` when `nochat` is non-zero.| `BotSetupChatAI` / `BotShutdownChatAI`. | HLIL `sub_1002ebb0` loads the three shared assets first and only then gates reply chat loading on `nochat`; `sub_1002ec80` frees the cached lists.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36922-L36948】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2960-L3015】 |
+| `j_sub_1002ebb0()` in setup and `j_sub_1002ec80()` in shutdown | Library setup invokes chat setup after weapon/item setup and shutdown tears the shared chat cache down before item/weapon teardown.| `Botlib_SetupAISubsystem`, `Botlib_ShutdownAISubsystem`, `BotSetupChatAI`, `BotShutdownChatAI`. | Gladiator HLIL `sub_10029c90` calls weapon setup, item setup, then chat setup before allocating bot-state storage; `sub_10029da0` invokes the chat shutdown bridge before item and weapon shutdown.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32727-L32748】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32754-L32760】 |
 | `rnd.c`, `syn.c`, `match.c` sibling loads | Retail reply chat depends on shared random tables, synonym contexts, and obituary match templates that live beside `rchat.c` rather than inside it.| `BotLoadChatFile`, `BotChat_ParseRandomStringTables`, `BotChat_ParseSynonymContextsFromScript`, `BotChat_ParseMatchScript`. | The loader now mirrors the multi-asset setup implied by the HLIL chat-load stages and Quake III's separate initial, reply, and match table construction paths. |
 | Macro-preserved `MSG_*` / match variables | Gladiator chat assets rely on precompiler macros such as `MSG_DEATH`, `VICTIM`, `NETNAME`, and `GENDER_HIM`; preserving those tokens keeps reconstructed templates readable and context-aware.| `PS_CreateScriptFromSource`, `PC_ShouldPreserveChatDefine`, `BotChat_MessageTypeFromToken`, `BotChat_RewriteVariablesForMessageType`. | This supports retail `match.c` registrations such as `{VICTIM} commits suicide` while still allowing numeric macro fallback when the token stream has already expanded a define. |
 
@@ -67,9 +88,19 @@ and id Software's GPL source.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L35770
 - Chat construction now mirrors the Q3 repeated random-expansion loop and applies
   the post-expansion weighted synonym pass when `BotInitialChat` receives a
   `CONTEXT_*` mask from the game wrapper.
+- `BotInitialChat` now stores the constructed text in the chat state, so
+  `BotChatLength`, `BotGetChatMessage`, and `BotEnterChat` expose the same
+  pending-message handoff used by the retail game timing and send paths.
+- Chat states now retain the bot's chat name, client, and gender metadata.
+  Character/profile loading seeds those fields, and reply-chat keys such as
+  unquoted `name`, `female`, `male`, and `it` use that metadata during matching.
 - `BotSetupChatAI` now follows the address-backed setup sequence by reading
   `synfile`, `rndfile`, `matchfile`, and conditionally `rchatfile`, while
   `BotShutdownChatAI` frees the shared setup cache.
+- The interface AI setup path now calls `BotSetupChatAI` in the HLIL-observed
+  sequence and `BotShutdownChatAI` during AI teardown, so setup-loaded random,
+  synonym, match, and reply assets become the shared fallback for per-bot
+  personality chat states.
 - Reply chat keys are now retained instead of skipped. Parenthesized keys with
   numeric captures feed `\vN\` response variables, and readable match
   placeholders such as `{VICTIM}` / `{KILLER}` are captured from incoming

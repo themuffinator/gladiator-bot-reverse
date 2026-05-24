@@ -26,6 +26,7 @@ typedef struct bot_client_state_s bot_client_state_t;
 enum bot_characteristic_index_e {
     BOT_CHARACTERISTIC_NAME = 0,
     BOT_CHARACTERISTIC_ALT_NAME = 1,
+    BOT_CHARACTERISTIC_GENDER = 3,
     BOT_CHARACTERISTIC_WEAPONWEIGHTS = 5,
     BOT_CHARACTERISTIC_CHAT_FILE = 12,
     BOT_CHARACTERISTIC_CHAT_NAME = 13,

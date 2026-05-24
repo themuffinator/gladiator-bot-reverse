@@ -16,6 +16,7 @@
 #include "botlib/interface/bot_state.h"
 #include "botlib/ai_chat/ai_chat.h"
 #include "botlib/ea/ea_local.h"
+#include "botlib/ai_move/bot_move.h"
 #include "botlib/ai_move/mover_catalogue.h"
 #include "botlib/ai/goal_move_orchestrator.h"
 #include "botlib/ai_goal/bot_goal.h"
@@ -1056,6 +1057,15 @@ assert_true(written > 0 && (size_t)written < sizeof(sample_path));
 status = context->api->BotLoadWeights(handle, sample_path);
 assert_int_equal(status, 1);
 
+assert_non_null(context->api->BotFindFuzzyWeight);
+assert_non_null(context->api->BotFuzzyWeightHandle);
+int single_index = context->api->BotFindFuzzyWeight(handle, "single_value");
+assert_true(single_index >= 0);
+assert_float_equal(context->api->BotFuzzyWeightHandle(handle, NULL, single_index),
+				   42.0f,
+				   0.01f);
+assert_int_equal(context->api->BotFindFuzzyWeight(handle, "missing_weight"), -1);
+
 char out_path[PATH_MAX];
 const char *tmpdir = getenv("TEMP");
 if (tmpdir == NULL || tmpdir[0] == '\0')
@@ -1234,7 +1244,7 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
-    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    snprintf(settings.charactername, sizeof(settings.charactername), "babe");
 
     status = context->api->BotSetupClient(1, &settings);
     assert_int_equal(status, BLERR_NOERROR);
@@ -1388,7 +1398,7 @@ static void test_bot_usehook_defaults_disabled(void **state)
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
-    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    snprintf(settings.charactername, sizeof(settings.charactername), "babe");
 
     status = context->api->BotSetupClient(1, &settings);
     assert_int_equal(status, BLERR_NOERROR);
@@ -1468,7 +1478,7 @@ static void test_bot_console_message_and_ai_pipeline(void **state)
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
-    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    snprintf(settings.charactername, sizeof(settings.charactername), "babe");
 
     status = context->api->BotSetupClient(1, &settings);
     assert_int_equal(status, BLERR_NOERROR);
@@ -1522,9 +1532,14 @@ static void test_chat_initial_exports_preserve_raw_type_aliases(void **state)
 
 	assert_non_null(context->api->BotNumInitialChats);
 	assert_non_null(context->api->BotInitialChat);
+	assert_non_null(context->api->BotChatLength);
+	assert_non_null(context->api->BotGetChatMessage);
+	assert_non_null(context->api->BotSetChatGender);
+	assert_non_null(context->api->BotSetChatName);
 
 	assert_int_equal(context->api->BotNumInitialChats(NULL, "game_exit"), 0);
 	assert_int_equal(context->api->BotInitialChat(NULL, "game_exit", 0, NULL), 0);
+	assert_int_equal(context->api->BotChatLength(NULL), 0);
 
 	int status = context->api->BotSetupLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
@@ -1546,6 +1561,15 @@ static void test_chat_initial_exports_preserve_raw_type_aliases(void **state)
 		"[invalid]",
 		"base1",
 		NULL));
+	assert_true(context->api->BotChatLength(chat) > 0);
+
+	char copied_message[256];
+	context->api->BotGetChatMessage(chat,
+		copied_message,
+		sizeof(copied_message));
+	assert_true(copied_message[0] != '\0');
+	assert_null(strstr(copied_message, "\\v"));
+	assert_int_equal(context->api->BotChatLength(chat), 0);
 
 	int message_type = -1;
 	char message[256];
@@ -1558,6 +1582,33 @@ static void test_chat_initial_exports_preserve_raw_type_aliases(void **state)
 	assert_null(strstr(message, "\\v"));
 
 	context->api->BotFreeChatState(chat);
+	context->api->BotShutdownLibrary();
+}
+
+/*
+=============
+test_bot_setup_library_wires_chat_setup
+
+Pins the HLIL setup sequence that calls the shared chat loader during library
+initialisation.
+=============
+*/
+static void test_bot_setup_library_wires_chat_setup(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotLibVarSet("rchatfile", "definitely_missing_rchat.c");
+	assert_int_equal(status, BLERR_NOERROR);
+
+	status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	Mock_AssertPrintContains(&context->mock,
+		"BotSetupChatAI: couldn't load reply chats definitely_missing_rchat.c",
+		PRT_WARNING);
+
 	context->api->BotShutdownLibrary();
 }
 
@@ -1838,7 +1889,7 @@ static void test_bot_interface_mover_parity(void **state)
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
-    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    snprintf(settings.charactername, sizeof(settings.charactername), "babe");
     status = context->api->BotSetupClient(1, &settings);
     assert_int_equal(status, BLERR_NOERROR);
 
@@ -2062,7 +2113,7 @@ static void test_bot_end_to_end_pipeline_with_assets(void **state)
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
-    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    snprintf(settings.charactername, sizeof(settings.charactername), "babe");
     settings.ailibrary[0] = '\0';
 
     status = context->api->BotSetupClient(1, &settings);
@@ -2133,7 +2184,7 @@ static void test_bot_bridge_tracks_mover_entity_updates(void **state)
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
-    snprintf(settings.charactername, sizeof(settings.charactername), "Babe");
+    snprintf(settings.charactername, sizeof(settings.charactername), "babe");
     status = context->api->BotSetupClient(1, &settings);
     assert_int_equal(status, BLERR_NOERROR);
 
@@ -2329,6 +2380,46 @@ static void test_bot_start_frame_updates_routing_diagnostics(void **state)
     context->api->BotShutdownLibrary();
 }
 
+/*
+=============
+test_bot_add_avoid_spot_export_wires_move_state
+
+Verifies the Quake III movement avoid-spot export is present and mutates the
+underlying reconstructed move state.
+=============
+*/
+static void test_bot_add_avoid_spot_export_wires_move_state(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	assert_non_null(context->api->BotAddAvoidSpot);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	int handle = context->api->BotAllocMoveState();
+	assert_true(handle > 0);
+
+	vec3_t origin;
+	VectorSet(origin, 12.0f, 24.0f, 36.0f);
+	context->api->BotAddAvoidSpot(handle, origin, 64.0f, AVOID_ALWAYS);
+
+	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
+	assert_non_null(ms);
+	assert_int_equal(ms->numavoidspots, 1);
+	assert_float_equal(ms->avoidspots[0].origin[0], 12.0f, 0.0001f);
+	assert_float_equal(ms->avoidspots[0].origin[1], 24.0f, 0.0001f);
+	assert_float_equal(ms->avoidspots[0].origin[2], 36.0f, 0.0001f);
+	assert_float_equal(ms->avoidspots[0].radius, 64.0f, 0.0001f);
+	assert_int_equal(ms->avoidspots[0].type, AVOID_ALWAYS);
+
+	context->api->BotAddAvoidSpot(handle, origin, 0.0f, AVOID_CLEAR);
+	assert_int_equal(ms->numavoidspots, 0);
+
+	context->api->BotFreeMoveState(handle);
+	context->api->BotShutdownLibrary();
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -2378,6 +2469,9 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_chat_initial_exports_preserve_raw_type_aliases,
 							setup_bot_interface,
 							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_setup_library_wires_chat_setup,
+							setup_bot_interface,
+							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_lib_var_set_propagates_import_status,
 							setup_bot_interface,
 							teardown_bot_interface),
@@ -2394,6 +2488,9 @@ int main(void)
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_routing_diagnostics,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_add_avoid_spot_export_wires_move_state,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,

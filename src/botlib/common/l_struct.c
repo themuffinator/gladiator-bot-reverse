@@ -1,7 +1,9 @@
 #include "l_struct.h"
 
+#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define STRUCT_MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -19,6 +21,90 @@ void StripSingleQuotes(char *string);
 void StripDoubleQuotes(char *string);
 void SourceError(pc_source_t *source, char *str, ...);
 void SourceWarning(pc_source_t *source, char *str, ...);
+
+/*
+=============
+L_Struct_ParseIntegerToken
+
+Parses integer text instead of relying on optional lexer value caches.
+=============
+*/
+static bool L_Struct_ParseIntegerToken(const pc_token_t *token, long int *value)
+{
+	if (token == NULL || value == NULL)
+	{
+		return false;
+	}
+
+	const char *text = token->string;
+	if ((token->subtype & TT_BINARY) != 0)
+	{
+		if (text[0] == '0' && (text[1] == 'b' || text[1] == 'B'))
+		{
+			text += 2;
+		}
+
+		long int parsed = 0;
+		for (const char *cursor = text; *cursor != '\0'; ++cursor)
+		{
+			if (*cursor != '0' && *cursor != '1')
+			{
+				return false;
+			}
+			parsed = (parsed << 1) + (*cursor - '0');
+		}
+
+		*value = parsed;
+		return true;
+	}
+
+	int base = 10;
+	if ((token->subtype & TT_HEX) != 0)
+	{
+		base = 16;
+	}
+	else if ((token->subtype & TT_OCTAL) != 0)
+	{
+		base = 8;
+	}
+
+	errno = 0;
+	char *end = NULL;
+	long int parsed = strtol(token->string, &end, base);
+	if (errno != 0 || end == token->string || (end != NULL && *end != '\0'))
+	{
+		return false;
+	}
+
+	*value = parsed;
+	return true;
+}
+
+/*
+=============
+L_Struct_ParseFloatToken
+
+Parses floating-point text instead of relying on optional lexer value caches.
+=============
+*/
+static bool L_Struct_ParseFloatToken(const pc_token_t *token, double *value)
+{
+	if (token == NULL || value == NULL)
+	{
+		return false;
+	}
+
+	errno = 0;
+	char *end = NULL;
+	double parsed = strtod(token->string, &end);
+	if (errno != 0 || end == token->string || (end != NULL && *end != '\0'))
+	{
+		return false;
+	}
+
+	*value = parsed;
+	return true;
+}
 
 bool L_Struct_Init(void) {
     if (g_l_struct_initialised) {
@@ -92,7 +178,12 @@ bool ReadNumber(pc_source_t *source, const fielddef_t *fd, void *p) {
             return false;
         }
 
-        double floatvalue = (double)token.floatvalue;
+        double floatvalue = 0.0;
+        if (!L_Struct_ParseFloatToken(&token, &floatvalue)) {
+            SourceError(source, "invalid float %s", token.string);
+            return false;
+        }
+
         if (negative) {
             floatvalue = -floatvalue;
         }
@@ -111,7 +202,12 @@ bool ReadNumber(pc_source_t *source, const fielddef_t *fd, void *p) {
         return true;
     }
 
-    long int intval = (long int)token.intvalue;
+    long int intval = 0;
+    if (!L_Struct_ParseIntegerToken(&token, &intval)) {
+        SourceError(source, "invalid integer %s", token.string);
+        return false;
+    }
+
     if (negative) {
         intval = -intval;
     }

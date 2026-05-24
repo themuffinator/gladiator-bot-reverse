@@ -325,7 +325,7 @@ static void configure_standard_bot_settings(bot_settings_t *settings)
 {
     memset(settings, 0, sizeof(*settings));
     snprintf(settings->characterfile, sizeof(settings->characterfile), "bots/babe_c.c");
-    snprintf(settings->charactername, sizeof(settings->charactername), "arena_tester");
+    snprintf(settings->charactername, sizeof(settings->charactername), "babe");
 }
 
 static void activate_test_client(test_environment_t *env)
@@ -353,6 +353,113 @@ static void test_setup_allocates_goal_move_states(void **state)
     ai_avoid_list_t *move_avoid = AI_MoveState_GetAvoidList(slot->move_state);
     assert_non_null(goal_avoid);
     assert_ptr_equal(goal_avoid, move_avoid);
+}
+
+/*
+=============
+test_goal_setup_loads_item_weights_into_goal_state
+
+Checks the HLIL setup path that loads CHARACTERISTIC_ITEMWEIGHTS into the
+botlib goal state, not only the parsed character profile.
+=============
+*/
+static void test_goal_setup_loads_item_weights_into_goal_state(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+	assert_true(slot->goal_handle > 0);
+	assert_non_null(slot->item_weights);
+
+	bot_levelitem_setup_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.classname = "weapon_rocketlauncher";
+	setup.goal.number = 301;
+	setup.goal.entitynum = 301;
+	setup.goal.flags = GFL_ITEM;
+	setup.flags = GFL_ITEM;
+	VectorSet(setup.goal.origin, 64.0f, 0.0f, 16.0f);
+	VectorSet(setup.goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(setup.goal.maxs, 16.0f, 16.0f, 16.0f);
+
+	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 301);
+	assert_true(env->exports->BotWeightIndex(slot->goal_handle, "weapon_rocketlauncher") >= 0);
+}
+
+/*
+=============
+test_goal_retail_exports_and_avoid_sync
+
+Exercises the retail goal helpers that are now wired through GetBotAPI and
+verifies orchestrator synchronisation no longer erases botlib-owned avoid
+timers.
+=============
+*/
+static void test_goal_retail_exports_and_avoid_sync(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+
+	assert_non_null(env->exports->BotEmptyGoalStack);
+	assert_non_null(env->exports->BotRemoveFromAvoidGoals);
+	assert_non_null(env->exports->BotAvoidGoalTime);
+	assert_non_null(env->exports->BotSetAvoidGoalTime);
+	assert_non_null(env->exports->BotDumpAvoidGoals);
+	assert_non_null(env->exports->BotDumpGoalStack);
+	assert_non_null(env->exports->BotGoalName);
+	assert_non_null(env->exports->BotGetLevelItemGoal);
+	assert_non_null(env->exports->BotGetNextCampSpotGoal);
+	assert_non_null(env->exports->BotGetMapLocationGoal);
+	assert_non_null(env->exports->BotInterbreedGoalFuzzyLogic);
+	assert_non_null(env->exports->BotSaveGoalFuzzyLogic);
+	assert_non_null(env->exports->BotMutateGoalFuzzyLogic);
+
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+
+	env->exports->BotSetAvoidGoalTime(slot->goal_handle, 77, 5.0f);
+	assert_float_equal(env->exports->BotAvoidGoalTime(slot->goal_handle, 77), 5.0f, 0.0001f);
+
+	ai_avoid_list_t *avoid = AI_GoalState_GetAvoidList(slot->goal_state);
+	assert_non_null(avoid);
+	assert_true(AI_AvoidList_Add(avoid, 77, 2.0f));
+
+	AI_GoalBotlib_SynchroniseAvoid(slot->goal_handle, slot->goal_state, 1.0f);
+	assert_float_equal(env->exports->BotAvoidGoalTime(slot->goal_handle, 77), 4.0f, 0.0001f);
+
+	env->exports->BotRemoveFromAvoidGoals(slot->goal_handle, 77);
+	assert_float_equal(env->exports->BotAvoidGoalTime(slot->goal_handle, 77), 0.0f, 0.0001f);
+
+	bot_levelitem_setup_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.classname = "weapon_rocketlauncher";
+	setup.goal.number = 302;
+	setup.goal.entitynum = 302;
+	setup.goal.flags = GFL_ITEM;
+	setup.flags = GFL_ITEM;
+	VectorSet(setup.goal.origin, 128.0f, 16.0f, 24.0f);
+	VectorSet(setup.goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(setup.goal.maxs, 16.0f, 16.0f, 16.0f);
+
+	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 302);
+
+	bot_goal_t found_goal;
+	memset(&found_goal, 0, sizeof(found_goal));
+	assert_int_equal(env->exports->BotGetLevelItemGoal(0, "weapon_rocketlauncher", &found_goal), 302);
+	assert_int_equal(found_goal.number, 302);
+
+	char goal_name[64];
+	memset(goal_name, 0, sizeof(goal_name));
+	env->exports->BotGoalName(302, goal_name, sizeof(goal_name));
+	assert_true(goal_name[0] != '\0');
+
+	assert_true(env->exports->BotPushGoal(slot->goal_handle, &found_goal));
+	assert_true(env->exports->BotGetTopGoal(slot->goal_handle, &found_goal));
+	env->exports->BotDumpGoalStack(slot->goal_handle);
+	env->exports->BotEmptyGoalStack(slot->goal_handle);
+	assert_false(env->exports->BotGetTopGoal(slot->goal_handle, &found_goal));
 }
 
 static void reset_goal_runtime(bot_client_state_t *slot)
@@ -494,8 +601,8 @@ static void test_goal_refresh_and_movement_dispatch_order(void **state)
     assert_int_equal(status, BLERR_NOERROR);
 
     assert_int_equal(slot->goal_snapshot_count, 2);
-    assert_int_equal(slot->goal_snapshot[0].number, 7);
-    assert_int_equal(slot->goal_snapshot[1].number, 3);
+    assert_int_equal(slot->goal_snapshot[0].number, 3);
+    assert_int_equal(slot->goal_snapshot[1].number, 7);
     assert_int_equal(slot->active_goal_number, 3);
 
     assert_int_equal(g_bot_input_log.count, 1);
@@ -762,6 +869,12 @@ int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_setup_allocates_goal_move_states,
+                                        goal_move_setup,
+                                        goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_goal_setup_loads_item_weights_into_goal_state,
+                                        goal_move_setup,
+                                        goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_goal_retail_exports_and_avoid_sync,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_refresh_and_movement_dispatch_order,

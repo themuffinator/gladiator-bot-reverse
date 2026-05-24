@@ -193,6 +193,20 @@ void BotState_AttachCharacter(bot_client_state_t *state, int character_handle)
 		state->client_settings.netname[sizeof(state->client_settings.netname) - 1] = '\0';
 	}
 
+	if (state->chat_state != NULL) {
+		const char *chat_name = (netname != NULL && *netname != '\0') ? netname : fallback_name;
+		BotSetChatName(state->chat_state, chat_name, state->client_number);
+
+		const char *gender = AI_CharacteristicAsString(state->character, BOT_CHARACTERISTIC_GENDER);
+		if (gender != NULL && (gender[0] == 'f' || gender[0] == 'F')) {
+			BotSetChatGender(state->chat_state, CHAT_GENDERFEMALE);
+		} else if (gender != NULL && (gender[0] == 'm' || gender[0] == 'M')) {
+			BotSetChatGender(state->chat_state, CHAT_GENDERMALE);
+		} else {
+			BotSetChatGender(state->chat_state, CHAT_GENDERLESS);
+		}
+	}
+
 	if (state->weapon_state > 0) {
 		if (state->weapon_weights != NULL) {
 			if (BotWeaponStateAttachWeights(state->weapon_state, state->weapon_weights) != BLERR_NOERROR) {

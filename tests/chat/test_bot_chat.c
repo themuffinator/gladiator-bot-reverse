@@ -400,6 +400,97 @@ static void test_retail_initial_chat_constructs_from_alias(void)
 
 /*
 =============
+test_initial_chat_pending_message_exports_and_enters
+
+Pins the Q3-style split where BotInitialChat constructs pending text and
+BotEnterChat sends that text through the bridge.
+=============
+*/
+static void test_initial_chat_pending_message_exports_and_enters(void)
+{
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/bots/babe_t.c", "babe"));
+
+	drain_console(chat);
+	assert(BotInitialChat(chat,
+		"game_exit",
+		0,
+		"Babe",
+		"Opponent",
+		"[invalid]",
+		"[invalid]",
+		"base1",
+		NULL));
+	assert(BotChatLength(chat) > 0);
+
+	int type = -1;
+	char expected[256];
+	assert(BotNextConsoleMessage(chat, &type, expected, sizeof(expected)));
+	assert(type == 0);
+	assert(expected[0] != '\0');
+
+	ChatBridge_Reset();
+	BotLib_TestSetMaxClients(8.0f);
+	BotEnterChat(chat, 6, 0);
+
+	char expected_command[320];
+	const int written = snprintf(expected_command,
+		sizeof(expected_command),
+		"say %s",
+		expected);
+	assert(written > 0);
+	assert((size_t)written < sizeof(expected_command));
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(g_chat_bridge_mock.last_client == 6);
+	assert(strcmp(g_chat_bridge_mock.last_command, expected_command) == 0);
+	assert(BotChatLength(chat) == 0);
+
+	Q2Bridge_ClearImportTable();
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_get_chat_message_copies_and_clears_pending
+
+Exercises the recovered BotGetChatMessage export semantics for pending initial
+chat text.
+=============
+*/
+static void test_get_chat_message_copies_and_clears_pending(void)
+{
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/bots/babe_t.c", "babe"));
+
+	drain_console(chat);
+	assert(BotInitialChat(chat,
+		"game_exit",
+		0,
+		"Babe",
+		"Opponent",
+		"[invalid]",
+		"[invalid]",
+		"base1",
+		NULL));
+	assert(BotChatLength(chat) > 0);
+
+	char buffer[256];
+	BotGetChatMessage(chat, buffer, sizeof(buffer));
+	assert(buffer[0] != '\0');
+	assert(strstr(buffer, "\\v") == NULL);
+	assert(BotChatLength(chat) == 0);
+
+	memset(buffer, 'x', sizeof(buffer));
+	BotGetChatMessage(chat, buffer, sizeof(buffer));
+	assert(buffer[0] == '\0');
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
 test_retail_initial_chat_missing_name_is_rejected
 
 Ensures named chat blocks preserve the HLIL-observed not-found diagnostic.
@@ -504,6 +595,43 @@ static void test_reply_chat_falls_back_to_reply_table(void) {
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 5);
 	assert(BotChat_HasReplyTemplate(chat, 5, buffer));
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_reply_chat_name_key_matches_configured_name
+
+Verifies unquoted reply key name maps to the configured bot identity instead
+of the literal token text.
+=============
+*/
+static void test_reply_chat_name_key_matches_configured_name(void)
+{
+	static const char *const expected_damn_replies[] = {
+		"please don't swear",
+		"damn damn damn",
+		"you have a flithy mouth",
+		"dams are for beavers",
+		"damn you!",
+	};
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
+
+	BotSetChatName(chat, "babe", 3);
+	drain_console(chat);
+	assert(BotReplyChat(chat, "babe", 7));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 7);
+	assert(string_is_one_of(buffer,
+		expected_damn_replies,
+		sizeof(expected_damn_replies) / sizeof(expected_damn_replies[0])));
 
 	BotFreeChatState(chat);
 }
@@ -1162,6 +1290,37 @@ static void test_setup_chat_ai_skips_reply_when_nochat_enabled(void)
 
 /*
 =============
+test_setup_chat_ai_supplies_shared_reply_fallback
+
+Confirms setup-loaded reply chats remain available to personality chat states
+that only load initial-chat blocks.
+=============
+*/
+static void test_setup_chat_ai_supplies_shared_reply_fallback(void)
+{
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	assert(BotSetupChatAI() == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/bots/babe_t.c", "babe"));
+
+	drain_console(chat);
+	assert(BotReplyChat(chat, "abnormal", 5));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 5);
+	assert(BotChat_HasReplyTemplate(chat, 5, buffer));
+
+	BotFreeChatState(chat);
+	BotShutdownChatAI();
+}
+
+/*
+=============
 test_enter_chat_sends_command_via_bridge
 
 Verifies BotEnterChat formats the say command and forwards it through the
@@ -1265,10 +1424,13 @@ int main(void) {
 	test_retail_initial_chat_block_drives_enter_event();
 	test_retail_initial_chat_counts_raw_type_buckets();
 	test_retail_initial_chat_constructs_from_alias();
+	test_initial_chat_pending_message_exports_and_enters();
+	test_get_chat_message_copies_and_clears_pending();
 	test_retail_initial_chat_missing_name_is_rejected();
 	test_enter_chat_construct_message_failure_respects_cooldown_reset();
 	test_reply_chat_death_context();
 	test_reply_chat_falls_back_to_reply_table();
+	test_reply_chat_name_key_matches_configured_name();
 	test_reply_chat_construct_message_paths();
 	test_reply_chat_known_random_string_context_enqueues_message();
 	test_reply_chat_expands_named_random_table();
@@ -1287,6 +1449,7 @@ int main(void) {
 	test_botloadchatfile_reports_missing_chat_context();
 	test_setup_chat_ai_loads_default_assets();
 	test_setup_chat_ai_skips_reply_when_nochat_enabled();
+	test_setup_chat_ai_supplies_shared_reply_fallback();
 	test_enter_chat_sends_command_via_bridge();
 	test_enter_chat_team_command_uses_say_team();
 	test_reply_chat_dispatches_using_bridge_speaker();

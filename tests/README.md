@@ -43,6 +43,13 @@ The regression harness sets these values explicitly and skips the assertions if
 the assets are unavailable (for example, when the repository is cloned without
 `dev_tools/`).
 
+The weapon tests now also pin the Gladiator-specific layout: weapon numbers are
+generated from compact file order, each weapon carries a pointer to the matched
+projectile definition, model lookups return the same number/name helpers seen in
+the HLIL, missing fuzzy weights remain loadable but are skipped by selection,
+and the combat selector queues the same model-change `use <weapon name>` command
+path gated by `activate + 3.0` seconds.
+
 ## AI character regression tests
 
 The AI character tests rely on the Gladiator assets mirroring their original

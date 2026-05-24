@@ -370,6 +370,93 @@ static void test_bot_move_func_bobbing_without_reachability_logs_warning(void **
     LibVarSet("bot_developer", "0");
 }
 
+/*
+=============
+test_bot_move_avoid_spot_blocks_reachability
+
+Verifies avoid spots can suppress an otherwise valid reachability.
+=============
+*/
+static void test_bot_move_avoid_spot_blocks_reachability(void **state)
+{
+	(void)state;
+
+	int movestate = BotAllocMoveState();
+	assert_true(movestate > 0);
+
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	assert_non_null(ms);
+
+	BotResetMoveState(movestate);
+	ms->areanum = 1;
+	VectorClear(ms->origin);
+
+	vec3_t avoid_origin;
+	VectorSet(avoid_origin, 64.0f, 0.0f, 0.0f);
+	BotAddAvoidSpot(movestate, avoid_origin, 48.0f, AVOID_ALWAYS);
+
+	bot_goal_t goal;
+	memset(&goal, 0, sizeof(goal));
+	goal.areanum = 2;
+	VectorSet(goal.origin, 128.0f, 0.0f, 0.0f);
+
+	bot_moveresult_t result;
+	BotMoveToGoal(&result, movestate, &goal, TFL_DEFAULT);
+
+	assert_true(result.failure);
+	assert_true((result.flags & MOVERESULT_BLOCKEDBYAVOIDSPOT) != 0);
+	assert_int_equal(ms->lastreachnum, 0);
+
+	BotFreeMoveState(movestate);
+}
+
+/*
+=============
+test_bot_init_move_state_preserves_reachability_state
+
+Pins BotInitMoveState as a frame input refresh instead of a full state reset.
+=============
+*/
+static void test_bot_init_move_state_preserves_reachability_state(void **state)
+{
+	(void)state;
+
+	int movestate = BotAllocMoveState();
+	assert_true(movestate > 0);
+
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	assert_non_null(ms);
+
+	BotResetMoveState(movestate);
+	ms->lastreachnum = 2;
+	ms->lastgoalareanum = 3;
+	ms->reachability_time = 42.0f;
+	ms->moveflags = MFL_ACTIVEGRAPPLE | MFL_ONGROUND | MFL_WATERJUMP;
+
+	bot_initmove_t init;
+	memset(&init, 0, sizeof(init));
+	VectorSet(init.origin, 4.0f, 8.0f, 16.0f);
+	VectorSet(init.velocity, 1.0f, 2.0f, 3.0f);
+	init.entitynum = 1;
+	init.client = 1;
+	init.thinktime = 0.1f;
+	init.presencetype = PRESENCE_NORMAL;
+	init.or_moveflags = MFL_TELEPORTED | MFL_WALK;
+
+	BotInitMoveState(movestate, &init);
+
+	assert_int_equal(ms->lastreachnum, 2);
+	assert_int_equal(ms->lastgoalareanum, 3);
+	assert_float_equal(ms->reachability_time, 42.0f, 0.0001f);
+	assert_true((ms->moveflags & MFL_ACTIVEGRAPPLE) != 0);
+	assert_true((ms->moveflags & MFL_TELEPORTED) != 0);
+	assert_true((ms->moveflags & MFL_WALK) != 0);
+	assert_false((ms->moveflags & MFL_ONGROUND) != 0);
+	assert_false((ms->moveflags & MFL_WATERJUMP) != 0);
+
+	BotFreeMoveState(movestate);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -379,6 +466,12 @@ int main(void)
                                         test_setup,
                                         test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_move_func_bobbing_without_reachability_logs_warning,
+                                        test_setup,
+                                        test_teardown),
+        cmocka_unit_test_setup_teardown(test_bot_move_avoid_spot_blocks_reachability,
+                                        test_setup,
+                                        test_teardown),
+        cmocka_unit_test_setup_teardown(test_bot_init_move_state_preserves_reachability_state,
                                         test_setup,
                                         test_teardown),
     };

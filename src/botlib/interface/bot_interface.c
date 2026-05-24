@@ -2046,6 +2046,8 @@ static int BotSetupClient(int client, bot_settings_t *settings)
         return BLERR_INVALIDIMPORT;
     }
 
+	int status = BLERR_NOERROR;
+
     state->weapon_state = BotAllocWeaponState();
     if (state->weapon_state <= 0)
     {
@@ -2058,7 +2060,9 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 
     memcpy(&state->settings, settings, sizeof(*settings));
 
-    int character_handle = BotLoadCharacter(settings->characterfile, 1.0f);
+	int character_handle = BotLoadNamedCharacter(settings->characterfile,
+		settings->charactername,
+		1.0f);
     if (character_handle <= 0)
     {
         BotInterface_Printf(PRT_ERROR,
@@ -2094,6 +2098,19 @@ static int BotSetupClient(int client, bot_settings_t *settings)
     }
 
     AI_GoalBotlib_ResetState(state->goal_handle);
+
+	const char *item_weights_file =
+		AI_CharacteristicAsString(state->character, BOT_CHARACTERISTIC_ITEMWEIGHTS);
+	status = AI_GoalBotlib_LoadItemWeights(state->goal_handle, item_weights_file);
+	if (status != BLERR_NOERROR)
+	{
+		BotInterface_Printf(PRT_ERROR,
+							"[bot_interface] BotSetupClient: failed to load item weights '%s' for client %d\n",
+							item_weights_file != NULL ? item_weights_file : "<null>",
+							client);
+		BotState_Destroy(client);
+		return status;
+	}
 
     state->move_state = AI_MoveState_Create();
     if (state->move_state == NULL)
@@ -2547,8 +2564,10 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 
 	if (state->weapon_state > 0)
 	{
-		state->current_weapon = BotChooseBestFightWeapon(state->weapon_state,
-														 state->last_client_update.inventory);
+		state->current_weapon = BotSelectBestFightWeapon(state->client_number,
+														 state->weapon_state,
+														 state->last_client_update.inventory,
+														 g_botInterfaceFrameTime);
 	}
 
 	int status = BotInterface_PrepareMoveState(state, thinktime);
@@ -3272,6 +3291,42 @@ static int BotInterface_BotSetWeight(int handle, const char *name, float value)
     return BotSetWeight(handle, name, value);
 }
 
+/*
+=============
+BotInterface_BotFindFuzzyWeight
+
+Bridge fuzzy weight name lookup through the weight handle table.
+=============
+*/
+static int BotInterface_BotFindFuzzyWeight(int handle, const char *name)
+{
+	if (!BotInterface_EnsureLibraryReady("BotFindFuzzyWeight"))
+	{
+		return -1;
+	}
+
+	return BotFindFuzzyWeight(handle, name);
+}
+
+/*
+=============
+BotInterface_BotFuzzyWeightHandle
+
+Bridge fuzzy weight evaluation through the weight handle table.
+=============
+*/
+static float BotInterface_BotFuzzyWeightHandle(int handle,
+											   const int *inventory,
+											   int weight_index)
+{
+	if (!BotInterface_EnsureLibraryReady("BotFuzzyWeightHandle"))
+	{
+		return 0.0f;
+	}
+
+	return BotFuzzyWeightHandle(handle, inventory, weight_index);
+}
+
 static bot_weight_config_t *BotInterface_BotReadWeightsFile(const char *filename)
 {
     if (!BotInterface_EnsureLibraryReady("BotReadWeightsFile"))
@@ -3433,6 +3488,23 @@ static int BotInterface_BotPredictVisiblePosition(vec3_t origin,
 	}
 
 	return BotPredictVisiblePosition(origin, areanum, goal, travelflags, target);
+}
+
+/*
+=============
+BotInterface_BotAddAvoidSpot
+
+Bridge avoid-spot updates through the botlib movement API.
+=============
+*/
+static void BotInterface_BotAddAvoidSpot(int movestate, vec3_t origin, float radius, int type)
+{
+	if (!BotInterface_EnsureLibraryReady("BotAddAvoidSpot"))
+	{
+		return;
+	}
+
+	BotAddAvoidSpot(movestate, origin, radius, type);
 }
 
 static int BotInterface_BotAllocWeaponState(void)
@@ -3705,14 +3777,55 @@ static int BotInterface_BotInitialChat(bot_chatstate_t *state,
 		NULL);
 }
 
-static int BotInterface_BotChatLength(const char *message)
-{
-    if (!BotInterface_EnsureLibraryReady("BotChatLength"))
-    {
-        return 0;
-    }
+/*
+=============
+BotInterface_BotChatLength
 
-    return BotChatLength(message);
+Returns the constructed chat message length for a chat state.
+=============
+*/
+static int BotInterface_BotChatLength(const bot_chatstate_t *state)
+{
+	if (!BotInterface_EnsureLibraryReady("BotChatLength"))
+	{
+		return 0;
+	}
+
+	return BotChatLength(state);
+}
+
+static void BotInterface_BotGetChatMessage(bot_chatstate_t *state, char *buffer, int buffer_size)
+{
+	if (!BotInterface_EnsureLibraryReady("BotGetChatMessage"))
+	{
+		if (buffer != NULL && buffer_size > 0)
+		{
+			buffer[0] = '\0';
+		}
+		return;
+	}
+
+	BotGetChatMessage(state, buffer, buffer_size);
+}
+
+static void BotInterface_BotSetChatGender(bot_chatstate_t *state, int gender)
+{
+	if (!BotInterface_EnsureLibraryReady("BotSetChatGender"))
+	{
+		return;
+	}
+
+	BotSetChatGender(state, gender);
+}
+
+static void BotInterface_BotSetChatName(bot_chatstate_t *state, const char *name, int client)
+{
+	if (!BotInterface_EnsureLibraryReady("BotSetChatName"))
+	{
+		return;
+	}
+
+	BotSetChatName(state, name, client);
 }
 
 /*
@@ -3771,12 +3884,25 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotWeightIndex = BotInterface_BotWeightIndex;
     exportTable.BotPushGoal = AI_GoalBotlib_PushGoal;
     exportTable.BotPopGoal = AI_GoalBotlib_PopGoal;
+    exportTable.BotEmptyGoalStack = AI_GoalBotlib_EmptyGoalStack;
     exportTable.BotGetTopGoal = AI_GoalBotlib_GetTopGoal;
     exportTable.BotGetSecondGoal = AI_GoalBotlib_GetSecondGoal;
     exportTable.BotChooseLTGItem = AI_GoalBotlib_ChooseLTG;
     exportTable.BotChooseNBGItem = AI_GoalBotlib_ChooseNBG;
     exportTable.BotResetAvoidGoals = AI_GoalBotlib_ResetAvoidGoals;
     exportTable.BotAddAvoidGoal = AI_GoalBotlib_AddAvoidGoal;
+    exportTable.BotRemoveFromAvoidGoals = AI_GoalBotlib_RemoveFromAvoidGoals;
+    exportTable.BotAvoidGoalTime = AI_GoalBotlib_AvoidGoalTime;
+    exportTable.BotSetAvoidGoalTime = AI_GoalBotlib_SetAvoidGoalTime;
+    exportTable.BotDumpAvoidGoals = AI_GoalBotlib_DumpAvoidGoals;
+    exportTable.BotDumpGoalStack = AI_GoalBotlib_DumpGoalStack;
+    exportTable.BotGoalName = AI_GoalBotlib_GoalName;
+    exportTable.BotGetLevelItemGoal = AI_GoalBotlib_GetLevelItemGoal;
+    exportTable.BotGetNextCampSpotGoal = AI_GoalBotlib_GetNextCampSpotGoal;
+    exportTable.BotGetMapLocationGoal = AI_GoalBotlib_GetMapLocationGoal;
+    exportTable.BotInterbreedGoalFuzzyLogic = AI_GoalBotlib_InterbreedGoalFuzzyLogic;
+    exportTable.BotSaveGoalFuzzyLogic = AI_GoalBotlib_SaveGoalFuzzyLogic;
+    exportTable.BotMutateGoalFuzzyLogic = AI_GoalBotlib_MutateGoalFuzzyLogic;
     exportTable.BotUpdateGoalState = AI_GoalBotlib_Update;
 	exportTable.BotUpdateEntityItems = AI_GoalBotlib_UpdateEntityItems;
     exportTable.BotRegisterLevelItem = AI_GoalBotlib_RegisterLevelItem;
@@ -3790,6 +3916,8 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotLoadWeights = BotInterface_BotLoadWeights;
     exportTable.BotWriteWeights = BotInterface_BotWriteWeights;
     exportTable.BotSetWeight = BotInterface_BotSetWeight;
+    exportTable.BotFindFuzzyWeight = BotInterface_BotFindFuzzyWeight;
+    exportTable.BotFuzzyWeightHandle = BotInterface_BotFuzzyWeightHandle;
     exportTable.BotReadWeightsFile = BotInterface_BotReadWeightsFile;
     exportTable.BotAllocMoveState = BotInterface_BotAllocMoveState;
     exportTable.BotFreeMoveState = BotInterface_BotFreeMoveState;
@@ -3802,6 +3930,7 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 	exportTable.BotReachabilityArea = BotInterface_BotReachabilityArea;
 	exportTable.BotMovementViewTarget = BotInterface_BotMovementViewTarget;
 	exportTable.BotPredictVisiblePosition = BotInterface_BotPredictVisiblePosition;
+	exportTable.BotAddAvoidSpot = BotInterface_BotAddAvoidSpot;
     exportTable.BotLoadCharacter = BotLoadCharacter;
     exportTable.BotFreeCharacter = BotFreeCharacter;
     exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
@@ -3832,6 +3961,9 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotChatLength = BotInterface_BotChatLength;
 	exportTable.BotNumInitialChats = BotInterface_BotNumInitialChats;
 	exportTable.BotInitialChat = BotInterface_BotInitialChat;
+    exportTable.BotGetChatMessage = BotInterface_BotGetChatMessage;
+    exportTable.BotSetChatGender = BotInterface_BotSetChatGender;
+    exportTable.BotSetChatName = BotInterface_BotSetChatName;
 
 	return &exportTable;
 }

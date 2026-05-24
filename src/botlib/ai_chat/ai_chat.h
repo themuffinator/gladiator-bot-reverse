@@ -11,6 +11,16 @@ extern "C" {
 
 typedef struct bot_chatstate_s bot_chatstate_t;
 
+#ifndef CHAT_GENDERLESS
+#define CHAT_GENDERLESS 0
+#endif
+#ifndef CHAT_GENDERFEMALE
+#define CHAT_GENDERFEMALE 1
+#endif
+#ifndef CHAT_GENDERMALE
+#define CHAT_GENDERMALE 2
+#endif
+
 /**
  * Allocates a chat state that owns parsed chat templates, reply tables,
  * random-string tables, cooldown state, and the diagnostic FIFO queue.
@@ -96,8 +106,17 @@ int BotChat_Praise(bot_chatstate_t *state, int client, int sendto);
  */
 int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context);
 
-/** Utility helper matching the legacy botlib export. */
-int BotChatLength(const char *message);
+/** Returns the length of the currently constructed pending chat message. */
+int BotChatLength(const bot_chatstate_t *state);
+
+/** Copies and clears the currently constructed pending chat message. */
+void BotGetChatMessage(bot_chatstate_t *state, char *buffer, int buffer_size);
+
+/** Sets the chat state's gender metadata for reply-key matching. */
+void BotSetChatGender(bot_chatstate_t *state, int gender);
+
+/** Sets the chat state's name metadata and owning client. */
+void BotSetChatName(bot_chatstate_t *state, const char *name, int client);
 
 /** Returns 1 when the supplied phrase is registered for the synonym context. */
 int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_name, const char *phrase);

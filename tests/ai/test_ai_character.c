@@ -259,6 +259,11 @@ static int character_profile_teardown(void **state)
         return 0;
     }
 
+    if (env->memory_initialised) {
+        BotShutdownCharacters();
+        BotShutdownWeights();
+    }
+
     if (env->weapon_library != NULL) {
         AI_UnloadWeaponLibrary(env->weapon_library);
         env->weapon_library = NULL;
@@ -389,6 +394,7 @@ static void test_babe_character_profile(void **state)
 
     ai_character_profile_t *profile = AI_LoadCharacter("bots/babe_c.c", 1.0f);
     assert_non_null(profile);
+    assert_string_equal(profile->character_name, "babe");
 
     const char *chat_file = AI_CharacteristicAsString(profile, CHARACTERISTIC_CHAT_FILE);
     assert_non_null(chat_file);
@@ -409,14 +415,13 @@ static void test_babe_character_profile(void **state)
 
     ai_weapon_weights_t *weapon_weights = AI_WeaponWeightsForCharacter(profile);
     assert_non_null(weapon_weights);
+    assert_non_null(weapon_weights->config);
+    assert_true(BotWeight_FindIndex(weapon_weights->config, "Rocket Launcher") >= 0);
 
     const bot_weapon_config_t *weapon_config = AI_GetWeaponConfig(env->weapon_library);
     assert_non_null(weapon_config);
     int rocket_index = weapon_index_by_name(weapon_config, "Rocket Launcher");
     assert_true(rocket_index >= 0);
-
-    float rocket_weight = AI_WeaponWeightForClient(weapon_weights, rocket_index);
-    assert_true(rocket_weight > 0.0f);
 
     struct ai_character_profile_s *internal = (struct ai_character_profile_s *)profile;
     assert_non_null(internal->chat_state);
@@ -472,6 +477,17 @@ static void test_bot_character_exports(void **state)
     int missing_handle = BotLoadCharacter("bots/does_not_exist.c", 1.0f);
     assert_int_equal(missing_handle, 0);
     assert_true(test_log_contains("couldn't load bot character"));
+
+    test_reset_log();
+    int named_handle = BotLoadNamedCharacter("bots/babe_c.c", "babe", 1.0f);
+    assert_true(named_handle > 0);
+    assert_true(test_log_contains("loaded bot character"));
+    BotFreeCharacter(named_handle);
+
+    test_reset_log();
+    int wrong_name_handle = BotLoadNamedCharacter("bots/babe_c.c", "Babe", 1.0f);
+    assert_int_equal(wrong_name_handle, 0);
+    assert_true(test_log_contains("couldn't find character Babe"));
 }
 
 static void test_bot_setup_client_exposes_profile(void **state)
@@ -499,7 +515,7 @@ static void test_bot_setup_client_exposes_profile(void **state)
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
-    snprintf(settings.charactername, sizeof(settings.charactername), "arena_tester");
+    snprintf(settings.charactername, sizeof(settings.charactername), "babe");
 
     status = env->exports->BotSetupClient(0, &settings);
     assert_int_equal(status, BLERR_NOERROR);

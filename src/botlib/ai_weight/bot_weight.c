@@ -101,7 +101,7 @@ void BotFreeWeightConfig(int handle)
 
 void BotFreeWeightConfig2(bot_weight_config_t *config)
 {
-    FreeWeightConfig(config);
+	FreeWeightConfig2(config);
 }
 
 static bot_weight_handle_t *BotWeight_ResolveHandle(const char *function, int handle)
@@ -270,7 +270,7 @@ static bool BotWeight_WriteConfig(FILE *fp, const bot_weight_config_t *config)
             }
         }
 
-        if (fprintf(fp, "} //end weight\n") < 0) {
+        if (fprintf(fp, "} //end itemweight\n") < 0) {
             return false;
         }
     }
@@ -444,4 +444,6 @@ void BotShutdownWeights(void)
 		BotWeight_DestroyHandle(g_weight_handles[i]);
 		g_weight_handles[i] = NULL;
 	}
+
+	BotWeight_ShutdownCachedConfigs();
 }

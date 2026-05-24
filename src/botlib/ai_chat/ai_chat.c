@@ -82,7 +82,18 @@ typedef struct bot_reply_key_s {
 	int is_pattern;
 	int required;
 	int negated;
+	int special;
 } bot_reply_key_t;
+
+enum
+{
+	BOT_CHAT_REPLY_KEY_TEXT = 0,
+	BOT_CHAT_REPLY_KEY_NAME,
+	BOT_CHAT_REPLY_KEY_GENDER_FEMALE,
+	BOT_CHAT_REPLY_KEY_GENDER_MALE,
+	BOT_CHAT_REPLY_KEY_GENDERLESS,
+	BOT_CHAT_REPLY_KEY_BOTNAMES
+};
 
 typedef struct {
 	bot_reply_key_t *keys;
@@ -175,6 +186,11 @@ struct bot_chatstate_s {
 	bot_console_message_t console_queue[BOT_CHAT_MAX_CONSOLE_MESSAGES];
 	size_t console_head;
 	size_t console_count;
+	char chat_message[BOT_CHAT_MAX_MESSAGE_CHARS];
+	unsigned long chat_message_context;
+	char chat_name[16];
+	int chat_client;
+	int chat_gender;
 
 	bot_synonym_context_t *synonym_contexts;
 	size_t synonym_context_count;
@@ -205,6 +221,23 @@ struct bot_chatstate_s {
 static bot_chatstate_t *bot_chat_setup_state;
 
 #define BOT_CHAT_MIN_INTERVAL_SECONDS 25.0
+
+/*
+=============
+BotChat_SetupFallbackState
+
+Returns the shared setup cache when a per-bot chat state needs global assets.
+=============
+*/
+static const bot_chatstate_t *BotChat_SetupFallbackState(const bot_chatstate_t *state)
+{
+	if (bot_chat_setup_state == NULL || bot_chat_setup_state == state)
+	{
+		return NULL;
+	}
+
+	return bot_chat_setup_state;
+}
 
 /*
 =============
@@ -628,31 +661,45 @@ static const bot_synonym_context_t *BotChat_FindSynonymContextByToken(
 	}
 	token_upper[token_index] = '\0';
 
-	for (size_t i = 0; i < state->synonym_context_count; ++i)
+	const bot_chatstate_t *states[2] = {
+		state,
+		BotChat_SetupFallbackState(state)
+	};
+
+	for (size_t state_index = 0; state_index < sizeof(states) / sizeof(states[0]); ++state_index)
 	{
-		const bot_synonym_context_t *context = &state->synonym_contexts[i];
-		if (context->context_name == NULL)
+		const bot_chatstate_t *source = states[state_index];
+		if (source == NULL)
 		{
 			continue;
 		}
 
-		const char *name = context->context_name;
-		if (strncmp(name, "CONTEXT_", 8) == 0)
+		for (size_t i = 0; i < source->synonym_context_count; ++i)
 		{
-			name += 8;
-		}
+			const bot_synonym_context_t *context = &source->synonym_contexts[i];
+			if (context->context_name == NULL)
+			{
+				continue;
+			}
 
-		char context_upper[BOT_CHAT_MAX_TOKEN_CHARS];
-		size_t context_index = 0;
-		for (; name[context_index] != '\0' && context_index + 1 < sizeof(context_upper); ++context_index)
-		{
-			context_upper[context_index] = (char)toupper((unsigned char)name[context_index]);
-		}
-		context_upper[context_index] = '\0';
+			const char *name = context->context_name;
+			if (strncmp(name, "CONTEXT_", 8) == 0)
+			{
+				name += 8;
+			}
 
-		if (strcmp(context_upper, token_upper) == 0)
-		{
-			return context;
+			char context_upper[BOT_CHAT_MAX_TOKEN_CHARS];
+			size_t context_index = 0;
+			for (; name[context_index] != '\0' && context_index + 1 < sizeof(context_upper); ++context_index)
+			{
+				context_upper[context_index] = (char)toupper((unsigned char)name[context_index]);
+			}
+			context_upper[context_index] = '\0';
+
+			if (strcmp(context_upper, token_upper) == 0)
+			{
+				return context;
+			}
 		}
 	}
 
@@ -902,12 +949,26 @@ static const bot_random_string_table_t *BotChat_FindStateRandomTable(
 		return NULL;
 	}
 
-	for (size_t i = 0; i < state->random_table_count; ++i)
+	const bot_chatstate_t *states[2] = {
+		state,
+		BotChat_SetupFallbackState(state)
+	};
+
+	for (size_t state_index = 0; state_index < sizeof(states) / sizeof(states[0]); ++state_index)
 	{
-		const bot_random_string_table_t *table = &state->random_tables[i];
-		if (table->name != NULL && strcmp(table->name, name) == 0)
+		const bot_chatstate_t *source = states[state_index];
+		if (source == NULL)
 		{
-			return table;
+			continue;
+		}
+
+		for (size_t i = 0; i < source->random_table_count; ++i)
+		{
+			const bot_random_string_table_t *table = &source->random_tables[i];
+			if (table->name != NULL && strcmp(table->name, name) == 0)
+			{
+				return table;
+			}
 		}
 	}
 
@@ -1060,6 +1121,44 @@ static void BotChat_ResetConsoleQueue(bot_chatstate_t *state)
     memset(state->console_queue, 0, sizeof(state->console_queue));
     state->console_head = 0;
     state->console_count = 0;
+}
+
+/*
+=============
+BotChat_ClearPendingMessage
+
+Clears the constructed chat text that retail keeps until BotEnterChat.
+=============
+*/
+static void BotChat_ClearPendingMessage(bot_chatstate_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->chat_message[0] = '\0';
+	state->chat_message_context = 0;
+}
+
+/*
+=============
+BotChat_StorePendingMessage
+
+Stores the latest constructed chat text in the retail chat-message slot.
+=============
+*/
+static void BotChat_StorePendingMessage(bot_chatstate_t *state,
+	unsigned long context,
+	const char *message)
+{
+	if (state == NULL || message == NULL)
+	{
+		return;
+	}
+
+	snprintf(state->chat_message, sizeof(state->chat_message), "%s", message);
+	state->chat_message_context = context;
 }
 
 static char *BotChat_StringDuplicate(const char *text)
@@ -1581,6 +1680,7 @@ static void BotChat_ClearMetadata(bot_chatstate_t *state)
 	state->active_chatfile[0] = '\0';
 	state->active_chatname[0] = '\0';
 	state->speaking_client = 0;
+	BotChat_ClearPendingMessage(state);
 }
 
 /*
@@ -1680,6 +1780,8 @@ static char **BotChat_AddTemplate(bot_match_context_t *context)
 }
 
 static bot_match_context_t *BotChat_FindMatchContext(bot_chatstate_t *state, unsigned long message_type);
+static bot_match_context_t *BotChat_FindResolvedMatchContext(bot_chatstate_t *state,
+	unsigned long message_type);
 
 /*
 =============
@@ -1846,6 +1948,36 @@ static bot_match_context_t *BotChat_FindMatchContext(bot_chatstate_t *state, uns
         }
     }
     return NULL;
+}
+
+/*
+=============
+BotChat_FindResolvedMatchContext
+
+Locates a per-state match context, falling back to the shared setup cache.
+=============
+*/
+static bot_match_context_t *BotChat_FindResolvedMatchContext(bot_chatstate_t *state,
+	unsigned long message_type)
+{
+	if (state == NULL)
+	{
+		return NULL;
+	}
+
+	bot_match_context_t *context = BotChat_FindMatchContext(state, message_type);
+	if (context != NULL)
+	{
+		return context;
+	}
+
+	const bot_chatstate_t *fallback_state = BotChat_SetupFallbackState(state);
+	if (fallback_state == NULL)
+	{
+		return NULL;
+	}
+
+	return BotChat_FindMatchContext((bot_chatstate_t *)fallback_state, message_type);
 }
 
 static bot_reply_rule_t *BotChat_FindReplyRule(bot_chatstate_t *state, unsigned long reply_context)
@@ -2973,6 +3105,29 @@ static int BotChat_StringContainsWordCaseInsensitive(const char *text,
 
 /*
 =============
+BotChat_StringContainsCaseInsensitive
+
+Checks for a case-insensitive substring without word-boundary filtering.
+=============
+*/
+static int BotChat_StringContainsCaseInsensitive(const char *text,
+	const char *needle)
+{
+	if (text == NULL || needle == NULL)
+	{
+		return 0;
+	}
+
+	return BotChat_FindCaseInsensitiveSpan(text,
+		0,
+		needle,
+		strlen(needle),
+		NULL,
+		NULL);
+}
+
+/*
+=============
 BotChat_SynonymContextMaskFromName
 
 Maps parsed CONTEXT_* names back to the bitmask values consumed by Q3 chat
@@ -3258,31 +3413,36 @@ static int BotChat_ReplaceSynonymWord(char *message,
 
 /*
 =============
-BotChat_ReplaceWeightedSynonyms
+BotChat_ReplaceWeightedSynonymsFromState
 
-Applies the retail post-expansion weighted synonym replacement pass.
+Applies weighted synonym groups from one parsed chat state.
 =============
 */
-static int BotChat_ReplaceWeightedSynonyms(bot_chatstate_t *state,
+static int BotChat_ReplaceWeightedSynonymsFromState(const bot_chatstate_t *source,
 	unsigned long message_context,
 	char *message,
 	size_t message_size,
-	const char *source_template)
+	const char *source_template,
+	int *applied_context)
 {
-	if (state == NULL || message == NULL || message_context == 0UL)
+	if (source == NULL || message == NULL || message_context == 0UL)
 	{
 		return 1;
 	}
 
 	for (size_t context_index = 0;
-		context_index < state->synonym_context_count;
+		context_index < source->synonym_context_count;
 		++context_index)
 	{
 		const bot_synonym_context_t *context =
-			&state->synonym_contexts[context_index];
+			&source->synonym_contexts[context_index];
 		if (!BotChat_SynonymContextApplies(context, message_context))
 		{
 			continue;
+		}
+		if (applied_context != NULL)
+		{
+			*applied_context = 1;
 		}
 
 		for (size_t group_index = 0;
@@ -3316,6 +3476,45 @@ static int BotChat_ReplaceWeightedSynonyms(bot_chatstate_t *state,
 				}
 			}
 		}
+	}
+
+	return 1;
+}
+
+/*
+=============
+BotChat_ReplaceWeightedSynonyms
+
+Applies the retail post-expansion weighted synonym replacement pass.
+=============
+*/
+static int BotChat_ReplaceWeightedSynonyms(bot_chatstate_t *state,
+	unsigned long message_context,
+	char *message,
+	size_t message_size,
+	const char *source_template)
+{
+	int applied_context = 0;
+	if (!BotChat_ReplaceWeightedSynonymsFromState(state,
+		message_context,
+		message,
+		message_size,
+		source_template,
+		&applied_context))
+	{
+		return 0;
+	}
+
+	const bot_chatstate_t *fallback_state = BotChat_SetupFallbackState(state);
+	if (!applied_context
+		&& !BotChat_ReplaceWeightedSynonymsFromState(fallback_state,
+			message_context,
+			message,
+			message_size,
+			source_template,
+			&applied_context))
+	{
+		return 0;
 	}
 
 	return 1;
@@ -4091,7 +4290,9 @@ BotChat_ParseReplyKeyText
 Reads one reply-key expression after optional ! or & modifiers.
 =============
 */
-static char *BotChat_ParseReplyKeyText(pc_script_t *script, int *is_pattern)
+static char *BotChat_ParseReplyKeyText(pc_script_t *script,
+	int *is_pattern,
+	int *special)
 {
 	pc_token_t token;
 	if (!PS_ReadToken(script, &token))
@@ -4109,6 +4310,70 @@ static char *BotChat_ParseReplyKeyText(pc_script_t *script, int *is_pattern)
 	}
 
 	bot_string_builder_t builder = {0};
+	if (token.type == TT_NAME)
+	{
+		if (BotChat_StringEqualsIgnoreCase(token.string, "name"))
+		{
+			if (is_pattern != NULL)
+			{
+				*is_pattern = 0;
+			}
+			if (special != NULL)
+			{
+				*special = BOT_CHAT_REPLY_KEY_NAME;
+			}
+			return BotChat_StringDuplicate(token.string);
+		}
+		if (BotChat_StringEqualsIgnoreCase(token.string, "botnames"))
+		{
+			if (is_pattern != NULL)
+			{
+				*is_pattern = 0;
+			}
+			if (special != NULL)
+			{
+				*special = BOT_CHAT_REPLY_KEY_BOTNAMES;
+			}
+			return BotChat_StringDuplicate(token.string);
+		}
+		if (BotChat_StringEqualsIgnoreCase(token.string, "female"))
+		{
+			if (is_pattern != NULL)
+			{
+				*is_pattern = 0;
+			}
+			if (special != NULL)
+			{
+				*special = BOT_CHAT_REPLY_KEY_GENDER_FEMALE;
+			}
+			return BotChat_StringDuplicate(token.string);
+		}
+		if (BotChat_StringEqualsIgnoreCase(token.string, "male"))
+		{
+			if (is_pattern != NULL)
+			{
+				*is_pattern = 0;
+			}
+			if (special != NULL)
+			{
+				*special = BOT_CHAT_REPLY_KEY_GENDER_MALE;
+			}
+			return BotChat_StringDuplicate(token.string);
+		}
+		if (BotChat_StringEqualsIgnoreCase(token.string, "it"))
+		{
+			if (is_pattern != NULL)
+			{
+				*is_pattern = 0;
+			}
+			if (special != NULL)
+			{
+				*special = BOT_CHAT_REPLY_KEY_GENDERLESS;
+			}
+			return BotChat_StringDuplicate(token.string);
+		}
+	}
+
 	if (token.type == TT_STRING || token.type == TT_NAME)
 	{
 		if (!BotChat_StringBuilderAppendTokenText(&builder, &token))
@@ -4176,7 +4441,8 @@ static int BotChat_ParseReplyKeys(pc_script_t *script,
 		}
 
 		int is_pattern = 0;
-		char *pattern = BotChat_ParseReplyKeyText(script, &is_pattern);
+		int special = BOT_CHAT_REPLY_KEY_TEXT;
+		char *pattern = BotChat_ParseReplyKeyText(script, &is_pattern, &special);
 		if (pattern == NULL)
 		{
 			return 0;
@@ -4190,6 +4456,7 @@ static int BotChat_ParseReplyKeys(pc_script_t *script,
 		}
 		key->pattern = pattern;
 		key->is_pattern = is_pattern;
+		key->special = special;
 		key->required = required;
 		key->negated = negated;
 
@@ -5491,7 +5758,9 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	strncpy(state->active_chatname, chatname, sizeof(state->active_chatname) - 1);
 	state->active_chatname[sizeof(state->active_chatname) - 1] = '\0';
 
-	if (!state->has_reply_chats)
+	const bot_chatstate_t *fallback_state = BotChat_SetupFallbackState(state);
+	if (!state->has_reply_chats
+		&& (fallback_state == NULL || !fallback_state->has_reply_chats))
 	{
 		BotLib_Print(PRT_MESSAGE, "no rchats\n");
 	}
@@ -5828,6 +6097,7 @@ static int BotConstructChatMessageWithVariables(bot_chatstate_t *state,
 	}
 
 	snprintf(out_message, out_size, "%s", source);
+	BotChat_StorePendingMessage(state, context, out_message);
 	BotQueueConsoleMessage(state, (int)context, out_message);
 	return 1;
 }
@@ -6153,7 +6423,7 @@ static int BotChat_ConstructAndDispatchContext(bot_chatstate_t *state,
 		return 0;
 	}
 
-	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
+	bot_match_context_t *match_context = BotChat_FindResolvedMatchContext(state, context);
 	const char *template_text = BotChat_SelectRandomTemplate(state, match_context, seed);
 	if (template_text == NULL) {
 		if (missing_context_message != NULL) {
@@ -6169,6 +6439,7 @@ static int BotChat_ConstructAndDispatchContext(bot_chatstate_t *state,
 	}
 
 	BotChat_DispatchMessage(state, message, client, sendto);
+	BotChat_ClearPendingMessage(state);
 	BotChat_CommitClientCooldown(state, (size_t)client, now_seconds);
 	return 1;
 }
@@ -6348,11 +6619,24 @@ int BotChat_Praise(bot_chatstate_t *state, int client, int sendto)
 =============
 BotEnterChat
 
-Builds and dispatches the MSG_ENTERGAME template while respecting cooldowns.
+Dispatches pending chat text, or builds the enter-game event when none exists.
 =============
 */
 void BotEnterChat(bot_chatstate_t *state, int client, int sendto)
 {
+	if (state == NULL)
+	{
+		return;
+	}
+
+	if (state->chat_message[0] != '\0')
+	{
+		state->speaking_client = client;
+		BotChat_DispatchMessage(state, state->chat_message, client, sendto);
+		BotChat_ClearPendingMessage(state);
+		return;
+	}
+
 	BotChat_EnterGame(state, client, sendto);
 }
 
@@ -6442,7 +6726,8 @@ BotChat_ReplyKeyMatches
 Evaluates one parsed reply key and captures variables when present.
 =============
 */
-static int BotChat_ReplyKeyMatches(const bot_reply_key_t *key,
+static int BotChat_ReplyKeyMatches(const bot_chatstate_t *state,
+	const bot_reply_key_t *key,
 	const char *message,
 	char storage[][BOT_CHAT_MAX_MESSAGE_CHARS],
 	const char *variables[BOT_CHAT_MAX_MATCH_VARIABLES])
@@ -6461,6 +6746,26 @@ static int BotChat_ReplyKeyMatches(const bot_reply_key_t *key,
 	}
 
 	BotChat_ClearCapturedVariables(variables);
+	switch (key->special)
+	{
+		case BOT_CHAT_REPLY_KEY_NAME:
+			return state != NULL
+				&& state->chat_name[0] != '\0'
+				&& BotChat_StringContainsCaseInsensitive(message, state->chat_name);
+		case BOT_CHAT_REPLY_KEY_BOTNAMES:
+			return state != NULL
+				&& state->chat_name[0] != '\0'
+				&& BotChat_StringContainsCaseInsensitive(key->pattern, state->chat_name);
+		case BOT_CHAT_REPLY_KEY_GENDER_FEMALE:
+			return state != NULL && state->chat_gender == CHAT_GENDERFEMALE;
+		case BOT_CHAT_REPLY_KEY_GENDER_MALE:
+			return state != NULL && state->chat_gender == CHAT_GENDERMALE;
+		case BOT_CHAT_REPLY_KEY_GENDERLESS:
+			return state == NULL || state->chat_gender == CHAT_GENDERLESS;
+		default:
+			break;
+	}
+
 	return BotChat_StringContainsWordCaseInsensitive(message, key->pattern);
 }
 
@@ -6471,7 +6776,8 @@ BotChat_ReplyRuleMatches
 Applies retail-style reply-key AND, NOT, and optional-key semantics.
 =============
 */
-static int BotChat_ReplyRuleMatches(const bot_reply_rule_t *rule,
+static int BotChat_ReplyRuleMatches(const bot_chatstate_t *state,
+	const bot_reply_rule_t *rule,
 	const char *message,
 	char storage[][BOT_CHAT_MAX_MESSAGE_CHARS],
 	const char *variables[BOT_CHAT_MAX_MATCH_VARIABLES])
@@ -6493,7 +6799,8 @@ static int BotChat_ReplyRuleMatches(const bot_reply_rule_t *rule,
 		char key_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
 		const char *key_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
 		const bot_reply_key_t *key = &rule->keys[i];
-		const int matched = BotChat_ReplyKeyMatches(key,
+		const int matched = BotChat_ReplyKeyMatches(state,
+			key,
 			message,
 			key_storage,
 			key_variables);
@@ -6527,6 +6834,54 @@ static int BotChat_ReplyRuleMatches(const bot_reply_rule_t *rule,
 
 /*
 =============
+BotChat_FindMatchingReplyRuleInState
+
+Searches one reply table and copies captured variables for the first match.
+=============
+*/
+static const bot_reply_rule_t *BotChat_FindMatchingReplyRuleInState(
+	bot_chatstate_t *source,
+	const char *message,
+	unsigned long int context,
+	char captured_storage[][BOT_CHAT_MAX_MESSAGE_CHARS],
+	const char *captured_variables[BOT_CHAT_MAX_MATCH_VARIABLES])
+{
+	if (source == NULL || message == NULL)
+	{
+		return NULL;
+	}
+
+	for (size_t i = 0; i < source->replies.rule_count; ++i)
+	{
+		bot_reply_rule_t *candidate_rule = &source->replies.rules[i];
+		if (candidate_rule->reply_context != context
+			|| candidate_rule->response_count == 0)
+		{
+			continue;
+		}
+
+		char rule_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
+		const char *rule_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
+		if (!BotChat_ReplyRuleMatches(source,
+				candidate_rule,
+				message,
+				rule_storage,
+				rule_variables))
+		{
+			continue;
+		}
+
+		BotChat_CopyCapturedVariables(captured_storage,
+			captured_variables,
+			rule_variables);
+		return candidate_rule;
+	}
+
+	return NULL;
+}
+
+/*
+=============
 BotReplyChat
 
 Constructs a reply by preferring match templates and falling back to reply
@@ -6550,7 +6905,7 @@ return 0;
 	char captured_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
 	const char *captured_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
 	int has_captured_variables = 0;
-	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
+	bot_match_context_t *match_context = BotChat_FindResolvedMatchContext(state, context);
 	if (match_context != NULL && match_context->template_count > 0)
 	{
 		size_t *matching_indices = malloc(match_context->template_count * sizeof(size_t));
@@ -6615,11 +6970,15 @@ return 0;
 			return 0;
 		}
 		BotChat_DispatchMessage(state, constructed, state->speaking_client, BOT_CHAT_SENDTO_ALL);
+		BotChat_ClearPendingMessage(state);
 		BotChat_CommitClientCooldown(state, (size_t)state->speaking_client, now_seconds);
 		return 1;
 	}
 
-	if (!state->has_reply_chats)
+	const bot_chatstate_t *fallback_state = BotChat_SetupFallbackState(state);
+	const int has_setup_reply_chats =
+		fallback_state != NULL && fallback_state->has_reply_chats;
+	if (!state->has_reply_chats && !has_setup_reply_chats)
 	{
 		const char *diagnostic = "no rchats\n";
 		BotLib_Print(PRT_MESSAGE, "%s", diagnostic);
@@ -6630,31 +6989,23 @@ return 0;
 	const bot_reply_rule_t *reply_rule = NULL;
 	BotChat_ClearCapturedVariables(captured_variables);
 	has_captured_variables = 0;
-	for (size_t i = 0; i < state->replies.rule_count; ++i)
+	reply_rule = BotChat_FindMatchingReplyRuleInState(state,
+		message,
+		context,
+		captured_storage,
+		captured_variables);
+	if (reply_rule == NULL && fallback_state != NULL)
 	{
-		bot_reply_rule_t *candidate_rule = &state->replies.rules[i];
-		if (candidate_rule->reply_context != context
-			|| candidate_rule->response_count == 0)
-		{
-			continue;
-		}
-
-		char rule_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
-		const char *rule_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
-		if (!BotChat_ReplyRuleMatches(candidate_rule,
-				message,
-				rule_storage,
-				rule_variables))
-		{
-			continue;
-		}
-
-		reply_rule = candidate_rule;
-		BotChat_CopyCapturedVariables(captured_storage,
-			captured_variables,
-			rule_variables);
+		BotChat_ClearCapturedVariables(captured_variables);
+		reply_rule = BotChat_FindMatchingReplyRuleInState((bot_chatstate_t *)fallback_state,
+			message,
+			context,
+			captured_storage,
+			captured_variables);
+	}
+	if (reply_rule != NULL)
+	{
 		has_captured_variables = 1;
-		break;
 	}
 
 	if (reply_rule != NULL && reply_rule->response_count > 0)
@@ -6674,6 +7025,7 @@ return 0;
 				return 0;
 			}
 			BotChat_DispatchMessage(state, constructed, state->speaking_client, BOT_CHAT_SENDTO_ALL);
+			BotChat_ClearPendingMessage(state);
 			BotChat_CommitClientCooldown(state, (size_t)state->speaking_client, now_seconds);
 			return 1;
 		}
@@ -6993,13 +7345,95 @@ static int BotChat_TemplateCanConstructText(const bot_chatstate_t *state,
 		0);
 }
 
-int BotChatLength(const char *message)
-{
-    if (message == NULL) {
-        return 0;
-    }
+/*
+=============
+BotChatLength
 
-    return (int)strlen(message);
+Returns the length of the pending constructed chat message.
+=============
+*/
+int BotChatLength(const bot_chatstate_t *state)
+{
+	if (state == NULL)
+	{
+		return 0;
+	}
+
+	return (int)strlen(state->chat_message);
+}
+
+/*
+=============
+BotGetChatMessage
+
+Copies the pending chat text into the caller buffer and clears it.
+=============
+*/
+void BotGetChatMessage(bot_chatstate_t *state, char *buffer, int buffer_size)
+{
+	if (buffer != NULL && buffer_size > 0)
+	{
+		buffer[0] = '\0';
+	}
+	if (state == NULL || buffer == NULL || buffer_size <= 0)
+	{
+		return;
+	}
+
+	snprintf(buffer, (size_t)buffer_size, "%s", state->chat_message);
+	BotChat_ClearPendingMessage(state);
+}
+
+/*
+=============
+BotSetChatGender
+
+Stores the reply-chat gender metadata using Quake III's gender constants.
+=============
+*/
+void BotSetChatGender(bot_chatstate_t *state, int gender)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	switch (gender)
+	{
+		case CHAT_GENDERFEMALE:
+			state->chat_gender = CHAT_GENDERFEMALE;
+			break;
+		case CHAT_GENDERMALE:
+			state->chat_gender = CHAT_GENDERMALE;
+			break;
+		default:
+			state->chat_gender = CHAT_GENDERLESS;
+			break;
+	}
+}
+
+/*
+=============
+BotSetChatName
+
+Stores the bot name and owner client used by reply-key matching.
+=============
+*/
+void BotSetChatName(bot_chatstate_t *state, const char *name, int client)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->chat_client = client;
+	memset(state->chat_name, 0, sizeof(state->chat_name));
+	if (name == NULL)
+	{
+		return;
+	}
+
+	snprintf(state->chat_name, sizeof(state->chat_name), "%s", name);
 }
 
 int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_name, const char *phrase)
@@ -7008,24 +7442,34 @@ int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_n
         return 0;
     }
 
-    for (size_t i = 0; i < state->synonym_context_count; ++i) {
-        const bot_synonym_context_t *context = &state->synonym_contexts[i];
-        if (context->context_name == NULL) {
-            continue;
-        }
-        if (strcmp(context->context_name, context_name) != 0) {
-            continue;
-        }
-        for (size_t j = 0; j < context->group_count; ++j) {
-            const bot_synonym_group_t *group = &context->groups[j];
-            for (size_t k = 0; k < group->phrase_count; ++k) {
-                const bot_synonym_phrase_t *entry = &group->phrases[k];
-                if (entry->text != NULL && strcmp(entry->text, phrase) == 0) {
-                    return 1;
-                }
-            }
-        }
-    }
+	const bot_chatstate_t *states[2] = {
+		state,
+		BotChat_SetupFallbackState(state)
+	};
+	for (size_t state_index = 0; state_index < sizeof(states) / sizeof(states[0]); ++state_index) {
+		const bot_chatstate_t *source = states[state_index];
+		if (source == NULL) {
+			continue;
+		}
+		for (size_t i = 0; i < source->synonym_context_count; ++i) {
+			const bot_synonym_context_t *context = &source->synonym_contexts[i];
+			if (context->context_name == NULL) {
+				continue;
+			}
+			if (strcmp(context->context_name, context_name) != 0) {
+				continue;
+			}
+			for (size_t j = 0; j < context->group_count; ++j) {
+				const bot_synonym_group_t *group = &context->groups[j];
+				for (size_t k = 0; k < group->phrase_count; ++k) {
+					const bot_synonym_phrase_t *entry = &group->phrases[k];
+					if (entry->text != NULL && strcmp(entry->text, phrase) == 0) {
+						return 1;
+					}
+				}
+			}
+		}
+	}
 
     return 0;
 }
@@ -7036,48 +7480,60 @@ int BotChat_HasReplyTemplate(const bot_chatstate_t *state, unsigned long int con
         return 0;
     }
 
-    const bot_match_context_t *match = BotChat_FindMatchContext((bot_chatstate_t *)state, context);
-    if (match != NULL) {
-        for (size_t i = 0; i < match->template_count; ++i) {
-			const char *stored_template = match->templates[i];
-			if (stored_template == NULL) {
-				continue;
-			}
-			if (strcmp(stored_template, template_text) == 0) {
-				return 1;
-			}
-			if (strchr(stored_template, '\\') != NULL
-				&& BotChat_TemplateCanConstructText(state,
-					context,
-					stored_template,
-					template_text)) {
-				return 1;
-			}
-        }
-    }
-
-	for (size_t rule_index = 0; rule_index < state->replies.rule_count; ++rule_index) {
-		const bot_reply_rule_t *rule = &state->replies.rules[rule_index];
-		if (rule->reply_context != context) {
+	const bot_chatstate_t *states[2] = {
+		state,
+		BotChat_SetupFallbackState(state)
+	};
+	for (size_t state_index = 0; state_index < sizeof(states) / sizeof(states[0]); ++state_index) {
+		const bot_chatstate_t *source = states[state_index];
+		if (source == NULL) {
 			continue;
 		}
-        for (size_t i = 0; i < rule->response_count; ++i) {
-			const char *stored_template = rule->responses[i];
-			if (stored_template == NULL) {
+
+		const bot_match_context_t *match =
+			BotChat_FindMatchContext((bot_chatstate_t *)source, context);
+		if (match != NULL) {
+			for (size_t i = 0; i < match->template_count; ++i) {
+				const char *stored_template = match->templates[i];
+				if (stored_template == NULL) {
+					continue;
+				}
+				if (strcmp(stored_template, template_text) == 0) {
+					return 1;
+				}
+				if (strchr(stored_template, '\\') != NULL
+					&& BotChat_TemplateCanConstructText(source,
+						context,
+						stored_template,
+						template_text)) {
+					return 1;
+				}
+			}
+		}
+
+		for (size_t rule_index = 0; rule_index < source->replies.rule_count; ++rule_index) {
+			const bot_reply_rule_t *rule = &source->replies.rules[rule_index];
+			if (rule->reply_context != context) {
 				continue;
 			}
-			if (strcmp(stored_template, template_text) == 0) {
-				return 1;
+			for (size_t i = 0; i < rule->response_count; ++i) {
+				const char *stored_template = rule->responses[i];
+				if (stored_template == NULL) {
+					continue;
+				}
+				if (strcmp(stored_template, template_text) == 0) {
+					return 1;
+				}
+				if (strchr(stored_template, '\\') != NULL
+					&& BotChat_TemplateCanConstructText(source,
+						context,
+						stored_template,
+						template_text)) {
+					return 1;
+				}
 			}
-			if (strchr(stored_template, '\\') != NULL
-				&& BotChat_TemplateCanConstructText(state,
-					context,
-					stored_template,
-					template_text)) {
-				return 1;
-			}
-        }
-    }
+		}
+	}
 
     return 0;
 }

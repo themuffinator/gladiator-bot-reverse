@@ -12,6 +12,7 @@
 
 #include "botlib/aas/aas_local.h"
 #include "botlib/aas/aas_map.h"
+#include "botlib/ai_move/bot_move.h"
 #include "botlib/common/l_assets.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
@@ -28,6 +29,8 @@
 #define BOT_GOAL_TRAVELTIME_SCALE 0.01f
 #define BOT_GOAL_ASSET_MAX_PATH 512
 #define BOT_GOAL_DEFAULT_RESPAWN_TIME 30.0f
+#define BOT_GOAL_MINIMUM_AVOID_TIME 10.0f
+#define BOT_GOAL_DROPPED_AVOID_TIME 10.0f
 #define BOT_GOAL_DEFAULT_ITEM_HALF_EXTENT 15.0f
 
 #define BOT_GOAL_ITEMFLAG_NOTFREE	(1 << 0)
@@ -125,12 +128,15 @@ static bot_itemdef_t g_itemdefs[BOT_GOAL_MAX_ITEMDEFS];
 static int g_itemdef_count = 0;
 
 static int BotGoal_PointAreaNum(const vec3_t origin);
+static int BotGoal_StartAreaForState(bot_goalstate_t *gs, const vec3_t origin);
 static bot_goalstate_t *BotGoalStateFromHandle(int handle);
 static bool BotGoal_EnsureWeightCapacity(bot_goalstate_t *gs);
 static float BotGoal_EvaluateItemWeight(const bot_goalstate_t *gs,
                                         const int *inventory,
                                         int iteminfo_index);
-static bool BotGoal_IsAvoided(const bot_goalstate_t *gs, int number);
+static float BotGoal_ItemBaseWeight(const bot_levelitem_t *item, float fuzzy_weight);
+static float BotGoal_AvoidGoalTimeForState(const bot_goalstate_t *gs, int number);
+static float BotGoal_AvoidTimeForItem(const bot_levelitem_t *item);
 static bot_levelitem_t *BotGoal_FindLevelItem(int number);
 static int BotGoal_FindItemInfoIndex(const char *classname);
 static int BotGoal_RegisterItemInfo(const char *classname);
@@ -334,7 +340,7 @@ int BotLoadItemWeights(int handle, const char *filename)
 	if (gs == NULL)
 	{
 		BotLib_Print(PRT_ERROR, "BotLoadItemWeights: invalid goal state %d\n", handle);
-		return 0;
+		return BLERR_CANNOTLOADITEMWEIGHTS;
 	}
 
 	char path[BOT_GOAL_ASSET_MAX_PATH];
@@ -343,21 +349,21 @@ int BotLoadItemWeights(int handle, const char *filename)
 		BotLib_Print(PRT_ERROR,
 					 "BotLoadItemWeights: unable to resolve %s\n",
 					 filename != NULL ? filename : "<null>");
-		return 0;
+		return BLERR_CANNOTLOADITEMWEIGHTS;
 	}
 
 	bot_weight_config_t *config = ReadWeightConfig(path);
 	if (config == NULL)
 	{
 		BotLib_Print(PRT_FATAL, "BotLoadItemWeights: couldn't load %s\n", path);
-		return 0;
+		return BLERR_CANNOTLOADITEMWEIGHTS;
 	}
 
 	if (!BotGoal_EnsureWeightCapacity(gs))
 	{
 		BotLib_Print(PRT_ERROR, "BotLoadItemWeights: weight index allocation failed\n");
 		FreeWeightConfig(config);
-		return 0;
+		return BLERR_CANNOTLOADITEMWEIGHTS;
 	}
 
 	if (gs->itemweightconfig != NULL)
@@ -381,7 +387,7 @@ int BotLoadItemWeights(int handle, const char *filename)
 		}
 	}
 
-	return 1;
+	return BLERR_NOERROR;
 }
 
 void BotFreeItemWeights(int handle)
@@ -689,22 +695,94 @@ static float BotGoal_EvaluateItemWeight(const bot_goalstate_t *gs,
     return weight;
 }
 
-static bool BotGoal_IsAvoided(const bot_goalstate_t *gs, int number)
-{
-    if (gs == NULL)
-    {
-        return false;
-    }
+/*
+=============
+BotGoal_ItemBaseWeight
 
-    float now = BotGoal_CurrentTime();
-    for (int i = 0; i < gs->numavoidgoals; ++i)
-    {
-        if (gs->avoidgoals[i].number == number && gs->avoidgoals[i].timeout > now)
-        {
-            return true;
-        }
-    }
-    return false;
+Applies Gladiator/Q3 roam scaling while preserving reconstructed fixture
+weights for synthetic level items.
+=============
+*/
+static float BotGoal_ItemBaseWeight(const bot_levelitem_t *item, float fuzzy_weight)
+{
+	if (item == NULL)
+	{
+		return fuzzy_weight;
+	}
+
+	if ((item->goal.flags & GFL_ROAM) && item->base_weight > 0.0f)
+	{
+		if (fuzzy_weight > 0.0f)
+		{
+			return fuzzy_weight * item->base_weight;
+		}
+		return item->base_weight;
+	}
+
+	if (fuzzy_weight > 0.0f)
+	{
+		return fuzzy_weight + item->base_weight;
+	}
+
+	return item->base_weight;
+}
+
+/*
+=============
+BotGoal_AvoidGoalTimeForState
+
+Returns the remaining avoid time without going back through the public handle.
+=============
+*/
+static float BotGoal_AvoidGoalTimeForState(const bot_goalstate_t *gs, int number)
+{
+	if (gs == NULL)
+	{
+		return 0.0f;
+	}
+
+	float now = BotGoal_CurrentTime();
+	for (int i = 0; i < gs->numavoidgoals; ++i)
+	{
+		if (gs->avoidgoals[i].number == number)
+		{
+			float remaining = gs->avoidgoals[i].timeout - now;
+			return (remaining > 0.0f) ? remaining : 0.0f;
+		}
+	}
+
+	return 0.0f;
+}
+
+/*
+=============
+BotGoal_AvoidTimeForItem
+
+Computes the retail avoid timeout assigned after choosing an item goal.
+=============
+*/
+static float BotGoal_AvoidTimeForItem(const bot_levelitem_t *item)
+{
+	if (item == NULL)
+	{
+		return BOT_GOAL_DEFAULT_RESPAWN_TIME;
+	}
+
+	if (item->goal.flags & GFL_DROPPED)
+	{
+		return BOT_GOAL_DROPPED_AVOID_TIME;
+	}
+
+	float avoidtime = item->respawntime;
+	if (avoidtime <= 0.0f)
+	{
+		avoidtime = BOT_GOAL_DEFAULT_RESPAWN_TIME;
+	}
+	if (avoidtime < BOT_GOAL_MINIMUM_AVOID_TIME)
+	{
+		avoidtime = BOT_GOAL_MINIMUM_AVOID_TIME;
+	}
+	return avoidtime;
 }
 
 static int BotGoal_PointAreaNum(const vec3_t origin)
@@ -733,6 +811,38 @@ static int BotGoal_PointAreaNum(const vec3_t origin)
     }
 
     return 0;
+}
+
+/*
+=============
+BotGoal_StartAreaForState
+
+Resolve the bot's current reachability area using the movement helper first,
+then fall back to the last usable goal area like the retail code.
+=============
+*/
+static int BotGoal_StartAreaForState(bot_goalstate_t *gs, const vec3_t origin)
+{
+	if (gs == NULL)
+	{
+		return 0;
+	}
+
+	int areanum = BotReachabilityArea(origin, gs->client);
+	if (areanum <= 0)
+	{
+		areanum = BotGoal_PointAreaNum(origin);
+	}
+	if (areanum <= 0)
+	{
+		areanum = gs->lastreachabilityarea;
+	}
+	if (areanum > 0)
+	{
+		gs->lastreachabilityarea = areanum;
+	}
+
+	return areanum;
 }
 
 static bot_levelitem_t *BotGoal_FindLevelItem(int number)
@@ -801,6 +911,13 @@ static int BotGoal_RegisterItemInfo(const char *classname)
                          "BotGoal_RegisterItemInfo: failed to expand weight index for handle %d\n",
                          handle);
         }
+		if (gs->itemweightconfig != NULL &&
+			gs->itemweightindex != NULL &&
+			index < gs->itemweightcount)
+		{
+			gs->itemweightindex[index] =
+				BotWeight_FindIndex(gs->itemweightconfig, g_iteminfo_names[index]);
+		}
     }
 
     return index;
@@ -980,7 +1097,8 @@ static float BotGoal_LevelItemScore(bot_goalstate_t *gs,
                                     int start_area,
                                     const int *inventory,
                                     int travelflags,
-                                    int *travel_time)
+                                    int *travel_time,
+                                    bool require_travel)
 {
     if (item == NULL || !item->valid)
     {
@@ -1010,15 +1128,24 @@ static float BotGoal_LevelItemScore(bot_goalstate_t *gs,
         *travel_time = time;
     }
 
-    float weight = BotGoal_EvaluateItemWeight(gs, inventory, item->goal.iteminfo);
-    weight += item->base_weight;
+	if (require_travel && time <= 0)
+	{
+		return -FLT_MAX;
+	}
+
+	float fuzzy_weight = BotGoal_EvaluateItemWeight(gs, inventory, item->goal.iteminfo);
+	float weight = BotGoal_ItemBaseWeight(item, fuzzy_weight);
     if (weight <= 0.0f)
     {
         return -FLT_MAX;
     }
 
-    float score = weight - (float)time * BOT_GOAL_TRAVELTIME_SCALE;
-    return score;
+	if (time > 0)
+	{
+		return weight / ((float)time * BOT_GOAL_TRAVELTIME_SCALE);
+	}
+
+    return weight;
 }
 
 int BotChooseLTGItem(int handle, const vec3_t origin, const int *inventory, int travelflags)
@@ -1029,11 +1156,16 @@ int BotChooseLTGItem(int handle, const vec3_t origin, const int *inventory, int 
         return 0;
     }
 
-    int start_area = BotGoal_PointAreaNum(origin);
-    if (start_area <= 0)
-    {
-        start_area = gs->lastreachabilityarea;
-    }
+	if (gs->itemweightconfig == NULL)
+	{
+		return 0;
+	}
+
+	int start_area = BotGoal_StartAreaForState(gs, origin);
+	if (start_area <= 0)
+	{
+		return 0;
+	}
 
     float now = BotGoal_CurrentTime();
     float best_score = -FLT_MAX;
@@ -1048,18 +1180,31 @@ int BotChooseLTGItem(int handle, const vec3_t origin, const int *inventory, int 
             continue;
         }
 
-        if (BotGoal_IsAvoided(gs, item->goal.number))
-        {
-            continue;
-        }
-
-        if (item->next_respawn_time > now)
-        {
-            continue;
-        }
-
         int travel_time = 0;
-        float score = BotGoal_LevelItemScore(gs, item, origin, start_area, inventory, travelflags, &travel_time);
+		float score = BotGoal_LevelItemScore(gs,
+											 item,
+											 origin,
+											 start_area,
+											 inventory,
+											 travelflags,
+											 &travel_time,
+											 true);
+		if (score <= -FLT_MAX)
+		{
+			continue;
+		}
+
+		float travel_seconds = (float)travel_time * 0.009f;
+		if (BotGoal_AvoidGoalTimeForState(gs, item->goal.number) - travel_seconds > 0.0f)
+		{
+			continue;
+		}
+
+		if (item->next_respawn_time > now + travel_seconds)
+		{
+			continue;
+		}
+
         if (score <= best_score)
         {
             continue;
@@ -1075,8 +1220,13 @@ int BotChooseLTGItem(int handle, const vec3_t origin, const int *inventory, int 
         return 0;
     }
 
-    gs->lastreachabilityarea = start_area;
-    return BotPushGoal(handle, &best_goal);
+	if (!BotPushGoal(handle, &best_goal))
+	{
+		return 0;
+	}
+
+	BotAddToAvoidGoals(handle, best_item->goal.number, BotGoal_AvoidTimeForItem(best_item));
+	return 1;
 }
 
 int BotChooseNBGItem(int handle,
@@ -1092,17 +1242,32 @@ int BotChooseNBGItem(int handle,
         return 0;
     }
 
-    int start_area = BotGoal_PointAreaNum(origin);
-    if (start_area <= 0)
-    {
-        start_area = gs->lastreachabilityarea;
-    }
+	if (gs->itemweightconfig == NULL)
+	{
+		return 0;
+	}
+
+	int start_area = BotGoal_StartAreaForState(gs, origin);
+	if (start_area <= 0)
+	{
+		return 0;
+	}
 
     float now = BotGoal_CurrentTime();
     float best_score = -FLT_MAX;
     const bot_levelitem_t *best_item = NULL;
     bot_goal_t best_goal = {0};
-    float max_travel_time = (maxtime > 0.0f) ? (maxtime / BOT_GOAL_TRAVELTIME_SCALE) : 0.0f;
+	int ltg_time = 99999;
+	if (ltg != NULL && ltg->areanum > 0)
+	{
+		vec3_t start;
+		VectorCopy(origin, start);
+		ltg_time = AAS_AreaTravelTimeToGoalArea(start_area, start, ltg->areanum, travelflags);
+		if (ltg_time <= 0)
+		{
+			ltg_time = 99999;
+		}
+	}
 
     for (int i = 0; i < g_levelitem_count; ++i)
     {
@@ -1117,27 +1282,54 @@ int BotChooseNBGItem(int handle,
             continue;
         }
 
-        if (BotGoal_IsAvoided(gs, item->goal.number))
-        {
-            continue;
-        }
-
-        if (item->next_respawn_time > now)
-        {
-            continue;
-        }
-
         int travel_time = 0;
-        float score = BotGoal_LevelItemScore(gs, item, origin, start_area, inventory, travelflags, &travel_time);
-        if (score <= best_score)
-        {
-            continue;
-        }
+		float score = BotGoal_LevelItemScore(gs,
+											 item,
+											 origin,
+											 start_area,
+											 inventory,
+											 travelflags,
+											 &travel_time,
+											 true);
+		if (score <= -FLT_MAX)
+		{
+			continue;
+		}
 
-        if (max_travel_time > 0.0f && (float)travel_time > max_travel_time)
-        {
-            continue;
-        }
+		if (maxtime > 0.0f && (float)travel_time >= maxtime)
+		{
+			continue;
+		}
+
+		float travel_seconds = (float)travel_time * 0.009f;
+		if (BotGoal_AvoidGoalTimeForState(gs, item->goal.number) - travel_seconds > 0.0f)
+		{
+			continue;
+		}
+
+		if (item->next_respawn_time > now + travel_seconds)
+		{
+			continue;
+		}
+
+		if (ltg != NULL && !(item->goal.flags & GFL_DROPPED))
+		{
+			vec3_t item_origin;
+			VectorCopy(item->goal.origin, item_origin);
+			int return_time = AAS_AreaTravelTimeToGoalArea(item->goal.areanum,
+														  item_origin,
+														  ltg->areanum,
+														  travelflags);
+			if (return_time > ltg_time)
+			{
+				continue;
+			}
+		}
+
+		if (score <= best_score)
+		{
+			continue;
+		}
 
         best_score = score;
         best_item = item;
@@ -1149,7 +1341,13 @@ int BotChooseNBGItem(int handle,
         return 0;
     }
 
-    return BotPushGoal(handle, &best_goal);
+	if (!BotPushGoal(handle, &best_goal))
+	{
+		return 0;
+	}
+
+	BotAddToAvoidGoals(handle, best_item->goal.number, BotGoal_AvoidTimeForItem(best_item));
+	return 1;
 }
 
 float BotGoal_EvaluateStackGoal(int handle,
@@ -1188,7 +1386,8 @@ float BotGoal_EvaluateStackGoal(int handle,
                                        start,
                                        inventory,
                                        travelflags,
-                                       &computed_travel);
+                                       &computed_travel,
+                                       false);
     }
     else if (start > 0 && goal->areanum > 0)
     {

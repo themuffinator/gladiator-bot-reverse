@@ -54,16 +54,20 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
                                                  size_t global_define_count);
 bot_weight_config_t *ReadWeightConfig(const char *filename);
 void FreeWeightConfig(bot_weight_config_t *config);
+void FreeWeightConfig2(bot_weight_config_t *config);
 int WriteWeightConfig(const char *filename, bot_weight_config_t *config);
+int FindFuzzyWeight(bot_weight_config_t *config, const char *name);
 float FuzzyWeight(const int *inventory, const bot_weight_config_t *config, int weight_index);
 float FuzzyWeightUndecided(const int *inventory, const bot_weight_config_t *config, int weight_index);
 int BotWeight_FindIndex(const bot_weight_config_t *config, const char *name);
 void ScaleWeight(bot_weight_config_t *config, const char *name, float scale);
 void ScaleBalanceRange(bot_weight_config_t *config, float scale);
 void EvolveWeightConfig(bot_weight_config_t *config);
+int MergeWeightConfigs(bot_weight_config_t *config1, bot_weight_config_t *config2);
 void InterbreedWeightConfigs(bot_weight_config_t *config1,
                              bot_weight_config_t *config2,
                              bot_weight_config_t *configout);
+void BotWeight_ShutdownCachedConfigs(void);
 void BotShutdownWeights(void);
 
 int BotAllocWeightConfig(void);

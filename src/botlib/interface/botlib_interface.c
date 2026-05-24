@@ -9,6 +9,7 @@
 #include "botlib/aas/aas_sound.h"
 #include "botlib/ea/ea_local.h"
 #include "botlib/ai_character/bot_character.h"
+#include "botlib/ai_chat/ai_chat.h"
 #include "botlib/ai_goal/bot_goal.h"
 #include "botlib/ai_move/bot_move.h"
 #include "botlib/ai_weapon/bot_weapon.h"
@@ -169,7 +170,15 @@ static bool Botlib_SetupAISubsystem(void)
         return false;
     }
 
+    if (BotSetupChatAI() != BLERR_NOERROR) {
+        BotShutdownGoalAI();
+        AI_UnloadWeaponLibrary(g_weapon_library);
+        g_weapon_library = NULL;
+        return false;
+    }
+
     if (BotSetupMoveAI() != BLERR_NOERROR) {
+        BotShutdownChatAI();
         BotShutdownGoalAI();
         AI_UnloadWeaponLibrary(g_weapon_library);
         g_weapon_library = NULL;
@@ -245,9 +254,10 @@ static void Botlib_ShutdownUtilities(void)
 static void Botlib_ShutdownAISubsystem(void)
 {
 	BotShutdownMoveAI();
+	BotShutdownChatAI();
 	BotShutdownGoalAI();
-	BotShutdownWeights();
 	BotShutdownCharacters();
+	BotShutdownWeights();
 
 	if (g_weapon_library != NULL) {
 		AI_UnloadWeaponLibrary(g_weapon_library);
@@ -380,11 +390,9 @@ int BotSetupLibrary(void)
      * The Gladiator HLIL initialises shared data before exposing the bot state
      * table: item configuration is loaded via sub_100309d0 ("itemconfig") and
      * the weapon library comes online through sub_10035680 ("weaponconfig")
-     * prior to character setup routines that request per-bot weight handles and
-     * chat files. When the AI subsystem grows beyond stubs, its setup function
-     * will need to honour that order so movement, weight, and character modules
-     * can acquire their dependencies deterministically.
-     *【F:dev_tools/gladiator.dll.bndb_hlil.txt†L38344-L38405】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L41398-L41415】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32483-L32552】
+     * before sub_1002ebb0 loads shared chat assets. Character setup routines
+     * then request per-bot weight handles and chat files after these shared
+     * caches exist.
      */
     if (!Botlib_SetupAISubsystem()) {
         Botlib_ShutdownEASubsystem();

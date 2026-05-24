@@ -353,6 +353,45 @@ static void test_bot_travel_grapple_hook_toggles(void **state)
     assert_false(ms.moveflags & MFL_ACTIVEGRAPPLE);
 }
 
+/*
+=============
+test_bot_move_in_direction_submits_actions
+
+Verifies direct movement requests issue EA movement, jump, and crouch input.
+=============
+*/
+static void test_bot_move_in_direction_submits_actions(void **state)
+{
+	(void)state;
+
+	int handle = BotAllocMoveState();
+	assert_true(handle > 0);
+
+	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
+	assert_non_null(ms);
+	BotResetMoveState(handle);
+	ms->client = 0;
+	ms->entitynum = 0;
+	ms->moveflags = MFL_ONGROUND;
+
+	vec3_t dir;
+	VectorSet(dir, 1.0f, 1.0f, 0.0f);
+
+	assert_true(BotMoveInDirection(handle, dir, 280.0f, MOVE_JUMP | MOVE_CROUCH));
+
+	bot_input_t input;
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_float_equal(input.speed, 280.0f, 0.0001f);
+	assert_float_equal(input.dir[0], 0.7071067f, 0.0001f);
+	assert_float_equal(input.dir[1], 0.7071067f, 0.0001f);
+	assert_float_equal(input.dir[2], 0.0f, 0.0001f);
+	assert_true((input.actionflags & ACTION_JUMP) != 0);
+	assert_true((input.actionflags & ACTION_CROUCH) != 0);
+	assert_int_equal(ms->jumpreach, 1);
+
+	BotFreeMoveState(handle);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -360,6 +399,9 @@ int main(void)
                                         test_setup,
                                         test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_travel_grapple_hook_toggles,
+                                        test_setup,
+                                        test_teardown),
+        cmocka_unit_test_setup_teardown(test_bot_move_in_direction_submits_actions,
                                         test_setup,
                                         test_teardown),
     };
