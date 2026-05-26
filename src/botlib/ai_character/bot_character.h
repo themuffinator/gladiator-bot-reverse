@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "botlib/ai_weapon/bot_weapon.h"
 #include "botlib/ai_weight/bot_weight.h"
 
@@ -30,10 +32,25 @@ ai_character_profile_t *AI_LoadCharacter(const char *filename, float skill);
 ai_character_profile_t *AI_LoadCharacterNamed(const char *filename,
 	const char *character_name,
 	float skill);
+bool AI_CharacterFileUsesSkillBlocks(const char *filename);
+bool AI_CharacterFileUsesNamedBlocks(const char *filename);
+bool AI_CharacterDefaultFileUsesSkillBlocks(void);
+ai_character_profile_t *AI_LoadCharacterSkillProfileBlock(const char *filename,
+	float requested_skill,
+	int block_skill,
+	bool merge_defaults);
+ai_character_profile_t *AI_LoadCharacterSkillProfile(const char *filename, float skill);
+bool AI_ApplyCharacterDefaults(ai_character_profile_t *profile,
+	const ai_character_profile_t *defaults);
+ai_character_profile_t *AI_InterpolateCharacterProfiles(const ai_character_profile_t *first,
+	const ai_character_profile_t *second,
+	float skill);
 void AI_FreeCharacter(ai_character_profile_t *profile);
 
 bot_weight_config_t *AI_ItemWeightsForCharacter(const ai_character_profile_t *profile);
 ai_weapon_weights_t *AI_WeaponWeightsForCharacter(const ai_character_profile_t *profile);
+float AI_CharacterProfileSkill(const ai_character_profile_t *profile);
+const char *AI_CharacterProfileFilename(const ai_character_profile_t *profile);
 
 int AI_CharacteristicCount(const ai_character_profile_t *profile);
 ai_character_value_type_t AI_CharacteristicType(const ai_character_profile_t *profile, int index);

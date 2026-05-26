@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdbool.h>
 
 #include "botlib/common/l_precomp.h"
@@ -81,6 +82,7 @@ void BotResetGoalState(int handle);
 int BotLoadItemWeights(int handle, const char *filename);
 void BotFreeItemWeights(int handle);
 int BotWeightIndex(int handle, const char *classname);
+size_t BotGoal_ItemWeightIndexByteSize(int handle);
 
 void BotResetAvoidGoals(int handle);
 void BotAddToAvoidGoals(int handle, int number, float avoidtime);

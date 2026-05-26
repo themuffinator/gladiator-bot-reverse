@@ -104,7 +104,7 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxacceleration, "sv_maxacceleration", "2200");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_friction, "sv_friction", "6");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_stopspeed, "sv_stopspeed", "100");
-    BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxstep, "sv_maxstep", "18");
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxstep, "sv_step", "18");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxbarrier, "sv_maxbarrier", "50");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxsteepness, "sv_maxsteepness", "0.7");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxwaterjump, "sv_maxwaterjump", "20");

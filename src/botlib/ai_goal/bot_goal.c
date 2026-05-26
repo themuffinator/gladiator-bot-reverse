@@ -126,14 +126,15 @@ static int g_campspot_count = 0;
 
 static bot_itemdef_t g_itemdefs[BOT_GOAL_MAX_ITEMDEFS];
 static int g_itemdef_count = 0;
+static bool g_itemdefs_loaded = false;
 
 static int BotGoal_PointAreaNum(const vec3_t origin);
 static int BotGoal_StartAreaForState(bot_goalstate_t *gs, const vec3_t origin);
 static bot_goalstate_t *BotGoalStateFromHandle(int handle);
 static bool BotGoal_EnsureWeightCapacity(bot_goalstate_t *gs);
 static float BotGoal_EvaluateItemWeight(const bot_goalstate_t *gs,
-                                        const int *inventory,
-                                        int iteminfo_index);
+	const int *inventory,
+	int iteminfo_index);
 static float BotGoal_ItemBaseWeight(const bot_levelitem_t *item, float fuzzy_weight);
 static float BotGoal_AvoidGoalTimeForState(const bot_goalstate_t *gs, int number);
 static float BotGoal_AvoidTimeForItem(const bot_levelitem_t *item);
@@ -141,8 +142,8 @@ static bot_levelitem_t *BotGoal_FindLevelItem(int number);
 static int BotGoal_FindItemInfoIndex(const char *classname);
 static int BotGoal_RegisterItemInfo(const char *classname);
 static bool BotGoal_BuildWeightPath(const char *filename, char *buffer, size_t size);
+static void BotGoal_ClearLevelItemState(void);
 static void BotGoal_RebuildWeightIndices(bot_goalstate_t *gs);
-static float BotGoal_RandomScale(float range);
 static int BotGoal_StrIcmp(const char *lhs, const char *rhs);
 static bool BotGoal_LevelItemAllowed(const bot_levelitem_t *item);
 static bool BotGoal_ReadSignedFloat(pc_source_t *source, float *out);
@@ -151,7 +152,7 @@ static bool BotGoal_SkipValue(pc_source_t *source);
 static bot_itemdef_t *BotGoal_FindItemDef(const char *classname);
 static bot_itemdef_t *BotGoal_RegisterItemDef(const char *classname);
 static bool BotGoal_ParseItemInfoBlock(pc_source_t *source, bot_itemdef_t *itemdef);
-static void BotGoal_LoadItemDefs(void);
+static bool BotGoal_LoadItemDefs(void);
 static bool BotGoal_ParseFloatString(const char *value, float *out);
 static bool BotGoal_ParseIntString(const char *value, int *out);
 static bool BotGoal_ParseVectorString(const char *value, vec3_t out);
@@ -208,7 +209,7 @@ int BotAllocGoalState(int client)
         }
 
         gs->client = client;
-        gs->goalstacktop = -1;
+        gs->goalstacktop = 0;
         gs->itemweightcount = 0;
         g_goalstates[handle] = gs;
         return handle;
@@ -252,7 +253,8 @@ void BotResetGoalState(int handle)
         return;
     }
 
-    gs->goalstacktop = -1;
+	memset(gs->goalstack, 0, sizeof(gs->goalstack));
+    gs->goalstacktop = 0;
     gs->numavoidgoals = 0;
     gs->numavoidreach = 0;
     gs->lastreachabilityarea = 0;
@@ -334,6 +336,24 @@ static bool BotGoal_EnsureWeightCapacity(bot_goalstate_t *gs)
     return true;
 }
 
+/*
+=============
+BotGoal_ItemWeightIndexByteSize
+
+Returns the tracked allocation size for a goal state's item-weight index.
+=============
+*/
+size_t BotGoal_ItemWeightIndexByteSize(int handle)
+{
+	bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
+	if (gs == NULL || gs->itemweightindex == NULL)
+	{
+		return 0;
+	}
+
+	return MemoryByteSize(gs->itemweightindex);
+}
+
 int BotLoadItemWeights(int handle, const char *filename)
 {
 	bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
@@ -356,6 +376,12 @@ int BotLoadItemWeights(int handle, const char *filename)
 	if (config == NULL)
 	{
 		BotLib_Print(PRT_FATAL, "BotLoadItemWeights: couldn't load %s\n", path);
+		return BLERR_CANNOTLOADITEMWEIGHTS;
+	}
+
+	if (!g_itemdefs_loaded)
+	{
+		FreeWeightConfig(config);
 		return BLERR_CANNOTLOADITEMWEIGHTS;
 	}
 
@@ -387,6 +413,9 @@ int BotLoadItemWeights(int handle, const char *filename)
 		}
 	}
 
+	BotLib_Print(PRT_DEVELOPER,
+				 "%6d bytes item index\n",
+				 (int)BotGoal_ItemWeightIndexByteSize(handle));
 	return BLERR_NOERROR;
 }
 
@@ -538,11 +567,15 @@ float BotAvoidGoalTime(int handle, int number)
 
 void BotSetAvoidGoalTime(int handle, int number, float avoidtime)
 {
-    if (avoidtime <= 0.0f)
-    {
-        BotRemoveFromAvoidGoals(handle, number);
-        return;
-    }
+	if (avoidtime < 0.0f)
+	{
+		const bot_levelitem_t *item = BotGoal_FindLevelItem(number);
+		if (item == NULL)
+		{
+			return;
+		}
+		avoidtime = BotGoal_AvoidTimeForItem(item);
+	}
 
     BotAddToAvoidGoals(handle, number, avoidtime);
 }
@@ -606,14 +639,12 @@ int BotPushGoal(int handle, const bot_goal_t *goal)
         return 0;
     }
 
-    if (gs->goalstacktop + 1 >= BOT_GOAL_MAX_STACK)
-    {
-        for (int i = 1; i < BOT_GOAL_MAX_STACK; ++i)
-        {
-            gs->goalstack[i - 1] = gs->goalstack[i];
-        }
-        gs->goalstacktop = BOT_GOAL_MAX_STACK - 2;
-    }
+	if (gs->goalstacktop >= BOT_GOAL_MAX_STACK - 1)
+	{
+		BotLib_Print(PRT_ERROR, "goal heap overflow\n");
+		BotDumpGoalStack(handle);
+		return 0;
+	}
 
     gs->goalstacktop++;
     gs->goalstack[gs->goalstacktop] = *goal;
@@ -623,16 +654,12 @@ int BotPushGoal(int handle, const bot_goal_t *goal)
 int BotPopGoal(int handle)
 {
     bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
-    if (gs == NULL || gs->goalstacktop < 0)
+    if (gs == NULL || gs->goalstacktop <= 0)
     {
         return 0;
     }
 
     gs->goalstacktop--;
-    if (gs->goalstacktop < -1)
-    {
-        gs->goalstacktop = -1;
-    }
     return 1;
 }
 
@@ -644,13 +671,13 @@ void BotEmptyGoalStack(int handle)
         return;
     }
 
-    gs->goalstacktop = -1;
+    gs->goalstacktop = 0;
 }
 
 int BotGetTopGoal(int handle, bot_goal_t *goal)
 {
     const bot_goalstate_t *gs = BotGoalStateFromHandle(handle);
-    if (gs == NULL || gs->goalstacktop < 0)
+    if (gs == NULL || gs->goalstacktop <= 0)
     {
         return 0;
     }
@@ -677,22 +704,29 @@ int BotGetSecondGoal(int handle, bot_goal_t *goal)
     return 1;
 }
 
+/*
+=============
+BotGoal_EvaluateItemWeight
+
+Samples the retail undecided fuzzy path used by LTG/NBG item scoring.
+=============
+*/
 static float BotGoal_EvaluateItemWeight(const bot_goalstate_t *gs,
-                                        const int *inventory,
-                                        int iteminfo_index)
+	const int *inventory,
+	int iteminfo_index)
 {
-    float weight = 0.0f;
-    if (gs != NULL && gs->itemweightconfig != NULL &&
-        gs->itemweightindex != NULL &&
-        iteminfo_index >= 0 && iteminfo_index < gs->itemweightcount)
-    {
-        int fuzzy_index = gs->itemweightindex[iteminfo_index];
-        if (fuzzy_index >= 0)
-        {
-            weight = FuzzyWeight(inventory, gs->itemweightconfig, fuzzy_index);
-        }
-    }
-    return weight;
+	float weight = 0.0f;
+	if (gs != NULL && gs->itemweightconfig != NULL &&
+		gs->itemweightindex != NULL &&
+		iteminfo_index >= 0 && iteminfo_index < gs->itemweightcount)
+	{
+		int fuzzy_index = gs->itemweightindex[iteminfo_index];
+		if (fuzzy_index >= 0)
+		{
+			weight = FuzzyWeightUndecided(inventory, gs->itemweightconfig, fuzzy_index);
+		}
+	}
+	return weight;
 }
 
 /*
@@ -1853,24 +1887,48 @@ static bool BotGoal_ParseItemInfoBlock(pc_source_t *source, bot_itemdef_t *itemd
 
 /*
 =============
+BotGoal_ClearLevelItemState
+=============
+*/
+static void BotGoal_ClearLevelItemState(void)
+{
+	memset(g_levelitems, 0, sizeof(g_levelitems));
+	g_levelitem_count = 0;
+	g_next_levelitem_number = 1;
+
+	memset(g_iteminfo_names, 0, sizeof(g_iteminfo_names));
+	g_iteminfo_count = 0;
+	memset(g_maplocations, 0, sizeof(g_maplocations));
+	g_maplocation_count = 0;
+	memset(g_campspots, 0, sizeof(g_campspots));
+	g_campspot_count = 0;
+
+	memset(g_itemdefs, 0, sizeof(g_itemdefs));
+	g_itemdef_count = 0;
+	g_itemdefs_loaded = false;
+}
+
+/*
+=============
 BotGoal_LoadItemDefs
 =============
 */
-static void BotGoal_LoadItemDefs(void)
+static bool BotGoal_LoadItemDefs(void)
 {
 	g_itemdef_count = 0;
+	g_itemdefs_loaded = false;
 	memset(g_itemdefs, 0, sizeof(g_itemdefs));
 
 	char itemconfig_path[BOT_GOAL_ASSET_MAX_PATH];
 	if (!BotGoal_BuildWeightPath(NULL, itemconfig_path, sizeof(itemconfig_path)))
 	{
-		return;
+		return false;
 	}
 
 	pc_source_t *source = PC_LoadSourceFile(itemconfig_path);
 	if (source == NULL)
 	{
-		return;
+		return false;
 	}
 
 	pc_token_t token;
@@ -1902,6 +1960,8 @@ static void BotGoal_LoadItemDefs(void)
 	}
 
 	PC_FreeSource(source);
+	g_itemdefs_loaded = true;
+	return true;
 }
 
 /*
@@ -2727,7 +2787,7 @@ void BotGoalName(int number, char *name, int size)
     const bot_levelitem_t *item = BotGoal_FindLevelItem(number);
     if (item == NULL)
     {
-        snprintf(name, (size_t)size, "%d", number);
+        name[0] = '\0';
         return;
     }
 
@@ -2771,8 +2831,8 @@ void BotDumpGoalStack(int handle)
         return;
     }
 
-    BotLib_Print(PRT_MESSAGE, "BotDumpGoalStack: state %d depth %d\n", handle, gs->goalstacktop + 1);
-    for (int i = gs->goalstacktop; i >= 0; --i)
+    BotLib_Print(PRT_MESSAGE, "BotDumpGoalStack: state %d depth %d\n", handle, gs->goalstacktop);
+    for (int i = gs->goalstacktop; i >= 1; --i)
     {
         const bot_goal_t *goal = &gs->goalstack[i];
         char name[64];
@@ -2816,45 +2876,13 @@ static void BotGoal_RebuildWeightIndices(bot_goalstate_t *gs)
 
 /*
 =============
-BotGoal_RandomScale
-=============
-*/
-static float BotGoal_RandomScale(float range)
-{
-	if (range <= 0.0f)
-	{
-		return 1.0f;
-	}
-
-	float unit = (float)rand() / (float)RAND_MAX;
-	float centered = (unit * 2.0f) - 1.0f;
-	float scale = 1.0f + (centered * range);
-	if (scale < 0.01f)
-	{
-		scale = 0.01f;
-	}
-	return scale;
-}
-
-/*
-=============
 BotInitLevelItems
 =============
 */
 void BotInitLevelItems(void)
 {
-	memset(g_levelitems, 0, sizeof(g_levelitems));
-	g_levelitem_count = 0;
-	g_next_levelitem_number = 1;
-
-	memset(g_iteminfo_names, 0, sizeof(g_iteminfo_names));
-	g_iteminfo_count = 0;
-	memset(g_maplocations, 0, sizeof(g_maplocations));
-	g_maplocation_count = 0;
-	memset(g_campspots, 0, sizeof(g_campspots));
-	g_campspot_count = 0;
-
-	BotGoal_LoadItemDefs();
+	BotGoal_ClearLevelItemState();
+	(void)BotGoal_LoadItemDefs();
 
 	char *entity_lump = NULL;
 	size_t entity_lump_length = 0U;
@@ -3037,44 +3065,21 @@ void BotInterbreedGoalFuzzyLogic(int parent1, int parent2, int child)
 	bot_goalstate_t *first = BotGoalStateFromHandle(parent1);
 	bot_goalstate_t *second = BotGoalStateFromHandle(parent2);
 	bot_goalstate_t *out = BotGoalStateFromHandle(child);
-	bot_weight_config_t *child_config;
-	const char *source_path;
 
 	if (first == NULL || second == NULL || out == NULL)
 	{
 		return;
 	}
 
-	if (first->itemweightconfig == NULL || second->itemweightconfig == NULL)
+	if (first->itemweightconfig == NULL || second->itemweightconfig == NULL
+		|| out->itemweightconfig == NULL)
 	{
 		return;
 	}
 
-	source_path = first->itemweightconfig->source_file;
-	if (source_path == NULL || source_path[0] == '\0')
-	{
-		source_path = second->itemweightconfig->source_file;
-	}
-	if (source_path == NULL || source_path[0] == '\0')
-	{
-		BotLib_Print(PRT_ERROR, "BotInterbreedGoalFuzzyLogic: parent configs have no source path\n");
-		return;
-	}
-
-	child_config = ReadWeightConfig(source_path);
-	if (child_config == NULL)
-	{
-		BotLib_Print(PRT_ERROR, "BotInterbreedGoalFuzzyLogic: couldn't clone %s\n", source_path);
-		return;
-	}
-
-	InterbreedWeightConfigs(first->itemweightconfig, second->itemweightconfig, child_config);
-
-	if (out->itemweightconfig != NULL)
-	{
-		FreeWeightConfig(out->itemweightconfig);
-	}
-	out->itemweightconfig = child_config;
+	InterbreedWeightConfigs(first->itemweightconfig,
+							second->itemweightconfig,
+							out->itemweightconfig);
 	BotGoal_RebuildWeightIndices(out);
 }
 
@@ -3101,30 +3106,15 @@ BotMutateGoalFuzzyLogic
 */
 void BotMutateGoalFuzzyLogic(int goalstate, float range)
 {
+	(void)range;
+
 	bot_goalstate_t *gs = BotGoalStateFromHandle(goalstate);
 	if (gs == NULL || gs->itemweightconfig == NULL)
 	{
 		return;
 	}
 
-	if (range <= 0.0f)
-	{
-		EvolveWeightConfig(gs->itemweightconfig);
-		BotGoal_RebuildWeightIndices(gs);
-		return;
-	}
-
-	for (int i = 0; i < gs->itemweightconfig->num_weights; ++i)
-	{
-		const char *name = gs->itemweightconfig->weights[i].name;
-		if (name == NULL || name[0] == '\0')
-		{
-			continue;
-		}
-		ScaleWeight(gs->itemweightconfig, name, BotGoal_RandomScale(range));
-	}
-
-	ScaleBalanceRange(gs->itemweightconfig, BotGoal_RandomScale(range));
+	EvolveWeightConfig(gs->itemweightconfig);
 	BotGoal_RebuildWeightIndices(gs);
 }
 
@@ -3136,6 +3126,11 @@ BotSetupGoalAI
 int BotSetupGoalAI(void)
 {
 	BotInitLevelItems();
+	if (!g_itemdefs_loaded)
+	{
+		BotLib_Print(PRT_FATAL, "couldn't load item config\n");
+		return BLERR_CANNOTLOADITEMCONFIG;
+	}
 	return BLERR_NOERROR;
 }
 
@@ -3154,5 +3149,5 @@ void BotShutdownGoalAI(void)
 		}
 	}
 
-	BotInitLevelItems();
+	BotGoal_ClearLevelItemState();
 }

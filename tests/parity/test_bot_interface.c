@@ -915,6 +915,48 @@ static void test_bot_shutdown_library_guard_emits_message(void **state)
 
 /*
 =============
+test_bot_shutdown_library_releases_weapon_state_handles
+
+Ensures library teardown drains the reconstructed weapon-state handle table.
+=============
+*/
+static void test_bot_shutdown_library_releases_weapon_state_handles(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	for (int index = 0; index < MAX_CLIENTS; ++index)
+	{
+		int handle = context->api->BotAllocWeaponState();
+		assert_true(handle > 0);
+	}
+
+	Mock_ClearPrints(&context->mock);
+	assert_int_equal(context->api->BotAllocWeaponState(), 0);
+	Mock_AssertPrintContains(&context->mock,
+	                         "BotAllocWeaponState: no free weapon state slots",
+	                         PRT_ERROR);
+
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	int handle = context->api->BotAllocWeaponState();
+	assert_true(handle > 0);
+
+	context->api->BotFreeWeaponState(handle);
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+}
+
+/*
+=============
 test_bot_shutdown_client_requires_library
 
 Checks the shutdown export enforces the library guard path.
@@ -1536,13 +1578,54 @@ static void test_chat_initial_exports_preserve_raw_type_aliases(void **state)
 	assert_non_null(context->api->BotGetChatMessage);
 	assert_non_null(context->api->BotSetChatGender);
 	assert_non_null(context->api->BotSetChatName);
+	assert_non_null(context->api->BotReplyChatWithContexts);
+	assert_non_null(context->api->StringContains);
+	assert_non_null(context->api->BotFindMatch);
+	assert_non_null(context->api->BotMatchVariable);
+	assert_non_null(context->api->UnifyWhiteSpaces);
+	assert_non_null(context->api->BotReplaceSynonyms);
 
 	assert_int_equal(context->api->BotNumInitialChats(NULL, "game_exit"), 0);
 	assert_int_equal(context->api->BotInitialChat(NULL, "game_exit", 0, NULL), 0);
+	assert_int_equal(context->api->BotReplyChatWithContexts(NULL,
+		"hello",
+		0,
+		0,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL),
+		0);
 	assert_int_equal(context->api->BotChatLength(NULL), 0);
+	assert_int_equal(context->api->StringContains("Alpha Beta", "beta", 0), -1);
 
 	int status = context->api->BotSetupLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
+
+	assert_int_equal(context->api->StringContains("Alpha Beta", "beta", 0), 6);
+	char whitespace[] = "  Alpha\t\tBeta\n ";
+	context->api->UnifyWhiteSpaces(whitespace);
+	assert_string_equal(whitespace, "Alpha Beta");
+
+	char synonym_text[256] = "I can't stay";
+	context->api->BotReplaceSynonyms(synonym_text, 1);
+	assert_string_equal(synonym_text, "I can not stay");
+
+	bot_match_t match;
+	assert_true(context->api->BotFindMatch("Alice was railed by Bob\n",
+		&match,
+		1));
+	assert_int_equal(match.type, 1);
+	assert_int_equal(match.subtype, 11);
+	char variable[256];
+	context->api->BotMatchVariable(&match, 0, variable, sizeof(variable));
+	assert_string_equal(variable, "Alice");
+	context->api->BotMatchVariable(&match, 1, variable, sizeof(variable));
+	assert_string_equal(variable, "Bob");
 
 	bot_chatstate_t *chat = context->api->BotAllocChatState();
 	assert_non_null(chat);
@@ -2437,6 +2520,9 @@ int main(void)
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_shutdown_library_guard_emits_message,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_shutdown_library_releases_weapon_state_handles,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_shutdown_client_requires_library,

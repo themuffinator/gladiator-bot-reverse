@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 
+#include "shared/bot_types.h"
 #include "botlib/precomp/l_precomp.h"
 #include "botlib/precomp/l_script.h"
 
@@ -106,6 +107,23 @@ int BotChat_Praise(bot_chatstate_t *state, int client, int sendto);
  */
 int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context);
 
+/**
+ * Constructs a scripted reply with the Quake III split between message and
+ * variable synonym contexts plus the fixed var0-var7 replacement slots.
+ */
+int BotReplyChatWithContexts(bot_chatstate_t *state,
+	const char *message,
+	unsigned long int mcontext,
+	unsigned long int vcontext,
+	const char *var0,
+	const char *var1,
+	const char *var2,
+	const char *var3,
+	const char *var4,
+	const char *var5,
+	const char *var6,
+	const char *var7);
+
 /** Returns the length of the currently constructed pending chat message. */
 int BotChatLength(const bot_chatstate_t *state);
 
@@ -117,6 +135,21 @@ void BotSetChatGender(bot_chatstate_t *state, int gender);
 
 /** Sets the chat state's name metadata and owning client. */
 void BotSetChatName(bot_chatstate_t *state, const char *name, int client);
+
+/** Returns the substring index using the retail case-sensitivity flag. */
+int StringContains(const char *str1, const char *str2, int casesensitive);
+
+/** Collapses retail whitespace runs in place. */
+void UnifyWhiteSpaces(char *string);
+
+/** Replaces synonyms in place using the shared setup synonym cache. */
+void BotReplaceSynonyms(char *string, unsigned long int context);
+
+/** Finds a setup match template and fills the retail match result. */
+int BotFindMatch(const char *str, bot_match_t *match, unsigned long int context);
+
+/** Copies one captured match variable to the caller buffer. */
+void BotMatchVariable(const bot_match_t *match, int variable, char *buffer, int buffer_size);
 
 /** Returns 1 when the supplied phrase is registered for the synonym context. */
 int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_name, const char *phrase);

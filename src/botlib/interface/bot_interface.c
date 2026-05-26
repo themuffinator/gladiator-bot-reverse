@@ -700,6 +700,25 @@ static bool BotInterface_RecordMapAssets(const char *mapname,
     return true;
 }
 
+/*
+=============
+BotInterface_ModelNameForIndex
+
+Resolves a live client gun model index through the map model cache.
+=============
+*/
+static const char *BotInterface_ModelNameForIndex(int modelindex)
+{
+	if (modelindex < 0 ||
+		g_botInterfaceMapCache.models.entries == NULL ||
+		(size_t)modelindex >= g_botInterfaceMapCache.models.count)
+	{
+		return NULL;
+	}
+
+	return g_botInterfaceMapCache.models.entries[modelindex];
+}
+
 static void BotInterface_ResetFrameQueues(void)
 {
     AAS_SoundSubsystem_ResetFrameEvents();
@@ -1108,15 +1127,6 @@ static void BotInterface_BeginFrame(float time)
     AAS_RouteFrameUpdate();
     AAS_ReachabilityFrameUpdate();
     BotInterface_ResetFrameQueues();
-
-    for (int client = 0; client < MAX_CLIENTS; ++client)
-    {
-        bot_client_state_t *state = BotState_Get(client);
-        if (state != NULL && state->active && state->weapon_state > 0)
-        {
-            BotResetWeaponState(state->weapon_state);
-        }
-    }
 }
 
 static void BotInterface_EnqueueSound(const vec3_t origin,
@@ -2564,6 +2574,10 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 
 	if (state->weapon_state > 0)
 	{
+		BotWeaponStateSyncFrame(state->weapon_state,
+								state->client_number,
+								state->last_client_update.inventory,
+								BotInterface_ModelNameForIndex(state->last_client_update.gunindex));
 		state->current_weapon = BotSelectBestFightWeapon(state->client_number,
 														 state->weapon_state,
 														 state->last_client_update.inventory,
@@ -3591,6 +3605,64 @@ static void BotInterface_BotGetWeaponInfo(int weaponstate, int weapon, bot_weapo
     BotGetWeaponInfo(weaponstate, weapon, weaponinfo);
 }
 
+/*
+=============
+BotInterface_BotLoadCharacter
+
+Guards and forwards Q3-style character loading.
+=============
+*/
+static int BotInterface_BotLoadCharacter(const char *character_file, float skill)
+{
+	if (!BotInterface_EnsureLibraryReady("BotLoadCharacter"))
+	{
+		return 0;
+	}
+
+	return BotLoadCharacter(character_file, skill);
+}
+
+/*
+=============
+BotInterface_BotFreeCharacter
+
+Guards and forwards character handle release.
+=============
+*/
+static void BotInterface_BotFreeCharacter(int handle)
+{
+	if (!BotInterface_EnsureLibraryReady("BotFreeCharacter"))
+	{
+		return;
+	}
+
+	BotFreeCharacter(handle);
+}
+
+/*
+=============
+BotInterface_BotLoadCharacterSkill
+
+Guards and forwards exact skill-specific character loading.
+=============
+*/
+static int BotInterface_BotLoadCharacterSkill(const char *character_file, float skill)
+{
+	if (!BotInterface_EnsureLibraryReady("BotLoadCharacterSkill"))
+	{
+		return 0;
+	}
+
+	return BotLoadCharacterSkill(character_file, skill);
+}
+
+/*
+=============
+BotInterface_BotFreeCharacterStrings
+
+Guards and forwards transient character profile cleanup.
+=============
+*/
 static void BotInterface_BotFreeCharacterStrings(ai_character_profile_t *profile)
 {
     if (!BotInterface_EnsureLibraryReady("BotFreeCharacterStrings"))
@@ -3599,6 +3671,104 @@ static void BotInterface_BotFreeCharacterStrings(ai_character_profile_t *profile
     }
 
     BotFreeCharacterStrings(profile);
+}
+
+/*
+=============
+BotInterface_Characteristic_Float
+
+Guards and forwards float characteristic queries.
+=============
+*/
+static float BotInterface_Characteristic_Float(int handle, int index)
+{
+	if (!BotInterface_EnsureLibraryReady("Characteristic_Float"))
+	{
+		return 0.0f;
+	}
+
+	return Characteristic_Float(handle, index);
+}
+
+/*
+=============
+BotInterface_Characteristic_BFloat
+
+Guards and forwards bounded float characteristic queries.
+=============
+*/
+static float BotInterface_Characteristic_BFloat(int handle,
+	int index,
+	float minimum,
+	float maximum)
+{
+	if (!BotInterface_EnsureLibraryReady("Characteristic_BFloat"))
+	{
+		return 0.0f;
+	}
+
+	return Characteristic_BFloat(handle, index, minimum, maximum);
+}
+
+/*
+=============
+BotInterface_Characteristic_Integer
+
+Guards and forwards integer characteristic queries.
+=============
+*/
+static int BotInterface_Characteristic_Integer(int handle, int index)
+{
+	if (!BotInterface_EnsureLibraryReady("Characteristic_Integer"))
+	{
+		return 0;
+	}
+
+	return Characteristic_Integer(handle, index);
+}
+
+/*
+=============
+BotInterface_Characteristic_BInteger
+
+Guards and forwards bounded integer characteristic queries.
+=============
+*/
+static int BotInterface_Characteristic_BInteger(int handle,
+	int index,
+	int minimum,
+	int maximum)
+{
+	if (!BotInterface_EnsureLibraryReady("Characteristic_BInteger"))
+	{
+		return 0;
+	}
+
+	return Characteristic_BInteger(handle, index, minimum, maximum);
+}
+
+/*
+=============
+BotInterface_Characteristic_String
+
+Guards and forwards string characteristic queries.
+=============
+*/
+static void BotInterface_Characteristic_String(int handle,
+	int index,
+	char *buffer,
+	int buffer_size)
+{
+	if (!BotInterface_EnsureLibraryReady("Characteristic_String"))
+	{
+		if (buffer != NULL && buffer_size > 0)
+		{
+			buffer[0] = '\0';
+		}
+		return;
+	}
+
+	Characteristic_String(handle, index, buffer, buffer_size);
 }
 
 static bot_chatstate_t *BotInterface_BotAllocChatState(void)
@@ -3719,14 +3889,62 @@ static void BotInterface_BotEnterChat(bot_chatstate_t *state, int client, int se
     BotEnterChat(state, client, sendto);
 }
 
-static int BotInterface_BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context)
-{
-    if (!BotInterface_EnsureLibraryReady("BotReplyChat"))
-    {
-        return 0;
-    }
+/*
+=============
+BotInterface_BotReplyChat
 
-    return BotReplyChat(state, message, context);
+Guards and forwards the legacy folded-context reply export.
+=============
+*/
+static int BotInterface_BotReplyChat(bot_chatstate_t *state,
+	const char *message,
+	unsigned long int context)
+{
+	if (!BotInterface_EnsureLibraryReady("BotReplyChat"))
+	{
+		return 0;
+	}
+
+	return BotReplyChat(state, message, context);
+}
+
+/*
+=============
+BotInterface_BotReplyChatWithContexts
+
+Guards and forwards the Q3-shaped split-context reply export.
+=============
+*/
+static int BotInterface_BotReplyChatWithContexts(bot_chatstate_t *state,
+	const char *message,
+	unsigned long int mcontext,
+	unsigned long int vcontext,
+	const char *var0,
+	const char *var1,
+	const char *var2,
+	const char *var3,
+	const char *var4,
+	const char *var5,
+	const char *var6,
+	const char *var7)
+{
+	if (!BotInterface_EnsureLibraryReady("BotReplyChatWithContexts"))
+	{
+		return 0;
+	}
+
+	return BotReplyChatWithContexts(state,
+		message,
+		mcontext,
+		vcontext,
+		var0,
+		var1,
+		var2,
+		var3,
+		var4,
+		var5,
+		var6,
+		var7);
 }
 
 /*
@@ -3826,6 +4044,106 @@ static void BotInterface_BotSetChatName(bot_chatstate_t *state, const char *name
 	}
 
 	BotSetChatName(state, name, client);
+}
+
+/*
+=============
+BotInterface_StringContains
+
+Guards and forwards the reconstructed chat substring helper.
+=============
+*/
+static int BotInterface_StringContains(const char *str1,
+	const char *str2,
+	int casesensitive)
+{
+	if (!BotInterface_EnsureLibraryReady("StringContains"))
+	{
+		return -1;
+	}
+
+	return StringContains(str1, str2, casesensitive);
+}
+
+/*
+=============
+BotInterface_BotFindMatch
+
+Guards and forwards the reconstructed setup match-template export.
+=============
+*/
+static int BotInterface_BotFindMatch(const char *str,
+	bot_match_t *match,
+	unsigned long int context)
+{
+	if (!BotInterface_EnsureLibraryReady("BotFindMatch"))
+	{
+		if (match != NULL)
+		{
+			memset(match, 0, sizeof(*match));
+		}
+		return 0;
+	}
+
+	return BotFindMatch(str, match, context);
+}
+
+/*
+=============
+BotInterface_BotMatchVariable
+
+Guards and forwards captured match-variable extraction.
+=============
+*/
+static void BotInterface_BotMatchVariable(const bot_match_t *match,
+	int variable,
+	char *buffer,
+	int buffer_size)
+{
+	if (!BotInterface_EnsureLibraryReady("BotMatchVariable"))
+	{
+		if (buffer != NULL && buffer_size > 0)
+		{
+			buffer[0] = '\0';
+		}
+		return;
+	}
+
+	BotMatchVariable(match, variable, buffer, buffer_size);
+}
+
+/*
+=============
+BotInterface_UnifyWhiteSpaces
+
+Guards and forwards retail chat whitespace canonicalization.
+=============
+*/
+static void BotInterface_UnifyWhiteSpaces(char *string)
+{
+	if (!BotInterface_EnsureLibraryReady("UnifyWhiteSpaces"))
+	{
+		return;
+	}
+
+	UnifyWhiteSpaces(string);
+}
+
+/*
+=============
+BotInterface_BotReplaceSynonyms
+
+Guards and forwards setup-cache synonym replacement.
+=============
+*/
+static void BotInterface_BotReplaceSynonyms(char *string, unsigned long int context)
+{
+	if (!BotInterface_EnsureLibraryReady("BotReplaceSynonyms"))
+	{
+		return;
+	}
+
+	BotReplaceSynonyms(string, context);
 }
 
 /*
@@ -3931,15 +4249,15 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 	exportTable.BotMovementViewTarget = BotInterface_BotMovementViewTarget;
 	exportTable.BotPredictVisiblePosition = BotInterface_BotPredictVisiblePosition;
 	exportTable.BotAddAvoidSpot = BotInterface_BotAddAvoidSpot;
-    exportTable.BotLoadCharacter = BotLoadCharacter;
-    exportTable.BotFreeCharacter = BotFreeCharacter;
-    exportTable.BotLoadCharacterSkill = BotLoadCharacterSkill;
+    exportTable.BotLoadCharacter = BotInterface_BotLoadCharacter;
+    exportTable.BotFreeCharacter = BotInterface_BotFreeCharacter;
+    exportTable.BotLoadCharacterSkill = BotInterface_BotLoadCharacterSkill;
     exportTable.BotFreeCharacterStrings = BotInterface_BotFreeCharacterStrings;
-    exportTable.Characteristic_Float = Characteristic_Float;
-    exportTable.Characteristic_BFloat = Characteristic_BFloat;
-    exportTable.Characteristic_Integer = Characteristic_Integer;
-    exportTable.Characteristic_BInteger = Characteristic_BInteger;
-    exportTable.Characteristic_String = Characteristic_String;
+    exportTable.Characteristic_Float = BotInterface_Characteristic_Float;
+    exportTable.Characteristic_BFloat = BotInterface_Characteristic_BFloat;
+    exportTable.Characteristic_Integer = BotInterface_Characteristic_Integer;
+    exportTable.Characteristic_BInteger = BotInterface_Characteristic_BInteger;
+    exportTable.Characteristic_String = BotInterface_Characteristic_String;
     exportTable.BotAllocWeaponState = BotInterface_BotAllocWeaponState;
     exportTable.BotFreeWeaponState = BotInterface_BotFreeWeaponState;
     exportTable.BotResetWeaponState = BotInterface_BotResetWeaponState;
@@ -3958,12 +4276,18 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
     exportTable.BotNumConsoleMessages = BotInterface_BotNumConsoleMessages;
     exportTable.BotEnterChat = BotInterface_BotEnterChat;
     exportTable.BotReplyChat = BotInterface_BotReplyChat;
+	exportTable.BotReplyChatWithContexts = BotInterface_BotReplyChatWithContexts;
     exportTable.BotChatLength = BotInterface_BotChatLength;
 	exportTable.BotNumInitialChats = BotInterface_BotNumInitialChats;
 	exportTable.BotInitialChat = BotInterface_BotInitialChat;
     exportTable.BotGetChatMessage = BotInterface_BotGetChatMessage;
     exportTable.BotSetChatGender = BotInterface_BotSetChatGender;
     exportTable.BotSetChatName = BotInterface_BotSetChatName;
+    exportTable.StringContains = BotInterface_StringContains;
+    exportTable.BotFindMatch = BotInterface_BotFindMatch;
+    exportTable.BotMatchVariable = BotInterface_BotMatchVariable;
+    exportTable.UnifyWhiteSpaces = BotInterface_UnifyWhiteSpaces;
+    exportTable.BotReplaceSynonyms = BotInterface_BotReplaceSynonyms;
 
 	return &exportTable;
 }

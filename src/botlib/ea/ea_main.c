@@ -529,3 +529,27 @@ void EA_Crouch(int client)
 {
     EA_SetActionFlag(client, ACTION_CROUCH);
 }
+
+/*
+=============
+EA_MoveUp
+
+Submit the retail upward movement action.
+=============
+*/
+void EA_MoveUp(int client)
+{
+	EA_SetActionFlag(client, ACTION_MOVEUP);
+}
+
+/*
+=============
+EA_MoveForward
+
+Submit the retail forward movement action.
+=============
+*/
+void EA_MoveForward(int client)
+{
+	EA_SetActionFlag(client, ACTION_MOVEFORWARD);
+}

@@ -36,6 +36,8 @@
 #define AI_CHARACTER_NAME_MAX 128
 #define AI_CHARACTER_PATH_MAX 512
 #define AI_CHARACTER_INDEX_LIMIT 1024
+#define AI_CHARACTER_Q3_MAX_CHARACTERISTICS 80
+#define AI_CHARACTER_Q3_DEFAULT_FILE "bots/default_c.c"
 
 enum {
 	AI_CHARACTER_INDEX_GENDER = 3,
@@ -58,12 +60,14 @@ typedef struct ai_character_scan_s {
 	bool found;
 	int count;
 	size_t string_bytes;
+	float skill;
 	char identifier[AI_CHARACTER_NAME_MAX];
 } ai_character_scan_t;
 
 typedef struct ai_character_definition_s {
 	int num_characteristics;
 	size_t string_bytes;
+	float skill;
 	char identifier[AI_CHARACTER_NAME_MAX];
 	ai_characteristic_t characteristics[1];
 } ai_character_definition_t;
@@ -384,6 +388,7 @@ static ai_character_definition_t *ai_character_alloc_definition(const ai_charact
 
 	definition->num_characteristics = scan->count;
 	definition->string_bytes = scan->string_bytes;
+	definition->skill = scan->skill;
 	ai_character_copy_string(definition->identifier,
 		sizeof(definition->identifier),
 		scan->identifier);
@@ -417,6 +422,84 @@ static bool ai_character_store_string(ai_character_definition_t *definition,
 
 	(void)definition;
 	return true;
+}
+
+/*
+=============
+ai_character_slot_string_bytes
+
+Returns packed storage needed by a string characteristic.
+=============
+*/
+static size_t ai_character_slot_string_bytes(const ai_characteristic_t *slot)
+{
+	if (slot == NULL || slot->type != AI_CHARACTER_VALUE_STRING || slot->value.string_value == NULL)
+	{
+		return 0;
+	}
+
+	return strlen(slot->value.string_value) + 1;
+}
+
+/*
+=============
+ai_character_definition_slot
+
+Returns a characteristic slot when it exists in a definition.
+=============
+*/
+static const ai_characteristic_t *ai_character_definition_slot(const ai_character_definition_t *definition,
+	int index)
+{
+	if (definition == NULL || index < 0 || index >= definition->num_characteristics)
+	{
+		return NULL;
+	}
+
+	return &definition->characteristics[index];
+}
+
+/*
+=============
+ai_character_copy_slot
+
+Copies one typed characteristic into a packed destination definition.
+=============
+*/
+static bool ai_character_copy_slot(ai_character_definition_t *definition,
+	ai_characteristic_t *destination,
+	const ai_characteristic_t *source,
+	char **cursor,
+	char *end)
+{
+	if (definition == NULL || destination == NULL || source == NULL)
+	{
+		return false;
+	}
+
+	switch (source->type)
+	{
+	case AI_CHARACTER_VALUE_INTEGER:
+		destination->type = AI_CHARACTER_VALUE_INTEGER;
+		destination->value.integer_value = source->value.integer_value;
+		return true;
+	case AI_CHARACTER_VALUE_FLOAT:
+		destination->type = AI_CHARACTER_VALUE_FLOAT;
+		destination->value.float_value = source->value.float_value;
+		return true;
+	case AI_CHARACTER_VALUE_STRING:
+		if (source->value.string_value == NULL)
+		{
+			return true;
+		}
+		return ai_character_store_string(definition,
+			destination,
+			source->value.string_value,
+			cursor,
+			end);
+	default:
+		return true;
+	}
 }
 
 /*
@@ -509,6 +592,177 @@ static bool ai_character_fill_block(pc_source_t *source, ai_character_definition
 	}
 
 	return false;
+}
+
+/*
+=============
+ai_character_alloc_derived_definition
+
+Allocates a packed definition for reconstructed default/interpolated tables.
+=============
+*/
+static ai_character_definition_t *ai_character_alloc_derived_definition(int count,
+	size_t string_bytes,
+	float skill,
+	const char *identifier)
+{
+	ai_character_scan_t scan;
+	memset(&scan, 0, sizeof(scan));
+	scan.count = count;
+	scan.string_bytes = string_bytes;
+	scan.skill = skill;
+	ai_character_copy_string(scan.identifier, sizeof(scan.identifier), identifier);
+	return ai_character_alloc_definition(&scan);
+}
+
+/*
+=============
+ai_character_merge_default_definition
+
+Fills missing slots from a Q3 default character definition.
+=============
+*/
+static ai_character_definition_t *ai_character_merge_default_definition(const ai_character_definition_t *definition,
+	const ai_character_definition_t *defaults)
+{
+	if (definition == NULL)
+	{
+		return NULL;
+	}
+	if (defaults == NULL)
+	{
+		return NULL;
+	}
+
+	int count = definition->num_characteristics;
+	if (defaults->num_characteristics > count)
+	{
+		count = defaults->num_characteristics;
+	}
+
+	size_t string_bytes = 0;
+	for (int index = 0; index < count; ++index)
+	{
+		const ai_characteristic_t *source = ai_character_definition_slot(definition, index);
+		if (source == NULL || source->type == AI_CHARACTER_VALUE_NONE)
+		{
+			source = ai_character_definition_slot(defaults, index);
+		}
+		string_bytes += ai_character_slot_string_bytes(source);
+	}
+
+	ai_character_definition_t *merged =
+		ai_character_alloc_derived_definition(count,
+			string_bytes,
+			definition->skill,
+			definition->identifier);
+	if (merged == NULL)
+	{
+		return NULL;
+	}
+
+	char *cursor = ai_character_definition_string_storage(merged);
+	char *end = cursor + merged->string_bytes;
+	for (int index = 0; index < count; ++index)
+	{
+		const ai_characteristic_t *source = ai_character_definition_slot(definition, index);
+		if (source == NULL || source->type == AI_CHARACTER_VALUE_NONE)
+		{
+			source = ai_character_definition_slot(defaults, index);
+		}
+		if (source == NULL || source->type == AI_CHARACTER_VALUE_NONE)
+		{
+			continue;
+		}
+		if (!ai_character_copy_slot(merged, &merged->characteristics[index], source, &cursor, end))
+		{
+			FreeMemory(merged);
+			return NULL;
+		}
+	}
+
+	return merged;
+}
+
+/*
+=============
+ai_character_interpolate_definitions
+
+Builds a Q3-style interpolated characteristic definition.
+=============
+*/
+static ai_character_definition_t *ai_character_interpolate_definitions(const ai_character_definition_t *first,
+	const ai_character_definition_t *second,
+	float skill)
+{
+	if (first == NULL || second == NULL || first->skill == second->skill)
+	{
+		return NULL;
+	}
+
+	int count = first->num_characteristics;
+	if (second->num_characteristics > count)
+	{
+		count = second->num_characteristics;
+	}
+
+	size_t string_bytes = 0;
+	for (int index = 0; index < count; ++index)
+	{
+		const ai_characteristic_t *first_slot = ai_character_definition_slot(first, index);
+		if (first_slot != NULL && first_slot->type == AI_CHARACTER_VALUE_STRING)
+		{
+			string_bytes += ai_character_slot_string_bytes(first_slot);
+		}
+	}
+
+	ai_character_definition_t *interpolated =
+		ai_character_alloc_derived_definition(count,
+			string_bytes,
+			skill,
+			first->identifier);
+	if (interpolated == NULL)
+	{
+		return NULL;
+	}
+
+	float scale = (skill - first->skill) / (second->skill - first->skill);
+	char *cursor = ai_character_definition_string_storage(interpolated);
+	char *end = cursor + interpolated->string_bytes;
+	for (int index = 0; index < count; ++index)
+	{
+		const ai_characteristic_t *first_slot = ai_character_definition_slot(first, index);
+		const ai_characteristic_t *second_slot = ai_character_definition_slot(second, index);
+		if (first_slot == NULL || first_slot->type == AI_CHARACTER_VALUE_NONE)
+		{
+			continue;
+		}
+
+		ai_characteristic_t *out = &interpolated->characteristics[index];
+		if (first_slot->type == AI_CHARACTER_VALUE_FLOAT &&
+			second_slot != NULL &&
+			second_slot->type == AI_CHARACTER_VALUE_FLOAT)
+		{
+			out->type = AI_CHARACTER_VALUE_FLOAT;
+			out->value.float_value = first_slot->value.float_value +
+				(second_slot->value.float_value - first_slot->value.float_value) * scale;
+		}
+		else if (first_slot->type == AI_CHARACTER_VALUE_INTEGER)
+		{
+			out->type = AI_CHARACTER_VALUE_INTEGER;
+			out->value.integer_value = first_slot->value.integer_value;
+		}
+		else if (first_slot->type == AI_CHARACTER_VALUE_STRING)
+		{
+			if (!ai_character_copy_slot(interpolated, out, first_slot, &cursor, end))
+			{
+				FreeMemory(interpolated);
+				return NULL;
+			}
+		}
+	}
+
+	return interpolated;
 }
 
 /*
@@ -613,6 +867,141 @@ static bool ai_character_fill_source(pc_source_t *source,
 
 /*
 =============
+ai_character_skill_matches
+
+Checks a Q3 skill block against the requested rounded skill.
+=============
+*/
+static bool ai_character_skill_matches(int parsed_skill, int requested_skill)
+{
+	return requested_skill < 0 || parsed_skill == requested_skill;
+}
+
+/*
+=============
+ai_character_expect_skill
+
+Reads the skill number and opening brace for a Q3 skill definition.
+=============
+*/
+static bool ai_character_expect_skill(pc_source_t *source, int *skill)
+{
+	pc_token_t token;
+	if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &token))
+	{
+		return false;
+	}
+
+	int parsed_skill = 0;
+	if (!ai_character_parse_integer_token(&token, &parsed_skill))
+	{
+		return false;
+	}
+
+	if (skill != NULL)
+	{
+		*skill = parsed_skill;
+	}
+	return PC_ExpectTokenString(source, "{") != 0;
+}
+
+/*
+=============
+ai_character_scan_skill_source
+
+Finds a Q3 skill block and gathers allocation sizes.
+=============
+*/
+static bool ai_character_scan_skill_source(pc_source_t *source,
+	int requested_skill,
+	ai_character_scan_t *scan)
+{
+	pc_token_t token;
+
+	while (PC_ReadToken(source, &token))
+	{
+		if (token.type != TT_NAME || strcmp(token.string, "skill") != 0)
+		{
+			BotLib_Print(PRT_ERROR, "unknown definition %s\n", token.string);
+			return false;
+		}
+
+		int parsed_skill = 0;
+		if (!ai_character_expect_skill(source, &parsed_skill))
+		{
+			return false;
+		}
+
+		if (!ai_character_skill_matches(parsed_skill, requested_skill))
+		{
+			if (!ai_character_skip_block(source))
+			{
+				return false;
+			}
+			continue;
+		}
+
+		scan->skill = (float)parsed_skill;
+		snprintf(scan->identifier, sizeof(scan->identifier), "skill %d", parsed_skill);
+		if (!ai_character_scan_block(source, scan))
+		{
+			return false;
+		}
+		if (scan->count < AI_CHARACTER_Q3_MAX_CHARACTERISTICS)
+		{
+			scan->count = AI_CHARACTER_Q3_MAX_CHARACTERISTICS;
+		}
+		scan->found = true;
+		return true;
+	}
+
+	return true;
+}
+
+/*
+=============
+ai_character_fill_skill_source
+
+Replays the source and fills the requested Q3 skill block.
+=============
+*/
+static bool ai_character_fill_skill_source(pc_source_t *source,
+	int requested_skill,
+	ai_character_definition_t *definition)
+{
+	pc_token_t token;
+
+	while (PC_ReadToken(source, &token))
+	{
+		if (token.type != TT_NAME || strcmp(token.string, "skill") != 0)
+		{
+			BotLib_Print(PRT_ERROR, "unknown definition %s\n", token.string);
+			return false;
+		}
+
+		int parsed_skill = 0;
+		if (!ai_character_expect_skill(source, &parsed_skill))
+		{
+			return false;
+		}
+
+		if (!ai_character_skill_matches(parsed_skill, requested_skill))
+		{
+			if (!ai_character_skip_block(source))
+			{
+				return false;
+			}
+			continue;
+		}
+
+		return ai_character_fill_block(source, definition);
+	}
+
+	return false;
+}
+
+/*
+=============
 ai_character_open_source
 
 Loads a character file through the reconstructed precompiler.
@@ -686,6 +1075,390 @@ static ai_character_definition_t *ai_parse_definition(const char *filename,
 		definition->identifier[0] != '\0' ? definition->identifier : ai_character_requested_name(character_name),
 		filename);
 	return definition;
+}
+
+/*
+=============
+ai_parse_skill_definition
+
+Builds a packed Q3 skill definition from a `skill N` block.
+=============
+*/
+static ai_character_definition_t *ai_parse_skill_definition(const char *filename,
+	int skill)
+{
+	if (filename == NULL || filename[0] == '\0')
+	{
+		return NULL;
+	}
+
+	ai_character_scan_t scan;
+	memset(&scan, 0, sizeof(scan));
+
+	pc_source_t *source = ai_character_open_source(filename);
+	if (source == NULL)
+	{
+		return NULL;
+	}
+
+	bool scanned = ai_character_scan_skill_source(source, skill, &scan);
+	PC_FreeSource(source);
+	if (!scanned || !scan.found)
+	{
+		return NULL;
+	}
+
+	ai_character_definition_t *definition = ai_character_alloc_definition(&scan);
+	if (definition == NULL)
+	{
+		return NULL;
+	}
+
+	source = ai_character_open_source(filename);
+	if (source == NULL)
+	{
+		FreeMemory(definition);
+		return NULL;
+	}
+
+	bool filled = ai_character_fill_skill_source(source, skill, definition);
+	PC_FreeSource(source);
+	if (!filled)
+	{
+		FreeMemory(definition);
+		return NULL;
+	}
+
+	BotLib_Print(PRT_MESSAGE,
+		"loaded skill %.0f from %s\n",
+		definition->skill,
+		filename);
+	return definition;
+}
+
+/*
+=============
+ai_profile_from_definition
+
+Wraps a packed characteristic definition in a profile without setup resources.
+=============
+*/
+static ai_character_profile_t *ai_profile_from_definition(const char *filename,
+	const char *character_name,
+	float skill,
+	ai_character_definition_t *definition)
+{
+	if (definition == NULL)
+	{
+		return NULL;
+	}
+
+	ai_character_profile_t *profile = (ai_character_profile_t *)GetClearedMemory(sizeof(*profile));
+	if (profile == NULL)
+	{
+		FreeMemory(definition);
+		return NULL;
+	}
+
+	profile->requested_skill = skill;
+	profile->definition_blob = definition;
+	ai_character_copy_string(profile->character_filename,
+		sizeof(profile->character_filename),
+		filename);
+	ai_character_copy_string(profile->character_name,
+		sizeof(profile->character_name),
+		character_name != NULL && character_name[0] != '\0' ? character_name : definition->identifier);
+	return profile;
+}
+
+/*
+=============
+ai_character_file_first_keyword
+
+Reads the first preprocessed name token from a character source.
+=============
+*/
+static bool ai_character_file_first_keyword(const char *filename,
+	char *keyword,
+	size_t keyword_size)
+{
+	if (keyword != NULL && keyword_size > 0)
+	{
+		keyword[0] = '\0';
+	}
+	if (filename == NULL || filename[0] == '\0' || keyword == NULL || keyword_size == 0)
+	{
+		return false;
+	}
+
+	pc_source_t *source = PC_LoadSourceFile(filename);
+	if (source == NULL)
+	{
+		return false;
+	}
+
+	pc_token_t token;
+	bool found = PC_ReadToken(source, &token) != 0 && token.type == TT_NAME;
+	if (found)
+	{
+		ai_character_copy_string(keyword, keyword_size, token.string);
+	}
+	PC_FreeSource(source);
+	return found;
+}
+
+/*
+=============
+AI_CharacterFileUsesSkillBlocks
+
+Detects whether a file uses Q3 `skill N` character blocks.
+=============
+*/
+bool AI_CharacterFileUsesSkillBlocks(const char *filename)
+{
+	char keyword[AI_CHARACTER_NAME_MAX];
+	if (!ai_character_file_first_keyword(filename, keyword, sizeof(keyword)))
+	{
+		return false;
+	}
+
+	return strcmp(keyword, "skill") == 0;
+}
+
+/*
+=============
+AI_CharacterFileUsesNamedBlocks
+
+Detects whether a file uses Gladiator `character "name"` blocks.
+=============
+*/
+bool AI_CharacterFileUsesNamedBlocks(const char *filename)
+{
+	char keyword[AI_CHARACTER_NAME_MAX];
+	if (!ai_character_file_first_keyword(filename, keyword, sizeof(keyword)))
+	{
+		return false;
+	}
+
+	return strcmp(keyword, "character") == 0;
+}
+
+/*
+=============
+AI_CharacterDefaultFileUsesSkillBlocks
+
+Returns whether the Q3 default character file is available.
+=============
+*/
+bool AI_CharacterDefaultFileUsesSkillBlocks(void)
+{
+	return AI_CharacterFileUsesSkillBlocks(AI_CHARACTER_Q3_DEFAULT_FILE);
+}
+
+/*
+=============
+AI_LoadCharacterSkillProfileBlock
+
+Loads one Q3 skill block without applying the retail fallback ladder.
+=============
+*/
+ai_character_profile_t *AI_LoadCharacterSkillProfileBlock(const char *filename,
+	float requested_skill,
+	int block_skill,
+	bool merge_defaults)
+{
+	if (filename == NULL || filename[0] == '\0')
+	{
+		return NULL;
+	}
+
+	ai_character_definition_t *definition = ai_parse_skill_definition(filename, block_skill);
+	if (definition == NULL)
+	{
+		return NULL;
+	}
+
+	if (merge_defaults &&
+		strcmp(filename, AI_CHARACTER_Q3_DEFAULT_FILE) != 0 &&
+		AI_CharacterFileUsesSkillBlocks(AI_CHARACTER_Q3_DEFAULT_FILE))
+	{
+		int default_skill = requested_skill < 0.0f ? -1 : (int)(requested_skill + 0.5f);
+		ai_character_definition_t *defaults =
+			ai_parse_skill_definition(AI_CHARACTER_Q3_DEFAULT_FILE, default_skill);
+		if (defaults == NULL)
+		{
+			defaults = ai_parse_skill_definition(AI_CHARACTER_Q3_DEFAULT_FILE, -1);
+		}
+		if (defaults != NULL)
+		{
+			ai_character_definition_t *merged =
+				ai_character_merge_default_definition(definition, defaults);
+			FreeMemory(defaults);
+			if (merged != NULL)
+			{
+				FreeMemory(definition);
+				definition = merged;
+			}
+		}
+	}
+
+	return ai_profile_from_definition(filename, NULL, requested_skill, definition);
+}
+
+/*
+=============
+AI_LoadCharacterSkillProfile
+
+Loads a Q3 skill-block character profile without Gladiator setup resources.
+=============
+*/
+ai_character_profile_t *AI_LoadCharacterSkillProfile(const char *filename, float skill)
+{
+	if (filename == NULL || filename[0] == '\0')
+	{
+		return NULL;
+	}
+
+	int rounded_skill = skill < 0.0f ? -1 : (int)(skill + 0.5f);
+	ai_character_definition_t *definition = ai_parse_skill_definition(filename, rounded_skill);
+	const char *loaded_file = filename;
+
+	bool default_available = AI_CharacterFileUsesSkillBlocks(AI_CHARACTER_Q3_DEFAULT_FILE);
+	if (definition == NULL)
+	{
+		BotLib_Print(PRT_WARNING,
+			"couldn't find skill %d in %s\n",
+			rounded_skill,
+			filename);
+		if (default_available)
+		{
+			definition = ai_parse_skill_definition(AI_CHARACTER_Q3_DEFAULT_FILE, rounded_skill);
+			if (definition != NULL)
+			{
+				loaded_file = AI_CHARACTER_Q3_DEFAULT_FILE;
+				BotLib_Print(PRT_MESSAGE,
+					"loaded default skill %d from %s\n",
+					rounded_skill,
+					filename);
+			}
+		}
+	}
+
+	if (definition == NULL)
+	{
+		definition = ai_parse_skill_definition(filename, -1);
+		if (definition != NULL)
+		{
+			BotLib_Print(PRT_MESSAGE,
+				"loaded skill %.0f from %s\n",
+				definition->skill,
+				filename);
+		}
+	}
+
+	if (definition == NULL && default_available)
+	{
+		definition = ai_parse_skill_definition(AI_CHARACTER_Q3_DEFAULT_FILE, -1);
+		if (definition != NULL)
+		{
+			loaded_file = AI_CHARACTER_Q3_DEFAULT_FILE;
+			BotLib_Print(PRT_MESSAGE,
+				"loaded default skill %.0f from %s\n",
+				definition->skill,
+				filename);
+		}
+	}
+
+	if (definition == NULL)
+	{
+		BotLib_Print(PRT_WARNING,
+			"couldn't load any skill from %s\n",
+			filename);
+		return NULL;
+	}
+
+	if (loaded_file == filename && default_available)
+	{
+		ai_character_definition_t *defaults =
+			ai_parse_skill_definition(AI_CHARACTER_Q3_DEFAULT_FILE, rounded_skill);
+		if (defaults == NULL)
+		{
+			defaults = ai_parse_skill_definition(AI_CHARACTER_Q3_DEFAULT_FILE, -1);
+		}
+		if (defaults != NULL)
+		{
+			ai_character_definition_t *merged =
+				ai_character_merge_default_definition(definition, defaults);
+			FreeMemory(defaults);
+			if (merged != NULL)
+			{
+				FreeMemory(definition);
+				definition = merged;
+			}
+		}
+	}
+
+	return ai_profile_from_definition(loaded_file, NULL, skill, definition);
+}
+
+/*
+=============
+AI_ApplyCharacterDefaults
+
+Fills a loaded Q3 profile from an already selected default profile.
+=============
+*/
+bool AI_ApplyCharacterDefaults(ai_character_profile_t *profile,
+	const ai_character_profile_t *defaults)
+{
+	if (profile == NULL || profile->definition_blob == NULL)
+	{
+		return false;
+	}
+	if (defaults == NULL || defaults->definition_blob == NULL)
+	{
+		return true;
+	}
+
+	ai_character_definition_t *merged =
+		ai_character_merge_default_definition(profile->definition_blob,
+			defaults->definition_blob);
+	if (merged == NULL)
+	{
+		return false;
+	}
+
+	FreeMemory(profile->definition_blob);
+	profile->definition_blob = merged;
+	return true;
+}
+
+/*
+=============
+AI_InterpolateCharacterProfiles
+
+Interpolates two Q3 skill-block profiles into a transient profile.
+=============
+*/
+ai_character_profile_t *AI_InterpolateCharacterProfiles(const ai_character_profile_t *first,
+	const ai_character_profile_t *second,
+	float skill)
+{
+	if (first == NULL || second == NULL)
+	{
+		return NULL;
+	}
+
+	ai_character_definition_t *definition =
+		ai_character_interpolate_definitions(first->definition_blob,
+			second->definition_blob,
+			skill);
+	if (definition == NULL)
+	{
+		return NULL;
+	}
+
+	return ai_profile_from_definition(first->character_filename, NULL, skill, definition);
 }
 
 /*
@@ -807,7 +1580,10 @@ static bool ai_profile_load_weapon_weights(ai_character_profile_t *profile,
 
 	BotLib_Print(PRT_DEVELOPER,
 		"%6d bytes weapon weights\n",
-		(int)MemoryByteSize(profile->weapon_weights));
+		(int)AI_WeaponWeightsConfigByteSize(profile->weapon_weights));
+	BotLib_Print(PRT_DEVELOPER,
+		"%6d bytes weapon index\n",
+		(int)AI_WeaponWeightsIndexByteSize(profile->weapon_weights));
 	return true;
 }
 
@@ -976,6 +1752,11 @@ Loads the first character block in a file for direct botlib callers.
 */
 ai_character_profile_t *AI_LoadCharacter(const char *filename, float skill)
 {
+	if (AI_CharacterFileUsesSkillBlocks(filename))
+	{
+		return AI_LoadCharacterSkillProfile(filename, skill);
+	}
+
 	return AI_LoadCharacterNamed(filename, NULL, skill);
 }
 
@@ -1058,6 +1839,67 @@ static const ai_character_definition_t *ai_definition(const ai_character_profile
 
 /*
 =============
+AI_CharacterProfileSkill
+
+Returns the skill value stored in a loaded character definition.
+=============
+*/
+float AI_CharacterProfileSkill(const ai_character_profile_t *profile)
+{
+	const ai_character_definition_t *definition = ai_definition(profile);
+	if (definition != NULL)
+	{
+		return definition->skill;
+	}
+
+	return profile != NULL ? profile->requested_skill : 0.0f;
+}
+
+/*
+=============
+AI_CharacterProfileFilename
+
+Returns the source filename recorded on a loaded character profile.
+=============
+*/
+const char *AI_CharacterProfileFilename(const ai_character_profile_t *profile)
+{
+	return profile != NULL ? profile->character_filename : "";
+}
+
+/*
+=============
+ai_character_checked_slot
+
+Validates a characteristic lookup and emits retail diagnostics.
+=============
+*/
+static const ai_characteristic_t *ai_character_checked_slot(const ai_character_profile_t *profile,
+	int index)
+{
+	const ai_character_definition_t *definition = ai_definition(profile);
+	if (definition == NULL || index < 0 || index >= definition->num_characteristics)
+	{
+		BotLib_Print(PRT_ERROR,
+			"characteristic %d does not exist\n",
+			index);
+		return NULL;
+	}
+
+	const ai_characteristic_t *slot = &definition->characteristics[index];
+	if (slot->type == AI_CHARACTER_VALUE_NONE)
+	{
+		BotLib_Print(PRT_ERROR,
+			"characteristic %d is not initialized\n",
+			index);
+		return NULL;
+	}
+
+	return slot;
+}
+
+/*
+=============
 AI_CharacteristicCount
 
 Returns the number of addressable characteristic slots in a profile.
@@ -1096,13 +1938,12 @@ Returns a float characteristic, converting integers like retail botlib.
 */
 float AI_CharacteristicAsFloat(const ai_character_profile_t *profile, int index)
 {
-	const ai_character_definition_t *definition = ai_definition(profile);
-	if (definition == NULL || index < 0 || index >= definition->num_characteristics)
+	const ai_characteristic_t *slot = ai_character_checked_slot(profile, index);
+	if (slot == NULL)
 	{
 		return 0.0f;
 	}
 
-	const ai_characteristic_t *slot = &definition->characteristics[index];
 	if (slot->type == AI_CHARACTER_VALUE_FLOAT)
 	{
 		return slot->value.float_value;
@@ -1112,6 +1953,9 @@ float AI_CharacteristicAsFloat(const ai_character_profile_t *profile, int index)
 		return (float)slot->value.integer_value;
 	}
 
+	BotLib_Print(PRT_ERROR,
+		"characteristic %d is not a float\n",
+		index);
 	return 0.0f;
 }
 
@@ -1124,13 +1968,12 @@ Returns an integer characteristic, truncating floats like the original code.
 */
 int AI_CharacteristicAsInteger(const ai_character_profile_t *profile, int index)
 {
-	const ai_character_definition_t *definition = ai_definition(profile);
-	if (definition == NULL || index < 0 || index >= definition->num_characteristics)
+	const ai_characteristic_t *slot = ai_character_checked_slot(profile, index);
+	if (slot == NULL)
 	{
 		return 0;
 	}
 
-	const ai_characteristic_t *slot = &definition->characteristics[index];
 	if (slot->type == AI_CHARACTER_VALUE_INTEGER)
 	{
 		return slot->value.integer_value;
@@ -1140,6 +1983,9 @@ int AI_CharacteristicAsInteger(const ai_character_profile_t *profile, int index)
 		return (int)slot->value.float_value;
 	}
 
+	BotLib_Print(PRT_ERROR,
+		"characteristic %d is not a integer\n",
+		index);
 	return 0;
 }
 
@@ -1152,12 +1998,19 @@ Returns a string characteristic pointer or NULL for non-string slots.
 */
 const char *AI_CharacteristicAsString(const ai_character_profile_t *profile, int index)
 {
-	const ai_character_definition_t *definition = ai_definition(profile);
-	if (definition == NULL || index < 0 || index >= definition->num_characteristics)
+	const ai_characteristic_t *slot = ai_character_checked_slot(profile, index);
+	if (slot == NULL)
 	{
-		return NULL;
+		return "";
 	}
 
-	const ai_characteristic_t *slot = &definition->characteristics[index];
-	return slot->type == AI_CHARACTER_VALUE_STRING ? slot->value.string_value : NULL;
+	if (slot->type == AI_CHARACTER_VALUE_STRING)
+	{
+		return slot->value.string_value;
+	}
+
+	BotLib_Print(PRT_ERROR,
+		"characteristic %d is not a string\n",
+		index);
+	return NULL;
 }

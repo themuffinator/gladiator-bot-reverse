@@ -15,7 +15,7 @@
 
 #define BOT_CHAT_MAX_CONSOLE_MESSAGES 16
 #define BOT_CHAT_MAX_MESSAGE_CHARS 256
-#define BOT_CHAT_MAX_MATCH_VARIABLES 11
+#define BOT_CHAT_MAX_MATCH_VARIABLES BOT_MATCH_MAX_VARIABLES
 #define BOT_CHAT_MAX_PATH_CHARS 1024
 #define BOT_CHAT_MAX_TOKEN_CHARS 64
 #define BOT_CHAT_MAX_TOKENS 64
@@ -63,16 +63,20 @@ typedef struct {
 typedef struct {
     unsigned long message_type;
     char **templates;
+	unsigned long *template_match_contexts;
+	unsigned long *template_subtypes;
     size_t template_count;
     size_t template_capacity;
 } bot_match_context_t;
 
 typedef struct {
     unsigned long reply_context;
+	float priority;
 	struct bot_reply_key_s *keys;
 	size_t key_count;
 	size_t key_capacity;
     char **responses;
+	double *response_times;
     size_t response_count;
     size_t response_capacity;
 } bot_reply_rule_t;
@@ -114,9 +118,12 @@ typedef struct {
 	size_t entry_capacity;
 } bot_random_string_table_t;
 
+static int BotChat_WordChar(char character);
+
 typedef struct {
 	char *type_name;
 	char **templates;
+	double *template_times;
 	size_t template_count;
 	size_t template_capacity;
 } bot_initial_chat_type_t;
@@ -190,6 +197,7 @@ struct bot_chatstate_s {
 	unsigned long chat_message_context;
 	char chat_name[16];
 	int chat_client;
+	int chat_client_valid;
 	int chat_gender;
 
 	bot_synonym_context_t *synonym_contexts;
@@ -221,6 +229,7 @@ struct bot_chatstate_s {
 static bot_chatstate_t *bot_chat_setup_state;
 
 #define BOT_CHAT_MIN_INTERVAL_SECONDS 25.0
+#define BOT_CHAT_MESSAGE_RECENT_SECONDS 20.0
 
 /*
 =============
@@ -274,6 +283,59 @@ Queries the libvar controlling fast chat timing adjustments.
 static int BotChat_FastChatEnabled(void)
 {
 	return LibVarValue("fastchat", "0") != 0.0f;
+}
+
+/*
+=============
+BotChat_TestInitialChatEnabled
+
+Checks the retail bot_testichat libvar used to print initial chat probes.
+=============
+*/
+static int BotChat_TestInitialChatEnabled(void)
+{
+	return LibVarValue("bot_testichat", "0") != 0.0f;
+}
+
+/*
+=============
+BotChat_TestReplyChatEnabled
+
+Checks the retail bot_testrchat libvar used to dump reply candidates.
+=============
+*/
+static int BotChat_TestReplyChatEnabled(void)
+{
+	return LibVarValue("bot_testrchat", "0") != 0.0f;
+}
+
+/*
+=============
+BotChat_PrintTestMessage
+
+Prints a retail chat test-mode line and mirrors it into the diagnostic queue.
+=============
+*/
+static void BotChat_PrintTestMessage(bot_chatstate_t *state, const char *format, ...)
+{
+	if (format == NULL)
+	{
+		return;
+	}
+
+	char message[BOT_CHAT_MAX_MESSAGE_CHARS];
+	va_list args;
+	va_start(args, format);
+	int written = vsnprintf(message, sizeof(message), format, args);
+	va_end(args);
+	if (written < 0)
+	{
+		return;
+	}
+	message[sizeof(message) - 1] = '\0';
+
+	BotLib_Print(PRT_MESSAGE, "%s", message);
+	BotQueueConsoleMessage(state, PRT_MESSAGE, message);
 }
 
 /*
@@ -565,6 +627,16 @@ Picks a template from the context using the hashing helper.
 =============
 */
 static size_t BotChat_SelectIndex(const char *seed, size_t count);
+static size_t BotChat_SelectRecentIndex(const char *seed,
+	const double *times,
+	size_t count,
+	double now_seconds,
+	int fallback_oldest,
+	int *selected_available);
+static void BotChat_MarkRecent(double *times,
+	size_t index,
+	size_t count,
+	double now_seconds);
 static const char *BotChat_SelectRandomTemplate(const bot_chatstate_t *state,
 	const bot_match_context_t *context,
 	const char *seed)
@@ -1161,6 +1233,146 @@ static void BotChat_StorePendingMessage(bot_chatstate_t *state,
 	state->chat_message_context = context;
 }
 
+/*
+=============
+BotChat_RemoveTildes
+
+Removes the retail chat spacing marker before text leaves the chat state.
+=============
+*/
+static void BotChat_RemoveTildes(char *message)
+{
+	if (message == NULL)
+	{
+		return;
+	}
+
+	for (size_t i = 0; message[i] != '\0';)
+	{
+		if (message[i] != '~')
+		{
+			++i;
+			continue;
+		}
+
+		memmove(&message[i], &message[i + 1], strlen(&message[i + 1]) + 1);
+	}
+}
+
+/*
+=============
+BotChat_IsRetailWhitespace
+
+Classifies separators using Q3's chat whitespace rules.
+=============
+*/
+static int BotChat_IsRetailWhitespace(char character)
+{
+	if ((character >= 'a' && character <= 'z')
+		|| (character >= 'A' && character <= 'Z')
+		|| (character >= '0' && character <= '9')
+		|| character == '(' || character == ')'
+		|| character == '?' || character == ':'
+		|| character == '\'' || character == '/'
+		|| character == ',' || character == '.'
+		|| character == '[' || character == ']'
+		|| character == '-' || character == '_'
+		|| character == '+' || character == '=')
+	{
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+=============
+UnifyWhiteSpaces
+
+Collapses chat whitespace runs in place using retail token rules.
+=============
+*/
+void UnifyWhiteSpaces(char *string)
+{
+	if (string == NULL)
+	{
+		return;
+	}
+
+	for (char *ptr = string, *oldptr = string; *ptr != '\0'; oldptr = ptr)
+	{
+		while (*ptr != '\0' && BotChat_IsRetailWhitespace(*ptr))
+		{
+			++ptr;
+		}
+		if (ptr > oldptr)
+		{
+			if (oldptr > string && *ptr != '\0')
+			{
+				*oldptr++ = ' ';
+			}
+			if (ptr > oldptr)
+			{
+				memmove(oldptr, ptr, strlen(ptr) + 1U);
+				ptr = oldptr;
+			}
+		}
+		while (*ptr != '\0' && !BotChat_IsRetailWhitespace(*ptr))
+		{
+			++ptr;
+		}
+	}
+}
+
+/*
+=============
+StringContains
+
+Returns the retail substring index, or -1 when no match exists.
+=============
+*/
+int StringContains(const char *str1, const char *str2, int casesensitive)
+{
+	if (str1 == NULL || str2 == NULL)
+	{
+		return -1;
+	}
+
+	const size_t haystack_length = strlen(str1);
+	const size_t needle_length = strlen(str2);
+	if (needle_length > haystack_length)
+	{
+		return -1;
+	}
+
+	for (size_t i = 0; i + needle_length <= haystack_length; ++i)
+	{
+		size_t j = 0;
+		for (; j < needle_length; ++j)
+		{
+			const int left = (unsigned char)str1[i + j];
+			const int right = (unsigned char)str2[j];
+			if (casesensitive)
+			{
+				if (left != right)
+				{
+					break;
+				}
+			}
+			else if (toupper(left) != toupper(right))
+			{
+				break;
+			}
+		}
+		if (j == needle_length)
+		{
+			return (int)i;
+		}
+	}
+
+	return -1;
+}
+
 static char *BotChat_StringDuplicate(const char *text)
 {
     if (text == NULL) {
@@ -1315,12 +1527,27 @@ static int BotChat_AddInitialTypeTemplate(bot_chatstate_t *state,
 	if (type->template_count == type->template_capacity)
 	{
 		size_t capacity = type->template_capacity ? type->template_capacity * 2U : 4U;
-		char **templates = realloc(type->templates, capacity * sizeof(*templates));
-		if (templates == NULL)
+		char **templates = malloc(capacity * sizeof(*templates));
+		double *times = malloc(capacity * sizeof(*times));
+		if (templates == NULL || times == NULL)
 		{
+			free(templates);
+			free(times);
 			return 0;
 		}
+		if (type->template_count > 0)
+		{
+			memcpy(templates,
+				type->templates,
+				type->template_count * sizeof(*templates));
+			memcpy(times,
+				type->template_times,
+				type->template_count * sizeof(*times));
+		}
+		free(type->templates);
+		free(type->template_times);
 		type->templates = templates;
+		type->template_times = times;
 		type->template_capacity = capacity;
 	}
 
@@ -1329,6 +1556,7 @@ static int BotChat_AddInitialTypeTemplate(bot_chatstate_t *state,
 	{
 		return 0;
 	}
+	type->template_times[type->template_count] = 0.0;
 	type->template_count++;
 	return 1;
 }
@@ -1356,6 +1584,7 @@ static void BotChat_FreeInitialTypes(bot_chatstate_t *state)
 			free(type->templates[j]);
 		}
 		free(type->templates);
+		free(type->template_times);
 	}
 
 	free(state->initial_types);
@@ -1380,7 +1609,21 @@ static const char *BotChat_ChooseInitialTemplate(bot_chatstate_t *state,
 		return NULL;
 	}
 
-	size_t index = BotChat_SelectIndex(type_name, type->template_count);
+	const double now_seconds = BotChat_CurrentTimeSeconds(state);
+	int selected_available = 0;
+	size_t index = BotChat_SelectRecentIndex(type_name,
+		type->template_times,
+		type->template_count,
+		now_seconds,
+		1,
+		&selected_available);
+	if (selected_available)
+	{
+		BotChat_MarkRecent(type->template_times,
+			index,
+			type->template_count,
+			now_seconds);
+	}
 	return type->templates[index];
 }
 
@@ -1435,6 +1678,36 @@ static char *BotChat_TokenTextDuplicate(const pc_token_t *token)
 	memcpy(copy, text, length);
 	copy[length] = '\0';
 	return copy;
+}
+
+/*
+=============
+BotChat_CheckTokenString
+
+Peeks one token from a precompiler-backed script without consuming it when the
+token does not match the requested punctuation or keyword.
+=============
+*/
+static int BotChat_CheckTokenString(pc_script_t *script, const char *text)
+{
+	if (script == NULL || text == NULL)
+	{
+		return 0;
+	}
+
+	pc_token_t token;
+	if (!PS_ReadToken(script, &token))
+	{
+		return 0;
+	}
+
+	if (strcmp(token.string, text) == 0)
+	{
+		return 1;
+	}
+
+	PS_UnreadToken(script, &token);
+	return 0;
 }
 
 /*
@@ -1639,7 +1912,9 @@ static void BotChat_FreeMatchContexts(bot_chatstate_t *state)
         for (size_t j = 0; j < context->template_count; ++j) {
             free(context->templates[j]);
         }
-        free(context->templates);
+		free(context->templates);
+		free(context->template_match_contexts);
+		free(context->template_subtypes);
     }
 
     free(state->match_contexts);
@@ -1662,6 +1937,7 @@ static void BotChat_FreeReplies(bot_chatstate_t *state)
             free(rule->responses[j]);
         }
         free(rule->responses);
+		free(rule->response_times);
     }
 
     free(state->replies.rules);
@@ -1767,16 +2043,54 @@ static bot_match_context_t *BotChat_AddMatchContext(bot_chatstate_t *state, unsi
     return context;
 }
 
-static char **BotChat_AddTemplate(bot_match_context_t *context)
-{
-    char **templates = realloc(context->templates, (context->template_count + 1) * sizeof(*templates));
-    if (templates == NULL) {
-        return NULL;
-    }
+/*
+=============
+BotChat_AddTemplate
 
-    context->templates = templates;
-    context->templates[context->template_count] = NULL;
-    return &context->templates[context->template_count++];
+Appends a match template while preserving MTCONTEXT and subtype metadata.
+=============
+*/
+static char **BotChat_AddTemplate(bot_match_context_t *context,
+	unsigned long match_context,
+	unsigned long subtype)
+{
+	const size_t next_count = context->template_count + 1U;
+	char **templates = malloc(
+		next_count * sizeof(*templates));
+	unsigned long *match_contexts = malloc(
+		next_count * sizeof(*match_contexts));
+	unsigned long *subtypes = malloc(
+		next_count * sizeof(*subtypes));
+	if (templates == NULL || match_contexts == NULL || subtypes == NULL)
+	{
+		free(templates);
+		free(match_contexts);
+		free(subtypes);
+		return NULL;
+	}
+
+	if (context->template_count > 0)
+	{
+		memcpy(templates,
+			context->templates,
+			context->template_count * sizeof(*templates));
+		memcpy(match_contexts,
+			context->template_match_contexts,
+			context->template_count * sizeof(*match_contexts));
+		memcpy(subtypes,
+			context->template_subtypes,
+			context->template_count * sizeof(*subtypes));
+	}
+	free(context->templates);
+	free(context->template_match_contexts);
+	free(context->template_subtypes);
+	context->templates = templates;
+	context->template_match_contexts = match_contexts;
+	context->template_subtypes = subtypes;
+	context->templates[context->template_count] = NULL;
+	context->template_match_contexts[context->template_count] = match_context;
+	context->template_subtypes[context->template_count] = subtype;
+	return &context->templates[context->template_count++];
 }
 
 static bot_match_context_t *BotChat_FindMatchContext(bot_chatstate_t *state, unsigned long message_type);
@@ -1809,7 +2123,7 @@ static int BotChat_AddTemplateForContext(bot_chatstate_t *state,
 		}
 	}
 
-	char **slot = BotChat_AddTemplate(match_context);
+	char **slot = BotChat_AddTemplate(match_context, context, 0UL);
 	if (slot == NULL)
 	{
 		return 0;
@@ -1819,31 +2133,66 @@ static int BotChat_AddTemplateForContext(bot_chatstate_t *state,
 	return *slot != NULL;
 }
 
-static bot_reply_rule_t *BotChat_AddReplyRule(bot_chatstate_t *state, unsigned long reply_context)
-{
-    bot_reply_rule_t *rules = realloc(state->replies.rules,
-                                      (state->replies.rule_count + 1) * sizeof(*rules));
-    if (rules == NULL) {
-        return NULL;
-    }
+/*
+=============
+BotChat_AddReplyRule
 
-    state->replies.rules = rules;
-    bot_reply_rule_t *rule = &state->replies.rules[state->replies.rule_count++];
-    memset(rule, 0, sizeof(*rule));
-    rule->reply_context = reply_context;
-    return rule;
+Adds a parsed reply block to the state's reply table.
+=============
+*/
+static bot_reply_rule_t *BotChat_AddReplyRule(bot_chatstate_t *state,
+	unsigned long reply_context)
+{
+	bot_reply_rule_t *rules = realloc(state->replies.rules,
+		(state->replies.rule_count + 1) * sizeof(*rules));
+	if (rules == NULL)
+	{
+		return NULL;
+	}
+
+	state->replies.rules = rules;
+	bot_reply_rule_t *rule = &state->replies.rules[state->replies.rule_count++];
+	memset(rule, 0, sizeof(*rule));
+	rule->reply_context = reply_context;
+	rule->priority = (float)reply_context;
+	return rule;
 }
 
+/*
+=============
+BotChat_AddReply
+
+Appends one response template and its recent-use timer to a reply rule.
+=============
+*/
 static char **BotChat_AddReply(bot_reply_rule_t *rule)
 {
-    char **responses = realloc(rule->responses, (rule->response_count + 1) * sizeof(*responses));
-    if (responses == NULL) {
-        return NULL;
-    }
+	const size_t next_count = rule->response_count + 1U;
+	char **responses = malloc(next_count * sizeof(*responses));
+	double *times = malloc(next_count * sizeof(*times));
+	if (responses == NULL || times == NULL)
+	{
+		free(responses);
+		free(times);
+		return NULL;
+	}
 
-    rule->responses = responses;
-    rule->responses[rule->response_count] = NULL;
-    return &rule->responses[rule->response_count++];
+	if (rule->response_count > 0)
+	{
+		memcpy(responses,
+			rule->responses,
+			rule->response_count * sizeof(*responses));
+		memcpy(times,
+			rule->response_times,
+			rule->response_count * sizeof(*times));
+	}
+	free(rule->responses);
+	free(rule->response_times);
+	rule->responses = responses;
+	rule->response_times = times;
+	rule->responses[rule->response_count] = NULL;
+	rule->response_times[rule->response_count] = 0.0;
+	return &rule->responses[rule->response_count++];
 }
 
 /*
@@ -2477,6 +2826,50 @@ static unsigned long BotChat_NumberTokenValue(const pc_token_t *token)
 
 /*
 =============
+BotChat_NumberTokenIsInteger
+
+Checks numeric chat and match parser fields the same way Q3's loader does:
+only integer number tokens are accepted for variables and match metadata.
+=============
+*/
+static int BotChat_NumberTokenIsInteger(const pc_token_t *token)
+{
+	return token != NULL
+		&& token->type == TT_NUMBER
+		&& (token->subtype & TT_INTEGER) != 0;
+}
+
+/*
+=============
+BotChat_NumberTokenMatchVariableValue
+
+Reads a Q3 match-piece variable token and validates the loader-time variable
+range before the pattern is registered.
+=============
+*/
+static int BotChat_NumberTokenMatchVariableValue(const pc_token_t *token,
+	unsigned long *value)
+{
+	if (!BotChat_NumberTokenIsInteger(token))
+	{
+		return 0;
+	}
+
+	const unsigned long parsed = BotChat_NumberTokenValue(token);
+	if (parsed >= BOT_CHAT_MAX_MATCH_VARIABLES)
+	{
+		return 0;
+	}
+
+	if (value != NULL)
+	{
+		*value = parsed;
+	}
+	return 1;
+}
+
+/*
+=============
 BotChat_MessageTypeFromToken
 
 Resolves message type tokens before and after preprocessor macro expansion.
@@ -2491,7 +2884,9 @@ static unsigned long BotChat_MessageTypeFromToken(const pc_token_t *token)
 
 	if (token->type == TT_NUMBER)
 	{
-		return BotChat_NumberTokenValue(token);
+		return BotChat_NumberTokenIsInteger(token)
+			? BotChat_NumberTokenValue(token)
+			: 0UL;
 	}
 
 	if (token->type == TT_NAME)
@@ -2500,6 +2895,173 @@ static unsigned long BotChat_MessageTypeFromToken(const pc_token_t *token)
 	}
 
 	return 0;
+}
+
+/*
+=============
+BotChat_MatchContextFromIdentifier
+
+Maps MTCONTEXT_* labels onto the retail match-template filter masks.
+=============
+*/
+static unsigned long BotChat_MatchContextFromIdentifier(const char *identifier)
+{
+	if (identifier == NULL)
+	{
+		return 0UL;
+	}
+
+	if (BotChat_StringEqualsIgnoreCase(identifier, "MTCONTEXT_CLIENTOBITUARY"))
+	{
+		return 1UL;
+	}
+	if (BotChat_StringEqualsIgnoreCase(identifier, "MTCONTEXT_ENTERGAME"))
+	{
+		return 2UL;
+	}
+	if (BotChat_StringEqualsIgnoreCase(identifier, "MTCONTEXT_INITIALTEAMCHAT"))
+	{
+		return 4UL;
+	}
+	if (BotChat_StringEqualsIgnoreCase(identifier, "MTCONTEXT_TIME"))
+	{
+		return 8UL;
+	}
+	if (BotChat_StringEqualsIgnoreCase(identifier, "MTCONTEXT_TEAMMATE"))
+	{
+		return 16UL;
+	}
+	if (BotChat_StringEqualsIgnoreCase(identifier, "MTCONTEXT_ADDRESSEE"))
+	{
+		return 32UL;
+	}
+	if (BotChat_StringEqualsIgnoreCase(identifier, "MTCONTEXT_PATROLKEYAREA"))
+	{
+		return 64UL;
+	}
+
+	return 0UL;
+}
+
+/*
+=============
+BotChat_MatchContextFromToken
+
+Resolves an MTCONTEXT token before or after preprocessor expansion.
+=============
+*/
+static unsigned long BotChat_MatchContextFromToken(const pc_token_t *token)
+{
+	if (token == NULL)
+	{
+		return 0UL;
+	}
+	if (token->type == TT_NUMBER)
+	{
+		return BotChat_NumberTokenIsInteger(token)
+			? BotChat_NumberTokenValue(token)
+			: 0UL;
+	}
+	if (token->type == TT_NAME)
+	{
+		return BotChat_MatchContextFromIdentifier(token->string);
+	}
+
+	return 0UL;
+}
+
+/*
+=============
+BotChat_MessageSubtypeFromIdentifier
+
+Maps preserved subtype names used by Gladiator and Q3 match scripts.
+=============
+*/
+static unsigned long BotChat_MessageSubtypeFromIdentifier(const char *identifier)
+{
+	static const struct {
+		const char *name;
+		unsigned long value;
+	} subtypes[] = {
+		{"ST_DEATH_SUICIDE", 1UL},
+		{"ST_DEATH_BLASTER", 2UL},
+		{"ST_DEATH_SHOTGUN", 3UL},
+		{"ST_DEATH_SUPERSHOTGUN", 4UL},
+		{"ST_DEATH_MACHINEGUN", 5UL},
+		{"ST_DEATH_CHAINGUN", 6UL},
+		{"ST_DEATH_GRENADES", 7UL},
+		{"ST_DEATH_GRENADELAUNCHER", 8UL},
+		{"ST_DEATH_ROCKETLAUNCHER", 9UL},
+		{"ST_DEATH_HYPERBLASTER", 10UL},
+		{"ST_DEATH_RAILGUN", 11UL},
+		{"ST_DEATH_BFG", 12UL},
+		{"ST_DEATH_TELEFRAG", 13UL},
+		{"ST_DEATH_GRAPPLE", 14UL},
+		{"ST_DEATH_RIPPER", 15UL},
+		{"ST_DEATH_PHALANX", 16UL},
+		{"ST_DEATH_TRAP", 17UL},
+		{"ST_DEATH_CHAINFIST", 18UL},
+		{"ST_DEATH_DISRUPTOR", 19UL},
+		{"ST_DEATH_ETFRIFLE", 20UL},
+		{"ST_DEATH_HEATBEAM", 21UL},
+		{"ST_DEATH_TESLA", 22UL},
+		{"ST_DEATH_PROX", 23UL},
+		{"ST_DEATH_NUKE", 24UL},
+		{"ST_DEATH_VENGEANCESPHERE", 25UL},
+		{"ST_DEATH_DEFENDER_SPHERE", 26UL},
+		{"ST_DEATH_HUNTERSPHERE", 27UL},
+		{"ST_DEATH_TRACKER", 28UL},
+		{"ST_DEATH_DOPPLEGANGER", 29UL},
+		{"ST_SOMEWHERE", 0UL},
+		{"ST_NEARITEM", 1UL},
+		{"ST_ADDRESSED", 2UL},
+		{"ST_METER", 4UL},
+		{"ST_FEET", 8UL},
+		{"ST_TIME", 16UL},
+		{"ST_HERE", 32UL},
+		{"ST_THERE", 64UL},
+		{"ST_I", 128UL},
+		{"ST_MORE", 256UL},
+		{"ST_BACK", 512UL},
+		{"ST_REVERSE", 1024UL}
+	};
+
+	for (size_t i = 0; i < sizeof(subtypes) / sizeof(subtypes[0]); ++i)
+	{
+		if (BotChat_StringEqualsIgnoreCase(identifier, subtypes[i].name))
+		{
+			return subtypes[i].value;
+		}
+	}
+
+	return 0UL;
+}
+
+/*
+=============
+BotChat_MessageSubtypeFromToken
+
+Resolves the optional match-template subtype token.
+=============
+*/
+static unsigned long BotChat_MessageSubtypeFromToken(const pc_token_t *token)
+{
+	if (token == NULL)
+	{
+		return 0UL;
+	}
+	if (token->type == TT_NUMBER)
+	{
+		return BotChat_NumberTokenIsInteger(token)
+			? BotChat_NumberTokenValue(token)
+			: 0UL;
+	}
+	if (token->type == TT_NAME)
+	{
+		return BotChat_MessageSubtypeFromIdentifier(token->string);
+	}
+
+	return 0UL;
 }
 
 /*
@@ -3040,9 +3602,147 @@ static int BotChat_MatchVariablePattern(const char *pattern,
 
 /*
 =============
+BotChat_ClearMatchResultVariables
+
+Resets the public match variable offsets before trying a template.
+=============
+*/
+static void BotChat_ClearMatchResultVariables(bot_match_t *match)
+{
+	if (match == NULL)
+	{
+		return;
+	}
+
+	for (size_t i = 0; i < BOT_MATCH_MAX_VARIABLES; ++i)
+	{
+		match->variables[i].offset = -1;
+		match->variables[i].length = 0;
+	}
+}
+
+/*
+=============
+BotChat_SetMatchResultVariable
+
+Stores a captured variable span in a public BotFindMatch result.
+=============
+*/
+static int BotChat_SetMatchResultVariable(bot_match_t *match,
+	unsigned long variable,
+	size_t offset,
+	size_t length)
+{
+	if (match == NULL || variable >= BOT_MATCH_MAX_VARIABLES)
+	{
+		return 0;
+	}
+
+	match->variables[variable].offset = (int)offset;
+	match->variables[variable].length = (int)length;
+	return 1;
+}
+
+/*
+=============
+BotChat_MatchVariablePatternResult
+
+Matches an internal \vN\ pattern and records public offset/length spans.
+=============
+*/
+static int BotChat_MatchVariablePatternResult(const char *pattern,
+	bot_match_t *match)
+{
+	if (pattern == NULL || match == NULL)
+	{
+		return 0;
+	}
+
+	const char *message = match->string;
+	size_t pattern_offset = 0;
+	size_t message_offset = 0;
+	long last_variable = -1;
+
+	BotChat_ClearMatchResultVariables(match);
+	while (pattern[pattern_offset] != '\0')
+	{
+		if (pattern[pattern_offset] == '\\' && pattern[pattern_offset + 1] == 'v')
+		{
+			size_t value_offset = pattern_offset + 2;
+			unsigned long value = 0;
+			int saw_digit = 0;
+			while (isdigit((unsigned char)pattern[value_offset]))
+			{
+				value = value * 10UL + (unsigned long)(pattern[value_offset] - '0');
+				saw_digit = 1;
+				++value_offset;
+			}
+			if (!saw_digit || pattern[value_offset] != '\\'
+				|| value >= BOT_MATCH_MAX_VARIABLES)
+			{
+				return 0;
+			}
+
+			last_variable = (long)value;
+			pattern_offset = value_offset + 1;
+			continue;
+		}
+
+		const size_t literal_start = pattern_offset;
+		while (pattern[pattern_offset] != '\0'
+			&& !(pattern[pattern_offset] == '\\'
+				&& pattern[pattern_offset + 1] == 'v'))
+		{
+			++pattern_offset;
+		}
+
+		const size_t literal_length = pattern_offset - literal_start;
+		size_t match_start = 0;
+		size_t match_end = 0;
+		if (!BotChat_FindCaseInsensitiveSpan(message,
+				message_offset,
+				pattern + literal_start,
+				literal_length,
+				&match_start,
+				&match_end))
+		{
+			return 0;
+		}
+
+		if (last_variable >= 0)
+		{
+			if (!BotChat_SetMatchResultVariable(match,
+					(unsigned long)last_variable,
+					message_offset,
+					match_start - message_offset))
+			{
+				return 0;
+			}
+			last_variable = -1;
+		}
+		else if (match_start != message_offset)
+		{
+			return 0;
+		}
+		message_offset = match_end;
+	}
+
+	if (last_variable >= 0)
+	{
+		return BotChat_SetMatchResultVariable(match,
+			(unsigned long)last_variable,
+			message_offset,
+			strlen(message + message_offset));
+	}
+
+	return message[message_offset] == '\0';
+}
+
+/*
+=============
 BotChat_WordChar
 
-Returns true for word characters used by reply key word matching.
+Returns true for the generic word characters used by synonym span matching.
 =============
 */
 static int BotChat_WordChar(char character)
@@ -3052,10 +3752,21 @@ static int BotChat_WordChar(char character)
 
 /*
 =============
+BotChat_IsReplyWordSeparator
+
+Returns true for the four separators used by Q3's StringContainsWord helper.
+=============
+*/
+static int BotChat_IsReplyWordSeparator(char character)
+{
+	return character == ' ' || character == '.' || character == ',' || character == '!';
+}
+
+/*
+=============
 BotChat_StringContainsWordCaseInsensitive
 
-Checks whether a reply key string occurs as a word, falling back to substring
-matching for punctuation-only keys.
+Checks whether a reply key string occurs as a retail reply-chat word.
 =============
 */
 static int BotChat_StringContainsWordCaseInsensitive(const char *text,
@@ -3065,39 +3776,48 @@ static int BotChat_StringContainsWordCaseInsensitive(const char *text,
 	{
 		return 0;
 	}
-	if (needle[0] == '\0')
+
+	const size_t needle_length = strlen(needle);
+	if (needle_length == 0U)
 	{
 		return 1;
 	}
 
-	int has_word_char = 0;
-	for (size_t i = 0; needle[i] != '\0'; ++i)
-	{
-		if (BotChat_WordChar(needle[i]))
-		{
-			has_word_char = 1;
-			break;
-		}
-	}
-
 	size_t start = 0;
-	size_t match_start = 0;
-	size_t match_end = 0;
-	const size_t needle_length = strlen(needle);
-	while (BotChat_FindCaseInsensitiveSpan(text,
-		start,
-		needle,
-		needle_length,
-		&match_start,
-		&match_end))
+	while (text[start] != '\0')
 	{
-		if (!has_word_char
-			|| ((match_start == 0 || !BotChat_WordChar(text[match_start - 1]))
-				&& !BotChat_WordChar(text[match_end])))
+		size_t index = 0;
+		while (needle[index] != '\0')
+		{
+			if (text[start + index] == '\0')
+			{
+				break;
+			}
+			const int left = toupper((unsigned char)text[start + index]);
+			const int right = toupper((unsigned char)needle[index]);
+			if (left != right)
+			{
+				break;
+			}
+			++index;
+		}
+		if (index == needle_length
+			&& (text[start + index] == '\0'
+				|| BotChat_IsReplyWordSeparator(text[start + index])))
 		{
 			return 1;
 		}
-		start = match_start + 1;
+
+		while (text[start] != '\0'
+			&& !BotChat_IsReplyWordSeparator(text[start]))
+		{
+			++start;
+		}
+		if (text[start] == '\0')
+		{
+			break;
+		}
+		++start;
 	}
 
 	return 0;
@@ -3522,6 +4242,293 @@ static int BotChat_ReplaceWeightedSynonyms(bot_chatstate_t *state,
 
 /*
 =============
+BotChat_ReplaceSynonymsFromState
+
+Applies the non-random retail synonym canonicalization pass.
+=============
+*/
+static int BotChat_ReplaceSynonymsFromState(const bot_chatstate_t *source,
+	unsigned long message_context,
+	char *message,
+	size_t message_size)
+{
+	if (source == NULL || message == NULL || message_context == 0UL)
+	{
+		return 1;
+	}
+
+	for (size_t context_index = 0;
+		context_index < source->synonym_context_count;
+		++context_index)
+	{
+		const bot_synonym_context_t *context =
+			&source->synonym_contexts[context_index];
+		if (!BotChat_SynonymContextApplies(context, message_context))
+		{
+			continue;
+		}
+
+		for (size_t group_index = 0;
+			group_index < context->group_count;
+			++group_index)
+		{
+			const bot_synonym_group_t *group = &context->groups[group_index];
+			if (group->phrase_count == 0 || group->phrases[0].text == NULL)
+			{
+				continue;
+			}
+
+			const char *replacement = group->phrases[0].text;
+			for (size_t phrase_index = 1;
+				phrase_index < group->phrase_count;
+				++phrase_index)
+			{
+				const bot_synonym_phrase_t *phrase = &group->phrases[phrase_index];
+				if (phrase->text == NULL)
+				{
+					continue;
+				}
+				if (!BotChat_ReplaceSynonymWord(message,
+						message_size,
+						phrase->text,
+						replacement,
+						message))
+				{
+					return 0;
+				}
+			}
+		}
+	}
+
+	return 1;
+}
+
+/*
+=============
+BotChat_PhraseStartsWord
+
+Checks whether a phrase starts at the current word using the retail word-boundary
+rules used by reply synonym replacement.
+=============
+*/
+static int BotChat_PhraseStartsWord(const char *text, const char *phrase)
+{
+	if (text == NULL || phrase == NULL || phrase[0] == '\0')
+	{
+		return 0;
+	}
+
+	const size_t phrase_length = strlen(phrase);
+	for (size_t i = 0; i < phrase_length; ++i)
+	{
+		if (text[i] == '\0')
+		{
+			return 0;
+		}
+		if (toupper((unsigned char)text[i])
+			!= toupper((unsigned char)phrase[i]))
+		{
+			return 0;
+		}
+	}
+
+	return BotChat_SpanIsWordMatch(text, 0, phrase_length);
+}
+
+/*
+=============
+BotChat_ReplaceReplySynonymsFromState
+
+Applies Q3's reply-variable synonym canonicalization pass to one state.
+=============
+*/
+static int BotChat_ReplaceReplySynonymsFromState(const bot_chatstate_t *source,
+	unsigned long message_context,
+	char *message,
+	size_t message_size,
+	int *applied_context)
+{
+	if (source == NULL || message == NULL || message_context == 0UL)
+	{
+		return 1;
+	}
+
+	for (char *cursor = message; *cursor != '\0';)
+	{
+		while (*cursor != '\0' && isspace((unsigned char)*cursor))
+		{
+			++cursor;
+		}
+		if (*cursor == '\0')
+		{
+			break;
+		}
+
+		int replaced = 0;
+		for (size_t context_index = 0;
+			context_index < source->synonym_context_count && !replaced;
+			++context_index)
+		{
+			const bot_synonym_context_t *context =
+				&source->synonym_contexts[context_index];
+			if (!BotChat_SynonymContextApplies(context, message_context))
+			{
+				continue;
+			}
+			if (applied_context != NULL)
+			{
+				*applied_context = 1;
+			}
+
+			for (size_t group_index = 0;
+				group_index < context->group_count && !replaced;
+				++group_index)
+			{
+				const bot_synonym_group_t *group =
+					&context->groups[group_index];
+				if (group->phrase_count < 2
+					|| group->phrases[0].text == NULL)
+				{
+					continue;
+				}
+
+				const char *replacement = group->phrases[0].text;
+				for (size_t phrase_index = 1;
+					phrase_index < group->phrase_count;
+					++phrase_index)
+				{
+					const bot_synonym_phrase_t *phrase =
+						&group->phrases[phrase_index];
+					if (phrase->text == NULL
+						|| !BotChat_PhraseStartsWord(cursor, phrase->text)
+						|| BotChat_PhraseStartsWord(cursor, replacement))
+					{
+						continue;
+					}
+
+					const size_t synonym_length = strlen(phrase->text);
+					const size_t replacement_length = strlen(replacement);
+					const size_t current_length = strlen(message);
+					const size_t new_length =
+						current_length - synonym_length + replacement_length;
+					if (new_length >= message_size
+						|| new_length >= BOT_CHAT_MAX_MESSAGE_CHARS)
+					{
+						BotLib_Print(PRT_ERROR,
+							"BotConstructChat: message \"%s\" too long\n",
+							message);
+						return 0;
+					}
+
+					memmove(cursor + replacement_length,
+						cursor + synonym_length,
+						strlen(cursor + synonym_length) + 1U);
+					memcpy(cursor, replacement, replacement_length);
+					replaced = 1;
+					break;
+				}
+			}
+		}
+
+		while (*cursor != '\0' && !isspace((unsigned char)*cursor))
+		{
+			++cursor;
+		}
+	}
+
+	return 1;
+}
+
+/*
+=============
+BotChat_ReplaceReplySynonyms
+
+Applies reply synonym canonicalization using the active chat state and setup
+fallback, matching Q3's separate vcontext pass for reply variables.
+=============
+*/
+static int BotChat_ReplaceReplySynonyms(bot_chatstate_t *state,
+	unsigned long variable_context,
+	char *message,
+	size_t message_size)
+{
+	int applied_context = 0;
+	if (!BotChat_ReplaceReplySynonymsFromState(state,
+		variable_context,
+		message,
+		message_size,
+		&applied_context))
+	{
+		return 0;
+	}
+
+	const bot_chatstate_t *fallback_state = BotChat_SetupFallbackState(state);
+	if (!applied_context
+		&& !BotChat_ReplaceReplySynonymsFromState(fallback_state,
+			variable_context,
+			message,
+			message_size,
+			&applied_context))
+	{
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+=============
+BotChat_ReplaceVariableSynonyms
+
+Applies the non-reply vcontext synonym pass to a copied variable value.
+=============
+*/
+static int BotChat_ReplaceVariableSynonyms(bot_chatstate_t *state,
+	unsigned long variable_context,
+	char *message,
+	size_t message_size)
+{
+	if (variable_context == 0UL)
+	{
+		return 1;
+	}
+	if (!BotChat_ReplaceSynonymsFromState(state,
+		variable_context,
+		message,
+		message_size))
+	{
+		return 0;
+	}
+
+	const bot_chatstate_t *fallback_state = BotChat_SetupFallbackState(state);
+	return BotChat_ReplaceSynonymsFromState(fallback_state,
+		variable_context,
+		message,
+		message_size);
+}
+
+/*
+=============
+BotReplaceSynonyms
+
+Public chat export that canonicalizes synonyms through the setup cache.
+=============
+*/
+void BotReplaceSynonyms(char *string, unsigned long int context)
+{
+	if (string == NULL)
+	{
+		return;
+	}
+
+	(void)BotChat_ReplaceSynonymsFromState(bot_chat_setup_state,
+		context,
+		string,
+		BOT_CHAT_MAX_MESSAGE_CHARS);
+}
+
+/*
+=============
 BotChat_CaptureMatchTemplateVariables
 
 Captures readable match-template placeholders from an incoming message.
@@ -3702,6 +4709,101 @@ static size_t BotChat_SelectIndex(const char *seed, size_t count)
         }
     }
     return (size_t)(hash % count);
+}
+
+/*
+=============
+BotChat_SelectRecentIndex
+
+Selects a chat-message slot while avoiding recently used entries when possible.
+=============
+*/
+static size_t BotChat_SelectRecentIndex(const char *seed,
+	const double *times,
+	size_t count,
+	double now_seconds,
+	int fallback_oldest,
+	int *selected_available)
+{
+	if (selected_available != NULL)
+	{
+		*selected_available = 0;
+	}
+	if (count == 0)
+	{
+		return 0;
+	}
+	if (times == NULL)
+	{
+		if (selected_available != NULL)
+		{
+			*selected_available = 1;
+		}
+		return BotChat_SelectIndex(seed, count);
+	}
+
+	size_t available_count = 0;
+	for (size_t i = 0; i < count; ++i)
+	{
+		if (times[i] <= now_seconds)
+		{
+			++available_count;
+		}
+	}
+	if (available_count > 0)
+	{
+		size_t selected = BotChat_SelectIndex(seed, available_count);
+		for (size_t i = 0; i < count; ++i)
+		{
+			if (times[i] > now_seconds)
+			{
+				continue;
+			}
+			if (selected-- == 0)
+			{
+				if (selected_available != NULL)
+				{
+					*selected_available = 1;
+				}
+				return i;
+			}
+		}
+	}
+
+	if (!fallback_oldest)
+	{
+		return 0;
+	}
+
+	size_t oldest = 0;
+	for (size_t i = 1; i < count; ++i)
+	{
+		if (times[i] < times[oldest])
+		{
+			oldest = i;
+		}
+	}
+	return oldest;
+}
+
+/*
+=============
+BotChat_MarkRecent
+
+Marks one chat-message slot as recently used.
+=============
+*/
+static void BotChat_MarkRecent(double *times,
+	size_t index,
+	size_t count,
+	double now_seconds)
+{
+	if (times == NULL || index >= count)
+	{
+		return;
+	}
+
+	times[index] = now_seconds + BOT_CHAT_MESSAGE_RECENT_SECONDS;
 }
 
 /*
@@ -3963,10 +5065,13 @@ BotChat_ParseMatchTemplate
 Extracts the template left-hand side and registers it under the message type.
 =============
 */
-static int BotChat_ParseMatchTemplate(bot_chatstate_t *state, pc_script_t *script)
+static int BotChat_ParseMatchTemplate(bot_chatstate_t *state,
+	pc_script_t *script,
+	unsigned long match_context)
 {
 	bot_string_builder_t builder = {0};
 	pc_token_t token;
+	int last_was_variable = 0;
 	while (PS_ReadToken(script, &token))
 	{
 		if (token.type == TT_PUNCTUATION && token.string[0] == '=')
@@ -3979,17 +5084,29 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state, pc_script_t *scrip
 		}
 		if (token.type == TT_STRING)
 		{
+			size_t token_length = 0;
+			(void)BotChat_TokenText(&token, &token_length);
 			if (!BotChat_StringBuilderAppendMatchTokenText(&builder, &token))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return 0;
 			}
+			if (token_length > 0)
+			{
+				last_was_variable = 0;
+			}
 			continue;
 		}
 		if (token.type == TT_NAME)
 		{
+			const int known_placeholder = BotChat_IsKnownPlaceholderName(token.string);
+			if (known_placeholder && last_was_variable)
+			{
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
 			const char next_character =
-				BotChat_IsKnownPlaceholderName(token.string) ? '{' : token.string[0];
+				known_placeholder ? '{' : token.string[0];
 			if (!BotChat_StringBuilderAppendMatchSeparator(&builder, next_character))
 			{
 				BotChat_StringBuilderDestroy(&builder);
@@ -4000,21 +5117,26 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state, pc_script_t *scrip
 				BotChat_StringBuilderDestroy(&builder);
 				return 0;
 			}
+			last_was_variable = known_placeholder ? 1 : 0;
 			continue;
 		}
 		if (token.type == TT_NUMBER)
 		{
-			if (!BotChat_StringBuilderAppendMatchSeparator(&builder, '{'))
+			unsigned long variable = 0UL;
+			if (!BotChat_NumberTokenMatchVariableValue(&token, &variable)
+				|| last_was_variable
+				|| !BotChat_StringBuilderAppendMatchSeparator(&builder, '{'))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return 0;
 			}
 			if (!BotChat_StringBuilderAppendVariableReference(&builder,
-					BotChat_NumberTokenValue(&token)))
+					variable))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return 0;
 			}
+			last_was_variable = 1;
 			continue;
 		}
 	}
@@ -4039,6 +5161,23 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state, pc_script_t *scrip
 	{
 		BotChat_StringBuilderDestroy(&builder);
 		return 0;
+	}
+	unsigned long subtype = 0UL;
+	if (PS_CheckTokenString(script, ","))
+	{
+		pc_token_t subtype_token;
+		if (!PS_ReadToken(script, &subtype_token))
+		{
+			BotChat_StringBuilderDestroy(&builder);
+			return 0;
+		}
+		if (subtype_token.type == TT_NUMBER
+			&& !BotChat_NumberTokenIsInteger(&subtype_token))
+		{
+			BotChat_StringBuilderDestroy(&builder);
+			return 0;
+		}
+		subtype = BotChat_MessageSubtypeFromToken(&subtype_token);
 	}
 	while (PS_ReadToken(script, &type_token))
 	{
@@ -4080,7 +5219,7 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state, pc_script_t *scrip
 			return 0;
 		}
 	}
-	char **slot = BotChat_AddTemplate(context);
+	char **slot = BotChat_AddTemplate(context, match_context, subtype);
 	if (slot == NULL)
 	{
 		free(mapped_template);
@@ -4097,7 +5236,9 @@ BotChat_ParseMatchBlock
 Iterates over the statements inside an MTCONTEXT_* block.
 =============
 */
-static int BotChat_ParseMatchBlock(bot_chatstate_t *state, pc_script_t *script)
+static int BotChat_ParseMatchBlock(bot_chatstate_t *state,
+	pc_script_t *script,
+	unsigned long match_context)
 {
 	pc_token_t token;
 	while (PS_ReadToken(script, &token))
@@ -4107,7 +5248,7 @@ static int BotChat_ParseMatchBlock(bot_chatstate_t *state, pc_script_t *script)
 			return 1;
 		}
 		PS_UnreadToken(script, &token);
-		if (!BotChat_ParseMatchTemplate(state, script))
+		if (!BotChat_ParseMatchTemplate(state, script, match_context))
 		{
 			return 0;
 		}
@@ -4194,7 +5335,9 @@ static int BotChat_ParseReplyTemplate(bot_chatstate_t *state, bot_reply_rule_t *
 		}
 		if (token.type == TT_NUMBER)
 		{
-			if (!BotChat_StringBuilderAppendVariableReference(&builder, token.intvalue))
+			if (!BotChat_NumberTokenIsInteger(&token)
+				|| !BotChat_StringBuilderAppendVariableReference(&builder,
+					BotChat_NumberTokenValue(&token)))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return 0;
@@ -4235,6 +5378,7 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 {
 	bot_string_builder_t builder = {0};
 	pc_token_t token;
+	int last_was_variable = 0;
 
 	while (PS_ReadToken(script, &token))
 	{
@@ -4248,21 +5392,31 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 		}
 		if (token.type == TT_STRING)
 		{
+			size_t token_length = 0;
+			(void)BotChat_TokenText(&token, &token_length);
 			if (!BotChat_StringBuilderAppendTokenText(&builder, &token))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return NULL;
 			}
+			if (token_length > 0)
+			{
+				last_was_variable = 0;
+			}
 			continue;
 		}
 		if (token.type == TT_NUMBER)
 		{
-			if (!BotChat_StringBuilderAppendVariableReference(&builder,
-					BotChat_NumberTokenValue(&token)))
+			unsigned long variable = 0UL;
+			if (!BotChat_NumberTokenMatchVariableValue(&token, &variable)
+				|| last_was_variable
+				|| !BotChat_StringBuilderAppendVariableReference(&builder,
+					variable))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return NULL;
 			}
+			last_was_variable = 1;
 			continue;
 		}
 		if (token.type == TT_NAME)
@@ -4272,6 +5426,7 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 				BotChat_StringBuilderDestroy(&builder);
 				return NULL;
 			}
+			last_was_variable = 0;
 			continue;
 		}
 
@@ -4308,6 +5463,62 @@ static char *BotChat_ParseReplyKeyText(pc_script_t *script,
 		}
 		return BotChat_ParseReplyKeyPattern(script);
 	}
+	if (token.type == TT_PUNCTUATION && token.string[0] == '<')
+	{
+		bot_string_builder_t names = {0};
+		int first_name = 1;
+		int expect_name = 1;
+		while (PS_ReadToken(script, &token))
+		{
+			if (token.type == TT_PUNCTUATION && token.string[0] == '>')
+			{
+				if (first_name || expect_name)
+				{
+					BotChat_StringBuilderDestroy(&names);
+					return NULL;
+				}
+				if (is_pattern != NULL)
+				{
+					*is_pattern = 0;
+				}
+				if (special != NULL)
+				{
+					*special = BOT_CHAT_REPLY_KEY_BOTNAMES;
+				}
+				return BotChat_StringBuilderDetach(&names);
+			}
+			if (!expect_name)
+			{
+				if (token.type == TT_PUNCTUATION && token.string[0] == ',')
+				{
+					expect_name = 1;
+					continue;
+				}
+				BotChat_StringBuilderDestroy(&names);
+				return NULL;
+			}
+			if (token.type != TT_STRING)
+			{
+				BotChat_StringBuilderDestroy(&names);
+				return NULL;
+			}
+			if (!first_name
+				&& !BotChat_StringBuilderAppendChar(&names, '\\'))
+			{
+				BotChat_StringBuilderDestroy(&names);
+				return NULL;
+			}
+			if (!BotChat_StringBuilderAppendTokenText(&names, &token))
+			{
+				BotChat_StringBuilderDestroy(&names);
+				return NULL;
+			}
+			first_name = 0;
+			expect_name = 0;
+		}
+		BotChat_StringBuilderDestroy(&names);
+		return NULL;
+	}
 
 	bot_string_builder_t builder = {0};
 	if (token.type == TT_NAME)
@@ -4321,18 +5532,6 @@ static char *BotChat_ParseReplyKeyText(pc_script_t *script,
 			if (special != NULL)
 			{
 				*special = BOT_CHAT_REPLY_KEY_NAME;
-			}
-			return BotChat_StringDuplicate(token.string);
-		}
-		if (BotChat_StringEqualsIgnoreCase(token.string, "botnames"))
-		{
-			if (is_pattern != NULL)
-			{
-				*is_pattern = 0;
-			}
-			if (special != NULL)
-			{
-				*special = BOT_CHAT_REPLY_KEY_BOTNAMES;
 			}
 			return BotChat_StringDuplicate(token.string);
 		}
@@ -4374,7 +5573,7 @@ static char *BotChat_ParseReplyKeyText(pc_script_t *script,
 		}
 	}
 
-	if (token.type == TT_STRING || token.type == TT_NAME)
+	if (token.type == TT_STRING)
 	{
 		if (!BotChat_StringBuilderAppendTokenText(&builder, &token))
 		{
@@ -4390,8 +5589,10 @@ static char *BotChat_ParseReplyKeyText(pc_script_t *script,
 
 	if (token.type == TT_NUMBER)
 	{
-		if (!BotChat_StringBuilderAppendVariableReference(&builder,
-				BotChat_NumberTokenValue(&token)))
+		unsigned long variable = 0UL;
+		if (!BotChat_NumberTokenMatchVariableValue(&token, &variable)
+			|| !BotChat_StringBuilderAppendVariableReference(&builder,
+				variable))
 		{
 			BotChat_StringBuilderDestroy(&builder);
 			return NULL;
@@ -4411,7 +5612,9 @@ static char *BotChat_ParseReplyKeyText(pc_script_t *script,
 =============
 BotChat_ParseReplyKeys
 
-Parses the key list inside a reply chat's square brackets.
+Parses the key list inside a reply chat's square brackets. Q3 accepts optional
+commas between keys but still requires at least one key before the closing
+bracket.
 =============
 */
 static int BotChat_ParseReplyKeys(pc_script_t *script,
@@ -4422,20 +5625,21 @@ static int BotChat_ParseReplyKeys(pc_script_t *script,
 		return 0;
 	}
 
+	int parsed_key = 0;
 	while (1)
 	{
-		if (PS_CheckTokenString(script, "]"))
+		if (BotChat_CheckTokenString(script, "]"))
 		{
-			return 1;
+			return parsed_key;
 		}
 
 		int negated = 0;
 		int required = 0;
-		if (PS_CheckTokenString(script, "!"))
+		if (BotChat_CheckTokenString(script, "!"))
 		{
 			negated = 1;
 		}
-		else if (PS_CheckTokenString(script, "&"))
+		else if (BotChat_CheckTokenString(script, "&"))
 		{
 			required = 1;
 		}
@@ -4459,15 +5663,9 @@ static int BotChat_ParseReplyKeys(pc_script_t *script,
 		key->special = special;
 		key->required = required;
 		key->negated = negated;
+		parsed_key = 1;
 
-		if (PS_CheckTokenString(script, "]"))
-		{
-			return 1;
-		}
-		if (!PS_ExpectTokenString(script, ","))
-		{
-			return 0;
-		}
+		(void)BotChat_CheckTokenString(script, ",");
 	}
 }
 
@@ -4498,6 +5696,7 @@ static int BotChat_ParseReplyBlock(bot_chatstate_t *state, pc_script_t *script)
 		return 0;
 	}
 	unsigned long reply_context = BotChat_NumberTokenValue(&token);
+	float priority = token.floatvalue;
 	if (!PS_ExpectTokenString(script, "{"))
 	{
 		BotChat_FreeReplyKeyList(&keys);
@@ -4509,6 +5708,7 @@ static int BotChat_ParseReplyBlock(bot_chatstate_t *state, pc_script_t *script)
 		BotChat_FreeReplyKeyList(&keys);
 		return 0;
 	}
+	rule->priority = priority;
 	if (!BotChat_MoveReplyKeysToRule(rule, &keys))
 	{
 		BotChat_FreeReplyKeyList(&keys);
@@ -4878,7 +6078,9 @@ static char *BotChat_ParseTextTemplate(pc_script_t *script)
 
 		if (token.type == TT_NUMBER)
 		{
-			if (!BotChat_StringBuilderAppendVariableReference(&builder, token.intvalue))
+			if (!BotChat_NumberTokenIsInteger(&token)
+				|| !BotChat_StringBuilderAppendVariableReference(&builder,
+					BotChat_NumberTokenValue(&token)))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return NULL;
@@ -5072,11 +6274,13 @@ static int BotChat_ParseMatchScript(bot_chatstate_t *state, pc_script_t *script)
 		}
 		if (token.type == TT_NAME && strncmp(token.string, "MTCONTEXT_", 10) == 0)
 		{
+			const unsigned long match_context =
+				BotChat_MatchContextFromToken(&token);
 			if (!PS_ExpectTokenString(script, "{"))
 			{
 				return 0;
 			}
-			if (!BotChat_ParseMatchBlock(state, script))
+			if (!BotChat_ParseMatchBlock(state, script, match_context))
 			{
 				return 0;
 			}
@@ -5085,19 +6289,37 @@ static int BotChat_ParseMatchScript(bot_chatstate_t *state, pc_script_t *script)
 		}
 		if (!previous_was_assign
 			&& token.type == TT_NUMBER
+			&& BotChat_NumberTokenIsInteger(&token)
 			&& BotChat_IsKnownMatchContextNumber(BotChat_NumberTokenValue(&token)))
 		{
+			const unsigned long match_context =
+				BotChat_MatchContextFromToken(&token);
 			if (!PS_CheckTokenString(script, "{"))
 			{
 				previous_was_assign = 0;
 				continue;
 			}
-			if (!BotChat_ParseMatchBlock(state, script))
+			if (!BotChat_ParseMatchBlock(state, script, match_context))
 			{
 				return 0;
 			}
 			previous_was_assign = 0;
 			continue;
+		}
+		if (!previous_was_assign
+			&& token.type == TT_NUMBER
+			&& !BotChat_NumberTokenIsInteger(&token))
+		{
+			pc_token_t open_token;
+			if (!PS_ReadToken(script, &open_token))
+			{
+				return 0;
+			}
+			if (open_token.type == TT_PUNCTUATION && open_token.string[0] == '{')
+			{
+				return 0;
+			}
+			PS_UnreadToken(script, &open_token);
 		}
 		if (token.type == TT_PUNCTUATION && token.string[0] == '[')
 		{
@@ -5139,6 +6361,7 @@ static int BotChat_ParseReplyScript(bot_chatstate_t *state, pc_script_t *script)
 			continue;
 		}
 		if (token.type == TT_NUMBER
+			&& BotChat_NumberTokenIsInteger(&token)
 			&& BotChat_IsKnownMatchContextNumber(BotChat_NumberTokenValue(&token)))
 		{
 			pc_token_t open_token;
@@ -5156,6 +6379,20 @@ static int BotChat_ParseReplyScript(bot_chatstate_t *state, pc_script_t *script)
 				return 0;
 			}
 			continue;
+		}
+		if (token.type == TT_NUMBER
+			&& !BotChat_NumberTokenIsInteger(&token))
+		{
+			pc_token_t open_token;
+			if (!PS_ReadToken(script, &open_token))
+			{
+				return 0;
+			}
+			if (open_token.type == TT_PUNCTUATION && open_token.string[0] == '{')
+			{
+				return 0;
+			}
+			PS_UnreadToken(script, &open_token);
 		}
 		char context_name[BOT_CHAT_MAX_TOKEN_CHARS];
 		if (BotChat_SynonymContextNameFromToken(&token,
@@ -5781,11 +7018,13 @@ references.
 =============
 */
 static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
-	unsigned long context,
+	unsigned long message_context,
+	unsigned long variable_context,
 	const char *template_text,
 	const char *const variables[BOT_CHAT_MAX_MATCH_VARIABLES],
 	char *out_message,
 	size_t out_size,
+	int reply,
 	int *expanded_random)
 {
 	if (state == NULL || template_text == NULL || out_message == NULL || out_size == 0U)
@@ -5829,11 +7068,36 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 				variable_name[name_length] = '\0';
 
 				unsigned long variable = 0;
-				if (BotChat_VariableNumberForName(variable_name, context, &variable)
+				if (BotChat_VariableNumberForName(variable_name,
+					message_context,
+					&variable)
 					&& variable < BOT_CHAT_MAX_MATCH_VARIABLES
 					&& variables[variable] != NULL)
 				{
-					const size_t replacement_length = strlen(variables[variable]);
+					char variable_buffer[BOT_CHAT_MAX_MESSAGE_CHARS];
+					snprintf(variable_buffer,
+						sizeof(variable_buffer),
+						"%s",
+						variables[variable]);
+					if (reply)
+					{
+						if (!BotChat_ReplaceReplySynonyms(state,
+							variable_context,
+							variable_buffer,
+							sizeof(variable_buffer)))
+						{
+							return 0;
+						}
+					}
+					else if (!BotChat_ReplaceVariableSynonyms(state,
+						variable_context,
+						variable_buffer,
+						sizeof(variable_buffer)))
+					{
+						return 0;
+					}
+
+					const size_t replacement_length = strlen(variable_buffer);
 					if (assembled_length + replacement_length > max_length
 						|| assembled_length + replacement_length >= out_size)
 					{
@@ -5843,7 +7107,7 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 						return 0;
 					}
 					memcpy(assembled + assembled_length,
-						variables[variable],
+						variable_buffer,
 						replacement_length);
 					assembled_length += replacement_length;
 					i = end_index + 1;
@@ -5889,7 +7153,7 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 		}
 
 		const char *replacement = NULL;
-		char replacement_buffer[64];
+		char replacement_buffer[BOT_CHAT_MAX_MESSAGE_CHARS];
 		if (escape == 'r')
 		{
 			size_t name_length = end_index - start_index;
@@ -5964,11 +7228,33 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 				&& value < BOT_CHAT_MAX_MATCH_VARIABLES
 				&& variables[value] != NULL)
 			{
-				replacement = variables[value];
+				snprintf(replacement_buffer,
+					sizeof(replacement_buffer),
+					"%s",
+					variables[value]);
+				if (reply)
+				{
+					if (!BotChat_ReplaceReplySynonyms(state,
+						variable_context,
+						replacement_buffer,
+						sizeof(replacement_buffer)))
+					{
+						return 0;
+					}
+				}
+				else if (!BotChat_ReplaceVariableSynonyms(state,
+					variable_context,
+					replacement_buffer,
+					sizeof(replacement_buffer)))
+				{
+					return 0;
+				}
+				replacement = replacement_buffer;
 			}
 			else
 			{
-				const char *variable_name = BotChat_VariableNameForNumber(context, value);
+				const char *variable_name =
+					BotChat_VariableNameForNumber(message_context, value);
 				int written;
 				if (variable_name != NULL)
 				{
@@ -6028,12 +7314,14 @@ provided buffer, and queues it when the text passes safety checks.
 =============
 */
 static int BotConstructChatMessageWithVariables(bot_chatstate_t *state,
-	unsigned long context,
+	unsigned long message_context,
+	unsigned long variable_context,
 	const char *template_text,
 	const char *const variables[BOT_CHAT_MAX_MATCH_VARIABLES],
 	char *out_message,
 	size_t out_size,
-	int replace_synonyms)
+	int replace_synonyms,
+	int reply)
 {
 	if (state == NULL || template_text == NULL || out_message == NULL || out_size == 0U)
 	{
@@ -6057,11 +7345,13 @@ static int BotConstructChatMessageWithVariables(bot_chatstate_t *state,
 	{
 		int expanded_random = 0;
 		if (!BotChat_ExpandChatMessageOnce(state,
-			context,
+			message_context,
+			variable_context,
 			source,
 			variables,
 			expanded,
 			sizeof(expanded),
+			reply,
 			&expanded_random))
 		{
 			return 0;
@@ -6082,7 +7372,7 @@ static int BotConstructChatMessageWithVariables(bot_chatstate_t *state,
 
 	if (replace_synonyms
 		&& !BotChat_ReplaceWeightedSynonyms(state,
-			context,
+			message_context,
 			source,
 			sizeof(source),
 			template_text))
@@ -6097,8 +7387,8 @@ static int BotConstructChatMessageWithVariables(bot_chatstate_t *state,
 	}
 
 	snprintf(out_message, out_size, "%s", source);
-	BotChat_StorePendingMessage(state, context, out_message);
-	BotQueueConsoleMessage(state, (int)context, out_message);
+	BotChat_StorePendingMessage(state, message_context, out_message);
+	BotQueueConsoleMessage(state, (int)message_context, out_message);
 	return 1;
 }
 
@@ -6117,11 +7407,30 @@ static int BotConstructChatMessage(bot_chatstate_t *state,
 {
 	return BotConstructChatMessageWithVariables(state,
 		context,
+		0,
 		template_text,
 		NULL,
 		out_message,
 		out_size,
+		0,
 		0);
+}
+
+/*
+=============
+BotChat_CommandClient
+
+Returns the owner client that should emit chat commands.
+=============
+*/
+static int BotChat_CommandClient(const bot_chatstate_t *state, int fallback_client)
+{
+	if (state != NULL && state->chat_client_valid)
+	{
+		return state->chat_client;
+	}
+
+	return fallback_client;
 }
 
 /*
@@ -6134,24 +7443,29 @@ the console queue used for diagnostics.
 */
 static void BotChat_DispatchMessage(bot_chatstate_t *state,
 	const char *message,
-int client,
-int sendto)
+	int client,
+	int sendto)
 {
 	if (state == NULL || message == NULL || message[0] == '\0')
 	{
 		return;
 	}
 
+	char cleaned_message[BOT_CHAT_MAX_MESSAGE_CHARS];
+	snprintf(cleaned_message, sizeof(cleaned_message), "%s", message);
+	BotChat_RemoveTildes(cleaned_message);
+
+	const int command_client = BotChat_CommandClient(state, client);
 	switch (sendto)
 	{
 		case BOT_CHAT_SENDTO_TEAM:
-			Q2_BotClientCommand(client, "%s %s", "say_team", message);
+			Q2_BotClientCommand(command_client, "%s %s", "say_team", cleaned_message);
 			return;
 		case BOT_CHAT_SENDTO_TELL:
-			Q2_BotClientCommand(client, "tell %d %s", client, message);
+			Q2_BotClientCommand(command_client, "tell %d %s", client, cleaned_message);
 			return;
 		default:
-			Q2_BotClientCommand(client, "%s %s", "say", message);
+			Q2_BotClientCommand(command_client, "%s %s", "say", cleaned_message);
 			return;
 	}
 }
@@ -6394,6 +7708,16 @@ int BotNumInitialChats(const bot_chatstate_t *state, const char *type)
 		return 0;
 	}
 
+	if (BotChat_TestInitialChatEnabled())
+	{
+		BotChat_PrintTestMessage((bot_chatstate_t *)state,
+			"%s has %d chat lines\n",
+			type,
+			(int)initial_type->template_count);
+		BotChat_PrintTestMessage((bot_chatstate_t *)state,
+			"-------------------\n");
+	}
+
 	return (int)initial_type->template_count;
 }
 
@@ -6632,6 +7956,18 @@ void BotEnterChat(bot_chatstate_t *state, int client, int sendto)
 	if (state->chat_message[0] != '\0')
 	{
 		state->speaking_client = client;
+		if (BotChat_TestInitialChatEnabled())
+		{
+			char cleaned_message[BOT_CHAT_MAX_MESSAGE_CHARS];
+			snprintf(cleaned_message,
+				sizeof(cleaned_message),
+				"%s",
+				state->chat_message);
+			BotChat_RemoveTildes(cleaned_message);
+			BotChat_PrintTestMessage(state, "%s\n", cleaned_message);
+			BotChat_ClearPendingMessage(state);
+			return;
+		}
 		BotChat_DispatchMessage(state, state->chat_message, client, sendto);
 		BotChat_ClearPendingMessage(state);
 		return;
@@ -6681,11 +8017,13 @@ int BotInitialChat(bot_chatstate_t *state,
 	char message[BOT_CHAT_MAX_MESSAGE_CHARS];
 	return BotConstructChatMessageWithVariables(state,
 		context,
+		0,
 		template_text,
 		variables,
 		message,
 		sizeof(message),
-		1);
+		1,
+		0);
 }
 
 /*
@@ -6804,7 +8142,6 @@ static int BotChat_ReplyRuleMatches(const bot_chatstate_t *state,
 			message,
 			key_storage,
 			key_variables);
-
 		if (key->required)
 		{
 			if (!matched)
@@ -6836,11 +8173,12 @@ static int BotChat_ReplyRuleMatches(const bot_chatstate_t *state,
 =============
 BotChat_FindMatchingReplyRuleInState
 
-Searches one reply table and copies captured variables for the first match.
+Searches one reply table and copies variables for the highest-priority match.
 =============
 */
 static const bot_reply_rule_t *BotChat_FindMatchingReplyRuleInState(
 	bot_chatstate_t *source,
+	const bot_chatstate_t *matcher_state,
 	const char *message,
 	unsigned long int context,
 	char captured_storage[][BOT_CHAT_MAX_MESSAGE_CHARS],
@@ -6850,19 +8188,26 @@ static const bot_reply_rule_t *BotChat_FindMatchingReplyRuleInState(
 	{
 		return NULL;
 	}
+	if (matcher_state == NULL)
+	{
+		matcher_state = source;
+	}
 
+	(void)context;
+	const bot_reply_rule_t *best_rule = NULL;
+	float best_priority = -1.0f;
+	BotChat_ClearCapturedVariables(captured_variables);
 	for (size_t i = 0; i < source->replies.rule_count; ++i)
 	{
 		bot_reply_rule_t *candidate_rule = &source->replies.rules[i];
-		if (candidate_rule->reply_context != context
-			|| candidate_rule->response_count == 0)
+		if (candidate_rule->response_count == 0)
 		{
 			continue;
 		}
 
 		char rule_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
 		const char *rule_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
-		if (!BotChat_ReplyRuleMatches(source,
+		if (!BotChat_ReplyRuleMatches(matcher_state,
 				candidate_rule,
 				message,
 				rule_storage,
@@ -6871,44 +8216,138 @@ static const bot_reply_rule_t *BotChat_FindMatchingReplyRuleInState(
 			continue;
 		}
 
-		BotChat_CopyCapturedVariables(captured_storage,
-			captured_variables,
-			rule_variables);
-		return candidate_rule;
+		if (best_rule == NULL || candidate_rule->priority > best_priority)
+		{
+			best_rule = candidate_rule;
+			best_priority = candidate_rule->priority;
+			BotChat_CopyCapturedVariables(captured_storage,
+				captured_variables,
+				rule_variables);
+		}
 	}
 
-	return NULL;
+	return best_rule;
 }
 
 /*
 =============
-BotReplyChat
+BotChat_ApplyExplicitReplyVariables
 
-Constructs a reply by preferring match templates and falling back to reply
-tables, emitting diagnostics when no response can be generated.
+Overlays fixed Q3 var0-var7 reply arguments onto captured match variables.
 =============
 */
-int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context)
+static int BotChat_ApplyExplicitReplyVariables(
+	char storage[][BOT_CHAT_MAX_MESSAGE_CHARS],
+	const char *variables[BOT_CHAT_MAX_MATCH_VARIABLES],
+	const char *const explicit_variables[BOT_CHAT_MAX_MATCH_VARIABLES])
 {
-if (state == NULL || message == NULL)
-{
-return 0;
+	if (storage == NULL || variables == NULL || explicit_variables == NULL)
+	{
+		return 0;
+	}
+
+	int applied = 0;
+	for (size_t i = 0; i < BOT_CHAT_MAX_MATCH_VARIABLES && i < 8U; ++i)
+	{
+		if (explicit_variables[i] == NULL)
+		{
+			continue;
+		}
+		snprintf(storage[i],
+			BOT_CHAT_MAX_MESSAGE_CHARS,
+			"%s",
+			explicit_variables[i]);
+		variables[i] = storage[i];
+		applied = 1;
+	}
+
+	return applied;
 }
 
-const double now_seconds = BotChat_CurrentTimeSeconds(state);
-if (!BotChat_EventAllowed(state, state->speaking_client, context, now_seconds))
+/*
+=============
+BotChat_PrintReplyTestMessages
+
+Constructs and prints every response in a matched reply rule for bot_testrchat.
+=============
+*/
+static int BotChat_PrintReplyTestMessages(bot_chatstate_t *state,
+	const bot_reply_rule_t *reply_rule,
+	unsigned long int mcontext,
+	unsigned long int vcontext,
+	const char *const variables[BOT_CHAT_MAX_MATCH_VARIABLES],
+	int q3_context_split)
 {
-return 0;
+	if (state == NULL || reply_rule == NULL || reply_rule->response_count == 0)
+	{
+		return 0;
+	}
+
+	for (size_t i = 0; i < reply_rule->response_count; ++i)
+	{
+		const char *template_text = reply_rule->responses[i];
+		if (template_text == NULL)
+		{
+			continue;
+		}
+
+		char constructed[BOT_CHAT_MAX_MESSAGE_CHARS];
+		if (!BotConstructChatMessageWithVariables(state,
+			mcontext,
+			q3_context_split ? vcontext : 0UL,
+			template_text,
+			variables,
+			constructed,
+			sizeof(constructed),
+			q3_context_split,
+			q3_context_split))
+		{
+			return 0;
+		}
+
+		BotChat_RemoveTildes(constructed);
+		BotChat_RemoveTildes(state->chat_message);
+		BotChat_PrintTestMessage(state, "%s\n", constructed);
+	}
+
+	return 1;
 }
+
+/*
+=============
+BotReplyChatInternal
+
+Constructs a reply by preferring match templates and falling back to reply
+tables, with optional Q3 split mcontext/vcontext construction semantics.
+=============
+*/
+static int BotReplyChatInternal(bot_chatstate_t *state,
+	const char *message,
+	unsigned long int mcontext,
+	unsigned long int vcontext,
+	const char *const explicit_variables[BOT_CHAT_MAX_MATCH_VARIABLES],
+	int q3_context_split)
+{
+	if (state == NULL || message == NULL)
+	{
+		return 0;
+	}
+	const double now_seconds = BotChat_CurrentTimeSeconds(state);
+	if (!BotChat_EventAllowed(state, state->speaking_client, mcontext, now_seconds))
+	{
+		return 0;
+	}
 
 	const char *template_text = NULL;
 	char captured_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
 	const char *captured_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
 	int has_captured_variables = 0;
-	bot_match_context_t *match_context = BotChat_FindResolvedMatchContext(state, context);
+	bot_match_context_t *match_context =
+		BotChat_FindResolvedMatchContext(state, mcontext);
 	if (match_context != NULL && match_context->template_count > 0)
 	{
-		size_t *matching_indices = malloc(match_context->template_count * sizeof(size_t));
+		size_t *matching_indices =
+			malloc(match_context->template_count * sizeof(size_t));
 		size_t match_count = 0;
 		if (matching_indices != NULL)
 		{
@@ -6926,7 +8365,7 @@ return 0;
 				const int matches = has_placeholders ?
 					BotChat_CaptureMatchTemplateVariables(candidate,
 						message,
-						context,
+						mcontext,
 						candidate_storage,
 						candidate_variables) :
 					BotChat_TemplateMatchesMessage(state, candidate, message);
@@ -6939,11 +8378,12 @@ return 0;
 			if (match_count > 0)
 			{
 				size_t selected_index = BotChat_SelectIndex(message, match_count);
-				template_text = match_context->templates[matching_indices[selected_index]];
+				template_text =
+					match_context->templates[matching_indices[selected_index]];
 				if (template_text != NULL && strchr(template_text, '{') != NULL
 					&& BotChat_CaptureMatchTemplateVariables(template_text,
 						message,
-						context,
+						mcontext,
 						captured_storage,
 						captured_variables))
 				{
@@ -6959,19 +8399,53 @@ return 0;
 
 	if (template_text != NULL)
 	{
+		char construction_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
+		const char *construction_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
+		if (has_captured_variables)
+		{
+			BotChat_CopyCapturedVariables(construction_storage,
+				construction_variables,
+				captured_variables);
+		}
+		const int has_explicit_variables =
+			BotChat_ApplyExplicitReplyVariables(construction_storage,
+				construction_variables,
+				explicit_variables);
+		if (BotChat_TestReplyChatEnabled())
+		{
+			if (!BotConstructChatMessageWithVariables(state,
+					mcontext,
+					q3_context_split ? vcontext : 0UL,
+					template_text,
+					(has_captured_variables || has_explicit_variables)
+						? construction_variables
+						: NULL,
+					constructed,
+					sizeof(constructed),
+					0,
+					0))
+			{
+				return 0;
+			}
+			BotChat_RemoveTildes(constructed);
+			BotChat_RemoveTildes(state->chat_message);
+			BotChat_PrintTestMessage(state, "%s\n", constructed);
+			return 1;
+		}
 		if (!BotConstructChatMessageWithVariables(state,
-				context,
+				mcontext,
+				q3_context_split ? vcontext : 0UL,
 				template_text,
-				has_captured_variables ? captured_variables : NULL,
+				(has_captured_variables || has_explicit_variables)
+					? construction_variables
+					: NULL,
 				constructed,
 				sizeof(constructed),
+				0,
 				0))
 		{
 			return 0;
 		}
-		BotChat_DispatchMessage(state, constructed, state->speaking_client, BOT_CHAT_SENDTO_ALL);
-		BotChat_ClearPendingMessage(state);
-		BotChat_CommitClientCooldown(state, (size_t)state->speaking_client, now_seconds);
 		return 1;
 	}
 
@@ -6980,9 +8454,6 @@ return 0;
 		fallback_state != NULL && fallback_state->has_reply_chats;
 	if (!state->has_reply_chats && !has_setup_reply_chats)
 	{
-		const char *diagnostic = "no rchats\n";
-		BotLib_Print(PRT_MESSAGE, "%s", diagnostic);
-		BotQueueConsoleMessage(state, PRT_MESSAGE, diagnostic);
 		return 0;
 	}
 
@@ -6990,16 +8461,18 @@ return 0;
 	BotChat_ClearCapturedVariables(captured_variables);
 	has_captured_variables = 0;
 	reply_rule = BotChat_FindMatchingReplyRuleInState(state,
+		state,
 		message,
-		context,
+		mcontext,
 		captured_storage,
 		captured_variables);
 	if (reply_rule == NULL && fallback_state != NULL)
 	{
 		BotChat_ClearCapturedVariables(captured_variables);
 		reply_rule = BotChat_FindMatchingReplyRuleInState((bot_chatstate_t *)fallback_state,
+			state,
 			message,
-			context,
+			mcontext,
 			captured_storage,
 			captured_variables);
 	}
@@ -7010,31 +8483,127 @@ return 0;
 
 	if (reply_rule != NULL && reply_rule->response_count > 0)
 	{
-		size_t index = BotChat_SelectIndex(message, reply_rule->response_count);
+		if (BotChat_TestReplyChatEnabled())
+		{
+			char construction_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
+			const char *construction_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
+			if (has_captured_variables)
+			{
+				BotChat_CopyCapturedVariables(construction_storage,
+					construction_variables,
+					captured_variables);
+			}
+			(void)BotChat_ApplyExplicitReplyVariables(construction_storage,
+				construction_variables,
+				explicit_variables);
+			return BotChat_PrintReplyTestMessages(state,
+				reply_rule,
+				mcontext,
+				vcontext,
+				construction_variables,
+				q3_context_split);
+		}
+
+		size_t index = BotChat_SelectRecentIndex(message,
+			reply_rule->response_times,
+			reply_rule->response_count,
+			now_seconds,
+			0,
+			NULL);
+		BotChat_MarkRecent(reply_rule->response_times,
+			index,
+			reply_rule->response_count,
+			now_seconds);
 		template_text = reply_rule->responses[index];
 		if (template_text != NULL)
 		{
+			char construction_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
+			const char *construction_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
+			if (has_captured_variables)
+			{
+				BotChat_CopyCapturedVariables(construction_storage,
+					construction_variables,
+					captured_variables);
+			}
+			const int has_explicit_variables =
+				BotChat_ApplyExplicitReplyVariables(construction_storage,
+					construction_variables,
+					explicit_variables);
 			if (!BotConstructChatMessageWithVariables(state,
-					context,
+					mcontext,
+					q3_context_split ? vcontext : 0UL,
 					template_text,
-					has_captured_variables ? captured_variables : NULL,
+					(has_captured_variables || has_explicit_variables)
+						? construction_variables
+						: NULL,
 					constructed,
 					sizeof(constructed),
-					0))
+					q3_context_split,
+					q3_context_split))
 			{
 				return 0;
 			}
-			BotChat_DispatchMessage(state, constructed, state->speaking_client, BOT_CHAT_SENDTO_ALL);
-			BotChat_ClearPendingMessage(state);
-			BotChat_CommitClientCooldown(state, (size_t)state->speaking_client, now_seconds);
 			return 1;
 		}
 	}
 
-	const char *diagnostic = "no rchats\n";
-	BotLib_Print(PRT_MESSAGE, "%s", diagnostic);
-	BotQueueConsoleMessage(state, PRT_MESSAGE, diagnostic);
 	return 0;
+}
+
+/*
+=============
+BotReplyChat
+
+Compatibility reply entry point that preserves the historical folded context.
+=============
+*/
+int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context)
+{
+	const char *explicit_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
+	return BotReplyChatInternal(state,
+		message,
+		context,
+		0UL,
+		explicit_variables,
+		0);
+}
+
+/*
+=============
+BotReplyChatWithContexts
+
+Q3-shaped reply entry point with split message and variable synonym contexts.
+=============
+*/
+int BotReplyChatWithContexts(bot_chatstate_t *state,
+	const char *message,
+	unsigned long int mcontext,
+	unsigned long int vcontext,
+	const char *var0,
+	const char *var1,
+	const char *var2,
+	const char *var3,
+	const char *var4,
+	const char *var5,
+	const char *var6,
+	const char *var7)
+{
+	const char *explicit_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
+	explicit_variables[0] = var0;
+	explicit_variables[1] = var1;
+	explicit_variables[2] = var2;
+	explicit_variables[3] = var3;
+	explicit_variables[4] = var4;
+	explicit_variables[5] = var5;
+	explicit_variables[6] = var6;
+	explicit_variables[7] = var7;
+
+	return BotReplyChatInternal(state,
+		message,
+		mcontext,
+		vcontext,
+		explicit_variables,
+		1);
 }
 
 /*
@@ -7381,6 +8950,7 @@ void BotGetChatMessage(bot_chatstate_t *state, char *buffer, int buffer_size)
 	}
 
 	snprintf(buffer, (size_t)buffer_size, "%s", state->chat_message);
+	BotChat_RemoveTildes(buffer);
 	BotChat_ClearPendingMessage(state);
 }
 
@@ -7427,6 +8997,7 @@ void BotSetChatName(bot_chatstate_t *state, const char *name, int client)
 	}
 
 	state->chat_client = client;
+	state->chat_client_valid = 1;
 	memset(state->chat_name, 0, sizeof(state->chat_name));
 	if (name == NULL)
 	{
@@ -7434,6 +9005,120 @@ void BotSetChatName(bot_chatstate_t *state, const char *name, int client)
 	}
 
 	snprintf(state->chat_name, sizeof(state->chat_name), "%s", name);
+}
+
+/*
+=============
+BotFindMatch
+
+Finds the first setup match template that applies to the requested context.
+=============
+*/
+int BotFindMatch(const char *str, bot_match_t *match, unsigned long int context)
+{
+	if (match != NULL)
+	{
+		memset(match, 0, sizeof(*match));
+		BotChat_ClearMatchResultVariables(match);
+	}
+	if (str == NULL || match == NULL || bot_chat_setup_state == NULL)
+	{
+		return 0;
+	}
+
+	snprintf(match->string, sizeof(match->string), "%s", str);
+	while (match->string[0] != '\0')
+	{
+		const size_t length = strlen(match->string);
+		if (match->string[length - 1] != '\n')
+		{
+			break;
+		}
+		match->string[length - 1] = '\0';
+	}
+
+	for (size_t context_index = 0;
+		context_index < bot_chat_setup_state->match_context_count;
+		++context_index)
+	{
+		const bot_match_context_t *match_context =
+			&bot_chat_setup_state->match_contexts[context_index];
+		for (size_t template_index = 0;
+			template_index < match_context->template_count;
+			++template_index)
+		{
+			const unsigned long template_context =
+				match_context->template_match_contexts[template_index];
+			if ((template_context & context) == 0UL)
+			{
+				continue;
+			}
+
+			const char *template_text = match_context->templates[template_index];
+			char *pattern = BotChat_TemplateVariablePattern(template_text,
+				match_context->message_type);
+			if (pattern == NULL)
+			{
+				continue;
+			}
+
+			const int matched = BotChat_MatchVariablePatternResult(pattern, match);
+			free(pattern);
+			if (!matched)
+			{
+				continue;
+			}
+
+			match->type = (int)match_context->message_type;
+			match->subtype =
+				(int)match_context->template_subtypes[template_index];
+			return 1;
+		}
+	}
+
+	BotChat_ClearMatchResultVariables(match);
+	return 0;
+}
+
+/*
+=============
+BotMatchVariable
+
+Copies a captured public match variable into the caller buffer.
+=============
+*/
+void BotMatchVariable(const bot_match_t *match,
+	int variable,
+	char *buffer,
+	int buffer_size)
+{
+	if (buffer != NULL && buffer_size > 0)
+	{
+		buffer[0] = '\0';
+	}
+	if (match == NULL || buffer == NULL || buffer_size <= 0)
+	{
+		return;
+	}
+	if (variable < 0 || variable >= BOT_MATCH_MAX_VARIABLES)
+	{
+		BotLib_Print(PRT_FATAL, "BotMatchVariable: variable out of range\n");
+		return;
+	}
+
+	const bot_matchvariable_t *span = &match->variables[variable];
+	if (span->offset < 0 || span->length <= 0)
+	{
+		return;
+	}
+
+	size_t copy_length = (size_t)span->length;
+	if (copy_length >= (size_t)buffer_size)
+	{
+		copy_length = (size_t)buffer_size - 1U;
+	}
+	memcpy(buffer, match->string + span->offset, copy_length);
+	buffer[copy_length] = '\0';
 }
 
 int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_name, const char *phrase)

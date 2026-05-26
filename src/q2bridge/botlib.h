@@ -308,12 +308,29 @@ typedef struct bot_export_s {
     size_t (*BotNumConsoleMessages)(const bot_chatstate_t *state);
     void (*BotEnterChat)(bot_chatstate_t *state, int client, int sendto);
     int (*BotReplyChat)(bot_chatstate_t *state, const char *message, unsigned long context);
+	int (*BotReplyChatWithContexts)(bot_chatstate_t *state,
+		const char *message,
+		unsigned long mcontext,
+		unsigned long vcontext,
+		const char *var0,
+		const char *var1,
+		const char *var2,
+		const char *var3,
+		const char *var4,
+		const char *var5,
+		const char *var6,
+		const char *var7);
     int (*BotChatLength)(const bot_chatstate_t *state);
 	int (*BotNumInitialChats)(const bot_chatstate_t *state, const char *type);
 	int (*BotInitialChat)(bot_chatstate_t *state, const char *type, unsigned long context, ...);
     void (*BotGetChatMessage)(bot_chatstate_t *state, char *buffer, int buffer_size);
     void (*BotSetChatGender)(bot_chatstate_t *state, int gender);
     void (*BotSetChatName)(bot_chatstate_t *state, const char *name, int client);
+    int (*StringContains)(const char *str1, const char *str2, int casesensitive);
+    int (*BotFindMatch)(const char *str, bot_match_t *match, unsigned long context);
+    void (*BotMatchVariable)(const bot_match_t *match, int variable, char *buffer, int buffer_size);
+    void (*UnifyWhiteSpaces)(char *string);
+    void (*BotReplaceSynonyms)(char *string, unsigned long context);
     void (*BotEmptyGoalStack)(int handle);
     void (*BotRemoveFromAvoidGoals)(int handle, int number);
     float (*BotAvoidGoalTime)(int handle, int number);

@@ -6,52 +6,50 @@
 extern "C" {
 #endif
 
+#define BOTLIB_WEIGHT_TYPE_BALANCE 1
+#define BOTLIB_WEIGHT_MAX_VALUE 999999
+
 /**
- * Maximum number of weight definitions observed in the Gladiator HLIL. The
- * parser aborts once 128 entries are queued, matching the Quake III
- * implementation and the `"too many fuzzy weights"` diagnostic captured in the
- * disassembly.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L42123-L42174】
+ * Maximum number of parsed weight definitions. Matches the Quake III
+ * MAX_WEIGHTS constant and Gladiator's "too many fuzzy weights" path.
  */
 #define BOTLIB_MAX_WEIGHTS 128
 
 /**
- * Placeholder for the fuzzy separator nodes used by weapon/item weight trees.
- * The field layout mirrors Quake III’s `fuzzyseperator_t` so downstream
- * heuristics can be ported with minimal friction once the HLIL is lifted.
+ * Fuzzy separator node used by item and weapon weight trees. The field order
+ * mirrors Quake III's fuzzyseperator_t layout.
  */
 typedef struct bot_fuzzy_seperator_s {
-    int index;
-    int value;
-    int type;
-    float weight;
-    float min_weight;
-    float max_weight;
-    struct bot_fuzzy_seperator_s *child;
-    struct bot_fuzzy_seperator_s *next;
+	int index;
+	int value;
+	int type;
+	float weight;
+	float min_weight;
+	float max_weight;
+	struct bot_fuzzy_seperator_s *child;
+	struct bot_fuzzy_seperator_s *next;
 } bot_fuzzy_seperator_t;
 
 /**
  * Named weight entry combining the source identifier with the root fuzzy tree.
  */
 typedef struct bot_weight_s {
-    char *name;
-    bot_fuzzy_seperator_t *first_seperator;
+	char *name;
+	bot_fuzzy_seperator_t *first_seperator;
 } bot_weight_t;
 
 /**
- * Runtime representation of a loaded weight configuration. The filename buffer
- * documents the origin path for debugging; its exact size will be refined once
- * filesystem helpers are restored.
+ * Runtime representation of a loaded weight configuration.
  */
 typedef struct bot_weight_config_s {
-    int num_weights;
-    bot_weight_t weights[BOTLIB_MAX_WEIGHTS];
-    char source_file[260];
+	int num_weights;
+	bot_weight_t weights[BOTLIB_MAX_WEIGHTS];
+	char source_file[260];
 } bot_weight_config_t;
 
 bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
-                                                 const char *const *global_defines,
-                                                 size_t global_define_count);
+	const char *const *global_defines,
+	size_t global_define_count);
 bot_weight_config_t *ReadWeightConfig(const char *filename);
 void FreeWeightConfig(bot_weight_config_t *config);
 void FreeWeightConfig2(bot_weight_config_t *config);
@@ -65,8 +63,8 @@ void ScaleBalanceRange(bot_weight_config_t *config, float scale);
 void EvolveWeightConfig(bot_weight_config_t *config);
 int MergeWeightConfigs(bot_weight_config_t *config1, bot_weight_config_t *config2);
 void InterbreedWeightConfigs(bot_weight_config_t *config1,
-                             bot_weight_config_t *config2,
-                             bot_weight_config_t *configout);
+	bot_weight_config_t *config2,
+	bot_weight_config_t *configout);
 void BotWeight_ShutdownCachedConfigs(void);
 void BotShutdownWeights(void);
 

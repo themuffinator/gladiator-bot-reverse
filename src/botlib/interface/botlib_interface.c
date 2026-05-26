@@ -150,43 +150,46 @@ static int Botlib_SetupEASubsystem(void)
     return BLERR_NOERROR;
 }
 
-static bool Botlib_SetupAISubsystem(void)
+static int Botlib_SetupAISubsystem(void)
 {
-    if (g_subsystem_state.ai_initialised) {
-        return true;
-    }
+	if (g_subsystem_state.ai_initialised) {
+		return BLERR_NOERROR;
+	}
 
-    const char *weapon_config_path =
-        (g_library_variables.weaponconfig[0] != '\0') ? g_library_variables.weaponconfig : NULL;
+	const char *weapon_config_path =
+		(g_library_variables.weaponconfig[0] != '\0') ? g_library_variables.weaponconfig : NULL;
 
-    g_weapon_library = AI_LoadWeaponLibrary(weapon_config_path);
-    if (g_weapon_library == NULL) {
-        return false;
-    }
+	g_weapon_library = AI_LoadWeaponLibrary(weapon_config_path);
+	if (g_weapon_library == NULL) {
+		return BLERR_CANNOTLOADWEAPONCONFIG;
+	}
 
-    if (BotSetupGoalAI() != BLERR_NOERROR) {
-        AI_UnloadWeaponLibrary(g_weapon_library);
-        g_weapon_library = NULL;
-        return false;
-    }
+	int status = BotSetupGoalAI();
+	if (status != BLERR_NOERROR) {
+		AI_UnloadWeaponLibrary(g_weapon_library);
+		g_weapon_library = NULL;
+		return status;
+	}
 
-    if (BotSetupChatAI() != BLERR_NOERROR) {
-        BotShutdownGoalAI();
-        AI_UnloadWeaponLibrary(g_weapon_library);
-        g_weapon_library = NULL;
-        return false;
-    }
+	status = BotSetupChatAI();
+	if (status != BLERR_NOERROR) {
+		BotShutdownGoalAI();
+		AI_UnloadWeaponLibrary(g_weapon_library);
+		g_weapon_library = NULL;
+		return status;
+	}
 
-    if (BotSetupMoveAI() != BLERR_NOERROR) {
-        BotShutdownChatAI();
-        BotShutdownGoalAI();
-        AI_UnloadWeaponLibrary(g_weapon_library);
-        g_weapon_library = NULL;
-        return false;
-    }
+	status = BotSetupMoveAI();
+	if (status != BLERR_NOERROR) {
+		BotShutdownChatAI();
+		BotShutdownGoalAI();
+		AI_UnloadWeaponLibrary(g_weapon_library);
+		g_weapon_library = NULL;
+		return status;
+	}
 
-    g_subsystem_state.ai_initialised = true;
-    return true;
+	g_subsystem_state.ai_initialised = true;
+	return BLERR_NOERROR;
 }
 
 static int Botlib_SetupSoundSubsystem(void)
@@ -257,6 +260,7 @@ static void Botlib_ShutdownAISubsystem(void)
 	BotShutdownChatAI();
 	BotShutdownGoalAI();
 	BotShutdownCharacters();
+	BotShutdownWeaponAI();
 	BotShutdownWeights();
 
 	if (g_weapon_library != NULL) {
@@ -394,16 +398,17 @@ int BotSetupLibrary(void)
      * then request per-bot weight handles and chat files after these shared
      * caches exist.
      */
-    if (!Botlib_SetupAISubsystem()) {
-        Botlib_ShutdownEASubsystem();
-        Botlib_ShutdownAASSubsystem();
-        Botlib_ShutdownUtilities();
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return BLERR_CANNOTLOADWEAPONCONFIG;
-    }
+	status = Botlib_SetupAISubsystem();
+	if (status != BLERR_NOERROR) {
+		Botlib_ShutdownEASubsystem();
+		Botlib_ShutdownAASSubsystem();
+		Botlib_ShutdownUtilities();
+		Botlib_ResetLibraryVariables();
+		Botlib_ResetSubsystemState();
+		LibVar_Shutdown();
+		BotMemory_Shutdown();
+		return status;
+	}
 
     status = Botlib_SetupSoundSubsystem();
     if (status != BLERR_NOERROR) {

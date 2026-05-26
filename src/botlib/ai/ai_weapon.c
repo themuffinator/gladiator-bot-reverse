@@ -7,6 +7,7 @@
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_struct.h"
 #include "botlib/precomp/l_precomp.h"
+#include "shared/q_platform.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -17,6 +18,19 @@
 
 #define AI_WEAPON_OFS(x) ((int)offsetof(bot_weapon_info_t, x))
 #define AI_PROJECTILE_OFS(x) ((int)offsetof(bot_weapon_projectile_t, x))
+
+typedef char ai_weapon_assert_number_offset[
+	offsetof(bot_weapon_info_t, number) == BOT_WEAPON_INFO_NUMBER_OFFSET ? 1 : -1];
+typedef char ai_weapon_assert_name_offset[
+	offsetof(bot_weapon_info_t, name) == BOT_WEAPON_INFO_NAME_OFFSET ? 1 : -1];
+typedef char ai_weapon_assert_model_offset[
+	offsetof(bot_weapon_info_t, model) == BOT_WEAPON_INFO_MODEL_OFFSET ? 1 : -1];
+typedef char ai_weapon_assert_activate_offset[
+	offsetof(bot_weapon_info_t, activate) == BOT_WEAPON_INFO_ACTIVATE_OFFSET ? 1 : -1];
+typedef char ai_weapon_assert_projectileinfo_offset[
+	offsetof(bot_weapon_info_t, projectileinfo) == BOT_WEAPON_INFO_PROJECTILEINFO_OFFSET ? 1 : -1];
+typedef char ai_weapon_assert_projectile_stride[
+	sizeof(bot_weapon_projectile_t) == BOT_PROJECTILE_INFO_RETAIL_SIZE ? 1 : -1];
 
 static const bot_weapon_config_t *g_active_weapon_config = NULL;
 
@@ -524,7 +538,7 @@ int AI_WeaponNumberForModel(const char *model)
 	for (int index = 0; index < config->num_weapons; ++index)
 	{
 		const bot_weapon_info_t *weapon = &config->weapons[index];
-		if (strcmp(weapon->model, model) == 0)
+		if (Q_stricmp(weapon->model, model) == 0)
 		{
 			return weapon->number;
 		}
@@ -549,7 +563,7 @@ const char *AI_WeaponNameForModel(const char *model)
 	for (int index = 0; index < config->num_weapons; ++index)
 	{
 		const bot_weapon_info_t *weapon = &config->weapons[index];
-		if (strcmp(weapon->model, model) == 0)
+		if (Q_stricmp(weapon->model, model) == 0)
 		{
 			return weapon->name;
 		}
@@ -576,6 +590,94 @@ static int AI_Weapon_FindWeightIndex(const bot_weight_config_t *config,
 
 /*
 =============
+AI_WeaponWeightsBindConfig
+
+Builds or refreshes the per-weapon fuzzy-weight index for a weapon config.
+=============
+*/
+bool AI_WeaponWeightsBindConfig(ai_weapon_weights_t *weights,
+								const bot_weapon_config_t *definitions)
+{
+	if (weights == NULL)
+	{
+		return false;
+	}
+
+	if (weights->index_by_weapon != NULL)
+	{
+		FreeMemory(weights->index_by_weapon);
+		weights->index_by_weapon = NULL;
+	}
+
+	weights->definitions = definitions;
+	weights->index_count = 0;
+
+	if (definitions == NULL)
+	{
+		return true;
+	}
+
+	weights->index_count = definitions->num_weapons;
+	if (weights->index_count <= 0)
+	{
+		return true;
+	}
+
+	weights->index_by_weapon =
+		(int *)GetClearedMemory(sizeof(int) * (size_t)weights->index_count);
+	if (weights->index_by_weapon == NULL)
+	{
+		weights->definitions = NULL;
+		weights->index_count = 0;
+		return false;
+	}
+
+	for (int index = 0; index < weights->index_count; ++index)
+	{
+		const bot_weapon_info_t *weapon = &definitions->weapons[index];
+		weights->index_by_weapon[index] =
+			AI_Weapon_FindWeightIndex(weights->config, weapon);
+	}
+
+	return true;
+}
+
+/*
+=============
+AI_WeaponWeightsConfigByteSize
+
+Returns the tracked allocation size for the parsed fuzzy weight config.
+=============
+*/
+size_t AI_WeaponWeightsConfigByteSize(const ai_weapon_weights_t *weights)
+{
+	if (weights == NULL || weights->config == NULL)
+	{
+		return 0;
+	}
+
+	return MemoryByteSize(weights->config);
+}
+
+/*
+=============
+AI_WeaponWeightsIndexByteSize
+
+Returns the tracked allocation size for the per-weapon fuzzy index.
+=============
+*/
+size_t AI_WeaponWeightsIndexByteSize(const ai_weapon_weights_t *weights)
+{
+	if (weights == NULL || weights->index_by_weapon == NULL)
+	{
+		return 0;
+	}
+
+	return MemoryByteSize(weights->index_by_weapon);
+}
+
+/*
+=============
 AI_LoadWeaponWeights
 =============
 */
@@ -597,15 +699,6 @@ ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 	}
 
 	const bot_weapon_config_t *definitions = AI_GetActiveWeaponConfig();
-	if (definitions == NULL)
-	{
-		BotLib_Print(PRT_ERROR,
-					 "[ai_weapon] unable to compile weapon weights without an active weapon config (%s)\n",
-					 filename != NULL ? filename : "<null>");
-		FreeWeightConfig(config);
-		return NULL;
-	}
-
 	ai_weapon_weights_t *weights = (ai_weapon_weights_t *)GetClearedMemory(sizeof(*weights));
 	if (weights == NULL)
 	{
@@ -614,25 +707,10 @@ ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 	}
 
 	weights->config = config;
-	weights->definitions = definitions;
-	weights->index_count = definitions->num_weapons;
-
-	if (weights->index_count > 0)
+	if (!AI_WeaponWeightsBindConfig(weights, definitions))
 	{
-		weights->index_by_weapon =
-			(int *)GetClearedMemory(sizeof(int) * (size_t)weights->index_count);
-		if (weights->index_by_weapon == NULL)
-		{
-			AI_FreeWeaponWeights(weights);
-			return NULL;
-		}
-
-		for (int index = 0; index < weights->index_count; ++index)
-		{
-			const bot_weapon_info_t *weapon = &definitions->weapons[index];
-			weights->index_by_weapon[index] =
-				AI_Weapon_FindWeightIndex(config, weapon);
-		}
+		AI_FreeWeaponWeights(weights);
+		return NULL;
 	}
 
 	return weights;

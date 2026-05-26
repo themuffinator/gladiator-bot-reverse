@@ -114,8 +114,8 @@ engineered details surface.
 ### Weapon state exports
 * **Handle reuse** &mdash; Allocate, reset, and free weapon state handles through the export table to ensure the wrappers enforce the same guard
   ordering (library initialisation, handle validation) as the direct calls in `BotSetupClient`.
-* **Weight loading** &mdash; Load the default weapon weight file via `BotLoadWeaponWeights` and confirm `BotChooseBestFightWeapon` and
-  `BotGetTopRankedWeapon` report identical selections to the internal combat orchestrator.
+* **Weight loading** &mdash; Load the default weapon weight file via `BotLoadWeaponWeights`, confirm `BotChooseBestFightWeapon` scores the
+  expected weapon without mutating selector state, and confirm `BotGetTopRankedWeapon` follows the internal combat orchestrator.
 * **Information queries** &mdash; Invoke `BotGetWeaponInfo` with invalid handles to verify the export zeroes the caller's buffer and logs the
   historical diagnostics.
 

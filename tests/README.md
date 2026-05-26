@@ -44,11 +44,28 @@ the assets are unavailable (for example, when the repository is cloned without
 `dev_tools/`).
 
 The weapon tests now also pin the Gladiator-specific layout: weapon numbers are
-generated from compact file order, each weapon carries a pointer to the matched
-projectile definition, model lookups return the same number/name helpers seen in
-the HLIL, missing fuzzy weights remain loadable but are skipped by selection,
-and the combat selector queues the same model-change `use <weapon name>` command
-path gated by `activate + 3.0` seconds.
+generated from compact file order, the recovered retail row sizes are `0x158`
+for weapons and `0xd0` for projectiles, the important weapon offsets are kept
+stable even when a 64-bit native build widens the tail projectile pointer, each
+weapon carries a pointer to the matched projectile definition, model lookups
+return the same case-insensitive number/name helpers seen in the HLIL, missing fuzzy weights remain loadable but are skipped by selection,
+weapon weights can be read before the global weaponconfig and bound later, and
+stale state bindings are refreshed against the active weaponconfig before
+scoring. `BotLoadWeaponWeights` also retains its parsed weight config after the
+HLIL-style `BLERR_CANNOTLOADWEAPONCONFIG` return so a later weaponconfig can bind
+it. The combat selector consumes the live client, inventory, and current weapon
+model sync used by Gladiator's frame code, queues the same model-change
+`use <weapon name>` command path gated by `activate + 3.0` seconds, and preserves
+the cached current weapon when a later scoring pass finds no winner. The public
+`BotChooseBestFightWeapon` coverage pins the Q3-compatible side-effect-free
+scoring behavior, while `BotGetTopRankedWeapon` tracks only selector-recorded
+state. The reset coverage also verifies that the Gladiator reset helper preserves
+loaded weights while clearing the cached selection, frame sync, and activation
+delay.
+
+The interface parity suite also covers weapon lifecycle wiring by exhausting the
+exported weapon-state handle pool, calling `BotShutdownLibrary`, and verifying a
+fresh setup can allocate from a cleared table.
 
 ## AI character regression tests
 

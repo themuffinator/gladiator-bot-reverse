@@ -38,6 +38,18 @@
 #define TEST_BOTLIB_HEAP_SIZE (8u << 20)
 #define TEST_MAX_LOG_MESSAGES 64
 
+enum q3_characteristic_index_e {
+	Q3_CHARACTERISTIC_NAME = 0,
+	Q3_CHARACTERISTIC_GENDER = 1,
+	Q3_CHARACTERISTIC_ATTACK_SKILL = 2,
+	Q3_CHARACTERISTIC_WEAPONWEIGHTS = 3,
+	Q3_CHARACTERISTIC_AIM_SKILL = 16,
+	Q3_CHARACTERISTIC_CHAT_NAME = 22,
+	Q3_CHARACTERISTIC_CHAT_CPM = 23,
+	Q3_CHARACTERISTIC_ITEMWEIGHTS = 40,
+	Q3_CHARACTERISTIC_WALKER = 48,
+};
+
 typedef struct test_log_message_s {
     int priority;
     char text[256];
@@ -364,6 +376,39 @@ static void asset_path_or_skip(const char *relative_path, char *out, size_t out_
     fclose(file);
 }
 
+/*
+=============
+q3_botfiles_root_or_skip
+
+Resolves the checked-in Q3 botfiles root for successor-format character tests.
+=============
+*/
+static void q3_botfiles_root_or_skip(char *out, size_t out_size)
+{
+	int written = snprintf(out,
+		out_size,
+		"%s/dev_tools/Quake-III-Arena-assets/botfiles",
+		PROJECT_SOURCE_DIR);
+	if (written <= 0 || (size_t)written >= out_size)
+	{
+		cmocka_skip();
+	}
+
+	char chars_path[PATH_MAX];
+	written = snprintf(chars_path, sizeof(chars_path), "%s/chars.h", out);
+	if (written <= 0 || (size_t)written >= sizeof(chars_path))
+	{
+		cmocka_skip();
+	}
+
+	FILE *file = fopen(chars_path, "rb");
+	if (file == NULL)
+	{
+		cmocka_skip();
+	}
+	fclose(file);
+}
+
 static int weapon_index_by_name(const bot_weapon_config_t *config, const char *name)
 {
     if (config == NULL || name == NULL) {
@@ -392,9 +437,15 @@ static void test_babe_character_profile(void **state)
     assert_non_null(env->weapon_library);
     assert_string_equal(env->weapon_library->source_path, weapon_config_path);
 
+    test_reset_log();
     ai_character_profile_t *profile = AI_LoadCharacter("bots/babe_c.c", 1.0f);
     assert_non_null(profile);
     assert_string_equal(profile->character_name, "babe");
+    assert_true(test_log_contains("bytes character"));
+    assert_true(test_log_contains("bytes item weights"));
+    assert_true(test_log_contains("bytes weapon weights"));
+    assert_true(test_log_contains("bytes weapon index"));
+    assert_true(test_log_contains("bytes chat file"));
 
     const char *chat_file = AI_CharacteristicAsString(profile, CHARACTERISTIC_CHAT_FILE);
     assert_non_null(chat_file);
@@ -452,6 +503,25 @@ static void test_bot_character_exports(void **state)
     ai_character_profile_t *profile = BotCharacterFromHandle(handle);
     assert_non_null(profile);
 
+    test_reset_log();
+    const char *missing_string = AI_CharacteristicAsString(profile, AI_CharacteristicCount(profile) + 3);
+    assert_non_null(missing_string);
+    assert_string_equal(missing_string, "");
+    assert_true(test_log_contains("does not exist"));
+
+    test_reset_log();
+    const char *wrong_string = AI_CharacteristicAsString(profile, CHARACTERISTIC_CHAT_CPM);
+    assert_null(wrong_string);
+    assert_true(test_log_contains("not a string"));
+
+    test_reset_log();
+    assert_true(fabsf(AI_CharacteristicAsFloat(profile, CHARACTERISTIC_CHAT_FILE)) < 0.0001f);
+    assert_true(test_log_contains("not a float"));
+
+    test_reset_log();
+    assert_int_equal(AI_CharacteristicAsInteger(profile, CHARACTERISTIC_CHAT_FILE), 0);
+    assert_true(test_log_contains("not a integer"));
+
     float aggression = Characteristic_Float(handle, CHARACTERISTIC_AGGRESSION);
     assert_true(fabsf(aggression - 0.7f) < 0.0001f);
 
@@ -467,11 +537,31 @@ static void test_bot_character_exports(void **state)
     assert_int_equal(cached_handle, handle);
     assert_true(test_log_contains("reusing cached character"));
 
+	test_reset_log();
     BotFreeCharacter(handle);
     assert_non_null(BotCharacterFromHandle(cached_handle));
+	assert_true(test_log_contains("retained cached character"));
 
     BotFreeCharacter(cached_handle);
-    assert_null(BotCharacterFromHandle(handle));
+    assert_non_null(BotCharacterFromHandle(handle));
+
+	LibVarSet("bot_reloadcharacters", "1");
+	BotFreeCharacter(handle);
+	assert_null(BotCharacterFromHandle(handle));
+
+	test_reset_log();
+	int reload_first = BotLoadCharacter("bots/babe_c.c", 1.0f);
+	assert_true(reload_first > 0);
+	int reload_second = BotLoadCharacter("bots/babe_c.c", 1.0f);
+	assert_true(reload_second > 0);
+	assert_int_not_equal(reload_first, reload_second);
+	assert_true(test_log_contains("loaded bot character"));
+
+	BotFreeCharacter(reload_first);
+	assert_null(BotCharacterFromHandle(reload_first));
+	BotFreeCharacter(reload_second);
+	assert_null(BotCharacterFromHandle(reload_second));
+	LibVarSet("bot_reloadcharacters", "0");
 
     test_reset_log();
     int missing_handle = BotLoadCharacter("bots/does_not_exist.c", 1.0f);
@@ -490,11 +580,260 @@ static void test_bot_character_exports(void **state)
     assert_true(test_log_contains("couldn't find character Babe"));
 }
 
+/*
+=============
+test_q3_skill_character_exports
+
+Confirms Q3 skill-block profiles load exactly and interpolate through the export cache.
+=============
+*/
+static void test_q3_skill_character_exports(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	assert_non_null(env);
+
+	char skill_character_path[PATH_MAX];
+	asset_path_or_skip("tests/support/assets/bots/q3_skill_c.c",
+		skill_character_path,
+		sizeof(skill_character_path));
+
+	assert_true(AI_CharacterFileUsesSkillBlocks(skill_character_path));
+
+	int near_anchor_handle = BotLoadCharacter(skill_character_path, 4.005f);
+	assert_true(near_anchor_handle > 0);
+	assert_true(fabsf(Characteristic_Float(near_anchor_handle, CHARACTERISTIC_ATTACK_SKILL) - 0.7015f) < 0.0001f);
+	assert_true(fabsf(Characteristic_Float(near_anchor_handle, CHARACTERISTIC_AIM_SKILL) - 0.801f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(near_anchor_handle, CHARACTERISTIC_CHAT_CPM), 250);
+
+	int exact_handle = BotLoadCharacterSkill(skill_character_path, 4.0f);
+	assert_true(exact_handle > 0);
+
+	ai_character_profile_t *exact = BotCharacterFromHandle(exact_handle);
+	assert_non_null(exact);
+	assert_null(AI_ItemWeightsForCharacter(exact));
+	assert_null(AI_WeaponWeightsForCharacter(exact));
+	assert_string_equal(AI_CharacteristicAsString(exact, CHARACTERISTIC_NAME), "Q3 Skill Four");
+	assert_true(fabsf(Characteristic_Float(exact_handle, CHARACTERISTIC_ATTACK_SKILL) - 0.7f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(exact_handle, CHARACTERISTIC_CHAT_CPM), 250);
+
+	test_reset_log();
+	int cached_exact = BotLoadCharacterSkill(skill_character_path, 4.0f);
+	assert_int_equal(cached_exact, exact_handle);
+	assert_true(test_log_contains("reusing cached character"));
+
+	LibVarSet("bot_reloadcharacters", "1");
+	int reload_exact = BotLoadCharacterSkill(skill_character_path, 4.0f);
+	assert_true(reload_exact > 0);
+	assert_int_not_equal(reload_exact, exact_handle);
+	BotFreeCharacter(reload_exact);
+	assert_null(BotCharacterFromHandle(reload_exact));
+	LibVarSet("bot_reloadcharacters", "0");
+
+	int clamped_low = BotLoadCharacter(skill_character_path, 0.25f);
+	assert_true(clamped_low > 0);
+	ai_character_profile_t *low = BotCharacterFromHandle(clamped_low);
+	assert_non_null(low);
+	assert_string_equal(AI_CharacteristicAsString(low, CHARACTERISTIC_NAME), "Q3 Skill One");
+	assert_true(fabsf(Characteristic_Float(clamped_low, CHARACTERISTIC_ATTACK_SKILL) - 0.1f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(clamped_low, CHARACTERISTIC_CHAT_CPM), 100);
+
+	int clamped_high = BotLoadCharacter(skill_character_path, 6.0f);
+	assert_true(clamped_high > 0);
+	ai_character_profile_t *high = BotCharacterFromHandle(clamped_high);
+	assert_non_null(high);
+	assert_string_equal(AI_CharacteristicAsString(high, CHARACTERISTIC_NAME), "Q3 Skill Five");
+	assert_true(fabsf(Characteristic_Float(clamped_high, CHARACTERISTIC_ATTACK_SKILL) - 1.0f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(clamped_high, CHARACTERISTIC_CHAT_CPM), 400);
+
+	int interpolated_handle = BotLoadCharacter(skill_character_path, 2.5f);
+	assert_true(interpolated_handle > 0);
+
+	ai_character_profile_t *interpolated = BotCharacterFromHandle(interpolated_handle);
+	assert_non_null(interpolated);
+	assert_true(fabsf(Characteristic_Float(interpolated_handle, CHARACTERISTIC_ATTACK_SKILL) - 0.4f) < 0.0001f);
+	assert_true(fabsf(Characteristic_Float(interpolated_handle, CHARACTERISTIC_AIM_SKILL) - 0.5f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(interpolated_handle, CHARACTERISTIC_CHAT_CPM), 100);
+	assert_string_equal(AI_CharacteristicAsString(interpolated, CHARACTERISTIC_CHAT_NAME), "skillone");
+
+	test_reset_log();
+	LibVarSet("bot_reloadcharacters", "1");
+	int reload_interpolated = BotLoadCharacter(skill_character_path, 2.5f);
+	assert_int_equal(reload_interpolated, interpolated_handle);
+	assert_true(test_log_contains("reusing cached character"));
+	BotFreeCharacter(reload_interpolated);
+	assert_null(BotCharacterFromHandle(interpolated_handle));
+	LibVarSet("bot_reloadcharacters", "0");
+
+	BotFreeCharacter(near_anchor_handle);
+	BotFreeCharacter(clamped_high);
+	BotFreeCharacter(clamped_low);
+	BotFreeCharacter(exact_handle);
+}
+
+/*
+=============
+test_q3_skill_fallback_cache_exports
+
+Confirms Q3 fallback skills are cached by the file and skill that actually loaded.
+=============
+*/
+static void test_q3_skill_fallback_cache_exports(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	assert_non_null(env);
+
+	char sparse_character_path[PATH_MAX];
+	asset_path_or_skip("tests/support/assets/bots/q3_sparse_c.c",
+		sparse_character_path,
+		sizeof(sparse_character_path));
+
+	assert_true(AI_CharacterFileUsesSkillBlocks(sparse_character_path));
+
+	int first_fallback = BotLoadCharacterSkill(sparse_character_path, 3.0f);
+	assert_true(first_fallback > 0);
+
+	ai_character_profile_t *first = BotCharacterFromHandle(first_fallback);
+	assert_non_null(first);
+	assert_string_equal(AI_CharacteristicAsString(first, CHARACTERISTIC_NAME), "Q3 Sparse Skill One");
+	assert_true(fabsf(Characteristic_Float(first_fallback, CHARACTERISTIC_ATTACK_SKILL) - 0.15f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(first_fallback, CHARACTERISTIC_CHAT_CPM), 90);
+
+	test_reset_log();
+	int second_fallback = BotLoadCharacterSkill(sparse_character_path, 4.0f);
+	assert_int_equal(second_fallback, first_fallback);
+	assert_true(test_log_contains("reusing cached character"));
+
+	BotFreeCharacter(second_fallback);
+	BotFreeCharacter(first_fallback);
+}
+
+/*
+=============
+test_q3_asset_character_exports
+
+Confirms native Q3 skill files load through includes, defaults, and interpolation.
+=============
+*/
+static void test_q3_asset_character_exports(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	assert_non_null(env);
+
+	char q3_botfiles_root[PATH_MAX];
+	q3_botfiles_root_or_skip(q3_botfiles_root, sizeof(q3_botfiles_root));
+
+	LibVarSet("basedir", q3_botfiles_root);
+	LibVarSet("gamedir", "");
+	LibVarSet("cddir", "");
+	LibVarSet("gladiator_asset_dir", "");
+
+	assert_true(AI_CharacterFileUsesSkillBlocks("bots/xian_c.c"));
+
+	test_reset_log();
+	int missing_default_handle = BotLoadCharacterSkill("bots/not_a_real_character.c", 4.0f);
+	assert_true(missing_default_handle > 0);
+	assert_true(test_log_contains("reusing cached character bots/default_c.c"));
+
+	ai_character_profile_t *missing_default = BotCharacterFromHandle(missing_default_handle);
+	assert_non_null(missing_default);
+	assert_string_equal(AI_CharacterProfileFilename(missing_default), "bots/default_c.c");
+	assert_string_equal(AI_CharacteristicAsString(missing_default, Q3_CHARACTERISTIC_NAME), "Player");
+	assert_string_equal(AI_CharacteristicAsString(missing_default, Q3_CHARACTERISTIC_ITEMWEIGHTS), "bots/daemia_i.c");
+	assert_true(fabsf(Characteristic_Float(missing_default_handle, Q3_CHARACTERISTIC_ATTACK_SKILL) - 1.0f) < 0.0001f);
+
+	int direct_unclamped_handle = BotLoadCharacterSkill("bots/xian_c.c", 6.0f);
+	assert_true(direct_unclamped_handle > 0);
+
+	ai_character_profile_t *direct_unclamped = BotCharacterFromHandle(direct_unclamped_handle);
+	assert_non_null(direct_unclamped);
+	assert_string_equal(AI_CharacterProfileFilename(direct_unclamped), "bots/xian_c.c");
+	assert_string_equal(AI_CharacteristicAsString(direct_unclamped, Q3_CHARACTERISTIC_NAME), "Xian");
+	assert_true(fabsf(AI_CharacterProfileSkill(direct_unclamped) - 1.0f) < 0.0001f);
+	assert_true(fabsf(Characteristic_Float(direct_unclamped_handle, Q3_CHARACTERISTIC_ATTACK_SKILL) - 1.0f) < 0.0001f);
+
+	LibVarSet("bot_reloadcharacters", "1");
+	BotFreeCharacter(direct_unclamped_handle);
+	assert_null(BotCharacterFromHandle(direct_unclamped_handle));
+	LibVarSet("bot_reloadcharacters", "0");
+
+	int exact_handle = BotLoadCharacterSkill("bots/xian_c.c", 4.0f);
+	assert_true(exact_handle > 0);
+
+	ai_character_profile_t *exact = BotCharacterFromHandle(exact_handle);
+	assert_non_null(exact);
+	assert_null(AI_ItemWeightsForCharacter(exact));
+	assert_null(AI_WeaponWeightsForCharacter(exact));
+	assert_string_equal(AI_CharacteristicAsString(exact, Q3_CHARACTERISTIC_NAME), "Xian");
+	assert_string_equal(AI_CharacteristicAsString(exact, Q3_CHARACTERISTIC_GENDER), "male");
+	assert_string_equal(AI_CharacteristicAsString(exact, Q3_CHARACTERISTIC_ITEMWEIGHTS), "bots/xian_i.c");
+	assert_true(fabsf(Characteristic_Float(exact_handle, Q3_CHARACTERISTIC_ATTACK_SKILL) - 0.75f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(exact_handle, Q3_CHARACTERISTIC_CHAT_CPM), 400);
+	assert_true(fabsf(Characteristic_Float(exact_handle, Q3_CHARACTERISTIC_WALKER)) < 0.0001f);
+
+	int cadaver_any_handle = BotLoadCharacterSkill("bots/cadaver_c.c", 3.0f);
+	assert_true(cadaver_any_handle > 0);
+
+	ai_character_profile_t *cadaver_any = BotCharacterFromHandle(cadaver_any_handle);
+	assert_non_null(cadaver_any);
+	assert_string_equal(AI_CharacterProfileFilename(cadaver_any), "bots/cadaver_c.c");
+	assert_string_equal(AI_CharacteristicAsString(cadaver_any, Q3_CHARACTERISTIC_NAME), "Cadaver");
+	assert_true(fabsf(Characteristic_Float(cadaver_any_handle, Q3_CHARACTERISTIC_ATTACK_SKILL) - 0.5f) < 0.0001f);
+
+	test_reset_log();
+	int cached_cadaver_any = BotLoadCharacterSkill("bots/cadaver_c.c", 3.0f);
+	assert_int_equal(cached_cadaver_any, cadaver_any_handle);
+	assert_true(test_log_contains("reusing cached character bots/cadaver_c.c"));
+	assert_false(test_log_contains("loaded skill 1 from bots/cadaver_c.c"));
+
+	int interpolated_handle = BotLoadCharacter("bots/xian_c.c", 2.5f);
+	assert_true(interpolated_handle > 0);
+
+	ai_character_profile_t *interpolated = BotCharacterFromHandle(interpolated_handle);
+	assert_non_null(interpolated);
+	assert_string_equal(AI_CharacteristicAsString(interpolated, Q3_CHARACTERISTIC_CHAT_NAME), "xian");
+	assert_true(fabsf(Characteristic_Float(interpolated_handle, Q3_CHARACTERISTIC_ATTACK_SKILL) - 0.5f) < 0.0001f);
+	assert_true(fabsf(Characteristic_Float(interpolated_handle, Q3_CHARACTERISTIC_AIM_SKILL) - 0.5f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(interpolated_handle, Q3_CHARACTERISTIC_CHAT_CPM), 400);
+
+	int fractional_missing_default = BotLoadCharacter("bots/fractional_missing_character.c", 2.5f);
+	assert_true(fractional_missing_default > 0);
+
+	ai_character_profile_t *fractional_default = BotCharacterFromHandle(fractional_missing_default);
+	assert_non_null(fractional_default);
+	assert_string_equal(AI_CharacterProfileFilename(fractional_default), "bots/default_c.c");
+	assert_string_equal(AI_CharacteristicAsString(fractional_default, Q3_CHARACTERISTIC_NAME), "Player");
+	assert_true(fabsf(Characteristic_Float(fractional_missing_default, Q3_CHARACTERISTIC_ATTACK_SKILL) - 0.625f) < 0.0001f);
+	assert_true(fabsf(Characteristic_Float(fractional_missing_default, Q3_CHARACTERISTIC_AIM_SKILL) - 0.625f) < 0.0001f);
+	assert_int_equal(Characteristic_Integer(fractional_missing_default, Q3_CHARACTERISTIC_CHAT_CPM), 400);
+
+	test_reset_log();
+	int public_missing_default = BotLoadCharacter("bots/another_missing_character.c", 4.0f);
+	assert_int_equal(public_missing_default, missing_default_handle);
+	assert_true(test_log_contains("reusing cached character"));
+
+	BotFreeCharacter(public_missing_default);
+	BotFreeCharacter(cached_cadaver_any);
+	BotFreeCharacter(cadaver_any_handle);
+	BotFreeCharacter(missing_default_handle);
+	BotFreeCharacter(fractional_missing_default);
+	BotFreeCharacter(interpolated_handle);
+	BotFreeCharacter(exact_handle);
+}
+
 static void test_bot_setup_client_exposes_profile(void **state)
 {
     test_environment_t *env = (test_environment_t *)(*state);
     assert_non_null(env);
     assert_non_null(env->exports);
+
+	test_reset_log();
+	assert_int_equal(env->exports->BotLoadCharacter("bots/babe_c.c", 1.0f), 0);
+	assert_true(test_log_contains("BotLoadCharacter: library not initialised"));
+
+	char guarded_string[16];
+	memset(guarded_string, 'x', sizeof(guarded_string));
+	env->exports->Characteristic_String(1, CHARACTERISTIC_NAME, guarded_string, sizeof(guarded_string));
+	assert_string_equal(guarded_string, "");
 
     char weapon_config_path[PATH_MAX];
     asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
@@ -512,13 +851,27 @@ static void test_bot_setup_client_exposes_profile(void **state)
     assert_int_equal(status, BLERR_NOERROR);
     env->library_setup = true;
 
+	int exported_handle = env->exports->BotLoadCharacter("bots/babe_c.c", 1.0f);
+	assert_true(exported_handle > 0);
+
+	char exported_name[64];
+	env->exports->Characteristic_String(exported_handle,
+		CHARACTERISTIC_NAME,
+		exported_name,
+		sizeof(exported_name));
+	assert_string_equal(exported_name, "Silicon Babe");
+	env->exports->BotFreeCharacter(exported_handle);
+
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
     snprintf(settings.charactername, sizeof(settings.charactername), "babe");
 
+    test_reset_log();
     status = env->exports->BotSetupClient(0, &settings);
     assert_int_equal(status, BLERR_NOERROR);
+    assert_true(test_log_contains("bytes weapon index"));
+    assert_true(test_log_contains("bytes item index"));
     env->client_active = true;
 
     bot_client_state_t *state_slot = BotState_Get(0);
@@ -550,6 +903,15 @@ int main(void)
                                         character_profile_setup,
                                         character_profile_teardown),
         cmocka_unit_test_setup_teardown(test_bot_character_exports,
+                                        character_profile_setup,
+                                        character_profile_teardown),
+        cmocka_unit_test_setup_teardown(test_q3_skill_character_exports,
+                                        character_profile_setup,
+                                        character_profile_teardown),
+        cmocka_unit_test_setup_teardown(test_q3_skill_fallback_cache_exports,
+                                        character_profile_setup,
+                                        character_profile_teardown),
+        cmocka_unit_test_setup_teardown(test_q3_asset_character_exports,
                                         character_profile_setup,
                                         character_profile_teardown),
         cmocka_unit_test_setup_teardown(test_bot_setup_client_exposes_profile,

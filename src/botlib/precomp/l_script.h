@@ -4,6 +4,8 @@
 #include "l_precomp.h"
 
 #define DOLLAR
+/* Gladiator's default weights use $evalfloat/$evalint, which need cached numeric token values. */
+#define NUMBERVALUE
 
 // -----------------------------------------------------------------------------
 //  Lexer Token Model

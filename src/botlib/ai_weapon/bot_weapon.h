@@ -15,13 +15,27 @@ extern "C" {
 /**
  * Gladiator stores weapon definitions in compact file order.  The HLIL field
  * table for `weaponinfo` starts with the generated weapon number at offset 0,
- * stores `name` at offset 4, `model` at offset 0x54, and ends with a pointer
- * to the matched projectile definition.  This is intentionally different from
- * Quake III's later embedded-projectile `weaponinfo_t`.
+ * stores `name` at offset 4, `model` at offset 0x54, `activate` at offset
+ * 0x144, and ends with a 32-bit pointer to the matched projectile definition
+ * at offset 0x154.  The retail row stride is therefore 0x158 bytes; 64-bit
+ * reconstruction builds keep the same field offsets but use a native pointer
+ * at the tail.  This is intentionally different from Quake III's later
+ * embedded-projectile `weaponinfo_t`.
  */
 
 /** Maximum string field length used by the legacy structures. */
 #define BOT_WEAPON_MAX_STRINGFIELD 80
+
+/** Retail Gladiator weapon/projectile row sizes recovered from the HLIL. */
+#define BOT_WEAPON_INFO_RETAIL_SIZE 0x158
+#define BOT_PROJECTILE_INFO_RETAIL_SIZE 0x0d0
+
+/** Retail Gladiator weaponinfo offsets used by the parser and parity tests. */
+#define BOT_WEAPON_INFO_NUMBER_OFFSET 0x000
+#define BOT_WEAPON_INFO_NAME_OFFSET 0x004
+#define BOT_WEAPON_INFO_MODEL_OFFSET 0x054
+#define BOT_WEAPON_INFO_ACTIVATE_OFFSET 0x144
+#define BOT_WEAPON_INFO_PROJECTILEINFO_OFFSET 0x154
 
 /** Maximum length of the recorded weapon configuration path. */
 #define AI_WEAPON_MAX_PATH 260
@@ -103,6 +117,8 @@ typedef struct ai_weapon_weights_s {
 } ai_weapon_weights_t;
 
 typedef struct bot_weaponstate_s {
+	int client;
+	const int *inventory;
 	ai_weapon_weights_t *weights;
 	const bot_weapon_config_t *config;
 	const bot_weight_config_t *weight_config;
@@ -124,6 +140,10 @@ int AI_WeaponNumberForModel(const char *model);
 const char *AI_WeaponNameForModel(const char *model);
 
 ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename);
+bool AI_WeaponWeightsBindConfig(ai_weapon_weights_t *weights,
+								const bot_weapon_config_t *definitions);
+size_t AI_WeaponWeightsConfigByteSize(const ai_weapon_weights_t *weights);
+size_t AI_WeaponWeightsIndexByteSize(const ai_weapon_weights_t *weights);
 void AI_FreeWeaponWeights(ai_weapon_weights_t *weights);
 float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_index);
 
@@ -137,6 +157,8 @@ void BotResetWeaponState(int handle);
 int BotLoadWeaponWeights(int weaponstate, const char *filename);
 void BotFreeWeaponWeights(int weaponstate);
 int BotWeaponStateAttachWeights(int weaponstate, ai_weapon_weights_t *weights);
+void BotWeaponStateSyncFrame(int weaponstate, int client, const int *inventory, const char *model);
+void BotWeaponStateSetCurrentModel(int weaponstate, const char *model);
 
 int BotChooseBestFightWeapon(int weaponstate, const int *inventory);
 int BotSelectBestFightWeapon(int client, int weaponstate, const int *inventory, float now);

@@ -31,5 +31,7 @@ void EA_Respawn(int client);
 void EA_Jump(int client);
 void EA_DelayedJump(int client);
 void EA_Crouch(int client);
+void EA_MoveUp(int client);
+void EA_MoveForward(int client);
 
 #endif /* GLADIATOR_BOTLIB_EA_LOCAL_H */

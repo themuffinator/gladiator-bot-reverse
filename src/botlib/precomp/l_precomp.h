@@ -106,6 +106,9 @@ int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *t
 // state as the historical botlib precompiler.
 int PC_AddGlobalDefine(const char *string);
 
+// Removes a global define previously registered for scoped source loading.
+int PC_RemoveGlobalDefine(char *name);
+
 // Pushes the last token read back into the stream.
 void PC_UnreadToken(pc_source_t *source, pc_token_t *token);
 

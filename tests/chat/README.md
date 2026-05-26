@@ -48,13 +48,29 @@ when finished so resource leaks are easy to spot. The existing coverage includes
 | `test_reply_chat_without_pattern_falls_back_to_reply_table` | Exercises the fallback reply path when no match template accepts the input. |
 | `test_enter_chat_enqueues_message` | Exercises the context queue and asserts the join message is emitted with type `2`. |
 | `test_enter_chat_cooldown_blocks_repeated_messages` | Validates the cooldown tracking path by forcing the log line `"context 2 blocked by cooldown"`. |
-| `test_reply_chat_logs_missing_contexts` | Uses `BotLib_TestResetLastMessage` / `BotLib_TestGetLastMessage` from the stubs to ensure missing contexts are surfaced via `BotLib_Print` and the console queue after a valid reply. |
+| `test_reply_chat_unmatched_rule_returns_false_quietly` | Uses `BotLib_TestResetLastMessage` / `BotLib_TestGetLastMessage` from the stubs to ensure unmatched reply text returns false without inventing a `"no rchats"` diagnostic. |
+| `test_reply_chat_string_key_uses_q3_word_separators` | Pins Q3 `StringContainsWord` separators for plain reply keys so punctuation such as `?` and `-` does not terminate a reply word. |
 | `test_synonym_lookup_contains_nearbyitem_entries` | Spot-checks that the synonym tables expose expected phrases. |
 | `test_known_template_is_registered` | Asserts the sibling `match.c` obituary templates are registered when `rchat.c` loads. |
 | `test_reply_chat_known_random_string_context_enqueues_message` | Confirms templates referencing built-in random string tables enqueue deterministic console entries. |
 | `test_reply_chat_expands_named_random_table` | Verifies parsed random-string tables can be referenced by reply templates. |
 | `test_reply_chat_expands_nested_random_table` | Verifies constructor expansion repeats when a random-table entry produces another random reference. |
 | `test_initial_chat_applies_weighted_synonym_context` | Covers the Q3 post-construction weighted synonym pass for initial chats with a `CONTEXT_*` mask. |
+| `test_initial_chat_rejects_float_message_component` | Pins Q3 `BotLoadChatMessage` integer-only numeric message components for named initial chat blocks. |
+| `test_reply_chat_rejects_float_message_component` | Ensures reply response templates reject float numeric components instead of truncating them into `\vN\` references. |
+| `test_reply_chat_rejects_float_pattern_variable` | Ensures parenthesized reply-key variables follow Q3 `BotLoadMatchPieces` integer-token requirements. |
+| `test_match_template_rejects_float_variable` | Ensures `match.c` template variables reject non-integer numeric pieces during load. |
+| `test_match_template_rejects_float_message_type` | Ensures match-template message type metadata rejects float numeric tokens. |
+| `test_match_template_rejects_float_message_subtype` | Ensures match-template subtype metadata rejects float numeric tokens. |
+| `test_match_template_rejects_float_context_label` | Ensures numeric match context block labels remain integer-only. |
+| `test_match_template_rejects_out_of_range_variable` | Ensures `match.c` template variables reject indices outside the capture table. |
+| `test_match_template_rejects_adjacent_variables` | Ensures `match.c` template variables cannot appear adjacent without an intervening non-empty string. |
+| `test_reply_chat_rejects_out_of_range_pattern_variable` | Ensures parenthesized reply-key variables reject indices outside the capture table. |
+| `test_reply_chat_rejects_adjacent_pattern_variables` | Ensures parenthesized reply-key variables follow Q3 adjacent-variable rejection. |
+| `test_reply_chat_rejects_empty_key_list` | Ensures reply blocks require at least one key before the closing bracket. |
+| `test_reply_chat_accepts_missing_key_commas` | Pins Q3's optional comma handling between adjacent reply keys. |
+| `test_reply_chat_rejects_unquoted_plain_key` | Ensures non-special reply keys must be quoted string tokens. |
+| `test_reply_chat_rejects_unquoted_botname_list_entry` | Ensures `<...>` bot-name key lists require quoted string entries. |
 | `test_reply_chat_unknown_random_string_context_logs_error` | Validates that unknown random string identifiers surface a `BotConstructChat` error and leave the console queue untouched. |
 | `test_include_path_too_long_is_rejected` | Bypasses the chat layer and exercises the precompiler diagnostics for oversized `#include` fragments. |
 

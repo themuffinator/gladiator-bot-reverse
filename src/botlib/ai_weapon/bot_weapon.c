@@ -6,6 +6,7 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "shared/q_platform.h"
 
 #include <string.h>
 
@@ -65,6 +66,8 @@ static void BotWeapon_ResetRanking(bot_weaponstate_t *state)
 		return;
 	}
 
+	state->client = 0;
+	state->inventory = NULL;
 	state->current_weapon = 0;
 	state->current_weapon_model = NULL;
 	state->next_weapon_select_time = 0.0f;
@@ -104,17 +107,49 @@ static void BotWeapon_ClearWeights(bot_weaponstate_t *state)
 =============
 BotWeapon_ConfigForState
 
-Returns the weapon definitions bound to a state or the current global config.
+Returns the current global weapon definitions used by the retail helpers.
 =============
 */
 static const bot_weapon_config_t *BotWeapon_ConfigForState(const bot_weaponstate_t *state)
 {
-	if (state != NULL && state->config != NULL)
+	(void)state;
+	return AI_GetActiveWeaponConfig();
+}
+
+/*
+=============
+BotWeapon_EnsureActiveBinding
+
+Refreshes a state's fuzzy-weight index against the active weaponconfig.
+=============
+*/
+static bool BotWeapon_EnsureActiveBinding(bot_weaponstate_t *state)
+{
+	if (state == NULL || state->weights == NULL || state->weights->config == NULL)
 	{
-		return state->config;
+		return false;
 	}
 
-	return AI_GetActiveWeaponConfig();
+	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
+	if (config == NULL)
+	{
+		return false;
+	}
+
+	if (state->weights->definitions != config ||
+		state->weights->index_count != config->num_weapons ||
+		(config->num_weapons > 0 && state->weights->index_by_weapon == NULL))
+	{
+		if (!AI_WeaponWeightsBindConfig(state->weights, config))
+		{
+			state->config = NULL;
+			return false;
+		}
+	}
+
+	state->config = state->weights->definitions;
+	state->weight_config = state->weights->config;
+	return true;
 }
 
 /*
@@ -144,8 +179,14 @@ static int BotWeapon_FindBestFightWeapon(bot_weaponstate_t *state,
 	}
 
 	if (state == NULL ||
+		inventory == NULL ||
 		state->weights == NULL ||
-		state->weight_config == NULL ||
+		state->weights->config == NULL)
+	{
+		return 0;
+	}
+
+	if (!BotWeapon_EnsureActiveBinding(state) ||
 		state->weights->index_by_weapon == NULL)
 	{
 		return 0;
@@ -322,6 +363,8 @@ void BotFreeWeaponState(int handle)
 /*
 =============
 BotResetWeaponState
+
+Preserves loaded weights while clearing selector state like Gladiator's reset helper.
 =============
 */
 void BotResetWeaponState(int handle)
@@ -359,6 +402,26 @@ int BotLoadWeaponWeights(int weaponstate, const char *filename)
 	ai_weapon_weights_t *weights = AI_LoadWeaponWeights(resolved);
 	if (weights == NULL)
 	{
+		return BLERR_CANNOTLOADWEAPONWEIGHTS;
+	}
+
+	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
+	if (config == NULL)
+	{
+		state->weights = weights;
+		state->config = NULL;
+		state->weight_config = weights->config;
+		state->owns_weights = true;
+		BotWeapon_ResetRanking(state);
+		return BLERR_CANNOTLOADWEAPONCONFIG;
+	}
+
+	if ((weights->definitions != config ||
+		 weights->index_count != config->num_weapons ||
+		 (config->num_weapons > 0 && weights->index_by_weapon == NULL)) &&
+		!AI_WeaponWeightsBindConfig(weights, config))
+	{
+		AI_FreeWeaponWeights(weights);
 		return BLERR_CANNOTLOADWEAPONWEIGHTS;
 	}
 
@@ -406,12 +469,69 @@ int BotWeaponStateAttachWeights(int weaponstate, ai_weapon_weights_t *weights)
 		return BLERR_CANNOTLOADWEAPONWEIGHTS;
 	}
 
+	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
+	if (config == NULL)
+	{
+		return BLERR_CANNOTLOADWEAPONCONFIG;
+	}
+
+	if (weights->definitions != config ||
+		weights->index_count != config->num_weapons ||
+		(config->num_weapons > 0 && weights->index_by_weapon == NULL))
+	{
+		if (!AI_WeaponWeightsBindConfig(weights, config))
+		{
+			return BLERR_CANNOTLOADWEAPONWEIGHTS;
+		}
+	}
+
 	state->weights = weights;
 	state->config = weights->definitions;
 	state->weight_config = weights->config;
 	state->owns_weights = false;
 	BotWeapon_ResetRanking(state);
 	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotWeaponStateSetCurrentModel
+
+Synchronises the cached live weapon model before combat selection.
+=============
+*/
+void BotWeaponStateSetCurrentModel(int weaponstate, const char *model)
+{
+	bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->current_weapon_model = (model != NULL && model[0] != '\0') ? model : NULL;
+}
+
+/*
+=============
+BotWeaponStateSyncFrame
+
+Reconstructs Gladiator's per-frame weapon state sync: client, inventory, model.
+=============
+*/
+void BotWeaponStateSyncFrame(int weaponstate,
+							 int client,
+							 const int *inventory,
+							 const char *model)
+{
+	bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->client = client;
+	state->inventory = inventory;
+	state->current_weapon_model = (model != NULL && model[0] != '\0') ? model : NULL;
 }
 
 /*
@@ -427,21 +547,18 @@ int BotChooseBestFightWeapon(int weaponstate, const int *inventory)
 		return 0;
 	}
 
+	const int *score_inventory = (inventory != NULL) ? inventory : state->inventory;
 	const bot_weapon_config_t *config = NULL;
 	const bot_weapon_info_t *weapon = NULL;
 	float best_weight = 0.0f;
 	int best_weapon = BotWeapon_FindBestFightWeapon(state,
-													inventory,
+													score_inventory,
 													&config,
 													&weapon,
 													&best_weight);
-	if (config == NULL || weapon == NULL)
-	{
-		BotWeapon_ResetRanking(state);
-		return 0;
-	}
-
-	BotWeapon_RecordSelection(state, weapon, best_weapon, best_weight);
+	(void)config;
+	(void)weapon;
+	(void)best_weight;
 	return best_weapon;
 }
 
@@ -466,24 +583,25 @@ int BotSelectBestFightWeapon(int client, int weaponstate, const int *inventory, 
 		return state->current_weapon;
 	}
 
+	int command_client = (client >= 0) ? client : state->client;
+	const int *score_inventory = (inventory != NULL) ? inventory : state->inventory;
 	const bot_weapon_config_t *config = NULL;
 	const bot_weapon_info_t *weapon = NULL;
 	float best_weight = 0.0f;
 	int best_weapon = BotWeapon_FindBestFightWeapon(state,
-													inventory,
+													score_inventory,
 													&config,
 													&weapon,
 													&best_weight);
 	if (config == NULL || weapon == NULL)
 	{
-		BotWeapon_ResetRanking(state);
-		return 0;
+		return state->current_weapon;
 	}
 
 	if (state->current_weapon_model == NULL ||
-		strcmp(weapon->model, state->current_weapon_model) != 0)
+		Q_stricmp(weapon->model, state->current_weapon_model) != 0)
 	{
-		EA_Command(client, "use %s", weapon->name);
+		EA_Command(command_client, "use %s", weapon->name);
 		state->next_weapon_select_time = now + weapon->activate + 3.0f;
 	}
 
