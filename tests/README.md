@@ -51,9 +51,10 @@ weapon carries a pointer to the matched projectile definition, model lookups
 return the same case-insensitive number/name helpers seen in the HLIL, missing fuzzy weights remain loadable but are skipped by selection,
 weapon weights can be read before the global weaponconfig and bound later, and
 stale state bindings are refreshed against the active weaponconfig before
-scoring. `BotLoadWeaponWeights` also retains its parsed weight config after the
-HLIL-style `BLERR_CANNOTLOADWEAPONCONFIG` return so a later weaponconfig can bind
-it. The combat selector consumes the live client, inventory, and current weapon
+scoring. `BotLoadWeaponWeights` and borrowed character-weight attachment both
+retain their parsed weight config after the HLIL-style
+`BLERR_CANNOTLOADWEAPONCONFIG` return so a later weaponconfig can bind it. The
+combat selector consumes the live client, inventory, and current weapon
 model sync used by Gladiator's frame code, queues the same model-change
 `use <weapon name>` command path gated by `activate + 3.0` seconds, and preserves
 the cached current weapon when a later scoring pass finds no winner. The public
@@ -65,7 +66,12 @@ delay.
 
 The interface parity suite also covers weapon lifecycle wiring by exhausting the
 exported weapon-state handle pool, calling `BotShutdownLibrary`, and verifying a
-fresh setup can allocate from a cleared table.
+fresh setup can allocate from a cleared table. It also sets up a real bot client,
+shuts the whole library down, and verifies the same client can restart with
+fresh character-owned weapon-weight wiring. Character setup coverage also checks
+that the character-owned weapon weight table is attached to the client's weapon
+state and can score the expected best fight weapon through the exported
+weapon chooser.
 
 ## AI character regression tests
 

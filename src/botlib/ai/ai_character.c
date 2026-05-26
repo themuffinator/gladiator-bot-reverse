@@ -66,6 +66,7 @@ typedef struct ai_character_scan_s {
 
 typedef struct ai_character_definition_s {
 	int num_characteristics;
+	int public_characteristics;
 	size_t string_bytes;
 	float skill;
 	char identifier[AI_CHARACTER_NAME_MAX];
@@ -267,7 +268,7 @@ ai_character_read_index
 Reads and validates a characteristic index token.
 =============
 */
-static bool ai_character_read_index(const pc_token_t *token, int *index)
+static bool ai_character_read_index(const pc_token_t *token, int max_index, int *index)
 {
 	if (token == NULL || token->type != TT_NUMBER || (token->subtype & TT_INTEGER) == 0)
 	{
@@ -286,11 +287,11 @@ static bool ai_character_read_index(const pc_token_t *token, int *index)
 		return false;
 	}
 
-	if (parsed_index < 0 || parsed_index >= AI_CHARACTER_INDEX_LIMIT)
+	if (parsed_index < 0 || parsed_index > max_index)
 	{
 		BotLib_Print(PRT_ERROR,
 			"characteristic index out of range [0, %d]\n",
-			AI_CHARACTER_INDEX_LIMIT - 1);
+			max_index);
 		return false;
 	}
 
@@ -308,7 +309,9 @@ ai_character_scan_block
 First pass over the matching block: count entries and packed string bytes.
 =============
 */
-static bool ai_character_scan_block(pc_source_t *source, ai_character_scan_t *scan)
+static bool ai_character_scan_block(pc_source_t *source,
+	ai_character_scan_t *scan,
+	int max_index)
 {
 	pc_token_t token;
 
@@ -320,7 +323,7 @@ static bool ai_character_scan_block(pc_source_t *source, ai_character_scan_t *sc
 		}
 
 		int index = 0;
-		if (!ai_character_read_index(&token, &index))
+		if (!ai_character_read_index(&token, max_index, &index))
 		{
 			return false;
 		}
@@ -387,6 +390,7 @@ static ai_character_definition_t *ai_character_alloc_definition(const ai_charact
 	}
 
 	definition->num_characteristics = scan->count;
+	definition->public_characteristics = scan->count;
 	definition->string_bytes = scan->string_bytes;
 	definition->skill = scan->skill;
 	ai_character_copy_string(definition->identifier,
@@ -513,6 +517,7 @@ static bool ai_character_fill_block(pc_source_t *source, ai_character_definition
 {
 	char *string_cursor = ai_character_definition_string_storage(definition);
 	char *string_end = string_cursor + definition->string_bytes;
+	int max_index = definition->num_characteristics - 1;
 	pc_token_t token;
 
 	while (PC_ExpectAnyToken(source, &token))
@@ -523,7 +528,7 @@ static bool ai_character_fill_block(pc_source_t *source, ai_character_definition
 		}
 
 		int index = 0;
-		if (!ai_character_read_index(&token, &index))
+		if (!ai_character_read_index(&token, max_index, &index))
 		{
 			return false;
 		}
@@ -602,6 +607,7 @@ Allocates a packed definition for reconstructed default/interpolated tables.
 =============
 */
 static ai_character_definition_t *ai_character_alloc_derived_definition(int count,
+	int public_count,
 	size_t string_bytes,
 	float skill,
 	const char *identifier)
@@ -612,7 +618,31 @@ static ai_character_definition_t *ai_character_alloc_derived_definition(int coun
 	scan.string_bytes = string_bytes;
 	scan.skill = skill;
 	ai_character_copy_string(scan.identifier, sizeof(scan.identifier), identifier);
-	return ai_character_alloc_definition(&scan);
+	ai_character_definition_t *definition = ai_character_alloc_definition(&scan);
+	if (definition != NULL)
+	{
+		definition->public_characteristics = public_count;
+	}
+	return definition;
+}
+
+/*
+=============
+ai_character_public_count
+
+Returns the retail-visible characteristic count for a definition.
+=============
+*/
+static int ai_character_public_count(const ai_character_definition_t *definition)
+{
+	if (definition == NULL)
+	{
+		return 0;
+	}
+
+	return definition->public_characteristics > 0 ?
+		definition->public_characteristics :
+		definition->num_characteristics;
 }
 
 /*
@@ -640,6 +670,17 @@ static ai_character_definition_t *ai_character_merge_default_definition(const ai
 		count = defaults->num_characteristics;
 	}
 
+	int public_count = ai_character_public_count(definition);
+	int default_public_count = ai_character_public_count(defaults);
+	if (default_public_count > public_count)
+	{
+		public_count = default_public_count;
+	}
+	if (count > public_count)
+	{
+		count = public_count;
+	}
+
 	size_t string_bytes = 0;
 	for (int index = 0; index < count; ++index)
 	{
@@ -653,6 +694,7 @@ static ai_character_definition_t *ai_character_merge_default_definition(const ai
 
 	ai_character_definition_t *merged =
 		ai_character_alloc_derived_definition(count,
+			public_count,
 			string_bytes,
 			definition->skill,
 			definition->identifier);
@@ -700,10 +742,11 @@ static ai_character_definition_t *ai_character_interpolate_definitions(const ai_
 		return NULL;
 	}
 
-	int count = first->num_characteristics;
-	if (second->num_characteristics > count)
+	int count = ai_character_public_count(first);
+	int second_public_count = ai_character_public_count(second);
+	if (second_public_count > count)
 	{
-		count = second->num_characteristics;
+		count = second_public_count;
 	}
 
 	size_t string_bytes = 0;
@@ -718,6 +761,7 @@ static ai_character_definition_t *ai_character_interpolate_definitions(const ai_
 
 	ai_character_definition_t *interpolated =
 		ai_character_alloc_derived_definition(count,
+			count,
 			string_bytes,
 			skill,
 			first->identifier);
@@ -803,7 +847,7 @@ static bool ai_character_scan_source(pc_source_t *source,
 		}
 
 		ai_character_copy_string(scan->identifier, sizeof(scan->identifier), identifier);
-		if (!ai_character_scan_block(source, scan))
+		if (!ai_character_scan_block(source, scan, AI_CHARACTER_INDEX_LIMIT - 1))
 		{
 			return false;
 		}
@@ -943,7 +987,7 @@ static bool ai_character_scan_skill_source(pc_source_t *source,
 
 		scan->skill = (float)parsed_skill;
 		snprintf(scan->identifier, sizeof(scan->identifier), "skill %d", parsed_skill);
-		if (!ai_character_scan_block(source, scan))
+		if (!ai_character_scan_block(source, scan, AI_CHARACTER_Q3_MAX_CHARACTERISTICS))
 		{
 			return false;
 		}
@@ -1113,6 +1157,7 @@ static ai_character_definition_t *ai_parse_skill_definition(const char *filename
 	{
 		return NULL;
 	}
+	definition->public_characteristics = AI_CHARACTER_Q3_MAX_CHARACTERISTICS;
 
 	source = ai_character_open_source(filename);
 	if (source == NULL)
@@ -1513,17 +1558,7 @@ static bool ai_profile_load_item_weights(ai_character_profile_t *profile,
 		return false;
 	}
 
-	char resolved_path[AI_CHARACTER_PATH_MAX];
-	if (!BotLib_ResolveAssetPath(item_weights_file, "bots", resolved_path, sizeof(resolved_path)))
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] failed to locate item weights %s for %s.\n",
-			item_weights_file,
-			character_name);
-		return false;
-	}
-
-	profile->item_weights = ReadWeightConfig(resolved_path);
+	profile->item_weights = ReadWeightConfig(item_weights_file);
 	if (profile->item_weights == NULL)
 	{
 		BotLib_Print(PRT_ERROR,
@@ -1558,17 +1593,7 @@ static bool ai_profile_load_weapon_weights(ai_character_profile_t *profile,
 		return false;
 	}
 
-	char resolved_path[AI_CHARACTER_PATH_MAX];
-	if (!BotLib_ResolveAssetPath(weapon_weights_file, "bots", resolved_path, sizeof(resolved_path)))
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] failed to locate weapon weights %s for %s.\n",
-			weapon_weights_file,
-			character_name);
-		return false;
-	}
-
-	profile->weapon_weights = AI_LoadWeaponWeights(resolved_path);
+	profile->weapon_weights = AI_LoadWeaponWeights(weapon_weights_file);
 	if (profile->weapon_weights == NULL)
 	{
 		BotLib_Print(PRT_ERROR,
@@ -1878,7 +1903,10 @@ static const ai_characteristic_t *ai_character_checked_slot(const ai_character_p
 	int index)
 {
 	const ai_character_definition_t *definition = ai_definition(profile);
-	if (definition == NULL || index < 0 || index >= definition->num_characteristics)
+	if (definition == NULL ||
+		index < 0 ||
+		index >= ai_character_public_count(definition) ||
+		index >= definition->num_characteristics)
 	{
 		BotLib_Print(PRT_ERROR,
 			"characteristic %d does not exist\n",
@@ -1908,7 +1936,7 @@ Returns the number of addressable characteristic slots in a profile.
 int AI_CharacteristicCount(const ai_character_profile_t *profile)
 {
 	const ai_character_definition_t *definition = ai_definition(profile);
-	return definition != NULL ? definition->num_characteristics : 0;
+	return ai_character_public_count(definition);
 }
 
 /*
@@ -1921,7 +1949,10 @@ Returns the stored type for an initialized characteristic slot.
 ai_character_value_type_t AI_CharacteristicType(const ai_character_profile_t *profile, int index)
 {
 	const ai_character_definition_t *definition = ai_definition(profile);
-	if (definition == NULL || index < 0 || index >= definition->num_characteristics)
+	if (definition == NULL ||
+		index < 0 ||
+		index >= ai_character_public_count(definition) ||
+		index >= definition->num_characteristics)
 	{
 		return AI_CHARACTER_VALUE_NONE;
 	}

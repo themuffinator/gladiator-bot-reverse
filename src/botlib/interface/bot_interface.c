@@ -1124,8 +1124,6 @@ static void BotInterface_BeginFrame(float time)
     g_botInterfaceFrameNumber += 1U;
     Bridge_SetFrameTime(time);
     AAS_SoundSubsystem_SetFrameTime(time);
-    AAS_RouteFrameUpdate();
-    AAS_ReachabilityFrameUpdate();
     BotInterface_ResetFrameQueues();
 }
 
@@ -1980,6 +1978,7 @@ static int BotLoadMap(char *mapname,
     BotInterface_ResetFrameQueues();
     BotInterface_ResetEntityCache();
     BotInterface_ResetMapCache();
+    BotGoal_SetMapModelIndexes(0, NULL);
     TranslateEntity_SetWorldLoaded(qfalse);
 
     int status = AAS_LoadMap(mapname,
@@ -2016,7 +2015,9 @@ static int BotLoadMap(char *mapname,
         return BLERR_INVALIDIMPORT;
     }
 
+    BotGoal_SetMapModelIndexes(modelindexes, modelindex);
     BotInitLevelItems();
+	BotState_ResetAllForNewMap();
 
     TranslateEntity_SetWorldLoaded(qtrue);
     TranslateEntity_SetCurrentTime(0.0f);
@@ -2031,7 +2032,7 @@ static int BotSetupClient(int client, bot_settings_t *settings)
         return BLERR_LIBRARYNOTSETUP;
     }
 
-    if (client < 0 || client >= MAX_CLIENTS)
+    if (!BotState_ClientInRange(client))
     {
         BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSetupClient: invalid client %d\n", client);
         return BLERR_INVALIDCLIENTNUMBER;
@@ -2083,7 +2084,15 @@ static int BotSetupClient(int client, bot_settings_t *settings)
         return BLERR_INVALIDIMPORT;
     }
 
-    BotState_AttachCharacter(state, character_handle);
+	status = BotState_AttachCharacter(state, character_handle);
+	if (status != BLERR_NOERROR)
+	{
+		BotInterface_Printf(PRT_ERROR,
+							"[bot_interface] BotSetupClient: failed to attach character resources for client %d\n",
+							client);
+		BotState_Destroy(client);
+		return status;
+	}
 
     state->goal_state = AI_GoalState_Create();
     if (state->goal_state == NULL)
@@ -2176,7 +2185,7 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 
     Bridge_ClearClientSlot(client);
     Bridge_SetClientActive(client, qtrue);
-    state->active = true;
+	BotState_SetActive(state, true);
     return BLERR_NOERROR;
 }
 
@@ -2194,7 +2203,7 @@ static int BotShutdownClient(int client)
 		return BLERR_LIBRARYNOTSETUP;
 	}
 
-	if (client < 0 || client >= MAX_CLIENTS)
+	if (!BotState_ClientInRange(client))
 	{
 		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotShutdownClient: invalid client %d\n", client);
 		return BLERR_INVALIDCLIENTNUMBER;
@@ -2208,6 +2217,7 @@ static int BotShutdownClient(int client)
 		return BLERR_AICLIENTALREADYSHUTDOWN;
 	}
 
+	BotState_SetActive(state, false);
 	BotState_Destroy(client);
 	Bridge_SetClientActive(client, qfalse);
 	Bridge_ClearClientSlot(client);
@@ -2234,13 +2244,13 @@ static int BotMoveClient(int oldclnum, int newclnum)
 		return BLERR_LIBRARYNOTSETUP;
 	}
 
-	if (oldclnum < 0 || oldclnum >= MAX_CLIENTS)
+	if (!BotState_ClientInRange(oldclnum))
 	{
 		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: invalid source client %d\n", oldclnum);
 		return BLERR_INVALIDCLIENTNUMBER;
 	}
 
-	if (newclnum < 0 || newclnum >= MAX_CLIENTS)
+	if (!BotState_ClientInRange(newclnum))
 	{
 		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: invalid destination client %d\n", newclnum);
 		return BLERR_INVALIDCLIENTNUMBER;
@@ -2290,7 +2300,7 @@ static int BotMoveClient(int oldclnum, int newclnum)
 =============
 BotClientSettings
 
-Provides the stored client presentation state for an active bot.
+Stores game-provided presentation settings for a client slot.
 =============
 */
 static int BotClientSettings(int client, bot_clientsettings_t *settings)
@@ -2306,23 +2316,20 @@ static int BotClientSettings(int client, bot_clientsettings_t *settings)
 		return BLERR_INVALIDIMPORT;
 	}
 
-	bot_client_state_t *state = BotState_Get(client);
-	if (state == NULL || !state->active)
+	if (!BotState_ClientInRange(client))
 	{
-		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotClientSettings: client %d inactive\n", client);
-		memset(settings, 0, sizeof(*settings));
-		return BLERR_SETTINGSINACTIVECLIENT;
+		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotClientSettings: invalid client %d\n", client);
+		return BLERR_INVALIDCLIENTNUMBER;
 	}
 
-	memcpy(settings, &state->client_settings, sizeof(*settings));
-	return BLERR_NOERROR;
+	return BotState_SetClientSettings(client, settings);
 }
 
 /*
 =============
 BotSettings
 
-Returns the original bot setup configuration for an active client.
+Updates the stored bot setup configuration for an active client.
 =============
 */
 static int BotSettings(int client, bot_settings_t *settings)
@@ -2338,15 +2345,20 @@ static int BotSettings(int client, bot_settings_t *settings)
 		return BLERR_INVALIDIMPORT;
 	}
 
+	if (!BotState_ClientInRange(client))
+	{
+		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSettings: invalid client %d\n", client);
+		return BLERR_INVALIDCLIENTNUMBER;
+	}
+
 	bot_client_state_t *state = BotState_Get(client);
 	if (state == NULL || !state->active)
 	{
 		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotSettings: client %d inactive\n", client);
-		memset(settings, 0, sizeof(*settings));
-		return BLERR_AICLIENTNOTSETUP;
+		return BLERR_SETTINGSINACTIVECLIENT;
 	}
 
-	memcpy(settings, &state->settings, sizeof(*settings));
+	memcpy(&state->settings, settings, sizeof(state->settings));
 	return BLERR_NOERROR;
 }
 
@@ -2363,8 +2375,8 @@ static int BotStartFrame(float time)
         return BLERR_LIBRARYNOTSETUP;
     }
 
-    BotInterface_BeginFrame(time);
     AAS_FrameSynchronise(time);
+    BotInterface_BeginFrame(time);
     AAS_UnlinkInvalidEntities();
     AAS_InvalidateEntities();
     AAS_ContinueInit(time);
@@ -2387,6 +2399,12 @@ static int BotUpdateClient(int client, bot_updateclient_t *buc)
     {
         BotInterface_Printf(PRT_ERROR, "[bot_interface] BotUpdateClient: library not initialised\n");
         return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotState_ClientInRange(client))
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotUpdateClient: invalid client %d\n", client);
+        return BLERR_INVALIDCLIENTNUMBER;
     }
 
     bot_client_state_t *state = BotState_Get(client);
@@ -2649,6 +2667,8 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
         BotInterface_SynchroniseCombatState(state);
     }
 
+	BotState_EmitPendingClientCommands(state);
+
     bot_input_t final_input = {0};
     status = EA_GetInput(state->client_number, thinktime, &final_input);
     if (status != BLERR_NOERROR)
@@ -2675,6 +2695,12 @@ static int BotAI(int client, float thinktime)
         return BLERR_LIBRARYNOTSETUP;
     }
 
+    if (!BotState_ClientInRange(client))
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotAI: invalid client %d\n", client);
+        return BLERR_INVALIDCLIENTNUMBER;
+    }
+
     bot_client_state_t *state = BotState_Get(client);
     if (state == NULL || !state->active)
     {
@@ -2696,6 +2722,12 @@ static int BotConsoleMessage(int client, int type, char *message)
     {
         BotInterface_Printf(PRT_ERROR, "[bot_interface] BotConsoleMessage: library not initialised\n");
         return BLERR_LIBRARYNOTSETUP;
+    }
+
+    if (!BotState_ClientInRange(client))
+    {
+        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotConsoleMessage: invalid client %d\n", client);
+        return BLERR_INVALIDCLIENTNUMBER;
     }
 
     bot_client_state_t *state = BotState_Get(client);

@@ -683,16 +683,12 @@ AI_LoadWeaponWeights
 */
 ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
 {
-	char resolved_path[AI_WEAPON_MAX_PATH];
-	if (!BotLib_ResolveAssetPath(filename, NULL, resolved_path, sizeof(resolved_path)))
+	if (filename == NULL || filename[0] == '\0')
 	{
-		BotLib_Print(PRT_ERROR,
-					 "[ai_weapon] failed to locate weapon weights %s\n",
-					 filename != NULL ? filename : "<null>");
 		return NULL;
 	}
 
-	bot_weight_config_t *config = ReadWeightConfig(resolved_path);
+	bot_weight_config_t *config = ReadWeightConfig(filename);
 	if (config == NULL)
 	{
 		return NULL;

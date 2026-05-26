@@ -469,6 +469,12 @@ int BotWeaponStateAttachWeights(int weaponstate, ai_weapon_weights_t *weights)
 		return BLERR_CANNOTLOADWEAPONWEIGHTS;
 	}
 
+	state->weights = weights;
+	state->config = weights->definitions;
+	state->weight_config = weights->config;
+	state->owns_weights = false;
+	BotWeapon_ResetRanking(state);
+
 	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
 	if (config == NULL)
 	{
@@ -481,14 +487,17 @@ int BotWeaponStateAttachWeights(int weaponstate, ai_weapon_weights_t *weights)
 	{
 		if (!AI_WeaponWeightsBindConfig(weights, config))
 		{
+			state->weights = NULL;
+			state->config = NULL;
+			state->weight_config = NULL;
+			state->owns_weights = false;
+			BotWeapon_ResetRanking(state);
 			return BLERR_CANNOTLOADWEAPONWEIGHTS;
 		}
 	}
 
-	state->weights = weights;
 	state->config = weights->definitions;
 	state->weight_config = weights->config;
-	state->owns_weights = false;
 	BotWeapon_ResetRanking(state);
 	return BLERR_NOERROR;
 }
@@ -663,13 +672,7 @@ void BotGetWeaponInfo(int weaponstate, int weapon, bot_weapon_info_t *weaponinfo
 
 	memset(weaponinfo, 0, sizeof(*weaponinfo));
 
-	bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
-	if (state == NULL)
-	{
-		return;
-	}
-
-	const bot_weapon_config_t *config = BotWeapon_ConfigForState(state);
+	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
 	if (config == NULL)
 	{
 		return;
@@ -677,9 +680,16 @@ void BotGetWeaponInfo(int weaponstate, int weapon, bot_weapon_info_t *weaponinfo
 
 	if (weapon < 0 || weapon >= config->num_weapons)
 	{
-		BotLib_Print(PRT_ERROR, "BotGetWeaponInfo: weapon %d out of range\n", weapon);
+		BotLib_Print(PRT_ERROR, "weapon number out of range\n");
 		return;
 	}
+
+	bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
+	if (state == NULL)
+	{
+		return;
+	}
+	(void)state;
 
 	memcpy(weaponinfo, &config->weapons[weapon], sizeof(*weaponinfo));
 }

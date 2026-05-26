@@ -24,6 +24,7 @@
 #include "botlib/ai_weight/bot_weight.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/ea/ea_local.h"
 #include "botlib/interface/bot_state.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/botlib.h"
@@ -37,6 +38,7 @@
 
 #define TEST_BOTLIB_HEAP_SIZE (8u << 20)
 #define TEST_MAX_LOG_MESSAGES 64
+#define TEST_MAX_CLIENT_COMMANDS 16
 
 enum q3_characteristic_index_e {
 	Q3_CHARACTERISTIC_NAME = 0,
@@ -55,6 +57,11 @@ typedef struct test_log_message_s {
     char text[256];
 } test_log_message_t;
 
+typedef struct test_client_command_s {
+	int client;
+	char text[256];
+} test_client_command_t;
+
 typedef struct test_environment_s {
     asset_env_t assets;
     bool libvar_initialised;
@@ -70,6 +77,20 @@ static struct {
     test_log_message_t entries[TEST_MAX_LOG_MESSAGES];
     int count;
 } g_test_log;
+
+static struct {
+	test_client_command_t entries[TEST_MAX_CLIENT_COMMANDS];
+	int count;
+} g_test_client_commands;
+
+static void test_reset_client_commands(void)
+{
+	g_test_client_commands.count = 0;
+	for (int i = 0; i < TEST_MAX_CLIENT_COMMANDS; ++i) {
+		g_test_client_commands.entries[i].client = -1;
+		g_test_client_commands.entries[i].text[0] = '\0';
+	}
+}
 
 static void test_reset_log(void)
 {
@@ -152,8 +173,13 @@ static void test_bot_input(int client, bot_input_t *input)
 
 static void test_bot_client_command(int client, char *fmt, ...)
 {
-    (void)client;
-    (void)fmt;
+	if (g_test_client_commands.count >= TEST_MAX_CLIENT_COMMANDS) {
+		return;
+	}
+
+	test_client_command_t *slot = &g_test_client_commands.entries[g_test_client_commands.count++];
+	slot->client = client;
+	snprintf(slot->text, sizeof(slot->text), "%s", fmt != NULL ? fmt : "");
 }
 
 static bsp_trace_t test_trace(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask)
@@ -242,6 +268,7 @@ static int character_profile_setup(void **state)
     }
 
     test_reset_log();
+	test_reset_client_commands();
     BotInterface_SetImportTable(&g_test_imports);
     env->import_table_set = true;
 
@@ -316,6 +343,7 @@ static int bot_setup_client_setup(void **state)
     }
 
     test_reset_log();
+	test_reset_client_commands();
     BotInterface_SetImportTable(&g_test_imports);
     env->import_table_set = true;
 
@@ -374,6 +402,21 @@ static void asset_path_or_skip(const char *relative_path, char *out, size_t out_
         cmocka_skip();
     }
     fclose(file);
+}
+
+/*
+=============
+write_character_fixture
+
+Writes temporary character or weight scripts for profile wiring tests.
+=============
+*/
+static void write_character_fixture(const char *path, const char *contents)
+{
+	FILE *file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_true(fputs(contents, file) >= 0);
+	assert_int_equal(fclose(file), 0);
 }
 
 /*
@@ -481,6 +524,100 @@ static void test_babe_character_profile(void **state)
                                          "Shotgun"));
 
     AI_FreeCharacter(profile);
+}
+
+/*
+=============
+test_character_weight_cache_uses_caller_filenames
+
+Pins character-owned item and weapon weights to the filename-keyed ai_weight cache.
+=============
+*/
+static void test_character_weight_cache_uses_caller_filenames(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	assert_non_null(env);
+
+	char weapon_config_path[PATH_MAX];
+	asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
+
+	char fixture_root[PATH_MAX];
+	int written = snprintf(fixture_root,
+		sizeof(fixture_root),
+		"%s/tests/support/assets",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_root));
+
+	char character_path[PATH_MAX];
+	written = snprintf(character_path,
+		sizeof(character_path),
+		"%s/tests/support/assets/bots/character_cache_retained_tmp_c.c",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(character_path));
+
+	char item_path[PATH_MAX];
+	written = snprintf(item_path,
+		sizeof(item_path),
+		"%s/tests/support/assets/bots/character_cache_retained_tmp_i.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(item_path));
+
+	char weapon_path[PATH_MAX];
+	written = snprintf(weapon_path,
+		sizeof(weapon_path),
+		"%s/tests/support/assets/bots/character_cache_retained_tmp_w.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(weapon_path));
+
+	write_character_fixture(item_path,
+		"weight \"weapon_rocketlauncher\"\n"
+		"{\n"
+		"return 31;\n"
+		"}\n");
+	write_character_fixture(weapon_path,
+		"weight \"Blaster\"\n"
+		"{\n"
+		"return 23;\n"
+		"}\n");
+	write_character_fixture(character_path,
+		"character \"cacheprobe\"\n"
+		"{\n"
+		"0 \"Cache Probe\"\n"
+		"3 \"male\"\n"
+		"5 \"bots/character_cache_retained_tmp_w.w\"\n"
+		"12 \"bots/babe_t.c\"\n"
+		"13 \"babe\"\n"
+		"28 \"bots/character_cache_retained_tmp_i.w\"\n"
+		"}\n");
+
+	env->weapon_library = AI_LoadWeaponLibrary(NULL);
+	assert_non_null(env->weapon_library);
+	assert_string_equal(env->weapon_library->source_path, weapon_config_path);
+
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	LibVarSet("bot_reloadcharacters", "0");
+
+	ai_character_profile_t *first = AI_LoadCharacter(character_path, 1.0f);
+	assert_non_null(first);
+	bot_weight_config_t *first_item = AI_ItemWeightsForCharacter(first);
+	ai_weapon_weights_t *first_weapon = AI_WeaponWeightsForCharacter(first);
+	assert_non_null(first_item);
+	assert_non_null(first_weapon);
+	assert_non_null(first_weapon->config);
+
+	assert_int_equal(remove(item_path), 0);
+	assert_int_equal(remove(weapon_path), 0);
+
+	ai_character_profile_t *second = AI_LoadCharacter(character_path, 1.0f);
+	assert_non_null(second);
+	assert_ptr_equal(AI_ItemWeightsForCharacter(second), first_item);
+	ai_weapon_weights_t *second_weapon = AI_WeaponWeightsForCharacter(second);
+	assert_non_null(second_weapon);
+	assert_ptr_equal(second_weapon->config, first_weapon->config);
+
+	AI_FreeCharacter(second);
+	AI_FreeCharacter(first);
+	assert_int_equal(remove(character_path), 0);
 }
 
 static void test_bot_character_exports(void **state)
@@ -615,6 +752,14 @@ static void test_q3_skill_character_exports(void **state)
 	assert_string_equal(AI_CharacteristicAsString(exact, CHARACTERISTIC_NAME), "Q3 Skill Four");
 	assert_true(fabsf(Characteristic_Float(exact_handle, CHARACTERISTIC_ATTACK_SKILL) - 0.7f) < 0.0001f);
 	assert_int_equal(Characteristic_Integer(exact_handle, CHARACTERISTIC_CHAT_CPM), 250);
+	assert_int_equal(AI_CharacteristicCount(exact), 80);
+
+	char hidden_sentinel[32];
+	memset(hidden_sentinel, 'x', sizeof(hidden_sentinel));
+	test_reset_log();
+	Characteristic_String(exact_handle, 80, hidden_sentinel, sizeof(hidden_sentinel));
+	assert_string_equal(hidden_sentinel, "");
+	assert_true(test_log_contains("characteristic 80 does not exist"));
 
 	test_reset_log();
 	int cached_exact = BotLoadCharacterSkill(skill_character_path, 4.0f);
@@ -850,6 +995,12 @@ static void test_bot_setup_client_exposes_profile(void **state)
     int status = env->exports->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
     env->library_setup = true;
+	assert_int_equal(BotState_ClientCapacity(), 4);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+	const bot_clientsettings_t *initial_client_settings = BotState_ClientSettings(0);
+	assert_non_null(initial_client_settings);
+	assert_string_equal(initial_client_settings->netname, "");
+	assert_string_equal(initial_client_settings->skin, "");
 
 	int exported_handle = env->exports->BotLoadCharacter("bots/babe_c.c", 1.0f);
 	assert_true(exported_handle > 0);
@@ -867,9 +1018,23 @@ static void test_bot_setup_client_exposes_profile(void **state)
     snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
     snprintf(settings.charactername, sizeof(settings.charactername), "babe");
 
+	bot_clientsettings_t live_client_settings;
+	memset(&live_client_settings, 0, sizeof(live_client_settings));
+	snprintf(live_client_settings.netname, sizeof(live_client_settings.netname), "Spawn Babe");
+	snprintf(live_client_settings.skin, sizeof(live_client_settings.skin), "female/athena");
+	status = env->exports->BotClientSettings(0, &live_client_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_string_equal(BotState_ClientSettings(0)->netname, "Spawn Babe");
+	assert_string_equal(BotState_ClientName(0), "Spawn Babe");
+	assert_string_equal(BotState_ClientSkin(0), "female/athena");
+	assert_int_equal(BotState_FindClientByName("Spawn Babe"), 0);
+	assert_string_equal(BotState_ClientName(MAX_CLIENTS), "");
+	assert_string_equal(BotState_ClientSkin(MAX_CLIENTS), "");
+
     test_reset_log();
     status = env->exports->BotSetupClient(0, &settings);
     assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
     assert_true(test_log_contains("bytes weapon index"));
     assert_true(test_log_contains("bytes item index"));
     env->client_active = true;
@@ -889,17 +1054,302 @@ static void test_bot_setup_client_exposes_profile(void **state)
     assert_ptr_equal(profile->weapon_weights, state_slot->weapon_weights);
     assert_ptr_equal(profile->chat_state, state_slot->chat_state);
 
+	bot_weapon_info_t blaster;
+	memset(&blaster, 0, sizeof(blaster));
+	env->exports->BotGetWeaponInfo(state_slot->weapon_state, 0, &blaster);
+	assert_string_equal(blaster.name, "Blaster");
+
+	bot_weapon_info_t machinegun;
+	memset(&machinegun, 0, sizeof(machinegun));
+	env->exports->BotGetWeaponInfo(state_slot->weapon_state, 3, &machinegun);
+	assert_string_equal(machinegun.name, "Machinegun");
+	assert_true(machinegun.weaponindex > 0 && machinegun.weaponindex < MAX_ITEMS);
+	assert_true(machinegun.ammoindex > 0 && machinegun.ammoindex < MAX_ITEMS);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	if (blaster.weaponindex > 0 && blaster.weaponindex < MAX_ITEMS)
+	{
+		inventory[blaster.weaponindex] = 1;
+	}
+	inventory[machinegun.weaponindex] = 1;
+	inventory[machinegun.ammoindex] = 50;
+	assert_int_equal(env->exports->BotChooseBestFightWeapon(state_slot->weapon_state, inventory), 3);
+
     assert_true(BotChat_HasSynonymPhrase((bot_chatstate_t *)profile->chat_state,
                                          "CONTEXT_NEARBYITEM",
                                          "Shotgun"));
+	assert_string_equal(BotChatName((bot_chatstate_t *)profile->chat_state), "babe");
+	assert_int_equal(BotChatClient((bot_chatstate_t *)profile->chat_state), 0);
 
-    assert_string_equal(state_slot->client_settings.netname, "Silicon Babe");
+    assert_string_equal(state_slot->client_settings.netname, "Spawn Babe");
+	assert_string_equal(state_slot->client_settings.skin, "female/athena");
+
+	memset(&live_client_settings, 0, sizeof(live_client_settings));
+	snprintf(live_client_settings.netname, sizeof(live_client_settings.netname), "Live Babe");
+	snprintf(live_client_settings.skin, sizeof(live_client_settings.skin), "female/venus");
+	status = env->exports->BotClientSettings(0, &live_client_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_string_equal(state_slot->client_settings.netname, "Live Babe");
+	assert_string_equal(state_slot->client_settings.skin, "female/venus");
+	assert_string_equal(BotState_ClientName(0), "Live Babe");
+	assert_string_equal(BotState_ClientSkin(0), "female/venus");
+
+	bot_settings_t updated_settings = settings;
+	snprintf(updated_settings.ailibrary, sizeof(updated_settings.ailibrary), "gladiator.dll");
+	status = env->exports->BotSettings(0, &updated_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_string_equal(state_slot->settings.ailibrary, "gladiator.dll");
+
+	test_reset_client_commands();
+	BotState_EmitPendingClientCommands(state_slot);
+	bot_input_t command_input;
+	memset(&command_input, 0, sizeof(command_input));
+	status = EA_GetInput(0, 0.05f, &command_input);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(g_test_client_commands.count, 1);
+	assert_int_equal(g_test_client_commands.entries[0].client, 0);
+	assert_string_equal(g_test_client_commands.entries[0].text, "gender female");
+
+	test_reset_client_commands();
+	BotState_EmitPendingClientCommands(state_slot);
+	memset(&command_input, 0, sizeof(command_input));
+	status = EA_GetInput(0, 0.05f, &command_input);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(g_test_client_commands.count, 0);
+
+	status = env->exports->BotShutdownClient(0);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+	env->client_active = false;
+
+	env->exports->BotLibVarSet("altnames", "1");
+	status = env->exports->BotSetupClient(0, &settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+	env->client_active = true;
+
+	state_slot = BotState_Get(0);
+	assert_non_null(state_slot);
+	assert_true(state_slot->active);
+	assert_string_equal(state_slot->client_settings.netname, "Live Babe");
+	profile = (struct ai_character_profile_s *)state_slot->character;
+	assert_non_null(profile);
+	assert_non_null(profile->chat_state);
+	assert_string_equal(BotChatName((bot_chatstate_t *)profile->chat_state), "babe");
+	assert_int_equal(BotChatClient((bot_chatstate_t *)profile->chat_state), 0);
+
+	memset(&live_client_settings, 0, sizeof(live_client_settings));
+	snprintf(live_client_settings.netname, sizeof(live_client_settings.netname), "Epsilon");
+	snprintf(live_client_settings.skin, sizeof(live_client_settings.skin), "female/venus");
+	status = env->exports->BotClientSettings(0, &live_client_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_string_equal(state_slot->client_settings.netname, "Epsilon");
+
+	test_reset_client_commands();
+	BotState_EmitPendingClientCommands(state_slot);
+	memset(&command_input, 0, sizeof(command_input));
+	status = EA_GetInput(0, 0.05f, &command_input);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(g_test_client_commands.count, 2);
+	assert_int_equal(g_test_client_commands.entries[0].client, 0);
+	assert_string_equal(g_test_client_commands.entries[0].text, "gender female");
+	assert_int_equal(g_test_client_commands.entries[1].client, 0);
+	assert_string_equal(g_test_client_commands.entries[1].text, "name Epsilon");
+
+	memset(&live_client_settings, 0, sizeof(live_client_settings));
+	snprintf(live_client_settings.netname, sizeof(live_client_settings.netname), "Moved Babe");
+	snprintf(live_client_settings.skin, sizeof(live_client_settings.skin), "female/phoenix");
+	status = env->exports->BotClientSettings(1, &live_client_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+
+	status = env->exports->BotMoveClient(0, 1);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+	env->client_active = false;
+	assert_null(BotState_Get(0));
+	state_slot = BotState_Get(1);
+	assert_non_null(state_slot);
+	assert_int_equal(state_slot->client_number, 1);
+	assert_string_equal(state_slot->client_settings.netname, "Moved Babe");
+	assert_string_equal(state_slot->client_settings.skin, "female/phoenix");
+	assert_string_equal(BotState_ClientName(1), "Moved Babe");
+	assert_string_equal(BotState_ClientSkin(1), "female/phoenix");
+	assert_int_equal(BotState_FindClientByName("Moved Babe"), 1);
+	profile = (struct ai_character_profile_s *)state_slot->character;
+	assert_non_null(profile);
+	assert_non_null(profile->chat_state);
+	assert_string_equal(BotChatName((bot_chatstate_t *)profile->chat_state), "babe");
+	assert_int_equal(BotChatClient((bot_chatstate_t *)profile->chat_state), 1);
+
+	status = env->exports->BotShutdownClient(1);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+
+	status = env->exports->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	env->library_setup = false;
+	assert_int_equal(BotState_ClientCapacity(), 0);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+
+	status = env->exports->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	env->library_setup = true;
+	assert_int_equal(BotState_ClientCapacity(), 4);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+	const bot_clientsettings_t *reset_client_settings = BotState_ClientSettings(0);
+	assert_non_null(reset_client_settings);
+	assert_string_equal(reset_client_settings->netname, "");
+	assert_string_equal(reset_client_settings->skin, "");
+	assert_string_equal(BotState_ClientName(0), "");
+	assert_string_equal(BotState_ClientSkin(0), "");
+}
+
+/*
+=============
+test_bot_state_map_reset_preserves_character_wiring
+
+Pins the HLIL map-load reset helper that preserves character-owned resources.
+=============
+*/
+static void test_bot_state_map_reset_preserves_character_wiring(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	assert_non_null(env);
+	assert_non_null(env->exports);
+
+	char weapon_config_path[PATH_MAX];
+	asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
+
+	env->exports->BotLibVarSet("basedir", env->assets.asset_root);
+	env->exports->BotLibVarSet("gamedir", "");
+	env->exports->BotLibVarSet("cddir", "");
+	env->exports->BotLibVarSet("gladiator_asset_dir", "");
+	env->exports->BotLibVarSet("weaponconfig", "weapons.c");
+	env->exports->BotLibVarSet("itemconfig", "items.c");
+	env->exports->BotLibVarSet("max_weaponinfo", "64");
+	env->exports->BotLibVarSet("max_projectileinfo", "64");
+
+	int status = env->exports->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	env->library_setup = true;
+
+	bot_clientsettings_t live_client_settings;
+	memset(&live_client_settings, 0, sizeof(live_client_settings));
+	snprintf(live_client_settings.netname, sizeof(live_client_settings.netname), "Reset Babe");
+	snprintf(live_client_settings.skin, sizeof(live_client_settings.skin), "female/athena");
+	status = env->exports->BotClientSettings(0, &live_client_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+
+	bot_settings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+	snprintf(settings.charactername, sizeof(settings.charactername), "babe");
+
+	status = env->exports->BotSetupClient(0, &settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	env->client_active = true;
+
+	bot_client_state_t *state_slot = BotState_Get(0);
+	assert_non_null(state_slot);
+	assert_true(state_slot->active);
+
+	ai_character_profile_t *character = state_slot->character;
+	bot_weight_config_t *item_weights = state_slot->item_weights;
+	ai_weapon_weights_t *weapon_weights = state_slot->weapon_weights;
+	bot_chatstate_t *chat_state = (bot_chatstate_t *)state_slot->chat_state;
+	ai_goal_state_t *goal_state = state_slot->goal_state;
+	ai_move_state_t *move_state = state_slot->move_state;
+	ai_dm_state_t *dm_state = state_slot->dm_state;
+	bot_movestate_t *move_handle_state = BotMoveStateFromHandle(state_slot->move_handle);
+	assert_non_null(character);
+	assert_non_null(item_weights);
+	assert_non_null(weapon_weights);
+	assert_non_null(chat_state);
+	assert_non_null(goal_state);
+	assert_non_null(move_state);
+	assert_non_null(dm_state);
+	assert_non_null(move_handle_state);
+
+	bot_goal_t goal;
+	memset(&goal, 0, sizeof(goal));
+	goal.number = 77;
+	goal.areanum = 3;
+	assert_true(BotPushGoal(state_slot->goal_handle, &goal));
+	bot_goal_t top_goal;
+	memset(&top_goal, 0, sizeof(top_goal));
+	assert_true(BotGetTopGoal(state_slot->goal_handle, &top_goal));
+	assert_int_equal(top_goal.number, 77);
+
+	state_slot->client_update_valid = true;
+	state_slot->last_update_time = 123.0f;
+	state_slot->goal_snapshot_count = 1;
+	state_slot->goal_snapshot[0] = goal;
+	state_slot->active_goal_number = 77;
+	state_slot->current_weapon = 3;
+	state_slot->client_commands_pending = true;
+	state_slot->has_move_result = true;
+	state_slot->last_move_result.type = RESULTTYPE_ELEVATORUP;
+	state_slot->combat.current_enemy = 9;
+	state_slot->combat.enemy_visible = true;
+	state_slot->goal_state->active_goal.valid = true;
+	state_slot->move_state->has_last_result = true;
+	move_handle_state->client = 99;
+	move_handle_state->areanum = 12;
+
+	BotState_ResetForNewMap(state_slot);
+
+	assert_true(state_slot->active);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+	assert_ptr_equal(state_slot->character, character);
+	assert_ptr_equal(state_slot->item_weights, item_weights);
+	assert_ptr_equal(state_slot->weapon_weights, weapon_weights);
+	assert_ptr_equal(state_slot->chat_state, chat_state);
+	assert_ptr_equal(state_slot->goal_state, goal_state);
+	assert_ptr_equal(state_slot->move_state, move_state);
+	assert_ptr_equal(state_slot->dm_state, dm_state);
+	assert_ptr_equal(BotMoveStateFromHandle(state_slot->move_handle), move_handle_state);
+	assert_string_equal(state_slot->settings.characterfile, "bots/babe_c.c");
+	assert_string_equal(state_slot->client_settings.netname, "Reset Babe");
+	assert_string_equal(BotChatName(chat_state), "babe");
+	assert_int_equal(BotChatClient(chat_state), 0);
+	assert_ptr_equal(AI_MoveState_GetAvoidList(state_slot->move_state),
+		AI_GoalState_GetAvoidList(state_slot->goal_state));
+
+	assert_false(state_slot->client_update_valid);
+	assert_float_equal(state_slot->last_update_time, 0.0f, 0.0001f);
+	assert_int_equal(state_slot->goal_snapshot_count, 0);
+	assert_int_equal(state_slot->active_goal_number, 0);
+	assert_int_equal(state_slot->current_weapon, 0);
+	assert_false(state_slot->client_commands_pending);
+	assert_false(state_slot->has_move_result);
+	assert_int_equal(state_slot->last_move_result.type, 0);
+	assert_int_equal(state_slot->combat.current_enemy, -1);
+	assert_false(state_slot->combat.enemy_visible);
+	assert_false(state_slot->goal_state->active_goal.valid);
+	assert_false(state_slot->move_state->has_last_result);
+	assert_int_equal(move_handle_state->client, 0);
+	assert_int_equal(move_handle_state->areanum, 0);
+	memset(&top_goal, 0, sizeof(top_goal));
+	assert_false(BotGetTopGoal(state_slot->goal_handle, &top_goal));
+
+	ai_dm_metrics_t dm_metrics;
+	AI_DMState_GetMetrics(state_slot->dm_state, &dm_metrics);
+	assert_int_equal(dm_metrics.enemy_entity, -1);
+
+	status = env->exports->BotShutdownClient(0);
+	assert_int_equal(status, BLERR_NOERROR);
+	env->client_active = false;
+	assert_int_equal(BotState_ActiveClientCount(), 0);
 }
 
 int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_babe_character_profile,
+                                        character_profile_setup,
+                                        character_profile_teardown),
+        cmocka_unit_test_setup_teardown(test_character_weight_cache_uses_caller_filenames,
                                         character_profile_setup,
                                         character_profile_teardown),
         cmocka_unit_test_setup_teardown(test_bot_character_exports,
@@ -917,6 +1367,9 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_bot_setup_client_exposes_profile,
                                         bot_setup_client_setup,
                                         bot_setup_client_teardown),
+		cmocka_unit_test_setup_teardown(test_bot_state_map_reset_preserves_character_wiring,
+										bot_setup_client_setup,
+										bot_setup_client_teardown),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

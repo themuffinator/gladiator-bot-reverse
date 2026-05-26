@@ -236,6 +236,48 @@ static void test_cache_follows_bot_reloadcharacters_flag(void **state)
 
 /*
 =============
+test_free_weight_config_respects_retail_reload_gate
+
+Pins Q3's FreeWeightConfig gate for direct, non-cacheable loads.
+=============
+*/
+static void test_free_weight_config_respects_retail_reload_gate(void **state)
+{
+	(void)state;
+
+	char fixture_path[512];
+	int written = snprintf(fixture_path,
+						   sizeof(fixture_path),
+						   "%s/tests/support/assets/bots/free_direct_tmp.w",
+						   PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	write_weight_fixture(fixture_path,
+		"weight \"direct_free\"\n"
+		"{\n"
+		"return 7;\n"
+		"}\n");
+
+	const char *defines[] = {"UNUSED_DEFINE 1"};
+	LibVarSet("bot_reloadcharacters", "0");
+
+	bot_weight_config_t *config = ReadWeightConfigWithDefines(fixture_path, defines, 1);
+	assert_non_null(config);
+	size_t allocated_before_free = BotMemory_TotalAllocated();
+
+	FreeWeightConfig(config);
+	assert_int_equal(BotMemory_TotalAllocated(), allocated_before_free);
+
+	LibVarSet("bot_reloadcharacters", "1");
+	FreeWeightConfig(config);
+	assert_true(BotMemory_TotalAllocated() < allocated_before_free);
+
+	LibVarSet("bot_reloadcharacters", "0");
+	remove(fixture_path);
+}
+
+/*
+=============
 test_fuzzy_weight_uses_retail_integer_scale
 
 Locks in the original integer division used between adjacent fuzzy cases.
@@ -1152,6 +1194,7 @@ int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_cache_follows_bot_reloadcharacters_flag),
+		cmocka_unit_test(test_free_weight_config_respects_retail_reload_gate),
 		cmocka_unit_test(test_fuzzy_weight_uses_retail_integer_scale),
 		cmocka_unit_test(test_fuzzy_weight_undecided_samples_balance_range),
 		cmocka_unit_test(test_fuzzy_weight_random_scale_matches_retail_mask),

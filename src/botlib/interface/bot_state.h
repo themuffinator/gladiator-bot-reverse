@@ -56,8 +56,10 @@ struct bot_client_state_s {
     int client_number;
     int team;
     bool active;
+	bool active_counted;
     bot_settings_t settings;
     bot_clientsettings_t client_settings;
+	bool client_commands_pending;
     int character_handle;
     ai_character_profile_t *character;
     bot_weight_config_t *item_weights;
@@ -87,7 +89,21 @@ bot_client_state_t *BotState_Create(int client);
 void BotState_Destroy(int client);
 void BotState_Move(int old_client, int new_client);
 void BotState_ShutdownAll(void);
-void BotState_AttachCharacter(bot_client_state_t *state, int character_handle);
+void BotState_ResetForNewMap(bot_client_state_t *state);
+void BotState_ResetAllForNewMap(void);
+void BotState_ConfigureClientCapacity(int max_clients);
+int BotState_ClientCapacity(void);
+bool BotState_ClientInRange(int client);
+void BotState_ResetClientSettings(void);
+void BotState_SetActive(bot_client_state_t *state, bool active);
+int BotState_ActiveClientCount(void);
+int BotState_AttachCharacter(bot_client_state_t *state, int character_handle);
+void BotState_EmitPendingClientCommands(bot_client_state_t *state);
+int BotState_SetClientSettings(int client, const bot_clientsettings_t *settings);
+const bot_clientsettings_t *BotState_ClientSettings(int client);
+const char *BotState_ClientName(int client);
+const char *BotState_ClientSkin(int client);
+int BotState_FindClientByName(const char *name);
 
 #ifdef __cplusplus
 } // extern "C"

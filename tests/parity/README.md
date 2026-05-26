@@ -87,12 +87,17 @@ engineered details surface.
 * **Import validation** &mdash; Confirm that attempting to move clients before the bridge import table is set returns `BLERR_LIBRARYNOTSETUP`.
 
 ### `BotClientSettings`
-* **Inactive guard** &mdash; Request settings for an inactive client and expect `BLERR_SETTINGSINACTIVECLIENT` with zeroed output buffers.
-* **Round-trip copy** &mdash; After setup, confirm that the stored netname/skin strings propagate to the caller intact.
+* **Slot setter** &mdash; Call the export before bot setup and confirm the netname/skin block is stored in the standalone client settings table, matching the `data_100643a8` copy path.
+* **Active mirror** &mdash; After setup, confirm that later game-provided netname/skin updates mirror into the active bot state without rewriting character persona data.
+* **Presentation helpers** &mdash; Validate the reconstructed client-name, client-skin, and first-match name lookup helpers over the same slot table.
+* **Runtime capacity** &mdash; Override `maxclients` before setup and confirm setup, move, settings, and presentation helpers reject slots outside the allocated `data_10064028` range.
+* **Map reset preservation** &mdash; Reset active clients after map load the way `sub_10029c10` calls `sub_10029a40`: clear transient goal, move, combat, and pending-command fields while retaining the character handle, chat persona, item weights, weapon weights, setup block, and live presentation mirror.
+* **Import validation** &mdash; Invalid client numbers still return `BLERR_INVALIDCLIENTNUMBER`; null settings pointers return the reconstruction guard `BLERR_INVALIDIMPORT`.
 
 ### `BotSettings`
-* **Inactive guard** &mdash; Mirror the inactive guard behaviour detected in HLIL (`BLERR_AICLIENTNOTSETUP`) and confirm the output buffer is cleared.
-* **Round-trip copy** &mdash; Validate that the original `bot_settings_t` provided during setup is returned verbatim.
+* **Inactive guard** &mdash; Mirror the inactive guard behaviour detected in HLIL (`BLERR_SETTINGSINACTIVECLIENT`) before setup and after shutdown.
+* **Active setter** &mdash; Validate that an active client's stored `bot_settings_t` block is overwritten from the caller, matching `sub_100299d0`.
+* **Import validation** &mdash; Invalid client numbers still return `BLERR_INVALIDCLIENTNUMBER`; null settings pointers return the reconstruction guard `BLERR_INVALIDIMPORT`.
 
 ### Weight configuration exports
 * **Handle guards** &mdash; Exercise `BotAllocWeightConfig`, `BotFreeWeightConfig`, and `BotReadWeightsFile` with the library uninitialised to confirm
@@ -114,10 +119,16 @@ engineered details surface.
 ### Weapon state exports
 * **Handle reuse** &mdash; Allocate, reset, and free weapon state handles through the export table to ensure the wrappers enforce the same guard
   ordering (library initialisation, handle validation) as the direct calls in `BotSetupClient`.
-* **Weight loading** &mdash; Load the default weapon weight file via `BotLoadWeaponWeights`, confirm `BotChooseBestFightWeapon` scores the
-  expected weapon without mutating selector state, and confirm `BotGetTopRankedWeapon` follows the internal combat orchestrator.
-* **Information queries** &mdash; Invoke `BotGetWeaponInfo` with invalid handles to verify the export zeroes the caller's buffer and logs the
-  historical diagnostics.
+* **Weight loading** &mdash; Covered by `test_weapon_exports_drive_weighted_selection`: load the default weapon weight file via
+  `BotLoadWeaponWeights`, confirm `BotGetWeaponInfo` returns the compact Gladiator weapon/projectile linkage, confirm
+  `BotChooseBestFightWeapon` scores the expected weapon without mutating selector state, reset the state, then free weights and verify scoring
+  drops back to zero.
+* **Client shutdown wiring** &mdash; Covered by `test_shutdown_library_releases_client_weapon_wiring`: set up a bot client with character-owned
+  weapon weights, shut the full library down, then restart the same client and verify the borrowed weapon-state weights are rebuilt and score
+  through the public chooser.
+* **Information queries** &mdash; Covered by `test_weapon_info_export_zeroes_invalid_queries`: invoke `BotGetWeaponInfo` with invalid weapon
+  numbers, invalid handles, and the library-not-initialised guard to verify the export zeroes the caller's buffer and logs the historical
+  diagnostics in the reconstructed validation order.
 
 ### Chat exports
 * **State lifecycle** &mdash; Allocate and free chat states through the export table, ensuring `BotLoadChatFile` and `BotFreeChatFile` mirror the

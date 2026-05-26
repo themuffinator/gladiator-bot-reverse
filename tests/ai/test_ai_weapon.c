@@ -184,6 +184,21 @@ static void asset_path_or_skip(const char *relative_path, char *out, size_t out_
     fclose(fp);
 }
 
+/*
+=============
+write_weapon_fixture
+
+Writes a temporary weapon-weight script for cache wiring tests.
+=============
+*/
+static void write_weapon_fixture(const char *path, const char *contents)
+{
+	FILE *file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_true(fputs(contents, file) >= 0);
+	assert_int_equal(fclose(file), 0);
+}
+
 static int weapon_index_by_name(const bot_weapon_config_t *config, const char *name)
 {
     if (config == NULL || name == NULL) {
@@ -326,6 +341,70 @@ static void test_weapon_weights_align_with_reference_values(void **state)
 
 /*
 =============
+test_weapon_weights_cache_uses_caller_filename
+
+Pins the AI weapon-weight loader to Q3's filename-keyed weight cache.
+=============
+*/
+static void test_weapon_weights_cache_uses_caller_filename(void **state)
+{
+	(void)state;
+
+	char weapon_config_path[512];
+	asset_path_or_skip("dev_tools/assets/weapons.c", weapon_config_path, sizeof(weapon_config_path));
+
+	char fixture_root[PATH_MAX];
+	int written = snprintf(fixture_root,
+		sizeof(fixture_root),
+		"%s/tests/support/assets",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_root));
+
+	char fixture_path[PATH_MAX];
+	written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/bots/weapon_cache_retained_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	write_weapon_fixture(fixture_path,
+		"weight \"Blaster\"\n"
+		"{\n"
+		"return 29;\n"
+		"}\n");
+
+	setup_botlib_environment();
+	ai_weapon_library_t *library = AI_LoadWeaponLibrary(NULL);
+	assert_non_null(library);
+	assert_string_equal(library->source_path, weapon_config_path);
+
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	LibVarSet("bot_reloadcharacters", "0");
+
+	ai_weapon_weights_t *first = AI_LoadWeaponWeights("bots/weapon_cache_retained_tmp.w");
+	assert_non_null(first);
+	assert_non_null(first->config);
+
+	assert_int_equal(remove(fixture_path), 0);
+
+	ai_weapon_weights_t *second = AI_LoadWeaponWeights("bots/weapon_cache_retained_tmp.w");
+	assert_non_null(second);
+	assert_ptr_equal(second->config, first->config);
+
+	int weapon_handle = BotAllocWeaponState();
+	assert_true(weapon_handle > 0);
+	assert_int_equal(BotLoadWeaponWeights(weapon_handle, "bots/weapon_cache_retained_tmp.w"),
+					 BLERR_NOERROR);
+	BotFreeWeaponState(weapon_handle);
+
+	AI_FreeWeaponWeights(second);
+	AI_FreeWeaponWeights(first);
+	AI_UnloadWeaponLibrary(library);
+	teardown_botlib_environment();
+}
+
+/*
+=============
 test_weapon_weight_binding_preserves_hlil_load_order
 
 Verifies weapon weights can load before the global weaponconfig exists.
@@ -356,32 +435,34 @@ static void test_weapon_weight_binding_preserves_hlil_load_order(void **state)
 	assert_int_equal(BotLoadWeaponWeights(weapon_handle, "default/defaul_w.c"),
 					 BLERR_CANNOTLOADWEAPONCONFIG);
 
+	int attached_handle = BotAllocWeaponState();
+	assert_true(attached_handle > 0);
+	assert_int_equal(BotWeaponStateAttachWeights(attached_handle, early_weights),
+					 BLERR_CANNOTLOADWEAPONCONFIG);
+
 	ai_weapon_library_t *library = AI_LoadWeaponLibrary(NULL);
 	assert_non_null(library);
 	assert_string_equal(library->source_path, weapon_config_path);
 
 	const bot_weapon_config_t *weapon_config = AI_GetWeaponConfig(library);
 	assert_non_null(weapon_config);
-	assert_true(AI_WeaponWeightsBindConfig(early_weights, weapon_config));
-	assert_non_null(early_weights->definitions);
-	assert_non_null(early_weights->index_by_weapon);
-	assert_int_equal(early_weights->index_count, weapon_config->num_weapons);
 
 	int machinegun_index = weapon_index_by_name(weapon_config, "Machinegun");
 	assert_true(machinegun_index >= 0);
-	assert_float_equal(AI_WeaponWeightForClient(early_weights, machinegun_index), 70.0f, 0.01f);
 
 	int inventory[MAX_ITEMS];
 	memset(inventory, 0, sizeof(inventory));
 	inventory[INVENTORY_BLASTER] = 1;
 	inventory[INVENTORY_MACHINEGUN] = 1;
 	inventory[INVENTORY_BULLETS] = 50;
-	assert_int_equal(BotChooseBestFightWeapon(weapon_handle, inventory), 3);
 
-	int attached_handle = BotAllocWeaponState();
-	assert_true(attached_handle > 0);
-	assert_int_equal(BotWeaponStateAttachWeights(attached_handle, early_weights), BLERR_NOERROR);
 	assert_int_equal(BotChooseBestFightWeapon(attached_handle, inventory), 3);
+	assert_non_null(early_weights->definitions);
+	assert_non_null(early_weights->index_by_weapon);
+	assert_int_equal(early_weights->index_count, weapon_config->num_weapons);
+	assert_float_equal(AI_WeaponWeightForClient(early_weights, machinegun_index), 70.0f, 0.01f);
+
+	assert_int_equal(BotChooseBestFightWeapon(weapon_handle, inventory), 3);
 
 	BotFreeWeaponState(weapon_handle);
 	BotFreeWeaponState(attached_handle);
@@ -845,6 +926,7 @@ int main(void)
         cmocka_unit_test(test_weapon_struct_layout_matches_hlil_offsets),
         cmocka_unit_test(test_weapon_library_reports_expected_counts),
         cmocka_unit_test(test_weapon_weights_align_with_reference_values),
+        cmocka_unit_test(test_weapon_weights_cache_uses_caller_filename),
         cmocka_unit_test(test_weapon_weight_binding_preserves_hlil_load_order),
         cmocka_unit_test(test_weapon_selection_rebinds_unbound_state_weights),
         cmocka_unit_test(test_weapon_model_lookup_and_info_copy_match_hlil_helpers),

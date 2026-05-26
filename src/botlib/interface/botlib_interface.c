@@ -20,6 +20,7 @@
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_utils.h"
+#include "botlib/interface/bot_state.h"
 #include "q2bridge/bridge_config.h"
 
 #define BOTLIB_DEFAULT_WEAPONCONFIG "weapons.c"
@@ -156,6 +157,8 @@ static int Botlib_SetupAISubsystem(void)
 		return BLERR_NOERROR;
 	}
 
+	BotState_ResetClientSettings();
+
 	const char *weapon_config_path =
 		(g_library_variables.weaponconfig[0] != '\0') ? g_library_variables.weaponconfig : NULL;
 
@@ -188,6 +191,7 @@ static int Botlib_SetupAISubsystem(void)
 		return status;
 	}
 
+	BotState_ConfigureClientCapacity(g_library_variables.maxclients);
 	g_subsystem_state.ai_initialised = true;
 	return BLERR_NOERROR;
 }
@@ -256,6 +260,9 @@ static void Botlib_ShutdownUtilities(void)
 
 static void Botlib_ShutdownAISubsystem(void)
 {
+	BotState_ShutdownAll();
+	BotState_ResetClientSettings();
+	BotState_ConfigureClientCapacity(0);
 	BotShutdownMoveAI();
 	BotShutdownChatAI();
 	BotShutdownGoalAI();

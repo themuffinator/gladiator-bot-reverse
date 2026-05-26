@@ -928,6 +928,7 @@ static void test_bot_shutdown_library_releases_weapon_state_handles(void **state
 
 	int status = context->api->BotSetupLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
 
 	for (int index = 0; index < MAX_CLIENTS; ++index)
 	{
@@ -953,6 +954,193 @@ static void test_bot_shutdown_library_releases_weapon_state_handles(void **state
 	context->api->BotFreeWeaponState(handle);
 	status = context->api->BotShutdownLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
+}
+
+/*
+=============
+test_shutdown_library_releases_client_weapon_wiring
+
+Verifies full library shutdown clears bot client state before freeing character
+weapon weights and lets the same client attach weapon weights after restart.
+=============
+*/
+static void test_shutdown_library_releases_client_weapon_wiring(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	bot_settings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.characterfile, sizeof(settings.characterfile), "bots/babe_c.c");
+	snprintf(settings.charactername, sizeof(settings.charactername), "babe");
+
+	status = context->api->BotSetupClient(1, &settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+
+	bot_client_state_t *state_slot = BotState_Get(1);
+	assert_non_null(state_slot);
+	assert_true(state_slot->weapon_state > 0);
+	assert_non_null(state_slot->weapon_weights);
+
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_null(BotState_Get(1));
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+
+	status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+
+	status = context->api->BotSetupClient(1, &settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+
+	state_slot = BotState_Get(1);
+	assert_non_null(state_slot);
+	assert_true(state_slot->weapon_state > 0);
+	assert_non_null(state_slot->weapon_weights);
+
+	bot_weapon_info_t blaster;
+	memset(&blaster, 0, sizeof(blaster));
+	context->api->BotGetWeaponInfo(state_slot->weapon_state, 0, &blaster);
+	assert_string_equal(blaster.name, "Blaster");
+
+	bot_weapon_info_t machinegun;
+	memset(&machinegun, 0, sizeof(machinegun));
+	context->api->BotGetWeaponInfo(state_slot->weapon_state, 3, &machinegun);
+	assert_string_equal(machinegun.name, "Machinegun");
+	assert_true(machinegun.weaponindex > 0 && machinegun.weaponindex < MAX_ITEMS);
+	assert_true(machinegun.ammoindex > 0 && machinegun.ammoindex < MAX_ITEMS);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	if (blaster.weaponindex > 0 && blaster.weaponindex < MAX_ITEMS)
+	{
+		inventory[blaster.weaponindex] = 1;
+	}
+	inventory[machinegun.weaponindex] = 1;
+	inventory[machinegun.ammoindex] = 50;
+
+	assert_int_equal(context->api->BotChooseBestFightWeapon(state_slot->weapon_state,
+															inventory),
+					 3);
+
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_null(BotState_Get(1));
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+}
+
+/*
+=============
+test_weapon_exports_drive_weighted_selection
+
+Pins the public export-table wiring for weapon weights, info, scoring, and reset.
+=============
+*/
+static void test_weapon_exports_drive_weighted_selection(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	int handle = context->api->BotAllocWeaponState();
+	assert_true(handle > 0);
+
+	status = context->api->BotLoadWeaponWeights(handle, "default/defaul_w.c");
+	assert_int_equal(status, BLERR_NOERROR);
+
+	bot_weapon_info_t blaster;
+	memset(&blaster, 0, sizeof(blaster));
+	context->api->BotGetWeaponInfo(handle, 0, &blaster);
+	assert_string_equal(blaster.name, "Blaster");
+	assert_non_null(blaster.projectileinfo);
+	assert_string_equal(blaster.projectileinfo->name, "blasterbolt");
+
+	bot_weapon_info_t machinegun;
+	memset(&machinegun, 0, sizeof(machinegun));
+	context->api->BotGetWeaponInfo(handle, 3, &machinegun);
+	assert_string_equal(machinegun.name, "Machinegun");
+	assert_true(machinegun.weaponindex > 0 && machinegun.weaponindex < MAX_ITEMS);
+	assert_true(machinegun.ammoindex > 0 && machinegun.ammoindex < MAX_ITEMS);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	if (blaster.weaponindex > 0 && blaster.weaponindex < MAX_ITEMS)
+	{
+		inventory[blaster.weaponindex] = 1;
+	}
+	inventory[machinegun.weaponindex] = 1;
+	inventory[machinegun.ammoindex] = 50;
+
+	assert_int_equal(context->api->BotChooseBestFightWeapon(handle, inventory), 3);
+	assert_int_equal(context->api->BotGetTopRankedWeapon(handle), 0);
+
+	context->api->BotResetWeaponState(handle);
+	assert_int_equal(context->api->BotGetTopRankedWeapon(handle), 0);
+
+	context->api->BotFreeWeaponWeights(handle);
+	assert_int_equal(context->api->BotChooseBestFightWeapon(handle, inventory), 0);
+
+	context->api->BotFreeWeaponState(handle);
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+}
+
+/*
+=============
+test_weapon_info_export_zeroes_invalid_queries
+
+Pins BotGetWeaponInfo's retail validation order and caller-buffer clearing.
+=============
+*/
+static void test_weapon_info_export_zeroes_invalid_queries(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	int handle = context->api->BotAllocWeaponState();
+	assert_true(handle > 0);
+
+	bot_weapon_info_t zero;
+	memset(&zero, 0, sizeof(zero));
+
+	bot_weapon_info_t info;
+	memset(&info, 0x7f, sizeof(info));
+	Mock_ClearPrints(&context->mock);
+	context->api->BotGetWeaponInfo(handle, 999, &info);
+	assert_memory_equal(&info, &zero, sizeof(info));
+	Mock_AssertPrintContains(&context->mock, "weapon number out of range", PRT_ERROR);
+
+	memset(&info, 0x7f, sizeof(info));
+	Mock_ClearPrints(&context->mock);
+	context->api->BotGetWeaponInfo(MAX_CLIENTS + 1, 0, &info);
+	assert_memory_equal(&info, &zero, sizeof(info));
+	Mock_AssertPrintContains(&context->mock, "weapon state handle", PRT_FATAL);
+
+	context->api->BotFreeWeaponState(handle);
+
+	memset(&info, 0x7f, sizeof(info));
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	context->api->BotGetWeaponInfo(handle, 0, &info);
+	assert_memory_equal(&info, &zero, sizeof(info));
+	Mock_AssertPrintContains(&context->mock,
+	                         "BotGetWeaponInfo: library not initialised",
+	                         PRT_ERROR);
 }
 
 /*
@@ -1030,19 +1218,230 @@ Verifies BotSettings enforces the library guard before use.
 */
 static void test_bot_settings_requires_library(void **state)
 {
-bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 
-Mock_Reset(&context->mock);
-Mock_ClearPrints(&context->mock);
+	Mock_Reset(&context->mock);
+	Mock_ClearPrints(&context->mock);
 
-bot_settings_t settings;
-memset(&settings, 0x7f, sizeof(settings));
+	bot_settings_t settings;
+	memset(&settings, 0x7f, sizeof(settings));
 
-int status = context->api->BotSettings(1, &settings);
-assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
-Mock_AssertPrintContains(&context->mock,
- "BotSettings: library not initialised",
- PRT_ERROR);
+	int status = context->api->BotSettings(1, &settings);
+	assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+	Mock_AssertPrintContains(&context->mock,
+	                         "BotSettings: library not initialised",
+	                         PRT_ERROR);
+}
+
+/*
+=============
+test_bot_client_settings_store_slot_mirrors
+
+Pins BotClientSettings as the retail game-to-botlib presentation setter.
+=============
+*/
+static void test_bot_client_settings_store_slot_mirrors(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	bot_clientsettings_t live_settings;
+	memset(&live_settings, 0, sizeof(live_settings));
+	snprintf(live_settings.netname, sizeof(live_settings.netname), "PreSetup Babe");
+	snprintf(live_settings.skin, sizeof(live_settings.skin), "female/athena");
+
+	status = context->api->BotClientSettings(MAX_CLIENTS, &live_settings);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	Mock_AssertPrintContains(&context->mock, "BotClientSettings: invalid client", PRT_ERROR);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotClientSettings(1, NULL);
+	assert_int_equal(status, BLERR_INVALIDIMPORT);
+	Mock_AssertPrintContains(&context->mock, "BotClientSettings: NULL output buffer", PRT_ERROR);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotClientSettings(1, &live_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+
+	const bot_clientsettings_t *stored_settings = BotState_ClientSettings(1);
+	assert_non_null(stored_settings);
+	assert_string_equal(stored_settings->netname, "PreSetup Babe");
+	assert_string_equal(stored_settings->skin, "female/athena");
+	assert_string_equal(BotState_ClientName(1), "PreSetup Babe");
+	assert_string_equal(BotState_ClientSkin(1), "female/athena");
+	assert_int_equal(BotState_FindClientByName("PreSetup Babe"), 1);
+	assert_string_equal(BotState_ClientName(MAX_CLIENTS), "");
+	assert_string_equal(BotState_ClientSkin(MAX_CLIENTS), "");
+
+	bot_settings_t setup_settings;
+	memset(&setup_settings, 0, sizeof(setup_settings));
+	snprintf(setup_settings.characterfile, sizeof(setup_settings.characterfile), "bots/babe_c.c");
+	snprintf(setup_settings.charactername, sizeof(setup_settings.charactername), "babe");
+
+	status = context->api->BotSetupClient(1, &setup_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+
+	bot_client_state_t *client_state = BotState_Get(1);
+	assert_non_null(client_state);
+	assert_string_equal(client_state->client_settings.netname, "PreSetup Babe");
+	assert_string_equal(client_state->client_settings.skin, "female/athena");
+
+	memset(&live_settings, 0, sizeof(live_settings));
+	snprintf(live_settings.netname, sizeof(live_settings.netname), "Live Babe");
+	snprintf(live_settings.skin, sizeof(live_settings.skin), "female/venus");
+
+	status = context->api->BotClientSettings(1, &live_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_string_equal(stored_settings->netname, "Live Babe");
+	assert_string_equal(stored_settings->skin, "female/venus");
+	assert_string_equal(client_state->client_settings.netname, "Live Babe");
+	assert_string_equal(client_state->client_settings.skin, "female/venus");
+	assert_string_equal(BotState_ClientName(1), "Live Babe");
+	assert_string_equal(BotState_ClientSkin(1), "female/venus");
+	assert_int_equal(BotState_FindClientByName("Live Babe"), 1);
+
+	status = context->api->BotShutdownClient(1);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+}
+
+/*
+=============
+test_bot_client_capacity_uses_setup_maxclients
+
+Pins the retail runtime client table size derived from maxclients.
+=============
+*/
+static void test_bot_client_capacity_uses_setup_maxclients(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotLibVarSet("maxclients", "2");
+	assert_int_equal(status, BLERR_NOERROR);
+
+	status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ClientCapacity(), 2);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+
+	bot_clientsettings_t live_settings;
+	memset(&live_settings, 0, sizeof(live_settings));
+	snprintf(live_settings.netname, sizeof(live_settings.netname), "Capacity Babe");
+	snprintf(live_settings.skin, sizeof(live_settings.skin), "female/athena");
+
+	status = context->api->BotClientSettings(1, &live_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_string_equal(BotState_ClientName(1), "Capacity Babe");
+	assert_int_equal(BotState_FindClientByName("Capacity Babe"), 1);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotClientSettings(2, &live_settings);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	Mock_AssertPrintContains(&context->mock, "BotClientSettings: invalid client 2", PRT_ERROR);
+	assert_null(BotState_ClientSettings(2));
+	assert_string_equal(BotState_ClientName(2), "");
+	assert_int_equal(BotState_FindClientByName("Capacity Babe"), 1);
+
+	bot_settings_t setup_settings;
+	memset(&setup_settings, 0, sizeof(setup_settings));
+	snprintf(setup_settings.characterfile, sizeof(setup_settings.characterfile), "bots/babe_c.c");
+	snprintf(setup_settings.charactername, sizeof(setup_settings.charactername), "babe");
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotSetupClient(2, &setup_settings);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	Mock_AssertPrintContains(&context->mock, "BotSetupClient: invalid client 2", PRT_ERROR);
+
+	status = context->api->BotSetupClient(1, &setup_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotMoveClient(1, 2);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	Mock_AssertPrintContains(&context->mock, "BotMoveClient: invalid destination client 2", PRT_ERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+
+	status = context->api->BotShutdownClient(1);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ClientCapacity(), 0);
+}
+
+/*
+=============
+test_bot_settings_updates_active_setup_block
+
+Pins BotSettings as the active-client setup setter reconstructed from HLIL.
+=============
+*/
+static void test_bot_settings_updates_active_setup_block(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+
+	bot_settings_t updated_settings;
+	memset(&updated_settings, 0, sizeof(updated_settings));
+	snprintf(updated_settings.characterfile, sizeof(updated_settings.characterfile), "bots/babe_c.c");
+	snprintf(updated_settings.charactername, sizeof(updated_settings.charactername), "babe");
+	snprintf(updated_settings.ailibrary, sizeof(updated_settings.ailibrary), "gladiator.dll");
+
+	status = context->api->BotSettings(1, &updated_settings);
+	assert_int_equal(status, BLERR_SETTINGSINACTIVECLIENT);
+	Mock_AssertPrintContains(&context->mock, "BotSettings: client 1 inactive", PRT_WARNING);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotSettings(MAX_CLIENTS, &updated_settings);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	Mock_AssertPrintContains(&context->mock, "BotSettings: invalid client", PRT_ERROR);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotSettings(1, NULL);
+	assert_int_equal(status, BLERR_INVALIDIMPORT);
+	Mock_AssertPrintContains(&context->mock, "BotSettings: NULL output buffer", PRT_ERROR);
+
+	bot_settings_t setup_settings;
+	memset(&setup_settings, 0, sizeof(setup_settings));
+	snprintf(setup_settings.characterfile, sizeof(setup_settings.characterfile), "bots/babe_c.c");
+	snprintf(setup_settings.charactername, sizeof(setup_settings.charactername), "babe");
+
+	status = context->api->BotSetupClient(1, &setup_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 1);
+
+	bot_client_state_t *client_state = BotState_Get(1);
+	assert_non_null(client_state);
+	assert_string_equal(client_state->settings.ailibrary, "");
+
+	status = context->api->BotSettings(1, &updated_settings);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_string_equal(client_state->settings.characterfile, "bots/babe_c.c");
+	assert_string_equal(client_state->settings.charactername, "babe");
+	assert_string_equal(client_state->settings.ailibrary, "gladiator.dll");
+
+	status = context->api->BotShutdownClient(1);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(BotState_ActiveClientCount(), 0);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotSettings(1, &updated_settings);
+	assert_int_equal(status, BLERR_SETTINGSINACTIVECLIENT);
+	Mock_AssertPrintContains(&context->mock, "BotSettings: client 1 inactive", PRT_WARNING);
 }
 
 /*
@@ -2057,21 +2456,15 @@ static void test_bot_interface_mover_parity(void **state)
         &context->mock.inputs[context->mock.bot_input_count - 1U];
     assert_float_equal(final_input->thinktime, 0.05f, 0.0001f);
 
-    vec3_t goal_delta;
-    VectorSubtract(mover_goal.origin, update.origin, goal_delta);
-    float expected_speed = sqrtf(goal_delta[0] * goal_delta[0] +
-                                 goal_delta[1] * goal_delta[1] +
-                                 goal_delta[2] * goal_delta[2]);
-    assert_true(expected_speed > 0.0f);
+    assert_true(client_state->has_move_result);
+    assert_int_equal(client_state->last_move_result.traveltype, TRAVEL_ELEVATOR);
+    assert_int_equal(client_state->last_move_result.type, RESULTTYPE_ELEVATORUP);
+    assert_true((client_state->last_move_result.flags & MOVERESULT_WAITING) != 0);
 
-    vec3_t expected_dir = {goal_delta[0] / expected_speed,
-                           goal_delta[1] / expected_speed,
-                           goal_delta[2] / expected_speed};
-
-    assert_float_equal(final_input->speed, 400.0f, 0.0001f);
-    assert_float_equal(final_input->dir[0], expected_dir[0], 0.0001f);
-    assert_float_equal(final_input->dir[1], expected_dir[1], 0.0001f);
-    assert_float_equal(final_input->dir[2], expected_dir[2], 0.0001f);
+    assert_float_equal(final_input->speed, 0.0f, 0.0001f);
+    assert_float_equal(final_input->dir[0], -1.0f, 0.0001f);
+    assert_float_equal(final_input->dir[1], 0.0f, 0.0001f);
+    assert_float_equal(final_input->dir[2], 0.0f, 0.0001f);
     assert_int_equal(final_input->actionflags, 0);
 
     context->api->BotShutdownClient(1);
@@ -2294,7 +2687,7 @@ static void test_bot_bridge_tracks_mover_entity_updates(void **state)
     VectorSet(mover_update.mins, -16.0f, -16.0f, -8.0f);
     VectorSet(mover_update.maxs, 16.0f, 16.0f, 8.0f);
     mover_update.solid = 3;
-    mover_update.modelindex = mover_modelnum;
+    mover_update.modelindex = mover_modelnum + 1;
 
     const int mover_entity_num = 32;
     status = context->api->BotUpdateEntity(mover_entity_num, &mover_update);
@@ -2525,6 +2918,15 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_bot_shutdown_library_releases_weapon_state_handles,
 							setup_bot_interface,
 							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_shutdown_library_releases_client_weapon_wiring,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_weapon_exports_drive_weighted_selection,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_weapon_info_export_zeroes_invalid_queries,
+							setup_bot_interface,
+							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_shutdown_client_requires_library,
 							setup_bot_interface,
 							teardown_bot_interface),
@@ -2535,6 +2937,15 @@ int main(void)
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_settings_requires_library,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_client_settings_store_slot_mirrors,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_client_capacity_uses_setup_maxclients,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_settings_updates_active_setup_block,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_weight_exports_cover_guards_and_round_trip,

@@ -19,6 +19,10 @@
 #define BOT_CHAT_MAX_PATH_CHARS 1024
 #define BOT_CHAT_MAX_TOKEN_CHARS 64
 #define BOT_CHAT_MAX_TOKENS 64
+#define BOT_CHAT_ESCAPE_CHAR '\x01'
+#define BOT_CHAT_MATCH_ALT_START '\x1f'
+#define BOT_CHAT_MATCH_ALT_SEPARATOR '\x1e'
+#define BOT_CHAT_MATCH_ALT_END '\x1d'
 #define BOT_CHAT_CONTEXT_DEATH 1
 #define BOT_CHAT_CONTEXT_ENTERGAME 2
 #define BOT_CHAT_CONTEXT_KILL 25
@@ -117,8 +121,6 @@ typedef struct {
 	size_t entry_count;
 	size_t entry_capacity;
 } bot_random_string_table_t;
-
-static int BotChat_WordChar(char character);
 
 typedef struct {
 	char *type_name;
@@ -2496,6 +2498,101 @@ static int BotChat_StringBuilderAppendMatchTokenText(bot_string_builder_t *build
 		&& BotChat_StringBuilderAppendSpan(builder, text, length);
 }
 
+/*
+=============
+BotChat_StringBuilderAppendStringAlternativePiece
+
+Consumes Q3 string-piece alternatives and appends the internal match encoding.
+=============
+*/
+static int BotChat_StringBuilderAppendStringAlternativePiece(
+	bot_string_builder_t *builder,
+	pc_script_t *script,
+	const pc_token_t *first_token,
+	int match_spacing,
+	int *contains_empty)
+{
+	if (builder == NULL || script == NULL || first_token == NULL)
+	{
+		return 0;
+	}
+
+	bot_string_builder_t alternatives = {0};
+	pc_token_t token = *first_token;
+	size_t alternative_count = 0;
+	char first_character = '\0';
+	int found_empty = 0;
+
+	for (;;)
+	{
+		size_t text_length = 0;
+		const char *text = BotChat_TokenText(&token, &text_length);
+		if (alternative_count == 0 && text_length > 0)
+		{
+			first_character = text[0];
+		}
+		if (text_length == 0)
+		{
+			found_empty = 1;
+		}
+		if (alternative_count > 0
+			&& !BotChat_StringBuilderAppendChar(&alternatives,
+				BOT_CHAT_MATCH_ALT_SEPARATOR))
+		{
+			BotChat_StringBuilderDestroy(&alternatives);
+			return 0;
+		}
+		if (!BotChat_StringBuilderAppendSpan(&alternatives, text, text_length))
+		{
+			BotChat_StringBuilderDestroy(&alternatives);
+			return 0;
+		}
+		++alternative_count;
+
+		if (!BotChat_CheckTokenString(script, "|"))
+		{
+			break;
+		}
+		if (!PS_ReadToken(script, &token) || token.type != TT_STRING)
+		{
+			BotChat_StringBuilderDestroy(&alternatives);
+			return 0;
+		}
+	}
+
+	if (contains_empty != NULL)
+	{
+		*contains_empty = found_empty;
+	}
+
+	if (alternative_count == 1 && !found_empty)
+	{
+		BotChat_StringBuilderDestroy(&alternatives);
+		return match_spacing
+			? BotChat_StringBuilderAppendMatchTokenText(builder, first_token)
+			: BotChat_StringBuilderAppendTokenText(builder, first_token);
+	}
+
+	if (match_spacing && first_character != '\0'
+		&& !BotChat_StringBuilderAppendMatchSeparator(builder, first_character))
+	{
+		BotChat_StringBuilderDestroy(&alternatives);
+		return 0;
+	}
+	if (!BotChat_StringBuilderAppendChar(builder, BOT_CHAT_MATCH_ALT_START)
+		|| !BotChat_StringBuilderAppendSpan(builder,
+			alternatives.buffer != NULL ? alternatives.buffer : "",
+			alternatives.length)
+		|| !BotChat_StringBuilderAppendChar(builder, BOT_CHAT_MATCH_ALT_END))
+	{
+		BotChat_StringBuilderDestroy(&alternatives);
+		return 0;
+	}
+
+	BotChat_StringBuilderDestroy(&alternatives);
+	return 1;
+}
+
 static int BotChat_StringBuilderAppendChar(bot_string_builder_t *builder, char character)
 {
     if (!BotChat_StringBuilderReserve(builder, builder->length + 2)) {
@@ -2612,6 +2709,19 @@ static int BotChat_StringBuilderAppendNameToken(bot_string_builder_t *builder,
 
 /*
 =============
+BotChat_IsEscapeChar
+
+Returns true for the retail ESCAPE_CHAR marker, while accepting the older
+readable reconstruction marker used by existing fixtures.
+=============
+*/
+static int BotChat_IsEscapeChar(char character)
+{
+	return character == BOT_CHAT_ESCAPE_CHAR || character == '\\';
+}
+
+/*
+=============
 BotChat_StringBuilderAppendRandomReference
 
 Stores a preprocessor-expanded random table reference for construction time.
@@ -2620,9 +2730,10 @@ Stores a preprocessor-expanded random table reference for construction time.
 static int BotChat_StringBuilderAppendRandomReference(bot_string_builder_t *builder,
 	const char *identifier)
 {
-	return BotChat_StringBuilderAppend(builder, "\\r")
+	return BotChat_StringBuilderAppendChar(builder, BOT_CHAT_ESCAPE_CHAR)
+		&& BotChat_StringBuilderAppendChar(builder, 'r')
 		&& BotChat_StringBuilderAppend(builder, identifier)
-		&& BotChat_StringBuilderAppendChar(builder, '\\');
+		&& BotChat_StringBuilderAppendChar(builder, BOT_CHAT_ESCAPE_CHAR);
 }
 
 /*
@@ -2636,13 +2747,15 @@ static int BotChat_StringBuilderAppendVariableReference(bot_string_builder_t *bu
 	unsigned long value)
 {
 	char buffer[32];
-	int written = snprintf(buffer, sizeof(buffer), "\\v%lu\\", value);
+	int written = snprintf(buffer, sizeof(buffer), "v%lu", value);
 	if (written <= 0 || (size_t)written >= sizeof(buffer))
 	{
 		return 0;
 	}
 
-	return BotChat_StringBuilderAppend(builder, buffer);
+	return BotChat_StringBuilderAppendChar(builder, BOT_CHAT_ESCAPE_CHAR)
+		&& BotChat_StringBuilderAppend(builder, buffer)
+		&& BotChat_StringBuilderAppendChar(builder, BOT_CHAT_ESCAPE_CHAR);
 }
 
 static unsigned long BotChat_MessageTypeFromIdentifier(const char *identifier, size_t length)
@@ -3126,7 +3239,8 @@ static int BotChat_AppendMappedVariable(bot_string_builder_t *builder,
 =============
 BotChat_RewriteVariablesForMessageType
 
-Converts temporary \vN\ markers into readable placeholders once MSG_* is known.
+Converts temporary retail variable markers into readable placeholders once
+MSG_* is known.
 =============
 */
 static char *BotChat_RewriteVariablesForMessageType(const char *template_text,
@@ -3136,7 +3250,7 @@ static char *BotChat_RewriteVariablesForMessageType(const char *template_text,
 
 	for (size_t i = 0; template_text != NULL && template_text[i] != '\0';)
 	{
-		if (template_text[i] != '\\' || template_text[i + 1] != 'v')
+		if (!BotChat_IsEscapeChar(template_text[i]) || template_text[i + 1] != 'v')
 		{
 			if (!BotChat_StringBuilderAppendChar(&builder, template_text[i++]))
 			{
@@ -3156,7 +3270,7 @@ static char *BotChat_RewriteVariablesForMessageType(const char *template_text,
 			++i;
 		}
 
-		if (!saw_digit || template_text[i] != '\\')
+		if (!saw_digit || !BotChat_IsEscapeChar(template_text[i]))
 		{
 			BotChat_StringBuilderDestroy(&builder);
 			return NULL;
@@ -3252,19 +3366,21 @@ static int BotChat_VariableNumberForName(const char *name,
 =============
 BotChat_AppendEscapedVariable
 
-Appends an internal \vN\ capture marker to a pattern builder.
+Appends an internal retail capture marker to a pattern builder.
 =============
 */
 static int BotChat_AppendEscapedVariable(bot_string_builder_t *builder,
 	unsigned long value)
 {
 	char buffer[32];
-	int written = snprintf(buffer, sizeof(buffer), "\\v%lu\\", value);
+	int written = snprintf(buffer, sizeof(buffer), "v%lu", value);
 	if (written <= 0 || (size_t)written >= sizeof(buffer))
 	{
 		return 0;
 	}
-	return BotChat_StringBuilderAppend(builder, buffer);
+	return BotChat_StringBuilderAppendChar(builder, BOT_CHAT_ESCAPE_CHAR)
+		&& BotChat_StringBuilderAppend(builder, buffer)
+		&& BotChat_StringBuilderAppendChar(builder, BOT_CHAT_ESCAPE_CHAR);
 }
 
 /*
@@ -3418,6 +3534,96 @@ static int BotChat_FindCaseInsensitiveSpan(const char *text,
 
 /*
 =============
+BotChat_PatternAtVariableReference
+
+Checks whether an internal match pattern points at a variable capture marker.
+=============
+*/
+static int BotChat_PatternAtVariableReference(const char *pattern, size_t offset)
+{
+	return pattern != NULL
+		&& BotChat_IsEscapeChar(pattern[offset])
+		&& pattern[offset + 1] == 'v';
+}
+
+/*
+=============
+BotChat_MatchAlternativePatternPiece
+
+Selects the first Q3 string-piece alternative that occurs in the message.
+=============
+*/
+static int BotChat_MatchAlternativePatternPiece(const char *pattern,
+	size_t pattern_offset,
+	const char *message,
+	size_t message_offset,
+	size_t *next_pattern_offset,
+	size_t *match_start,
+	size_t *match_end)
+{
+	if (pattern == NULL || message == NULL
+		|| pattern[pattern_offset] != BOT_CHAT_MATCH_ALT_START)
+	{
+		return 0;
+	}
+
+	size_t alternative_start = pattern_offset + 1;
+	for (size_t offset = alternative_start;; ++offset)
+	{
+		if (pattern[offset] == '\0')
+		{
+			return 0;
+		}
+		if (pattern[offset] != BOT_CHAT_MATCH_ALT_SEPARATOR
+			&& pattern[offset] != BOT_CHAT_MATCH_ALT_END)
+		{
+			continue;
+		}
+
+		const size_t alternative_length = offset - alternative_start;
+		size_t candidate_start = 0;
+		size_t candidate_end = 0;
+		if (BotChat_FindCaseInsensitiveSpan(message,
+				message_offset,
+				pattern + alternative_start,
+				alternative_length,
+				&candidate_start,
+				&candidate_end))
+		{
+			size_t end_offset = offset;
+			while (pattern[end_offset] != BOT_CHAT_MATCH_ALT_END)
+			{
+				if (pattern[end_offset] == '\0')
+				{
+					return 0;
+				}
+				++end_offset;
+			}
+			if (next_pattern_offset != NULL)
+			{
+				*next_pattern_offset = end_offset + 1;
+			}
+			if (match_start != NULL)
+			{
+				*match_start = candidate_start;
+			}
+			if (match_end != NULL)
+			{
+				*match_end = candidate_end;
+			}
+			return 1;
+		}
+
+		if (pattern[offset] == BOT_CHAT_MATCH_ALT_END)
+		{
+			return 0;
+		}
+		alternative_start = offset + 1;
+	}
+}
+
+/*
+=============
 BotChat_CopyCapturedVariable
 
 Copies one captured span into the variable table used by construction.
@@ -3524,7 +3730,7 @@ static int BotChat_MatchVariablePattern(const char *pattern,
 
 	while (pattern[pattern_offset] != '\0')
 	{
-		if (pattern[pattern_offset] == '\\' && pattern[pattern_offset + 1] == 'v')
+		if (BotChat_PatternAtVariableReference(pattern, pattern_offset))
 		{
 			size_t value_offset = pattern_offset + 2;
 			unsigned long value = 0;
@@ -3535,7 +3741,7 @@ static int BotChat_MatchVariablePattern(const char *pattern,
 				saw_digit = 1;
 				++value_offset;
 			}
-			if (!saw_digit || pattern[value_offset] != '\\'
+			if (!saw_digit || !BotChat_IsEscapeChar(pattern[value_offset])
 				|| value >= BOT_CHAT_MAX_MATCH_VARIABLES)
 			{
 				return 0;
@@ -3546,10 +3752,48 @@ static int BotChat_MatchVariablePattern(const char *pattern,
 			continue;
 		}
 
+		if (pattern[pattern_offset] == BOT_CHAT_MATCH_ALT_START)
+		{
+			size_t next_pattern_offset = 0;
+			size_t match_start = 0;
+			size_t match_end = 0;
+			if (!BotChat_MatchAlternativePatternPiece(pattern,
+					pattern_offset,
+					message,
+					message_offset,
+					&next_pattern_offset,
+					&match_start,
+					&match_end))
+			{
+				return 0;
+			}
+
+			if (last_variable >= 0)
+			{
+				if (!BotChat_CopyCapturedVariable(message,
+						message_offset,
+						match_start - message_offset,
+						(unsigned long)last_variable,
+						storage,
+						variables))
+				{
+					return 0;
+				}
+				last_variable = -1;
+			}
+			else if (match_start != message_offset)
+			{
+				return 0;
+			}
+			message_offset = match_end;
+			pattern_offset = next_pattern_offset;
+			continue;
+		}
+
 		const size_t literal_start = pattern_offset;
 		while (pattern[pattern_offset] != '\0'
-			&& !(pattern[pattern_offset] == '\\'
-				&& pattern[pattern_offset + 1] == 'v'))
+			&& !BotChat_PatternAtVariableReference(pattern, pattern_offset)
+			&& pattern[pattern_offset] != BOT_CHAT_MATCH_ALT_START)
 		{
 			++pattern_offset;
 		}
@@ -3647,7 +3891,7 @@ static int BotChat_SetMatchResultVariable(bot_match_t *match,
 =============
 BotChat_MatchVariablePatternResult
 
-Matches an internal \vN\ pattern and records public offset/length spans.
+Matches an internal variable-capture pattern and records public offset/length spans.
 =============
 */
 static int BotChat_MatchVariablePatternResult(const char *pattern,
@@ -3666,7 +3910,7 @@ static int BotChat_MatchVariablePatternResult(const char *pattern,
 	BotChat_ClearMatchResultVariables(match);
 	while (pattern[pattern_offset] != '\0')
 	{
-		if (pattern[pattern_offset] == '\\' && pattern[pattern_offset + 1] == 'v')
+		if (BotChat_PatternAtVariableReference(pattern, pattern_offset))
 		{
 			size_t value_offset = pattern_offset + 2;
 			unsigned long value = 0;
@@ -3677,7 +3921,7 @@ static int BotChat_MatchVariablePatternResult(const char *pattern,
 				saw_digit = 1;
 				++value_offset;
 			}
-			if (!saw_digit || pattern[value_offset] != '\\'
+			if (!saw_digit || !BotChat_IsEscapeChar(pattern[value_offset])
 				|| value >= BOT_MATCH_MAX_VARIABLES)
 			{
 				return 0;
@@ -3688,10 +3932,46 @@ static int BotChat_MatchVariablePatternResult(const char *pattern,
 			continue;
 		}
 
+		if (pattern[pattern_offset] == BOT_CHAT_MATCH_ALT_START)
+		{
+			size_t next_pattern_offset = 0;
+			size_t match_start = 0;
+			size_t match_end = 0;
+			if (!BotChat_MatchAlternativePatternPiece(pattern,
+					pattern_offset,
+					message,
+					message_offset,
+					&next_pattern_offset,
+					&match_start,
+					&match_end))
+			{
+				return 0;
+			}
+
+			if (last_variable >= 0)
+			{
+				if (!BotChat_SetMatchResultVariable(match,
+						(unsigned long)last_variable,
+						message_offset,
+						match_start - message_offset))
+				{
+					return 0;
+				}
+				last_variable = -1;
+			}
+			else if (match_start != message_offset)
+			{
+				return 0;
+			}
+			message_offset = match_end;
+			pattern_offset = next_pattern_offset;
+			continue;
+		}
+
 		const size_t literal_start = pattern_offset;
 		while (pattern[pattern_offset] != '\0'
-			&& !(pattern[pattern_offset] == '\\'
-				&& pattern[pattern_offset + 1] == 'v'))
+			&& !BotChat_PatternAtVariableReference(pattern, pattern_offset)
+			&& pattern[pattern_offset] != BOT_CHAT_MATCH_ALT_START)
 		{
 			++pattern_offset;
 		}
@@ -3736,18 +4016,6 @@ static int BotChat_MatchVariablePatternResult(const char *pattern,
 	}
 
 	return message[message_offset] == '\0';
-}
-
-/*
-=============
-BotChat_WordChar
-
-Returns true for the generic word characters used by synonym span matching.
-=============
-*/
-static int BotChat_WordChar(char character)
-{
-	return isalnum((unsigned char)character) || character == '_';
 }
 
 /*
@@ -4006,7 +4274,7 @@ static const bot_synonym_phrase_t *BotChat_SelectWeightedSynonymFromGroup(
 =============
 BotChat_SpanIsWordMatch
 
-Checks retail-style word boundaries around a candidate replacement span.
+Checks Q3 StringContainsWord boundaries around a candidate replacement span.
 =============
 */
 static int BotChat_SpanIsWordMatch(const char *text, size_t start, size_t end)
@@ -4016,11 +4284,11 @@ static int BotChat_SpanIsWordMatch(const char *text, size_t start, size_t end)
 		return 0;
 	}
 
-	if (start > 0 && BotChat_WordChar(text[start - 1]))
+	if (start > 0 && !BotChat_IsReplyWordSeparator(text[start - 1]))
 	{
 		return 0;
 	}
-	if (BotChat_WordChar(text[end]))
+	if (text[end] != '\0' && !BotChat_IsReplyWordSeparator(text[end]))
 	{
 		return 0;
 	}
@@ -5072,29 +5340,46 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state,
 	bot_string_builder_t builder = {0};
 	pc_token_t token;
 	int last_was_variable = 0;
+	int need_separator = 0;
 	while (PS_ReadToken(script, &token))
 	{
-		if (token.type == TT_PUNCTUATION && token.string[0] == '=')
+		if (need_separator)
 		{
-			break;
+			if (token.type == TT_PUNCTUATION && token.string[0] == '=')
+			{
+				break;
+			}
+			if (token.type == TT_PUNCTUATION && token.string[0] == ',')
+			{
+				need_separator = 0;
+				continue;
+			}
+			BotChat_StringBuilderDestroy(&builder);
+			return 0;
 		}
-		if (token.type == TT_PUNCTUATION && token.string[0] == ',')
+
+		if (token.type == TT_PUNCTUATION)
 		{
-			continue;
+			BotChat_StringBuilderDestroy(&builder);
+			return 0;
 		}
 		if (token.type == TT_STRING)
 		{
-			size_t token_length = 0;
-			(void)BotChat_TokenText(&token, &token_length);
-			if (!BotChat_StringBuilderAppendMatchTokenText(&builder, &token))
+			int contains_empty = 0;
+			if (!BotChat_StringBuilderAppendStringAlternativePiece(&builder,
+					script,
+					&token,
+					1,
+					&contains_empty))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return 0;
 			}
-			if (token_length > 0)
+			if (!contains_empty)
 			{
 				last_was_variable = 0;
 			}
+			need_separator = 1;
 			continue;
 		}
 		if (token.type == TT_NAME)
@@ -5118,6 +5403,7 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state,
 				return 0;
 			}
 			last_was_variable = known_placeholder ? 1 : 0;
+			need_separator = 1;
 			continue;
 		}
 		if (token.type == TT_NUMBER)
@@ -5137,8 +5423,12 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state,
 				return 0;
 			}
 			last_was_variable = 1;
+			need_separator = 1;
 			continue;
 		}
+
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
 	}
 	if (token.type != TT_PUNCTUATION || token.string[0] != '=')
 	{
@@ -5284,6 +5574,46 @@ static int BotChat_IsKnownMatchContextNumber(unsigned long value)
 
 /*
 =============
+BotChat_StringBuilderAppendChatMessageComponent
+
+Appends one Q3 BotLoadChatMessage component to a template builder.
+=============
+*/
+static int BotChat_StringBuilderAppendChatMessageComponent(
+	bot_string_builder_t *builder,
+	const pc_token_t *token)
+{
+	if (builder == NULL || token == NULL)
+	{
+		return 0;
+	}
+
+	if (token->type == TT_STRING)
+	{
+		return BotChat_StringBuilderAppendTokenText(builder, token);
+	}
+
+	if (token->type == TT_NAME)
+	{
+		if (BotChat_IsKnownPlaceholderName(token->string))
+		{
+			return BotChat_StringBuilderAppendNameToken(builder, token);
+		}
+		return BotChat_StringBuilderAppendRandomReference(builder, token->string);
+	}
+
+	if (token->type == TT_NUMBER)
+	{
+		return BotChat_NumberTokenIsInteger(token)
+			&& BotChat_StringBuilderAppendVariableReference(builder,
+				BotChat_NumberTokenValue(token));
+	}
+
+	return 0;
+}
+
+/*
+=============
 BotChat_ParseReplyTemplate
 
 Builds a single reply text entry from the token stream.
@@ -5293,63 +5623,27 @@ static int BotChat_ParseReplyTemplate(bot_chatstate_t *state, bot_reply_rule_t *
 {
 	bot_string_builder_t builder = {0};
 	pc_token_t token;
-	while (PS_ReadToken(script, &token))
+	while (1)
 	{
-		if (token.type == TT_PUNCTUATION)
+		if (!PS_ReadToken(script, &token)
+			|| !BotChat_StringBuilderAppendChatMessageComponent(&builder,
+				&token))
 		{
-			if (token.string[0] == ';')
-			{
-				break;
-			}
-			if (token.string[0] == ',')
-			{
-				continue;
-			}
+			BotChat_StringBuilderDestroy(&builder);
+			return 0;
 		}
-		if (token.type == TT_STRING)
+
+		if (BotChat_CheckTokenString(script, ";"))
 		{
-			if (!BotChat_StringBuilderAppendTokenText(&builder, &token))
-			{
-				BotChat_StringBuilderDestroy(&builder);
-				return 0;
-			}
-			continue;
+			break;
 		}
-		if (token.type == TT_NAME)
+		if (!PS_ExpectTokenString(script, ","))
 		{
-			int appended = 0;
-			if (BotChat_IsKnownPlaceholderName(token.string))
-			{
-				appended = BotChat_StringBuilderAppendNameToken(&builder, &token);
-			}
-			else
-			{
-				appended = BotChat_StringBuilderAppendRandomReference(&builder, token.string);
-			}
-			if (!appended)
-			{
-				BotChat_StringBuilderDestroy(&builder);
-				return 0;
-			}
-			continue;
-		}
-		if (token.type == TT_NUMBER)
-		{
-			if (!BotChat_NumberTokenIsInteger(&token)
-				|| !BotChat_StringBuilderAppendVariableReference(&builder,
-					BotChat_NumberTokenValue(&token)))
-			{
-				BotChat_StringBuilderDestroy(&builder);
-				return 0;
-			}
-			continue;
+			BotChat_StringBuilderDestroy(&builder);
+			return 0;
 		}
 	}
-	if (token.type != TT_PUNCTUATION || token.string[0] != ';')
-	{
-		BotChat_StringBuilderDestroy(&builder);
-		return 0;
-	}
+
 	char *reply_text = BotChat_StringBuilderDetach(&builder);
 	BotChat_StringBuilderDestroy(&builder);
 	if (reply_text == NULL)
@@ -5379,30 +5673,47 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 	bot_string_builder_t builder = {0};
 	pc_token_t token;
 	int last_was_variable = 0;
+	int need_separator = 0;
 
 	while (PS_ReadToken(script, &token))
 	{
-		if (token.type == TT_PUNCTUATION && token.string[0] == ')')
+		if (need_separator)
 		{
-			return BotChat_StringBuilderDetach(&builder);
+			if (token.type == TT_PUNCTUATION && token.string[0] == ')')
+			{
+				return BotChat_StringBuilderDetach(&builder);
+			}
+			if (token.type == TT_PUNCTUATION && token.string[0] == ',')
+			{
+				need_separator = 0;
+				continue;
+			}
+			BotChat_StringBuilderDestroy(&builder);
+			return NULL;
 		}
-		if (token.type == TT_PUNCTUATION && token.string[0] == ',')
+
+		if (token.type == TT_PUNCTUATION)
 		{
-			continue;
+			BotChat_StringBuilderDestroy(&builder);
+			return NULL;
 		}
 		if (token.type == TT_STRING)
 		{
-			size_t token_length = 0;
-			(void)BotChat_TokenText(&token, &token_length);
-			if (!BotChat_StringBuilderAppendTokenText(&builder, &token))
+			int contains_empty = 0;
+			if (!BotChat_StringBuilderAppendStringAlternativePiece(&builder,
+					script,
+					&token,
+					0,
+					&contains_empty))
 			{
 				BotChat_StringBuilderDestroy(&builder);
 				return NULL;
 			}
-			if (token_length > 0)
+			if (!contains_empty)
 			{
 				last_was_variable = 0;
 			}
+			need_separator = 1;
 			continue;
 		}
 		if (token.type == TT_NUMBER)
@@ -5417,6 +5728,7 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 				return NULL;
 			}
 			last_was_variable = 1;
+			need_separator = 1;
 			continue;
 		}
 		if (token.type == TT_NAME)
@@ -5427,6 +5739,7 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 				return NULL;
 			}
 			last_was_variable = 0;
+			need_separator = 1;
 			continue;
 		}
 
@@ -6033,64 +6346,26 @@ static char *BotChat_ParseTextTemplate(pc_script_t *script)
 	bot_string_builder_t builder = {0};
 	pc_token_t token;
 
-	while (PS_ReadToken(script, &token))
+	while (1)
 	{
-		if (token.type == TT_PUNCTUATION)
+		if (!PS_ReadToken(script, &token)
+			|| !BotChat_StringBuilderAppendChatMessageComponent(&builder,
+				&token))
 		{
-			if (token.string[0] == ';')
-			{
-				return BotChat_StringBuilderDetach(&builder);
-			}
-			if (token.string[0] == ',')
-			{
-				continue;
-			}
+			BotChat_StringBuilderDestroy(&builder);
+			return NULL;
 		}
 
-		if (token.type == TT_STRING)
+		if (BotChat_CheckTokenString(script, ";"))
 		{
-			if (!BotChat_StringBuilderAppendTokenText(&builder, &token))
-			{
-				BotChat_StringBuilderDestroy(&builder);
-				return NULL;
-			}
-			continue;
+			return BotChat_StringBuilderDetach(&builder);
 		}
-
-		if (token.type == TT_NAME)
+		if (!PS_ExpectTokenString(script, ","))
 		{
-			int appended = 0;
-			if (BotChat_IsKnownPlaceholderName(token.string))
-			{
-				appended = BotChat_StringBuilderAppendNameToken(&builder, &token);
-			}
-			else
-			{
-				appended = BotChat_StringBuilderAppendRandomReference(&builder, token.string);
-			}
-			if (!appended)
-			{
-				BotChat_StringBuilderDestroy(&builder);
-				return NULL;
-			}
-			continue;
-		}
-
-		if (token.type == TT_NUMBER)
-		{
-			if (!BotChat_NumberTokenIsInteger(&token)
-				|| !BotChat_StringBuilderAppendVariableReference(&builder,
-					BotChat_NumberTokenValue(&token)))
-			{
-				BotChat_StringBuilderDestroy(&builder);
-				return NULL;
-			}
-			continue;
+			BotChat_StringBuilderDestroy(&builder);
+			return NULL;
 		}
 	}
-
-	BotChat_StringBuilderDestroy(&builder);
-	return NULL;
 }
 
 /*
@@ -7025,6 +7300,8 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 	char *out_message,
 	size_t out_size,
 	int reply,
+	int replace_synonyms,
+	const char *source_template,
 	int *expanded_random)
 {
 	if (state == NULL || template_text == NULL || out_message == NULL || out_size == 0U)
@@ -7116,7 +7393,7 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 			}
 		}
 
-		if (template_text[i] != '\\')
+		if (!BotChat_IsEscapeChar(template_text[i]))
 		{
 			if (assembled_length >= max_length)
 			{
@@ -7140,11 +7417,12 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 
 		size_t start_index = i + 2;
 		size_t end_index = start_index;
-		while (template_text[end_index] != '\0' && template_text[end_index] != '\\')
+		while (template_text[end_index] != '\0'
+			&& !BotChat_IsEscapeChar(template_text[end_index]))
 		{
 			++end_index;
 		}
-		if (template_text[end_index] != '\\')
+		if (!BotChat_IsEscapeChar(template_text[end_index]))
 		{
 			BotLib_Print(PRT_ERROR,
 				"BotConstructChat: message \"%s\" invalid escape char\n",
@@ -7301,6 +7579,21 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 	}
 
 	assembled[assembled_length] = '\0';
+	if (replace_synonyms
+		&& !BotChat_ReplaceWeightedSynonyms(state,
+			message_context,
+			assembled,
+			sizeof(assembled),
+			source_template != NULL ? source_template : template_text))
+	{
+		return 0;
+	}
+	if (strlen(assembled) >= out_size)
+	{
+		BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" too long\n", template_text);
+		return 0;
+	}
+
 	snprintf(out_message, out_size, "%s", assembled);
 	return 1;
 }
@@ -7352,6 +7645,8 @@ static int BotConstructChatMessageWithVariables(bot_chatstate_t *state,
 			expanded,
 			sizeof(expanded),
 			reply,
+			replace_synonyms,
+			template_text,
 			&expanded_random))
 		{
 			return 0;
@@ -7368,16 +7663,6 @@ static int BotConstructChatMessageWithVariables(bot_chatstate_t *state,
 	{
 		BotLib_Print(PRT_WARNING, "too many expansions in chat message\n");
 		BotLib_Print(PRT_WARNING, "%s\n", expanded);
-	}
-
-	if (replace_synonyms
-		&& !BotChat_ReplaceWeightedSynonyms(state,
-			message_context,
-			source,
-			sizeof(source),
-			template_text))
-	{
-		return 0;
 	}
 
 	if (strlen(source) >= out_size)
@@ -8668,7 +8953,7 @@ static int BotChat_TemplateCanConstructTextAt(const bot_chatstate_t *state,
 {
 	while (template_text[template_offset] != '\0')
 	{
-		if (template_text[template_offset] != '\\')
+		if (!BotChat_IsEscapeChar(template_text[template_offset]))
 		{
 			if (constructed_text[constructed_offset] != template_text[template_offset])
 			{
@@ -8687,11 +8972,12 @@ static int BotChat_TemplateCanConstructTextAt(const bot_chatstate_t *state,
 
 		size_t name_start = template_offset + 2;
 		size_t name_end = name_start;
-		while (template_text[name_end] != '\0' && template_text[name_end] != '\\')
+		while (template_text[name_end] != '\0'
+			&& !BotChat_IsEscapeChar(template_text[name_end]))
 		{
 			++name_end;
 		}
-		if (template_text[name_end] != '\\')
+		if (!BotChat_IsEscapeChar(template_text[name_end]))
 		{
 			return 0;
 		}
@@ -8916,6 +9202,31 @@ static int BotChat_TemplateCanConstructText(const bot_chatstate_t *state,
 
 /*
 =============
+BotChat_TemplateContainsEscape
+
+Checks whether a stored template contains an expandable internal marker.
+=============
+*/
+static int BotChat_TemplateContainsEscape(const char *template_text)
+{
+	if (template_text == NULL)
+	{
+		return 0;
+	}
+
+	for (size_t i = 0; template_text[i] != '\0'; ++i)
+	{
+		if (BotChat_IsEscapeChar(template_text[i]))
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+/*
+=============
 BotChatLength
 
 Returns the length of the pending constructed chat message.
@@ -8998,13 +9309,54 @@ void BotSetChatName(bot_chatstate_t *state, const char *name, int client)
 
 	state->chat_client = client;
 	state->chat_client_valid = 1;
+	char name_copy[sizeof(state->chat_name)];
+	memset(name_copy, 0, sizeof(name_copy));
+	if (name != NULL)
+	{
+		snprintf(name_copy, sizeof(name_copy), "%s", name);
+	}
+
 	memset(state->chat_name, 0, sizeof(state->chat_name));
 	if (name == NULL)
 	{
 		return;
 	}
 
-	snprintf(state->chat_name, sizeof(state->chat_name), "%s", name);
+	snprintf(state->chat_name, sizeof(state->chat_name), "%s", name_copy);
+}
+
+/*
+=============
+BotChatName
+
+Returns the chat persona name used by reply-key matching.
+=============
+*/
+const char *BotChatName(const bot_chatstate_t *state)
+{
+	if (state == NULL)
+	{
+		return "";
+	}
+
+	return state->chat_name;
+}
+
+/*
+=============
+BotChatClient
+
+Returns the owning client used for chat commands.
+=============
+*/
+int BotChatClient(const bot_chatstate_t *state)
+{
+	if (state == NULL || !state->chat_client_valid)
+	{
+		return -1;
+	}
+
+	return state->chat_client;
 }
 
 /*
@@ -9186,7 +9538,7 @@ int BotChat_HasReplyTemplate(const bot_chatstate_t *state, unsigned long int con
 				if (strcmp(stored_template, template_text) == 0) {
 					return 1;
 				}
-				if (strchr(stored_template, '\\') != NULL
+				if (BotChat_TemplateContainsEscape(stored_template)
 					&& BotChat_TemplateCanConstructText(source,
 						context,
 						stored_template,
@@ -9209,7 +9561,7 @@ int BotChat_HasReplyTemplate(const bot_chatstate_t *state, unsigned long int con
 				if (strcmp(stored_template, template_text) == 0) {
 					return 1;
 				}
-				if (strchr(stored_template, '\\') != NULL
+				if (BotChat_TemplateContainsEscape(stored_template)
 					&& BotChat_TemplateCanConstructText(source,
 						context,
 						stored_template,

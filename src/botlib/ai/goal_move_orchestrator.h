@@ -87,6 +87,7 @@ typedef struct ai_move_state_s {
 
 ai_goal_state_t *AI_GoalState_Create(void);
 void AI_GoalState_Destroy(ai_goal_state_t *state);
+void AI_GoalState_Reset(ai_goal_state_t *state);
 void AI_GoalState_SetServices(ai_goal_state_t *state, const ai_goal_services_t *services);
 void AI_GoalState_ClearCandidates(ai_goal_state_t *state);
 bool AI_GoalState_AddCandidate(ai_goal_state_t *state, const ai_goal_candidate_t *candidate);
@@ -99,6 +100,7 @@ ai_avoid_list_t *AI_GoalState_GetAvoidList(ai_goal_state_t *state);
 
 ai_move_state_t *AI_MoveState_Create(void);
 void AI_MoveState_Destroy(ai_move_state_t *state);
+void AI_MoveState_Reset(ai_move_state_t *state);
 void AI_MoveState_SetServices(ai_move_state_t *state, const ai_move_services_t *services);
 void AI_MoveState_LinkAvoidList(ai_move_state_t *state, ai_avoid_list_t *avoid);
 int AI_MoveOrchestrator_Dispatch(ai_move_state_t *state,

@@ -34,6 +34,129 @@ typedef struct aas_node_s
     int children[2];    /* <0 means leaf/area, 0 means solid */
 } aas_node_t;
 
+typedef struct aas_plane_s
+{
+	vec3_t normal;
+	float dist;
+	int type;
+} aas_plane_t;
+
+typedef struct aas_bspmodel_s
+{
+	vec3_t mins;
+	vec3_t maxs;
+	vec3_t origin;
+	int headnode;
+	int firstface;
+	int numfaces;
+} aas_bspmodel_t;
+
+typedef struct aas_bspnode_s
+{
+	int planenum;
+	int children[2];
+	short mins[3];
+	short maxs[3];
+	unsigned short firstface;
+	unsigned short numfaces;
+} aas_bspnode_t;
+
+typedef struct aas_bspleaf_s
+{
+	int contents;
+	short cluster;
+	short area;
+	short mins[3];
+	short maxs[3];
+	unsigned short firstleafface;
+	unsigned short numleaffaces;
+	unsigned short firstleafbrush;
+	unsigned short numleafbrushes;
+} aas_bspleaf_t;
+
+typedef struct aas_bspbrushside_s
+{
+	unsigned short planenum;
+	short texinfo;
+} aas_bspbrushside_t;
+
+typedef struct aas_bspbrush_s
+{
+	int firstside;
+	int numsides;
+	int contents;
+} aas_bspbrush_t;
+
+typedef vec3_t aas_vertex_t;
+
+typedef struct aas_bbox_s
+{
+	int presencetype;
+	int flags;
+	vec3_t mins;
+	vec3_t maxs;
+} aas_bbox_t;
+
+typedef struct aas_edge_s
+{
+	int v[2];
+} aas_edge_t;
+
+typedef struct aas_face_s
+{
+	int planenum;
+	int faceflags;
+	int numedges;
+	int firstedge;
+	int frontarea;
+	int backarea;
+} aas_face_t;
+
+typedef struct aas_areainfo_s
+{
+	int cluster;
+	int contents;
+	int flags;
+	int presencetype;
+	vec3_t mins;
+	vec3_t maxs;
+	vec3_t center;
+} aas_areainfo_t;
+
+#define AAS_ENTITYTYPE_GENERAL 0
+#define AAS_ENTITYTYPE_PLAYER  1
+#define AAS_ENTITYTYPE_ITEM    2
+#define AAS_ENTITYTYPE_MISSILE 3
+#define AAS_ENTITYTYPE_MOVER   4
+
+typedef struct aas_entityinfo_s
+{
+	qboolean valid;
+	int type;
+	int flags;
+	float ltime;
+	float update_time;
+	int number;
+	vec3_t origin;
+	vec3_t angles;
+	vec3_t old_origin;
+	vec3_t lastvisorigin;
+	vec3_t mins;
+	vec3_t maxs;
+	int groundent;
+	int solid;
+	int modelindex;
+	int modelindex2;
+	int modelindex3;
+	int modelindex4;
+	int frame;
+	int skinnum;
+	int eventid;
+	int effects;
+	int renderfx;
+	int sound;
+} aas_entityinfo_t;
+
 /*
  * Travel type definitions reconstructed from the Quake III / Gladiator
  * binaries. The values mirror the original enum encoded in the reachability
@@ -100,6 +223,115 @@ typedef struct aas_node_s
      | TFL_SWIM | TFL_WATERJUMP | TFL_TELEPORT | TFL_ELEVATOR | TFL_AIR | TFL_WATER            \
      | TFL_JUMPPAD | TFL_FUNCBOB)
 
+/* Area settings flags mirrored from Quake III's aasfile.h. */
+#ifndef PRESENCE_NONE
+#define PRESENCE_NONE    1
+#endif
+#ifndef PRESENCE_NORMAL
+#define PRESENCE_NORMAL  2
+#endif
+#ifndef PRESENCE_CROUCH
+#define PRESENCE_CROUCH  4
+#endif
+
+#define AAS_AREACONTENTS_WATER         1
+#define AAS_AREACONTENTS_LAVA          2
+#define AAS_AREACONTENTS_SLIME         4
+#define AAS_AREACONTENTS_CLUSTERPORTAL 8
+#define AAS_AREACONTENTS_TELEPORTAL    16
+#define AAS_AREACONTENTS_ROUTEPORTAL   32
+#define AAS_AREACONTENTS_TELEPORTER    64
+#define AAS_AREACONTENTS_JUMPPAD       128
+#define AAS_AREACONTENTS_DONOTENTER    256
+#define AAS_AREACONTENTS_VIEWPORTAL    512
+#define AAS_AREACONTENTS_MOVER         1024
+#define AAS_AREACONTENTS_NOTTEAM1      2048
+#define AAS_AREACONTENTS_NOTTEAM2      4096
+
+#define AAS_FACE_SOLID         1
+#define AAS_FACE_LADDER        2
+#define AAS_FACE_GROUND        4
+#define AAS_FACE_GAP           8
+#define AAS_FACE_LIQUID        16
+#define AAS_FACE_LIQUIDSURFACE 32
+#define AAS_FACE_BRIDGE        64
+
+#define AAS_AREA_GROUNDED 1
+#define AAS_AREA_LADDER   2
+#define AAS_AREA_LIQUID   4
+#define AAS_AREA_DISABLED 8
+#define AAS_AREA_BRIDGE   16
+
+#define SE_NONE                 0
+#define SE_HITGROUND            1
+#define SE_LEAVEGROUND          2
+#define SE_ENTERWATER           4
+#define SE_ENTERSLIME           8
+#define SE_ENTERLAVA            16
+#define SE_HITGROUNDDAMAGE      32
+#define SE_GAP                  64
+#define SE_TOUCHJUMPPAD         128
+#define SE_TOUCHTELEPORTER      256
+#define SE_ENTERAREA            512
+#define SE_HITGROUNDAREA        1024
+#define SE_HITBOUNDINGBOX       2048
+#define SE_TOUCHCLUSTERPORTAL   4096
+
+typedef struct aas_trace_s
+{
+	qboolean startsolid;
+	float fraction;
+	vec3_t endpos;
+	int ent;
+	int lastarea;
+	int area;
+	int planenum;
+	cplane_t plane;
+} aas_trace_t;
+
+typedef struct aas_clientmove_s
+{
+	vec3_t endpos;
+	int endarea;
+	vec3_t velocity;
+	aas_trace_t trace;
+	int presencetype;
+	int stopevent;
+	int endcontents;
+	float time;
+	int frames;
+} aas_clientmove_t;
+
+#define RSE_NONE          0
+#define RSE_NOROUTE       1
+#define RSE_USETRAVELTYPE 2
+#define RSE_ENTERCONTENTS 4
+#define RSE_ENTERAREA     8
+
+typedef struct aas_predictroute_s
+{
+	vec3_t endpos;
+	int endarea;
+	int stopevent;
+	int endcontents;
+	int endtravelflags;
+	int numareas;
+	int time;
+} aas_predictroute_t;
+
+#define ALTROUTEGOAL_ALL            1
+#define ALTROUTEGOAL_CLUSTERPORTALS 2
+#define ALTROUTEGOAL_VIEWPORTALS    4
+
+typedef struct aas_altroutegoal_s
+{
+	vec3_t origin;
+	int areanum;
+	unsigned short starttraveltime;
+	unsigned short goaltraveltime;
+	unsigned short extratraveltime;
+} aas_altroutegoal_t;
+
 typedef struct aas_reachability_s
 {
     int areanum;
@@ -122,6 +354,22 @@ typedef struct aas_areasettings_s
     int numreachableareas;
     int firstreachablearea;
 } aas_areasettings_t;
+
+typedef struct aas_portal_s
+{
+	int areanum;
+	int frontcluster;
+	int backcluster;
+	int clusterareanum[2];
+} aas_portal_t;
+
+typedef struct aas_cluster_s
+{
+	int numareas;
+	int numreachabilityareas;
+	int numportals;
+	int firstportal;
+} aas_cluster_t;
 
 typedef struct aas_link_s
 {
@@ -159,6 +407,7 @@ typedef struct aas_entity_s
     vec3_t maxs;            /* offsets 0x4c - 0x58 */
 
     int solid;              /* offset 0x58 */
+    qboolean isMover;       /* derived from the mover catalogue during translation */
     int modelindex;         /* offset 0x5c (stored as modelNum + 1 in HLIL) */
     int modelindex2;        /* offsets 0x60 - 0x68 capture secondary models */
     int modelindex3;
@@ -186,11 +435,18 @@ typedef struct aas_reversedreachability_s
     int *reachIndexes;
 } aas_reversedreachability_t;
 
+typedef struct aas_reachabilityareas_s
+{
+	int firstarea;
+	int numareas;
+} aas_reachabilityareas_t;
+
 typedef struct aas_routingcache_s
 {
     int goalArea;
     int travelflags;
     unsigned short *traveltimes;
+    int *reachabilities;
     struct aas_routingcache_s *hashNext;
     struct aas_routingcache_s *prev;
     struct aas_routingcache_s *next;
@@ -209,8 +465,47 @@ typedef struct aas_world_s
     char aasFilePath[MAX_FILEPATH];
     char mapName[MAX_FILEPATH];
 
+	int numBspModels;
+	aas_bspmodel_t *bspModels;
+
+	int numBspNodes;
+	aas_bspnode_t *bspNodes;
+
+	int numBspLeaves;
+	aas_bspleaf_t *bspLeaves;
+
+	int bspLeafBrushIndexSize;
+	unsigned short *bspLeafBrushes;
+
+	int numBspPlanes;
+	aas_plane_t *bspPlanes;
+
+	int numBspBrushSides;
+	aas_bspbrushside_t *bspBrushSides;
+
+	int numBspBrushes;
+	aas_bspbrush_t *bspBrushes;
+
     int numAreas;
     aas_area_t *areas;
+
+    int numBBoxes;
+    aas_bbox_t *bboxes;
+
+    int numVertexes;
+    aas_vertex_t *vertexes;
+
+    int numEdges;
+    aas_edge_t *edges;
+
+    int edgeIndexSize;
+    int *edgeIndex;
+
+    int numFaces;
+    aas_face_t *faces;
+
+    int faceIndexSize;
+    int *faceIndex;
 
     int numReachability;
     aas_reachability_t *reachability;
@@ -220,9 +515,24 @@ typedef struct aas_world_s
 
     int *reachabilityFromArea; /* index of the source area for each reachability */
     aas_reversedreachability_t *reversedReachability;
+    aas_reachabilityareas_t *reachabilityAreas;
+    int *reachabilityAreaIndex;
+    int reachabilityAreaIndexSize;
 
     int numNodes;
     aas_node_t *nodes;
+
+    int numPlanes;
+    aas_plane_t *planes;
+
+    int numPortals;
+    aas_portal_t *portals;
+
+    int portalIndexSize;
+    int *portalIndex;
+
+    int numClusters;
+    aas_cluster_t *clusters;
 
     int maxEntities;
     aas_entity_t *entities; /* base pointer from data_100669a0 */
@@ -236,20 +546,141 @@ typedef struct aas_world_s
     aas_routingcache_t **routingCacheTable;
     aas_routingcache_t *routingCacheHead;
     aas_routingcache_t *routingCacheTail;
+
+    int *areacontentstravelflags;
 } aas_world_t;
 
 extern aas_world_t aasworld;
 
+int AAS_Loaded(void);
+int AAS_Initialized(void);
+float AAS_Time(void);
 void AAS_InitTravelFlagFromType(void);
+int AAS_TravelFlagForType(int traveltype);
+int AAS_GetAreaContentsTravelFlags(int areanum);
+void AAS_InitAreaContentsTravelFlags(void);
+int AAS_AreaContentsTravelFlags(int areanum);
+bool AAS_AreaTravelAllowed(int areanum, int travelflags);
+bool AAS_AreaDoNotEnter(int areanum);
+bool AAS_AreaDisabled(int areanum);
+bool AAS_AreaHasLadder(int areanum);
+int AAS_AreaCluster(int areanum);
+int AAS_AreaPresenceType(int areanum);
+int AAS_AreaInfo(int areanum, aas_areainfo_t *info);
+void AAS_PresenceTypeBoundingBox(int presencetype, vec3_t mins, vec3_t maxs);
+int AAS_PointAreaNum(const vec3_t point);
+int AAS_PointPresenceType(const vec3_t point);
+int AAS_PointReachabilityAreaIndex(const vec3_t origin);
+bsp_trace_t AAS_Trace(const vec3_t start,
+                      const vec3_t mins,
+                      const vec3_t maxs,
+                      const vec3_t end,
+                      int passent,
+                      int contentmask);
+int AAS_PointContents(const vec3_t point);
+void AAS_EntityInfo(int entnum, aas_entityinfo_t *info);
+void AAS_EntityOrigin(int entnum, vec3_t origin);
+int AAS_EntityModelindex(int entnum);
+int AAS_EntityModelNum(int entnum);
+void AAS_EntitySize(int entnum, vec3_t mins, vec3_t maxs);
+int AAS_OriginOfMoverWithModelNum(int modelnum, vec3_t origin);
+void AAS_BSPModelMinsMaxsOrigin(int modelnum,
+                                const vec3_t angles,
+                                vec3_t mins,
+                                vec3_t maxs,
+                                vec3_t origin);
+bsp_trace_t AAS_TraceBSPModel(int modelnum,
+                              const vec3_t angles,
+                              const vec3_t origin,
+                              const vec3_t start,
+                              const vec3_t mins,
+                              const vec3_t maxs,
+                              const vec3_t end,
+                              int contentmask);
+qboolean AAS_EntityCollision(int entnum,
+                             const vec3_t start,
+                             const vec3_t boxmins,
+                             const vec3_t boxmaxs,
+                             const vec3_t end,
+                             int contentmask,
+                             bsp_trace_t *trace);
+aas_trace_t AAS_TraceClientBBox(const vec3_t start, const vec3_t end, int presencetype, int passent);
+int AAS_TraceAreas(const vec3_t start, const vec3_t end, int *areas, vec3_t *points, int maxareas);
+int AAS_BBoxAreas(const vec3_t absmins, const vec3_t absmaxs, int *areas, int maxareas);
+aas_plane_t *AAS_PlaneFromNum(int planenum);
+qboolean AAS_PointInsideFace(int facenum, const vec3_t point, float epsilon);
+aas_face_t *AAS_AreaGroundFace(int areanum, const vec3_t point);
+aas_face_t *AAS_TraceEndFace(const aas_trace_t *trace);
+void AAS_FacePlane(int facenum, vec3_t normal, float *dist);
+float AAS_FaceArea(const aas_face_t *face);
+float AAS_AreaGroundFaceArea(int areanum);
 void AAS_ClearReachabilityData(void);
 int AAS_PrepareReachability(void);
+int AAS_AreaReachability(int areanum);
+int AAS_AreaCrouch(int areanum);
+int AAS_AreaSwim(int areanum);
+int AAS_AreaGrounded(int areanum);
+int AAS_AreaLadder(int areanum);
+int AAS_AreaJumpPad(int areanum);
+int AAS_AreaClusterPortal(int areanum);
+void AAS_JumpReachRunStart(const aas_reachability_t *reach, vec3_t runstart);
+int AAS_HorizontalVelocityForJump(float zvel, const vec3_t start, const vec3_t end, float *velocity);
+int AAS_OnGround(const vec3_t origin, int presencetype, int passent);
+int AAS_Swimming(const vec3_t origin);
+int AAS_PredictClientMovement(aas_clientmove_t *move,
+                              int entnum,
+                              const vec3_t origin,
+                              int presencetype,
+                              int onground,
+                              const vec3_t velocity,
+                              const vec3_t cmdmove,
+                              int cmdframes,
+                              int maxframes,
+                              float frametime,
+                              int stopevent,
+                              int stopareanum,
+                              int visualize);
 void AAS_FreeAllRoutingCaches(void);
 void AAS_InvalidateRouteCache(void);
 void AAS_ContinueInit(float time);
 void AAS_UnlinkInvalidEntities(void);
 void AAS_InvalidateEntities(void);
 void AAS_FrameSynchronise(float time);
+unsigned short AAS_AreaTravelTime(int areanum, const vec3_t start, const vec3_t end);
 int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, int travelflags);
+int AAS_AreaReachabilityToGoalArea(int areanum, vec3_t origin, int goalareanum, int travelflags);
+int AAS_EnableRoutingArea(int areanum, int enable);
+void AAS_ReachabilityFromNum(int num, aas_reachability_t *reach);
+int AAS_BridgeWalkable(int areanum);
+int AAS_RandomGoalArea(int areanum, int travelflags, int *goalareanum, vec3_t goalorigin);
+int AAS_AreaVisible(int srcarea, int destarea);
+int AAS_PredictRoute(aas_predictroute_t *route,
+                     int areanum,
+                     vec3_t origin,
+                     int goalareanum,
+                     int travelflags,
+                     int maxareas,
+                     int maxtime,
+                     int stopevent,
+                     int stopcontents,
+                     int stoptfl,
+                     int stopareanum);
+int AAS_AlternativeRouteGoals(vec3_t start,
+                              int startareanum,
+                              vec3_t goal,
+                              int goalareanum,
+                              int travelflags,
+                              aas_altroutegoal_t *altroutegoals,
+                              int maxaltroutegoals,
+                              int type);
+int AAS_NearestHideArea(int srcnum,
+                        vec3_t origin,
+                        int areanum,
+                        int enemynum,
+                        vec3_t enemyorigin,
+                        int enemyareanum,
+                        int travelflags);
+int AAS_NextAreaReachability(int areanum, int reachnum);
 void AAS_RouteFrameUpdate(void);
 void AAS_RouteFrameResetDiagnostics(void);
 int AAS_RouteFrameWorkCounter(void);

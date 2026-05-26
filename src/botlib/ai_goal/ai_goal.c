@@ -208,7 +208,7 @@ int AI_GoalBotlib_Update(int handle,
 		return BLERR_INVALIDIMPORT;
 	}
 
-	AI_GoalBotlib_SetTime(now);
+	BotUpdateEntityItemsThrottled(now);
 
 	bot_goal_t top_goal;
 	if (BotGetTopGoal(handle, &top_goal))

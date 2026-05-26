@@ -136,6 +136,12 @@ void BotSetChatGender(bot_chatstate_t *state, int gender);
 /** Sets the chat state's name metadata and owning client. */
 void BotSetChatName(bot_chatstate_t *state, const char *name, int client);
 
+/** Returns the chat persona name used by reply-key matching. */
+const char *BotChatName(const bot_chatstate_t *state);
+
+/** Returns the owning client used for chat commands, or -1 when unset. */
+int BotChatClient(const bot_chatstate_t *state);
+
 /** Returns the substring index using the retail case-sensitivity flag. */
 int StringContains(const char *str1, const char *str2, int casesensitive);
 

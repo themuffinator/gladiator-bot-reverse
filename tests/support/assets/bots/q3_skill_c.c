@@ -16,6 +16,7 @@ skill 4
 	13 "skillfour"
 	14 250
 	32 0.8
+	80 "q3 private sentinel"
 }
 
 skill 5

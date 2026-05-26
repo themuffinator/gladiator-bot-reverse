@@ -10,29 +10,6 @@
 
 #define AAS_DEBUG_MAX_PATH_DEPTH 128
 
-/*
- * The original Gladiator binaries mirror Quake III's AAS area contents
- * constants.  Import the subset that drives the diagnostic strings so
- * the debug helpers can reproduce the historical wording when reporting
- * area characteristics.【F:dev_tools/Quake-III-Arena-master/code/bspc/aasfile.h†L67-L89】
- */
-enum
-{
-    AAS_CONTENTS_WATER = 1,
-    AAS_CONTENTS_LAVA = 2,
-    AAS_CONTENTS_SLIME = 4,
-    AAS_CONTENTS_CLUSTERPORTAL = 8,
-    AAS_CONTENTS_TELEPORTAL = 16,
-    AAS_CONTENTS_ROUTEPORTAL = 32,
-    AAS_CONTENTS_TELEPORTER = 64,
-    AAS_CONTENTS_JUMPPAD = 128,
-    AAS_CONTENTS_DONOTENTER = 256,
-    AAS_CONTENTS_VIEWPORTAL = 512,
-    AAS_CONTENTS_MOVER = 1024,
-    AAS_CONTENTS_NOTTEAM1 = 2048,
-    AAS_CONTENTS_NOTTEAM2 = 4096,
-};
-
 static bool AAS_DebugWorldLoaded(const char *command)
 {
     if (aasworld.loaded && aasworld.areas != NULL && aasworld.numAreas > 0)
@@ -164,62 +141,62 @@ static void AAS_DebugDescribeArea(const aas_area_t *area)
         int contents = settings->contents;
         bool emitted = false;
 
-        if (contents & AAS_CONTENTS_WATER)
+        if (contents & AAS_AREACONTENTS_WATER)
         {
             BotLib_Print(PRT_MESSAGE, "water &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_LAVA)
+        if (contents & AAS_AREACONTENTS_LAVA)
         {
             BotLib_Print(PRT_MESSAGE, "lava &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_SLIME)
+        if (contents & AAS_AREACONTENTS_SLIME)
         {
             BotLib_Print(PRT_MESSAGE, "slime &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_JUMPPAD)
+        if (contents & AAS_AREACONTENTS_JUMPPAD)
         {
             BotLib_Print(PRT_MESSAGE, "jump pad &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_CLUSTERPORTAL)
+        if (contents & AAS_AREACONTENTS_CLUSTERPORTAL)
         {
             BotLib_Print(PRT_MESSAGE, "cluster portal &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_VIEWPORTAL)
+        if (contents & AAS_AREACONTENTS_VIEWPORTAL)
         {
             BotLib_Print(PRT_MESSAGE, "view portal &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_DONOTENTER)
+        if (contents & AAS_AREACONTENTS_DONOTENTER)
         {
             BotLib_Print(PRT_MESSAGE, "do not enter &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_MOVER)
+        if (contents & AAS_AREACONTENTS_MOVER)
         {
             BotLib_Print(PRT_MESSAGE, "mover &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_TELEPORTER)
+        if (contents & AAS_AREACONTENTS_TELEPORTER)
         {
             BotLib_Print(PRT_MESSAGE, "teleporter &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_ROUTEPORTAL)
+        if (contents & AAS_AREACONTENTS_ROUTEPORTAL)
         {
             BotLib_Print(PRT_MESSAGE, "route portal &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_NOTTEAM1)
+        if (contents & AAS_AREACONTENTS_NOTTEAM1)
         {
             BotLib_Print(PRT_MESSAGE, "notteam1 &");
             emitted = true;
         }
-        if (contents & AAS_CONTENTS_NOTTEAM2)
+        if (contents & AAS_AREACONTENTS_NOTTEAM2)
         {
             BotLib_Print(PRT_MESSAGE, "notteam2 &");
             emitted = true;

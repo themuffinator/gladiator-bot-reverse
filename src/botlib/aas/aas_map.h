@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "aas_local.h"
 #include "q2bridge/aas_translation.h"
 
 /*
@@ -98,6 +99,45 @@ void AAS_Shutdown(void);
 int AAS_UpdateEntity(int ent, const AASEntityFrame *state);
 
 qboolean AAS_WorldLoaded(void);
+int AAS_Loaded(void);
+int AAS_Initialized(void);
+float AAS_Time(void);
+bsp_trace_t AAS_Trace(const vec3_t start,
+                      const vec3_t mins,
+                      const vec3_t maxs,
+                      const vec3_t end,
+                      int passent,
+                      int contentmask);
+int AAS_PointContents(const vec3_t point);
+void AAS_EntityInfo(int entnum, aas_entityinfo_t *info);
+void AAS_EntityOrigin(int entnum, vec3_t origin);
+int AAS_EntityModelindex(int entnum);
+int AAS_EntityModelNum(int entnum);
+void AAS_EntitySize(int entnum, vec3_t mins, vec3_t maxs);
+int AAS_OriginOfMoverWithModelNum(int modelnum, vec3_t origin);
+void AAS_BSPModelMinsMaxsOrigin(int modelnum,
+                                const vec3_t angles,
+                                vec3_t mins,
+                                vec3_t maxs,
+                                vec3_t origin);
+bsp_trace_t AAS_TraceBSPModel(int modelnum,
+                              const vec3_t angles,
+                              const vec3_t origin,
+                              const vec3_t start,
+                              const vec3_t mins,
+                              const vec3_t maxs,
+                              const vec3_t end,
+                              int contentmask);
+qboolean AAS_EntityCollision(int entnum,
+                             const vec3_t start,
+                             const vec3_t boxmins,
+                             const vec3_t boxmaxs,
+                             const vec3_t end,
+                             int contentmask,
+                             bsp_trace_t *trace);
+aas_trace_t AAS_TraceClientBBox(const vec3_t start, const vec3_t end, int presencetype, int passent);
+int AAS_TraceAreas(const vec3_t start, const vec3_t end, int *areas, vec3_t *points, int maxareas);
+int AAS_BBoxAreas(const vec3_t absmins, const vec3_t absmaxs, int *areas, int maxareas);
 
 #ifdef __cplusplus
 } /* extern "C" */

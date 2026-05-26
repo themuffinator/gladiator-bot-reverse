@@ -814,14 +814,15 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
 	char resolved_path[BOTLIB_ASSET_MAX_PATH];
 	if (!BotLib_ResolveAssetPath(filename, NULL, resolved_path, sizeof(resolved_path))) {
 		BotWeight_PopGlobalDefines(&define_scope);
-		BotLib_Print(PRT_ERROR, "couldn't load %s\n", filename != NULL ? filename : "<null>");
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n",
+			resolved_path[0] != '\0' ? resolved_path : filename);
 		return NULL;
 	}
 
 	pc_source_t *source = PC_LoadSourceFile(resolved_path);
 	BotWeight_PopGlobalDefines(&define_scope);
 	if (source == NULL) {
-		BotLib_Print(PRT_ERROR, "couldn't load %s\n", resolved_path);
+		BotLib_Print(PRT_ERROR, "counldn't load %s\n", resolved_path);
 		return NULL;
 	}
 
@@ -874,7 +875,7 @@ void FreeWeightConfig(bot_weight_config_t *config)
 		return;
 	}
 
-	if (!BotWeight_ShouldReloadCharacters() && BotWeight_ConfigIsCached(config)) {
+	if (!BotWeight_ShouldReloadCharacters()) {
 		return;
 	}
 

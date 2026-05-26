@@ -531,6 +531,23 @@ void AI_GoalState_Destroy(ai_goal_state_t *state)
     free(state);
 }
 
+/*
+=============
+AI_GoalState_Reset
+
+Clears transient goal orchestration while preserving caller-provided services.
+=============
+*/
+void AI_GoalState_Reset(ai_goal_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	ai_goal_state_reset(state);
+}
+
 void AI_GoalState_SetServices(ai_goal_state_t *state, const ai_goal_services_t *services)
 {
     if (state == NULL) {
@@ -785,6 +802,31 @@ void AI_MoveState_Destroy(ai_move_state_t *state)
     }
 
     free(state);
+}
+
+/*
+=============
+AI_MoveState_Reset
+
+Clears transient move orchestration while preserving service callbacks.
+=============
+*/
+void AI_MoveState_Reset(ai_move_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	ai_move_services_t services = state->services;
+	ai_avoid_list_t *shared_avoid = state->shared_avoid;
+	ai_move_state_reset(state);
+	state->services = services;
+	if (state->services.submit_fn == NULL)
+	{
+		state->services.submit_fn = ai_move_default_submit;
+	}
+	state->shared_avoid = shared_avoid;
 }
 
 void AI_MoveState_SetServices(ai_move_state_t *state, const ai_move_services_t *services)

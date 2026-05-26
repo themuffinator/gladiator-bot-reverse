@@ -92,6 +92,7 @@ static void test_spawn_brush_entity(int entnum,
 
     int status = AAS_UpdateEntity(entnum, &frame);
     assert_int_equal(status, BLERR_NOERROR);
+    assert_int_equal(AAS_ModelNumForEntity(entnum), modelnum);
 }
 
 typedef struct test_map_fixture_s
@@ -251,6 +252,49 @@ static void test_bot_move_unknown_travel_logs_warning(void **state)
 
     aasworld.reachability[1].traveltype = original_type;
     BotFreeMoveState(movestate);
+}
+
+/*
+=============
+test_bot_move_bfgjump_uses_gladiator_unsupported_warning
+
+Pins Gladiator's active type-13 dispatch branch.
+=============
+*/
+static void test_bot_move_bfgjump_uses_gladiator_unsupported_warning(void **state)
+{
+	(void)state;
+
+	test_log_reset();
+	int movestate = BotAllocMoveState();
+	assert_true(movestate > 0);
+
+	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
+	assert_non_null(ms);
+
+	BotResetMoveState(movestate);
+	ms->areanum = 1;
+	VectorClear(ms->origin);
+
+	int original_type = aasworld.reachability[1].traveltype;
+	aasworld.reachability[1].traveltype = TRAVEL_BFGJUMP;
+
+	bot_goal_t goal;
+	memset(&goal, 0, sizeof(goal));
+	goal.areanum = 2;
+	VectorSet(goal.origin, 128.0f, 0.0f, 0.0f);
+
+	bot_moveresult_t result;
+	BotClearMoveResult(&result);
+
+	BotMoveToGoal(&result, movestate, &goal, TFL_DEFAULT | TFL_BFGJUMP);
+
+	assert_true(result.failure);
+	assert_int_equal(g_test_log.count, 1);
+	assert_string_equal(g_test_log.entries[0].message, "(last) travel type 13 not implemented yet\n");
+
+	aasworld.reachability[1].traveltype = original_type;
+	BotFreeMoveState(movestate);
 }
 
 static void test_bot_move_relinks_func_plat_logs_message(void **state)
@@ -462,6 +506,9 @@ int main(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_bot_move_multi_hop_path, test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_move_unknown_travel_logs_warning, test_setup, test_teardown),
+        cmocka_unit_test_setup_teardown(test_bot_move_bfgjump_uses_gladiator_unsupported_warning,
+                                        test_setup,
+                                        test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_move_relinks_func_plat_logs_message,
                                         test_setup,
                                         test_teardown),

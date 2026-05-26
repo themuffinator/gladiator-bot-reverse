@@ -629,6 +629,48 @@ static void test_initial_chat_rejects_float_message_component(void)
 
 /*
 =============
+test_initial_chat_rejects_missing_message_component_comma
+
+Pins Q3 BotLoadChatMessage delimiter handling for named initial chat blocks:
+each component must be followed by a comma or semicolon.
+=============
+*/
+static void test_initial_chat_rejects_missing_message_component_comma(void)
+{
+	const char *path = "bot_chat_missing_initial_component_comma_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"chat \"missing_initial_comma\"\n"
+		"{\n"
+		"type \"line\"\n"
+		"{\n"
+		"\"bad \" 0;\n"
+		"}\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	assert(!BotLoadChatFile(chat, path, "missing_initial_comma"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+		"couldn't find chat missing_initial_comma in "
+		"bot_chat_missing_initial_component_comma_test.c\n")
+		!= NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
 test_reply_chat_rejects_float_message_component
 
 Matches Q3 reply loading by rejecting float tokens inside response message
@@ -659,6 +701,45 @@ static void test_reply_chat_rejects_float_message_component(void)
 	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
 	assert(strstr(BotLib_TestGetLastMessage(),
 		"couldn't load chat float_reply from bot_chat_float_reply_component_test.c\n")
+		!= NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_rejects_missing_message_component_comma
+
+Matches Q3 reply loading by requiring commas between response message
+components before the terminating semicolon.
+=============
+*/
+static void test_reply_chat_rejects_missing_message_component_comma(void)
+{
+	const char *path = "bot_chat_missing_reply_component_comma_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"missing\"] = 16\n"
+		"{\n"
+		"\"bad \" 0;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	assert(!BotLoadChatFile(chat, path, "missing_reply_component_comma"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+		"couldn't load chat missing_reply_component_comma from "
+		"bot_chat_missing_reply_component_comma_test.c\n")
 		!= NULL);
 
 	BotFreeChatState(chat);
@@ -938,6 +1019,46 @@ static void test_match_template_rejects_adjacent_variables(void)
 
 /*
 =============
+test_match_template_rejects_missing_piece_comma
+
+Pins Q3 BotLoadMatchPieces delimiter handling for setup-loaded match.c
+templates: each match piece must be followed by a comma or '='.
+=============
+*/
+static void test_match_template_rejects_missing_piece_comma(void)
+{
+	const char *path = "bot_chat_missing_match_piece_comma_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"#include \"match.h\"\n"
+		"MTCONTEXT_CLIENTOBITUARY\n"
+		"{\n"
+		"0 \" was railed by \", 1 = (MSG_DEATH, ST_DEATH_RAILGUN);\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	assert(!BotLoadChatFile(chat, path, "missing_match_piece_comma"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+		"couldn't find chat missing_match_piece_comma in "
+		"bot_chat_missing_match_piece_comma_test.c\n")
+		!= NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
 test_reply_chat_rejects_out_of_range_pattern_variable
 
 Ensures reply-key match pieces reject variable indices outside the capture
@@ -1005,6 +1126,122 @@ static void test_reply_chat_rejects_adjacent_pattern_variables(void)
 	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
 	assert(strstr(BotLib_TestGetLastMessage(),
 		"couldn't load chat adjacent_reply_key from bot_chat_adjacent_reply_key_test.c\n")
+		!= NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_rejects_missing_pattern_piece_comma
+
+Pins Q3 BotLoadMatchPieces delimiter handling for parenthesized reply keys.
+=============
+*/
+static void test_reply_chat_rejects_missing_pattern_piece_comma(void)
+{
+	const char *path = "bot_chat_missing_reply_pattern_comma_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[(0 \" tail\")] = 16\n"
+		"{\n"
+		"\"bad\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	assert(!BotLoadChatFile(chat, path, "missing_reply_pattern_comma"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+		"couldn't load chat missing_reply_pattern_comma from "
+		"bot_chat_missing_reply_pattern_comma_test.c\n")
+		!= NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_rejects_empty_pattern_key
+
+Mirrors Q3 BotLoadMatchPieces rejecting an immediately closed parenthesized
+reply key.
+=============
+*/
+static void test_reply_chat_rejects_empty_pattern_key(void)
+{
+	const char *path = "bot_chat_empty_reply_pattern_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[()] = 16\n"
+		"{\n"
+		"\"bad\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	assert(!BotLoadChatFile(chat, path, "empty_reply_pattern"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+		"couldn't load chat empty_reply_pattern from "
+		"bot_chat_empty_reply_pattern_test.c\n")
+		!= NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_rejects_empty_alternative_between_variables
+
+Pins Q3's empty-string match-piece guard: an optional string still leaves the
+following variable adjacent to the previous variable.
+=============
+*/
+static void test_reply_chat_rejects_empty_alternative_between_variables(void)
+{
+	const char *path = "bot_chat_empty_alt_adjacent_reply_key_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[(0, \"\" | \" and \", 1)] = 9411\n"
+		"{\n"
+		"\"bad\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	assert(!BotLoadChatFile(chat, path, "empty_alt_adjacent_reply_key"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+		"couldn't load chat empty_alt_adjacent_reply_key from "
+		"bot_chat_empty_alt_adjacent_reply_key_test.c\n")
 		!= NULL);
 
 	BotFreeChatState(chat);
@@ -1846,6 +2083,7 @@ static void test_reply_chat_expands_named_random_table(void)
 	bot_chatstate_t *chat = BotAllocChatState();
 	assert(chat != NULL);
 	assert(BotLoadChatFile(chat, path, "random_table"));
+	assert(BotChat_HasReplyTemplate(chat, 9300, "Pick alpha"));
 	drain_console(chat);
 	assert(BotReplyChat(chat, "unit", 9300));
 
@@ -1895,6 +2133,58 @@ static void test_reply_chat_expands_nested_random_table(void)
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 9301);
 	assert(strcmp(buffer, "Nested omega") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_initial_chat_weighted_synonym_runs_each_expansion_pass
+
+Pins Q3 BotExpandChatMessage timing: weighted synonyms run at the end of each
+random expansion pass, so a synonym result can feed the next random pass.
+=============
+*/
+static void test_initial_chat_weighted_synonym_runs_each_expansion_pass(void)
+{
+	const char *path = "bot_chat_synonym_expansion_pass_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"CONTEXT_NORMAL\n"
+		"{\n"
+		"[\n"
+		"(\"\\\\rinner\\\\\", 10000000000.0),\n"
+		"(\"bridge\", 1.0)\n"
+		"]\n"
+		"}\n"
+		"outer = {\"bridge\"}\n"
+		"inner = {\"omega\"}\n"
+		"chat \"synonym_expansion\"\n"
+		"{\n"
+		"type \"line\"\n"
+		"{\n"
+		"outer;\n"
+		"}\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "synonym_expansion"));
+
+	drain_console(chat);
+	assert(BotInitialChat(chat, "line", 1, NULL));
+
+	int type = -1;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 1);
+	assert(strcmp(buffer, "omega") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -1996,6 +2286,85 @@ static void test_reply_chat_captures_key_variable(void)
 
 /*
 =============
+test_reply_chat_captures_key_variable_after_string_alternative
+
+Pins Q3 BotLoadMatchPieces string alternatives inside parenthesized reply keys.
+=============
+*/
+static void test_reply_chat_captures_key_variable_after_string_alternative(void)
+{
+	const char *path = "bot_chat_reply_alternative_capture_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[(\"alert \" | \"warning \", 0)] = 9410\n"
+		"{\n"
+		"\"handled \", 0;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "reply_alternative_capture"));
+	drain_console(chat);
+	assert(!BotReplyChat(chat, "prefix warning Bravo", 9410));
+	assert(BotReplyChat(chat, "WARNING Bravo", 9410));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9410);
+	assert(strcmp(buffer, "handled Bravo") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_empty_string_piece_closes_variable_capture
+
+Ensures a single empty string match piece behaves like Q3's real string piece
+instead of being dropped and turning the previous variable into a catch-all.
+=============
+*/
+static void test_reply_chat_empty_string_piece_closes_variable_capture(void)
+{
+	const char *path = "bot_chat_reply_empty_string_piece_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[(0, \"\")] = 9412\n"
+		"{\n"
+		"\"empty\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "reply_empty_string_piece"));
+	drain_console(chat);
+	assert(!BotReplyChat(chat, "not empty", 9412));
+	assert(BotReplyChat(chat, "", 9412));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9412);
+	assert(strcmp(buffer, "empty") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
 test_reply_chat_split_vcontext_canonicalizes_variables
 
 Mirrors Q3 BotReplyChat's separate vcontext pass, where captured reply
@@ -2063,6 +2432,80 @@ static void test_reply_chat_split_vcontext_canonicalizes_variables(void)
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 0);
 	assert(strcmp(buffer, "you like Quad Damage") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_split_vcontext_uses_q3_word_separators
+
+Pins Q3 BotReplaceReplySynonyms word boundaries: only spaces, periods, commas,
+and exclamation marks terminate synonym words.
+=============
+*/
+static void test_reply_chat_split_vcontext_uses_q3_word_separators(void)
+{
+	const char *path = "bot_chat_reply_vcontext_separator_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"CONTEXT_REPLY\n"
+		"{\n"
+		"[\n"
+		"(\"Quad Damage\", 1.0),\n"
+		"(\"quad\", 1.0)\n"
+		"]\n"
+		"}\n"
+		"[(\"i like \", 0)] = 0\n"
+		"{\n"
+		"\"you like \", 0;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "reply_vcontext_separator"));
+
+	drain_console(chat);
+	assert(BotReplyChatWithContexts(chat,
+		"I like quad?",
+		0,
+		16,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL));
+	int type = -1;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 0);
+	assert(strcmp(buffer, "you like quad?") == 0);
+
+	drain_console(chat);
+	assert(BotReplyChatWithContexts(chat,
+		"I like quad!",
+		0,
+		16,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL));
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 0);
+	assert(strcmp(buffer, "you like Quad Damage!") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2503,6 +2946,10 @@ static void test_setup_chat_ai_exports_match_and_synonym_utilities(void)
 	BotReplaceSynonyms(synonym_text, CONTEXT_NORMAL_TEST);
 	assert(strcmp(synonym_text, "I can not stay") == 0);
 
+	char synonym_question[256] = "I can't?";
+	BotReplaceSynonyms(synonym_question, CONTEXT_NORMAL_TEST);
+	assert(strcmp(synonym_question, "I can't?") == 0);
+
 	bot_match_t match;
 	assert(BotFindMatch("Alice was railed by Bob\n",
 		&match,
@@ -2524,6 +2971,72 @@ static void test_setup_chat_ai_exports_match_and_synonym_utilities(void)
 
 	BotShutdownChatAI();
 	configure_chat_libvars(0.0f, 0.0f);
+}
+
+/*
+=============
+test_setup_chat_ai_match_string_alternatives_capture_variables
+
+Exercises setup-loaded match.c string alternatives through BotFindMatch.
+=============
+*/
+static void test_setup_chat_ai_match_string_alternatives_capture_variables(void)
+{
+	enum
+	{
+		MTCONTEXT_CLIENTOBITUARY_TEST = 1,
+		MSG_DEATH_TEST = 1,
+		ST_DEATH_TEST = 12
+	};
+
+	const char *path = "bot_chat_match_alternative_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"1\n"
+		"{\n"
+		"0, \" was railed by \" | \" got fried by \", 1 = (1, 12);\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 1.0f);
+	BotLib_TestSetLibVarString("synfile", "definitely_missing_syn.c");
+	BotLib_TestSetLibVarString("rndfile", "definitely_missing_rnd.c");
+	BotLib_TestSetLibVarString("matchfile", path);
+	assert(BotSetupChatAI() == 0);
+
+	bot_match_t match;
+	assert(BotFindMatch("Alice got fried by Bob\n",
+		&match,
+		MTCONTEXT_CLIENTOBITUARY_TEST));
+	assert(match.type == MSG_DEATH_TEST);
+	assert(match.subtype == ST_DEATH_TEST);
+
+	char variable[256];
+	BotMatchVariable(&match, 0, variable, sizeof(variable));
+	assert(strcmp(variable, "Alice") == 0);
+	BotMatchVariable(&match, 1, variable, sizeof(variable));
+	assert(strcmp(variable, "Bob") == 0);
+
+	assert(BotFindMatch("Alice was railed by Bob\n",
+		&match,
+		MTCONTEXT_CLIENTOBITUARY_TEST));
+	BotMatchVariable(&match, 0, variable, sizeof(variable));
+	assert(strcmp(variable, "Alice") == 0);
+	BotMatchVariable(&match, 1, variable, sizeof(variable));
+	assert(strcmp(variable, "Bob") == 0);
+
+	assert(!BotFindMatch("Alice got frozen by Bob\n",
+		&match,
+		MTCONTEXT_CLIENTOBITUARY_TEST));
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	remove(path);
 }
 
 /*
@@ -2684,7 +3197,9 @@ int main(void) {
 	test_pending_chat_handoff_removes_tildes();
 	test_initial_chat_recent_lines_rotate();
 	test_initial_chat_rejects_float_message_component();
+	test_initial_chat_rejects_missing_message_component_comma();
 	test_reply_chat_rejects_float_message_component();
+	test_reply_chat_rejects_missing_message_component_comma();
 	test_reply_chat_rejects_float_pattern_variable();
 	test_match_template_rejects_float_variable();
 	test_match_template_rejects_float_message_type();
@@ -2692,8 +3207,12 @@ int main(void) {
 	test_match_template_rejects_float_context_label();
 	test_match_template_rejects_out_of_range_variable();
 	test_match_template_rejects_adjacent_variables();
+	test_match_template_rejects_missing_piece_comma();
 	test_reply_chat_rejects_out_of_range_pattern_variable();
 	test_reply_chat_rejects_adjacent_pattern_variables();
+	test_reply_chat_rejects_missing_pattern_piece_comma();
+	test_reply_chat_rejects_empty_pattern_key();
+	test_reply_chat_rejects_empty_alternative_between_variables();
 	test_reply_chat_rejects_empty_key_list();
 	test_reply_chat_accepts_missing_key_commas();
 	test_reply_chat_rejects_unquoted_plain_key();
@@ -2711,9 +3230,13 @@ int main(void) {
 	test_reply_chat_known_random_string_context_enqueues_message();
 	test_reply_chat_expands_named_random_table();
 	test_reply_chat_expands_nested_random_table();
+	test_initial_chat_weighted_synonym_runs_each_expansion_pass();
 	test_initial_chat_applies_weighted_synonym_context();
 	test_reply_chat_captures_key_variable();
+	test_reply_chat_captures_key_variable_after_string_alternative();
+	test_reply_chat_empty_string_piece_closes_variable_capture();
 	test_reply_chat_split_vcontext_canonicalizes_variables();
+	test_reply_chat_split_vcontext_uses_q3_word_separators();
 	test_reply_chat_split_context_accepts_fixed_var_slots();
 	test_reply_chat_test_libvar_dumps_responses_without_dispatch();
 	test_reply_chat_captures_match_template_variables();
@@ -2731,6 +3254,7 @@ int main(void) {
 	test_setup_chat_ai_skips_reply_when_nochat_enabled();
 	test_setup_chat_ai_supplies_shared_reply_fallback();
 	test_setup_chat_ai_exports_match_and_synonym_utilities();
+	test_setup_chat_ai_match_string_alternatives_capture_variables();
 	test_enter_chat_sends_command_via_bridge();
 	test_enter_chat_team_command_uses_say_team();
 	test_enter_chat_tell_uses_owner_client_and_target();
