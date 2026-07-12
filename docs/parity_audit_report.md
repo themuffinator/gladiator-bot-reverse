@@ -15,12 +15,12 @@ Based on the detailed analysis of the parity matrix:
 | Move      | 12          | 0         | 0       | 12    | 100.0%   |
 | Weapon    | 5           | 0         | 0       | 5     | 100.0%   |
 | Character | 4           | 0         | 0       | 4     | 100.0%   |
-| Chat      | 11          | 3         | 0       | 14    | 78.6%    |
-| **Total** | **63**      | **3**     | **0**   | **66**| **95.5%**|
+| Chat      | 12          | 2         | 0       | 14    | 85.7%    |
+| **Total** | **64**      | **2**     | **0**   | **66**| **97.0%**|
 
 *Note: "Divergent" items are considered not fully implemented for the purpose of strict parity calculation.*
 
-**Overall Tracked Parity: 95.5%**
+**Overall Tracked Parity: 97.0%**
 
 ## Remediation Tasks
 
@@ -37,6 +37,7 @@ the global setup/shutdown gap. The chat work now covers sibling
 constructor passes,
 match-template registration,
 reply-key parsing, captured variable substitution, reply construction, and
-HLIL-backed symbol staging. Remaining chat gaps are stricter match parser
-decomposition, the separate Q3 reply `mcontext`/`vcontext` synonym split, and
-retail reply priority/time scoring.
+HLIL-backed symbol staging. Match metadata now enforces the retail
+`(type, subtype);` grammar, including rejection of missing subtypes and extra
+trailing tokens. Remaining chat gaps are exact constructor behavior and retail
+reply selection/scoring parity.

@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,10 @@
 #include "q2bridge/bridge_config.h"
 
 #define MAX_REACHABILITYPASSAREAS 32
+#define AAS_MAX_REACHABILITYSIZE 65536
+#define INSIDEUNITS 2.0f
+#define INSIDEUNITS_WALKEND 5.0f
+#define INSIDEUNITS_WALKSTART 0.1f
 
 typedef struct
 {
@@ -20,6 +25,13 @@ typedef struct
 } aas_reachability_frame_state_t;
 
 static aas_reachability_frame_state_t g_reach_frame_state;
+static aas_lreachability_t *reachabilityheap;
+static aas_lreachability_t *nextreachability;
+static aas_lreachability_t **areareachability;
+static int numlreachabilities;
+static int reachabilityareacount;
+static int reach_swim;
+static int reach_equalfloor;
 
 /*
 =============
@@ -45,6 +57,192 @@ Return the Euclidean length of a vector.
 static float AAS_VectorLength(const vec3_t vector)
 {
 	return sqrtf(DotProduct(vector, vector));
+}
+
+/*
+=============
+AAS_VectorNormalize
+
+Normalize a reachability geometry vector and return its original length.
+=============
+*/
+static float AAS_VectorNormalize(vec3_t vector)
+{
+	float length = AAS_VectorLength(vector);
+	if (length > 0.000001f)
+	{
+		VectorScale(vector, 1.0f / length, vector);
+	}
+	else
+	{
+		VectorClear(vector);
+	}
+
+	return length;
+}
+
+/*
+=============
+AAS_ReachPositiveLibVarValue
+
+Read a reachability physics variable with its retail fallback.
+=============
+*/
+static float AAS_ReachPositiveLibVarValue(const libvar_t *var, float fallback)
+{
+	if (var == NULL || var->value <= 0.0f)
+	{
+		return fallback;
+	}
+
+	return var->value;
+}
+
+/*
+=============
+AAS_ResetReachabilityGenerator
+
+Release the temporary retail reachability heap and per-area link heads.
+=============
+*/
+static void AAS_ResetReachabilityGenerator(void)
+{
+	free(reachabilityheap);
+	reachabilityheap = NULL;
+	nextreachability = NULL;
+	free(areareachability);
+	areareachability = NULL;
+	numlreachabilities = 0;
+	reachabilityareacount = 0;
+	reach_swim = 0;
+	reach_equalfloor = 0;
+}
+
+/*
+=============
+AAS_SetupReachabilityHeap
+
+Allocate and chain the retail 65,536-entry temporary reachability heap.
+=============
+*/
+void AAS_SetupReachabilityHeap(void)
+{
+	AAS_ResetReachabilityGenerator();
+	reachabilityheap = calloc(AAS_MAX_REACHABILITYSIZE, sizeof(*reachabilityheap));
+	if (reachabilityheap == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "AAS_SetupReachabilityHeap: out of memory\n");
+		return;
+	}
+
+	for (int index = 0; index < AAS_MAX_REACHABILITYSIZE - 1; ++index)
+	{
+		reachabilityheap[index].next = &reachabilityheap[index + 1];
+	}
+	reachabilityheap[AAS_MAX_REACHABILITYSIZE - 1].next = NULL;
+	nextreachability = reachabilityheap;
+}
+
+/*
+=============
+AAS_ShutDownReachabilityHeap
+
+Release all temporary reachability-generation storage.
+=============
+*/
+void AAS_ShutDownReachabilityHeap(void)
+{
+	AAS_ResetReachabilityGenerator();
+}
+
+/*
+=============
+AAS_AllocReachability
+
+Pop one link from the retail temporary reachability free list.
+=============
+*/
+aas_lreachability_t *AAS_AllocReachability(void)
+{
+	aas_lreachability_t *reachability = nextreachability;
+	if (reachability == NULL)
+	{
+		return NULL;
+	}
+
+	if (reachability->next == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "AAS_MAX_REACHABILITYSIZE\n");
+	}
+
+	nextreachability = reachability->next;
+	memset(reachability, 0, sizeof(*reachability));
+	numlreachabilities++;
+	return reachability;
+}
+
+/*
+=============
+AAS_FreeReachability
+
+Return one temporary reachability link to the free list.
+=============
+*/
+void AAS_FreeReachability(aas_lreachability_t *reachability)
+{
+	if (reachability == NULL || reachabilityheap == NULL ||
+		reachability < reachabilityheap ||
+		reachability >= reachabilityheap + AAS_MAX_REACHABILITYSIZE)
+	{
+		return;
+	}
+
+	memset(reachability, 0, sizeof(*reachability));
+	reachability->next = nextreachability;
+	nextreachability = reachability;
+	if (numlreachabilities > 0)
+	{
+		numlreachabilities--;
+	}
+}
+
+/*
+=============
+AAS_InitReachability
+
+Begin forced reachability generation with empty per-area temporary lists.
+=============
+*/
+void AAS_InitReachability(void)
+{
+	AAS_ResetReachabilityGenerator();
+	if (!aasworld.loaded || aasworld.areasettings == NULL ||
+		aasworld.numAreaSettings <= 0)
+	{
+		return;
+	}
+
+	libvar_t *force_reachability = Bridge_ForceReachability();
+	if (aasworld.numReachability > 0 &&
+		(force_reachability == NULL || force_reachability->value == 0.0f))
+	{
+		return;
+	}
+
+	AAS_SetupReachabilityHeap();
+	if (reachabilityheap == NULL)
+	{
+		return;
+	}
+
+	reachabilityareacount = aasworld.numAreaSettings;
+	areareachability = calloc((size_t)reachabilityareacount,
+		sizeof(*areareachability));
+	if (areareachability == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "AAS_InitReachability: out of memory\n");
+		AAS_ResetReachabilityGenerator();
+	}
 }
 
 static void AAS_FreeReverseReachability(void)
@@ -219,6 +417,52 @@ int AAS_AreaSwim(int areanum)
 
 /*
 =============
+AAS_AreaLiquid
+
+Return true when an area contains a swimmable liquid.
+=============
+*/
+int AAS_AreaLiquid(int areanum)
+{
+	return AAS_AreaSwim(areanum);
+}
+
+/*
+=============
+AAS_AreaLava
+
+Return the retail lava contents flag for an area.
+=============
+*/
+int AAS_AreaLava(int areanum)
+{
+	if (aasworld.areasettings == NULL || areanum <= 0 || areanum >= aasworld.numAreaSettings)
+	{
+		return 0;
+	}
+
+	return aasworld.areasettings[areanum].contents & AAS_AREACONTENTS_LAVA;
+}
+
+/*
+=============
+AAS_AreaSlime
+
+Return the retail slime contents flag for an area.
+=============
+*/
+int AAS_AreaSlime(int areanum)
+{
+	if (aasworld.areasettings == NULL || areanum <= 0 || areanum >= aasworld.numAreaSettings)
+	{
+		return 0;
+	}
+
+	return aasworld.areasettings[areanum].contents & AAS_AREACONTENTS_SLIME;
+}
+
+/*
+=============
 AAS_AreaGrounded
 
 Return true when an area is flagged as grounded.
@@ -261,6 +505,23 @@ int AAS_AreaJumpPad(int areanum)
 	}
 
 	return (aasworld.areasettings[areanum].contents & AAS_AREACONTENTS_JUMPPAD) != 0;
+}
+
+/*
+=============
+AAS_AreaTeleporter
+
+Return the retail teleporter contents flag for an area.
+=============
+*/
+int AAS_AreaTeleporter(int areanum)
+{
+	if (aasworld.areasettings == NULL || areanum <= 0 || areanum >= aasworld.numAreaSettings)
+	{
+		return 0;
+	}
+
+	return aasworld.areasettings[areanum].contents & AAS_AREACONTENTS_TELEPORTER;
 }
 
 /*
@@ -612,6 +873,696 @@ float AAS_FaceArea(const aas_face_t *face)
 	}
 
 	return total;
+}
+
+/*
+=============
+AAS_AreaVolume
+
+Return the convex area volume by forming tetrahedrons from one hull corner.
+=============
+*/
+float AAS_AreaVolume(int areanum)
+{
+	if (aasworld.areas == NULL || aasworld.faceIndex == NULL ||
+		aasworld.faces == NULL || aasworld.edgeIndex == NULL ||
+		aasworld.edges == NULL || aasworld.vertexes == NULL ||
+		aasworld.planes == NULL || areanum <= 0 || areanum > aasworld.numAreas)
+	{
+		return 0.0f;
+	}
+
+	const aas_area_t *area = &aasworld.areas[areanum];
+	if (area->numfaces <= 0 || area->firstface < 0 ||
+		area->firstface + area->numfaces > aasworld.faceIndexSize)
+	{
+		return 0.0f;
+	}
+
+	int firstfacenum = abs(aasworld.faceIndex[area->firstface]);
+	if (firstfacenum < 0 || firstfacenum >= aasworld.numFaces)
+	{
+		return 0.0f;
+	}
+
+	const aas_face_t *firstface = &aasworld.faces[firstfacenum];
+	if (firstface->numedges <= 0 || firstface->firstedge < 0 ||
+		firstface->firstedge >= aasworld.edgeIndexSize)
+	{
+		return 0.0f;
+	}
+
+	int firstedgenum = abs(aasworld.edgeIndex[firstface->firstedge]);
+	if (firstedgenum < 0 || firstedgenum >= aasworld.numEdges)
+	{
+		return 0.0f;
+	}
+
+	int cornerindex = aasworld.edges[firstedgenum].v[0];
+	if (cornerindex < 0 || cornerindex >= aasworld.numVertexes)
+	{
+		return 0.0f;
+	}
+
+	const vec_t *corner = aasworld.vertexes[cornerindex];
+	float volume = 0.0f;
+	for (int index = 0; index < area->numfaces; ++index)
+	{
+		int facenum = abs(aasworld.faceIndex[area->firstface + index]);
+		if (facenum < 0 || facenum >= aasworld.numFaces)
+		{
+			continue;
+		}
+
+		const aas_face_t *face = &aasworld.faces[facenum];
+		int side = face->backarea != areanum;
+		int planenum = face->planenum ^ side;
+		if (planenum < 0 || planenum >= aasworld.numPlanes)
+		{
+			continue;
+		}
+
+		const aas_plane_t *plane = &aasworld.planes[planenum];
+		float distance = -(DotProduct(corner, plane->normal) - plane->dist);
+		volume += distance * AAS_FaceArea(face);
+	}
+
+	return volume / 3.0f;
+}
+
+/*
+=============
+AAS_FaceCenter
+
+Average both endpoints of every face edge to recover the face center.
+=============
+*/
+void AAS_FaceCenter(int facenum, vec3_t center)
+{
+	if (center == NULL)
+	{
+		return;
+	}
+
+	VectorClear(center);
+	if (aasworld.faces == NULL || aasworld.edgeIndex == NULL ||
+		aasworld.edges == NULL || aasworld.vertexes == NULL ||
+		facenum < 0 || facenum >= aasworld.numFaces)
+	{
+		return;
+	}
+
+	const aas_face_t *face = &aasworld.faces[facenum];
+	if (face->numedges <= 0 || face->firstedge < 0 ||
+		face->firstedge + face->numedges > aasworld.edgeIndexSize)
+	{
+		return;
+	}
+
+	for (int index = 0; index < face->numedges; ++index)
+	{
+		int edgenum = abs(aasworld.edgeIndex[face->firstedge + index]);
+		if (edgenum < 0 || edgenum >= aasworld.numEdges)
+		{
+			VectorClear(center);
+			return;
+		}
+
+		const aas_edge_t *edge = &aasworld.edges[edgenum];
+		if (edge->v[0] < 0 || edge->v[0] >= aasworld.numVertexes ||
+			edge->v[1] < 0 || edge->v[1] >= aasworld.numVertexes)
+		{
+			VectorClear(center);
+			return;
+		}
+
+		VectorAdd(center, aasworld.vertexes[edge->v[0]], center);
+		VectorAdd(center, aasworld.vertexes[edge->v[1]], center);
+	}
+
+	VectorScale(center, 0.5f / (float)face->numedges, center);
+}
+
+/*
+=============
+AAS_BestReachableLinkArea
+
+Choose the first grounded or swimming linked area, then the first valid area.
+=============
+*/
+int AAS_BestReachableLinkArea(aas_link_t *areas)
+{
+	for (aas_link_t *link = areas; link != NULL; link = link->next_area)
+	{
+		if (AAS_AreaGrounded(link->areanum) || AAS_AreaSwim(link->areanum))
+		{
+			return link->areanum;
+		}
+	}
+
+	for (aas_link_t *link = areas; link != NULL; link = link->next_area)
+	{
+		if (link->areanum != 0)
+		{
+			return link->areanum;
+		}
+	}
+
+	return 0;
+}
+
+/*
+=============
+AAS_FallDamageDistance
+
+Return the maximum whole-unit fall distance before the retail damage threshold.
+=============
+*/
+int AAS_FallDamageDistance(void)
+{
+	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
+	float maxzvelocity = sqrtf(30.0f * 10000.0f);
+	float time = maxzvelocity / gravity;
+	return (int)(0.5f * gravity * time * time);
+}
+
+/*
+=============
+AAS_FallDelta
+
+Convert a fall distance into the retail squared-velocity damage delta.
+=============
+*/
+float AAS_FallDelta(float distance)
+{
+	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
+	float time = sqrtf(fabsf(distance) * 2.0f / gravity);
+	float delta = time * gravity;
+	return delta * delta * 0.0001f;
+}
+
+/*
+=============
+AAS_MaxJumpHeight
+
+Return the ballistic apex height for a vertical jump velocity.
+=============
+*/
+float AAS_MaxJumpHeight(float phys_jumpvel)
+{
+	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
+	float time = phys_jumpvel / gravity;
+	return 0.5f * gravity * time * time;
+}
+
+/*
+=============
+AAS_MaxJumpDistance
+
+Return the maximum horizontal distance across the configured jump-fall height.
+=============
+*/
+float AAS_MaxJumpDistance(float phys_jumpvel)
+{
+	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
+	float maxvelocity = AAS_ReachPositiveLibVarValue(Bridge_MaxVelocity(), 300.0f);
+	float maxjumpfallheight = LibVarGetValue("rs_maxjumpfallheight");
+	if (maxjumpfallheight <= 0.0f)
+	{
+		maxjumpfallheight = 450.0f;
+	}
+	float falltime = sqrtf(maxjumpfallheight / (0.5f * gravity));
+	return maxvelocity * (falltime + phys_jumpvel / gravity);
+}
+
+/*
+=============
+AAS_BarrierJumpTravelTime
+
+Return the Q3 decisecond estimate for completing a barrier jump.
+=============
+*/
+unsigned short AAS_BarrierJumpTravelTime(void)
+{
+	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
+	float jumpvelocity = AAS_ReachPositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
+	return (unsigned short)(jumpvelocity / (gravity * 0.1f));
+}
+
+/*
+=============
+AAS_ReachabilityExists
+
+Return true when an existing area reachability already targets the destination.
+=============
+*/
+qboolean AAS_ReachabilityExists(int area1num, int area2num)
+{
+	if (areareachability != NULL && area1num > 0 &&
+		area1num < reachabilityareacount)
+	{
+		for (aas_lreachability_t *reachability = areareachability[area1num];
+			reachability != NULL;
+			reachability = reachability->next)
+		{
+			if (reachability->areanum == area2num)
+			{
+				return qtrue;
+			}
+		}
+	}
+
+	if (aasworld.areasettings == NULL || aasworld.reachability == NULL ||
+		area1num <= 0 || area1num >= aasworld.numAreaSettings ||
+		area2num <= 0 || area2num >= aasworld.numAreaSettings)
+	{
+		return qfalse;
+	}
+
+	const aas_areasettings_t *settings = &aasworld.areasettings[area1num];
+	if (settings->firstreachablearea < 0 || settings->numreachableareas < 0 ||
+		settings->firstreachablearea + settings->numreachableareas > aasworld.numReachability)
+	{
+		return qfalse;
+	}
+
+	for (int index = 0; index < settings->numreachableareas; ++index)
+	{
+		const aas_reachability_t *reach =
+			&aasworld.reachability[settings->firstreachablearea + index];
+		if (reach->areanum == area2num)
+		{
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+=============
+AAS_NearbySolidOrGap
+
+Return true when the space beyond a reachability ends in solid or an
+unsupported non-ground, non-liquid area.
+=============
+*/
+int AAS_NearbySolidOrGap(const vec3_t start, const vec3_t end)
+{
+	vec3_t direction;
+	VectorSubtract(end, start, direction);
+	direction[2] = 0.0f;
+	AAS_VectorNormalize(direction);
+
+	vec3_t testpoint;
+	VectorMA(end, 48.0f, direction, testpoint);
+	int areanum = AAS_PointAreaNum(testpoint);
+	if (areanum == 0)
+	{
+		testpoint[2] += 16.0f;
+		areanum = AAS_PointAreaNum(testpoint);
+		if (areanum == 0)
+		{
+			return qtrue;
+		}
+	}
+
+	VectorMA(end, 64.0f, direction, testpoint);
+	areanum = AAS_PointAreaNum(testpoint);
+	if (areanum != 0 && !AAS_AreaSwim(areanum) && !AAS_AreaGrounded(areanum))
+	{
+		return qtrue;
+	}
+
+	return qfalse;
+}
+
+/*
+=============
+AAS_StoreReachability
+
+Flatten temporary per-area links into the one-based runtime reachability lump.
+=============
+*/
+void AAS_StoreReachability(void)
+{
+	if (areareachability == NULL || aasworld.areasettings == NULL ||
+		reachabilityareacount <= 0)
+	{
+		return;
+	}
+
+	size_t reachability_count = 0U;
+	for (int area = 0; area < reachabilityareacount; ++area)
+	{
+		for (aas_lreachability_t *link = areareachability[area];
+			link != NULL;
+			link = link->next)
+		{
+			reachability_count++;
+		}
+	}
+
+	if (reachability_count >= (size_t)INT_MAX)
+	{
+		BotLib_Print(PRT_FATAL, "AAS_StoreReachability: too many reachabilities\n");
+		return;
+	}
+
+	aas_reachability_t *stored = calloc(reachability_count + 1U, sizeof(*stored));
+	if (stored == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "AAS_StoreReachability: out of memory\n");
+		return;
+	}
+
+	int stored_index = 1;
+	for (int area = 0; area < aasworld.numAreaSettings; ++area)
+	{
+		aas_areasettings_t *settings = &aasworld.areasettings[area];
+		settings->firstreachablearea = stored_index;
+		settings->numreachableareas = 0;
+		if (area >= reachabilityareacount)
+		{
+			continue;
+		}
+
+		for (aas_lreachability_t *link = areareachability[area];
+			link != NULL;
+			link = link->next)
+		{
+			aas_reachability_t *reachability = &stored[stored_index++];
+			reachability->areanum = link->areanum;
+			reachability->facenum = link->facenum;
+			reachability->edgenum = link->edgenum;
+			VectorCopy(link->start, reachability->start);
+			VectorCopy(link->end, reachability->end);
+			reachability->traveltype = link->traveltype;
+			reachability->traveltime = link->traveltime;
+			settings->numreachableareas++;
+		}
+	}
+
+	AAS_ClearReachabilityData();
+	free(aasworld.reachability);
+	aasworld.reachability = stored;
+	aasworld.numReachability = stored_index;
+	if (AAS_PrepareReachability() != BLERR_NOERROR)
+	{
+		BotLib_Print(PRT_ERROR,
+			"AAS_StoreReachability: failed to prepare generated reachability\n");
+	}
+	AAS_InvalidateRouteCache();
+}
+
+/*
+=============
+AAS_Reachability_Swim
+
+Create a swim link across a shared liquid face between adjacent swim areas.
+=============
+*/
+int AAS_Reachability_Swim(int area1num, int area2num)
+{
+	if (areareachability == NULL || aasworld.areas == NULL ||
+		aasworld.areasettings == NULL || aasworld.faceIndex == NULL ||
+		aasworld.faces == NULL || aasworld.planes == NULL ||
+		area1num <= 0 || area2num <= 0 ||
+		area1num >= aasworld.numAreaSettings ||
+		area2num >= aasworld.numAreaSettings ||
+		area1num >= aasworld.numAreas || area2num >= aasworld.numAreas)
+	{
+		return qfalse;
+	}
+
+	if (!AAS_AreaSwim(area1num) || !AAS_AreaSwim(area2num) ||
+		(aasworld.areasettings[area2num].presencetype & PRESENCE_NORMAL) == 0)
+	{
+		return qfalse;
+	}
+
+	const aas_area_t *area1 = &aasworld.areas[area1num];
+	const aas_area_t *area2 = &aasworld.areas[area2num];
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		if (area1->mins[axis] > area2->maxs[axis] + 10.0f ||
+			area1->maxs[axis] < area2->mins[axis] - 10.0f)
+		{
+			return qfalse;
+		}
+	}
+
+	if (area1->firstface < 0 || area1->numfaces < 0 ||
+		area1->firstface + area1->numfaces > aasworld.faceIndexSize ||
+		area2->firstface < 0 || area2->numfaces < 0 ||
+		area2->firstface + area2->numfaces > aasworld.faceIndexSize)
+	{
+		return qfalse;
+	}
+
+	for (int index1 = 0; index1 < area1->numfaces; ++index1)
+	{
+		int signedface1 = aasworld.faceIndex[area1->firstface + index1];
+		int side1 = signedface1 < 0;
+		int face1num = abs(signedface1);
+		if (face1num < 0 || face1num >= aasworld.numFaces)
+		{
+			continue;
+		}
+
+		for (int index2 = 0; index2 < area2->numfaces; ++index2)
+		{
+			int face2num = abs(aasworld.faceIndex[area2->firstface + index2]);
+			if (face1num != face2num)
+			{
+				continue;
+			}
+
+			vec3_t start;
+			AAS_FaceCenter(face1num, start);
+			if ((AAS_PointContents(start) & MASK_WATER) == 0)
+			{
+				continue;
+			}
+
+			const aas_face_t *face = &aasworld.faces[face1num];
+			int planenum = face->planenum ^ side1;
+			if (planenum < 0 || planenum >= aasworld.numPlanes)
+			{
+				continue;
+			}
+
+			aas_lreachability_t *reachability = AAS_AllocReachability();
+			if (reachability == NULL)
+			{
+				return qfalse;
+			}
+			reachability->areanum = area2num;
+			reachability->facenum = face1num;
+			reachability->edgenum = 0;
+			VectorCopy(start, reachability->start);
+			VectorMA(reachability->start,
+				INSIDEUNITS,
+				aasworld.planes[planenum].normal,
+				reachability->end);
+			reachability->traveltype = TRAVEL_SWIM;
+			reachability->traveltime = 1;
+			if (AAS_AreaVolume(area2num) < 800.0f)
+			{
+				reachability->traveltime += 200;
+			}
+			reachability->next = areareachability[area1num];
+			areareachability[area1num] = reachability;
+			reach_swim++;
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+=============
+AAS_Reachability_EqualFloorHeight
+
+Create a walk link over the lowest, longest edge shared by two ground faces.
+=============
+*/
+int AAS_Reachability_EqualFloorHeight(int area1num, int area2num)
+{
+	if (areareachability == NULL || aasworld.areas == NULL ||
+		aasworld.areasettings == NULL || aasworld.faceIndex == NULL ||
+		aasworld.faces == NULL || aasworld.edgeIndex == NULL ||
+		aasworld.edges == NULL || aasworld.vertexes == NULL ||
+		aasworld.planes == NULL || area1num <= 0 || area2num <= 0 ||
+		area1num >= aasworld.numAreaSettings ||
+		area2num >= aasworld.numAreaSettings ||
+		area1num >= aasworld.numAreas || area2num >= aasworld.numAreas)
+	{
+		return qfalse;
+	}
+
+	if (!AAS_AreaGrounded(area1num) || !AAS_AreaGrounded(area2num))
+	{
+		return qfalse;
+	}
+
+	const aas_area_t *area1 = &aasworld.areas[area1num];
+	const aas_area_t *area2 = &aasworld.areas[area2num];
+	for (int axis = 0; axis < 2; ++axis)
+	{
+		if (area1->mins[axis] > area2->maxs[axis] + 10.0f ||
+			area1->maxs[axis] < area2->mins[axis] - 10.0f)
+		{
+			return qfalse;
+		}
+	}
+	if (area2->mins[2] > area1->maxs[2])
+	{
+		return qfalse;
+	}
+
+	if (area1->firstface < 0 || area1->numfaces < 0 ||
+		area1->firstface + area1->numfaces > aasworld.faceIndexSize ||
+		area2->firstface < 0 || area2->numfaces < 0 ||
+		area2->firstface + area2->numfaces > aasworld.faceIndexSize)
+	{
+		return qfalse;
+	}
+
+	float bestheight = 99999.0f;
+	float bestlength = 0.0f;
+	qboolean foundreach = qfalse;
+	aas_lreachability_t candidate;
+	memset(&candidate, 0, sizeof(candidate));
+	for (int index1 = 0; index1 < area1->numfaces; ++index1)
+	{
+		int face1num = abs(aasworld.faceIndex[area1->firstface + index1]);
+		if (face1num < 0 || face1num >= aasworld.numFaces)
+		{
+			continue;
+		}
+		const aas_face_t *face1 = &aasworld.faces[face1num];
+		if ((face1->faceflags & AAS_FACE_GROUND) == 0 ||
+			face1->firstedge < 0 || face1->numedges < 0 ||
+			face1->firstedge + face1->numedges > aasworld.edgeIndexSize)
+		{
+			continue;
+		}
+
+		for (int index2 = 0; index2 < area2->numfaces; ++index2)
+		{
+			int face2num = abs(aasworld.faceIndex[area2->firstface + index2]);
+			if (face2num < 0 || face2num >= aasworld.numFaces)
+			{
+				continue;
+			}
+			const aas_face_t *face2 = &aasworld.faces[face2num];
+			if ((face2->faceflags & AAS_FACE_GROUND) == 0 ||
+				face2->firstedge < 0 || face2->numedges < 0 ||
+				face2->firstedge + face2->numedges > aasworld.edgeIndexSize ||
+				face2->planenum < 0 || face2->planenum >= aasworld.numPlanes)
+			{
+				continue;
+			}
+
+			for (int edge1index = 0; edge1index < face1->numedges; ++edge1index)
+			{
+				int signededge = aasworld.edgeIndex[face1->firstedge + edge1index];
+				int edgenum = abs(signededge);
+				if (edgenum < 0 || edgenum >= aasworld.numEdges)
+				{
+					continue;
+				}
+				for (int edge2index = 0; edge2index < face2->numedges; ++edge2index)
+				{
+					if (edgenum != abs(aasworld.edgeIndex[face2->firstedge + edge2index]))
+					{
+						continue;
+					}
+
+					const aas_edge_t *edge = &aasworld.edges[edgenum];
+					if (edge->v[0] < 0 || edge->v[0] >= aasworld.numVertexes ||
+						edge->v[1] < 0 || edge->v[1] >= aasworld.numVertexes)
+					{
+						continue;
+					}
+
+					vec3_t direction;
+					VectorSubtract(aasworld.vertexes[edge->v[1]],
+						aasworld.vertexes[edge->v[0]],
+						direction);
+					float length = AAS_VectorLength(direction);
+					vec3_t start;
+					VectorAdd(aasworld.vertexes[edge->v[0]],
+						aasworld.vertexes[edge->v[1]],
+						start);
+					VectorScale(start, 0.5f, start);
+					vec3_t end;
+					VectorCopy(start, end);
+
+					int side = signededge < 0;
+					vec3_t edgevector;
+					VectorSubtract(aasworld.vertexes[edge->v[side]],
+						aasworld.vertexes[edge->v[!side]],
+						edgevector);
+					vec3_t normal;
+					AAS_CrossProduct(edgevector,
+						aasworld.planes[face2->planenum].normal,
+						normal);
+					if (AAS_VectorNormalize(normal) == 0.0f)
+					{
+						continue;
+					}
+
+					VectorMA(end, INSIDEUNITS_WALKEND, normal, end);
+					VectorMA(start, INSIDEUNITS_WALKSTART, normal, start);
+					end[2] += 0.125f;
+					float height = start[2];
+					if (height < bestheight ||
+						(height < bestheight + 1.0f && length > bestlength))
+					{
+						bestheight = height;
+						bestlength = length;
+						candidate.areanum = area2num;
+						candidate.facenum = 0;
+						candidate.edgenum = signededge;
+						VectorCopy(start, candidate.start);
+						VectorCopy(end, candidate.end);
+						candidate.traveltype = TRAVEL_WALK;
+						candidate.traveltime = 1;
+						foundreach = qtrue;
+					}
+				}
+			}
+		}
+	}
+
+	if (!foundreach)
+	{
+		return qfalse;
+	}
+
+	aas_lreachability_t *reachability = AAS_AllocReachability();
+	if (reachability == NULL)
+	{
+		return qfalse;
+	}
+	*reachability = candidate;
+	reachability->next = areareachability[area1num];
+	areareachability[area1num] = reachability;
+	if (!AAS_AreaCrouch(area1num) && AAS_AreaCrouch(area2num))
+	{
+		float startcrouch = LibVarGetValue("rs_startcrouch");
+		if (startcrouch <= 0.0f)
+		{
+			startcrouch = 300.0f;
+		}
+		reachability->traveltime =
+			(unsigned short)(reachability->traveltime + (unsigned short)startcrouch);
+	}
+	reach_equalfloor++;
+	return qtrue;
 }
 
 /*

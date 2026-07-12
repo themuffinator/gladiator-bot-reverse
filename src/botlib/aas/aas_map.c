@@ -4174,6 +4174,7 @@ static void AAS_ClearWorld(void)
     BotMove_MoverCatalogueReset();
     AAS_RouteFrameResetDiagnostics();
     AAS_ReachabilityFrameResetDiagnostics();
+    AAS_ShutDownReachabilityHeap();
     AAS_FreeAllRoutingCaches();
     AAS_ClearReachabilityData();
     free(aasworld.areacontentstravelflags);

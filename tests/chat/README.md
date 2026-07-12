@@ -65,6 +65,8 @@ when finished so resource leaks are easy to spot. The existing coverage includes
 | `test_match_template_rejects_float_variable` | Ensures `match.c` template variables reject non-integer numeric pieces during load. |
 | `test_match_template_rejects_float_message_type` | Ensures match-template message type metadata rejects float numeric tokens. |
 | `test_match_template_rejects_float_message_subtype` | Ensures match-template subtype metadata rejects float numeric tokens. |
+| `test_match_template_requires_message_subtype` | Ensures match-template metadata always supplies the retail comma-delimited subtype. |
+| `test_match_template_requires_metadata_closing_tokens` | Ensures match-template metadata closes with exactly `);` and rejects extra trailing tokens. |
 | `test_match_template_rejects_float_context_label` | Ensures numeric match context block labels remain integer-only. |
 | `test_match_template_rejects_out_of_range_variable` | Ensures `match.c` template variables reject indices outside the capture table. |
 | `test_match_template_rejects_adjacent_variables` | Ensures `match.c` template variables cannot appear adjacent without an intervening non-empty string. |

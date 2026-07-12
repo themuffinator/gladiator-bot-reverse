@@ -204,6 +204,9 @@ and id Software's GPL source.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L35770
   match pieces require commas before `=` or `)`. This is intentionally narrower
   than reply-key list parsing, where Q3 still accepts omitted commas between
   adjacent sibling keys.
+- Match-template metadata now follows the exact retail tail grammar: every
+  entry requires `(type, subtype);`. Missing subtypes and arbitrary tokens
+  between the subtype and semicolon are rejected instead of being skipped.
 - Synonym replacement now shares Q3's `StringContainsWord` separator set with
   plain reply-key matching. Space, period, comma, and exclamation mark terminate
   synonym words; punctuation such as `?`, `_`, and `-` remains part of the word

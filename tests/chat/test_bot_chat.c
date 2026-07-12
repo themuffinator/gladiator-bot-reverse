@@ -903,6 +903,86 @@ static void test_match_template_rejects_float_message_subtype(void)
 
 /*
 =============
+test_match_template_requires_message_subtype
+
+Pins the retail BotLoadMatchTemplates grammar, which always requires a comma
+and integer subtype after the message type.
+=============
+*/
+static void test_match_template_requires_message_subtype(void)
+{
+	const char *path = "bot_chat_missing_match_subtype_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"#include \"match.h\"\n"
+		"MTCONTEXT_CLIENTOBITUARY\n"
+		"{\n"
+		"\"hello\" = (MSG_DEATH);\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	assert(!BotLoadChatFile(chat, path, "missing_match_subtype"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+		"couldn't find chat missing_match_subtype in "
+		"bot_chat_missing_match_subtype_test.c\n")
+		!= NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_match_template_requires_metadata_closing_tokens
+
+Ensures BotLoadMatchTemplates rejects extra metadata tokens instead of scanning
+forward to the next semicolon.
+=============
+*/
+static void test_match_template_requires_metadata_closing_tokens(void)
+{
+	const char *path = "bot_chat_invalid_match_metadata_tail_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"#include \"match.h\"\n"
+		"MTCONTEXT_CLIENTOBITUARY\n"
+		"{\n"
+		"\"hello\" = (MSG_DEATH, ST_DEATH_RAILGUN, 7);\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestResetLastMessage();
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	assert(!BotLoadChatFile(chat, path, "invalid_match_metadata_tail"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+		"couldn't find chat invalid_match_metadata_tail in "
+		"bot_chat_invalid_match_metadata_tail_test.c\n")
+		!= NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
 test_match_template_rejects_float_context_label
 
 Ensures preprocessor-expanded numeric match context blocks remain integer-only
@@ -3204,6 +3284,8 @@ int main(void) {
 	test_match_template_rejects_float_variable();
 	test_match_template_rejects_float_message_type();
 	test_match_template_rejects_float_message_subtype();
+	test_match_template_requires_message_subtype();
+	test_match_template_requires_metadata_closing_tokens();
 	test_match_template_rejects_float_context_label();
 	test_match_template_rejects_out_of_range_variable();
 	test_match_template_rejects_adjacent_variables();

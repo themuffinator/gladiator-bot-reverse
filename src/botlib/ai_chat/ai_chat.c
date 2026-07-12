@@ -5452,31 +5452,26 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state,
 		BotChat_StringBuilderDestroy(&builder);
 		return 0;
 	}
-	unsigned long subtype = 0UL;
-	if (PS_CheckTokenString(script, ","))
+	if (!PS_ExpectTokenString(script, ","))
 	{
-		pc_token_t subtype_token;
-		if (!PS_ReadToken(script, &subtype_token))
-		{
-			BotChat_StringBuilderDestroy(&builder);
-			return 0;
-		}
-		if (subtype_token.type == TT_NUMBER
-			&& !BotChat_NumberTokenIsInteger(&subtype_token))
-		{
-			BotChat_StringBuilderDestroy(&builder);
-			return 0;
-		}
-		subtype = BotChat_MessageSubtypeFromToken(&subtype_token);
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
 	}
-	while (PS_ReadToken(script, &type_token))
+	pc_token_t subtype_token;
+	if (!PS_ReadToken(script, &subtype_token))
 	{
-		if (type_token.type == TT_PUNCTUATION && type_token.string[0] == ';')
-		{
-			break;
-		}
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
 	}
-	if (type_token.type != TT_PUNCTUATION || type_token.string[0] != ';')
+	if (subtype_token.type == TT_NUMBER
+		&& !BotChat_NumberTokenIsInteger(&subtype_token))
+	{
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
+	}
+	const unsigned long subtype = BotChat_MessageSubtypeFromToken(&subtype_token);
+	if (!PS_ExpectTokenString(script, ")")
+		|| !PS_ExpectTokenString(script, ";"))
 	{
 		BotChat_StringBuilderDestroy(&builder);
 		return 0;

@@ -103,6 +103,15 @@ The navigation harness under `tests/aas/` boots the botlib memory system and
 loads a miniature BSP/AAS pair to exercise `AAS_LoadMap` and
 `AAS_UpdateEntity`. To keep the tests deterministic:
 
+The executable also contains in-memory reachability geometry,
+area-classification, link-selection, duplicate-link, and jump/fall physics
+tests. Those cases do not require external assets and still exercise the
+generator prerequisite layer when the map fixtures below are unavailable.
+Synthetic shared-face and shared-edge worlds additionally validate temporary
+heap allocation, swim/equal-floor generation, crouch and small-area travel
+costs, one-based flattening with the retail index-zero sentinel, and derived
+reachability metadata rebuilding.
+
 - Download `test_nav.bsp` and `test_nav.aas` separately (for example, from the
   original Gladiator bot asset distribution) and place them under a directory
   referenced by `GLADIATOR_AAS_TEST_ASSET_DIR`. When the environment variable is

@@ -344,6 +344,18 @@ typedef struct aas_reachability_s
     unsigned short reserved; /* padding observed in the original binary */
 } aas_reachability_t;
 
+typedef struct aas_lreachability_s
+{
+	int areanum;
+	int facenum;
+	int edgenum;
+	vec3_t start;
+	vec3_t end;
+	int traveltype;
+	unsigned short traveltime;
+	struct aas_lreachability_s *next;
+} aas_lreachability_t;
+
 typedef struct aas_areasettings_s
 {
     int contents;
@@ -613,16 +625,38 @@ aas_face_t *AAS_AreaGroundFace(int areanum, const vec3_t point);
 aas_face_t *AAS_TraceEndFace(const aas_trace_t *trace);
 void AAS_FacePlane(int facenum, vec3_t normal, float *dist);
 float AAS_FaceArea(const aas_face_t *face);
+float AAS_AreaVolume(int areanum);
 float AAS_AreaGroundFaceArea(int areanum);
+void AAS_FaceCenter(int facenum, vec3_t center);
 void AAS_ClearReachabilityData(void);
 int AAS_PrepareReachability(void);
 int AAS_AreaReachability(int areanum);
+int AAS_BestReachableLinkArea(aas_link_t *areas);
 int AAS_AreaCrouch(int areanum);
 int AAS_AreaSwim(int areanum);
+int AAS_AreaLiquid(int areanum);
+int AAS_AreaLava(int areanum);
+int AAS_AreaSlime(int areanum);
 int AAS_AreaGrounded(int areanum);
 int AAS_AreaLadder(int areanum);
 int AAS_AreaJumpPad(int areanum);
+int AAS_AreaTeleporter(int areanum);
 int AAS_AreaClusterPortal(int areanum);
+int AAS_FallDamageDistance(void);
+float AAS_FallDelta(float distance);
+float AAS_MaxJumpHeight(float phys_jumpvel);
+float AAS_MaxJumpDistance(float phys_jumpvel);
+unsigned short AAS_BarrierJumpTravelTime(void);
+qboolean AAS_ReachabilityExists(int area1num, int area2num);
+int AAS_NearbySolidOrGap(const vec3_t start, const vec3_t end);
+void AAS_SetupReachabilityHeap(void);
+void AAS_ShutDownReachabilityHeap(void);
+aas_lreachability_t *AAS_AllocReachability(void);
+void AAS_FreeReachability(aas_lreachability_t *reachability);
+void AAS_InitReachability(void);
+void AAS_StoreReachability(void);
+int AAS_Reachability_Swim(int area1num, int area2num);
+int AAS_Reachability_EqualFloorHeight(int area1num, int area2num);
 void AAS_JumpReachRunStart(const aas_reachability_t *reach, vec3_t runstart);
 int AAS_HorizontalVelocityForJump(float zvel, const vec3_t start, const vec3_t end, float *velocity);
 int AAS_OnGround(const vec3_t origin, int presencetype, int passent);
