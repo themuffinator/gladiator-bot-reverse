@@ -267,7 +267,7 @@ static void RouteCache_Unlink(aas_routingcache_t *cache)
 
 static aas_routingcache_t *RouteCache_Alloc(int goalArea, int travelflags)
 {
-    size_t numAreas = (aasworld.numAreas > 0) ? (size_t)aasworld.numAreas + 1U : 1U;
+    size_t numAreas = (aasworld.numAreas > 0) ? (size_t)aasworld.numAreas : 1U;
 
     aas_routingcache_t *cache = (aas_routingcache_t *)calloc(1, sizeof(aas_routingcache_t));
     if (cache == NULL)
@@ -563,7 +563,7 @@ int AAS_EnableRoutingArea(int areanum, int enable)
 {
 	if (aasworld.areasettings == NULL ||
 	    areanum <= 0 ||
-	    areanum > aasworld.numAreas ||
+	    areanum >= aasworld.numAreas ||
 	    areanum >= aasworld.numAreaSettings)
 	{
 		BotLib_Print(PRT_ERROR, "AAS_EnableRoutingArea: areanum %d out of range\n", areanum);
@@ -692,7 +692,7 @@ static unsigned short AAS_LocalTravelTime(int areanum, const vec3_t origin, int 
         return 0;
     }
 
-    if (areanum <= 0 || areanum > aasworld.numAreas)
+    if (areanum <= 0 || areanum >= aasworld.numAreas)
     {
         return 0;
     }
@@ -725,13 +725,13 @@ static void AAS_PopulateRouteCache(aas_routingcache_t *cache)
 		return;
 	}
 
-    for (int area = 0; area <= numAreas; ++area)
+    for (int area = 0; area < numAreas; ++area)
     {
         cache->traveltimes[area] = (unsigned short)ROUTE_INVALID_TIME;
         cache->reachabilities[area] = -1;
     }
 
-    if (cache->goalArea <= 0 || cache->goalArea > numAreas)
+    if (cache->goalArea <= 0 || cache->goalArea >= numAreas)
     {
         return;
     }
@@ -747,7 +747,8 @@ static void AAS_PopulateRouteCache(aas_routingcache_t *cache)
         return;
     }
 
-    if (!Heap_Push(&heap, cache->goalArea, 0))
+	cache->traveltimes[cache->goalArea] = 0;
+	if (!Heap_Push(&heap, cache->goalArea, 0))
     {
         Heap_Destroy(&heap);
         return;
@@ -756,22 +757,20 @@ static void AAS_PopulateRouteCache(aas_routingcache_t *cache)
     while (heap.size > 0)
     {
         routing_heap_node_t node = Heap_Pop(&heap);
-        if (node.area <= 0 || node.area > numAreas)
+        if (node.area <= 0 || node.area >= numAreas)
         {
             continue;
         }
 
-        if (node.time >= cache->traveltimes[node.area])
+        if (node.time != cache->traveltimes[node.area])
         {
             continue;
         }
 
-        unsigned int clamped = node.time;
-        if (clamped > ROUTE_INVALID_TIME)
-        {
-            clamped = ROUTE_INVALID_TIME;
-        }
-        cache->traveltimes[node.area] = (unsigned short)clamped;
+		if (!AAS_AreaTravelAllowed(node.area, cache->travelflags))
+		{
+			continue;
+		}
 
         const aas_reversedreachability_t *reverse = &aasworld.reversedReachability[node.area];
         if (reverse->count <= 0 || reverse->reachIndexes == NULL)
@@ -788,15 +787,10 @@ static void AAS_PopulateRouteCache(aas_routingcache_t *cache)
             }
 
             int startArea = aasworld.reachabilityFromArea[reachIndex];
-            if (startArea <= 0 || startArea > numAreas)
+            if (startArea <= 0 || startArea >= numAreas)
             {
                 continue;
             }
-
-			if (!AAS_AreaTravelAllowed(startArea, cache->travelflags))
-			{
-				continue;
-			}
 
             int traveltype = aasworld.reachability[reachIndex].traveltype;
             int required = AAS_TravelFlagForType(traveltype);
@@ -805,15 +799,26 @@ static void AAS_PopulateRouteCache(aas_routingcache_t *cache)
                 continue;
             }
 
-            unsigned int cost = node.time + aasworld.reachability[reachIndex].traveltime;
+			unsigned int cost = node.time +
+				aasworld.reachability[reachIndex].traveltime;
+			int outgoingreach = cache->reachabilities[node.area];
+			if (outgoingreach > 0 && outgoingreach < aasworld.numReachability)
+			{
+				cost += AAS_AreaTravelTime(node.area,
+					aasworld.reachability[reachIndex].end,
+					aasworld.reachability[outgoingreach].start);
+			}
             if (cost >= cache->traveltimes[startArea])
             {
                 continue;
             }
 
-            if (Heap_Push(&heap, startArea, cost))
+			cache->traveltimes[startArea] = (unsigned short)cost;
+			cache->reachabilities[startArea] = reachIndex;
+			if (!Heap_Push(&heap, startArea, cost))
             {
-                cache->reachabilities[startArea] = reachIndex;
+				cache->traveltimes[startArea] = (unsigned short)ROUTE_INVALID_TIME;
+				cache->reachabilities[startArea] = -1;
             }
         }
     }
@@ -867,18 +872,18 @@ Validate source and goal areas for route queries.
 */
 static bool AAS_RouteValidAreaPair(int areanum, int goalareanum, const char *functionName)
 {
-	if (!aasworld.loaded)
+	if (!aasworld.initialized)
 	{
 		return false;
 	}
 
-	if (areanum <= 0 || areanum > aasworld.numAreas)
+	if (areanum <= 0 || areanum >= aasworld.numAreas)
 	{
 		BotLib_Print(PRT_ERROR, "%s: areanum %d out of range\n", functionName, areanum);
 		return false;
 	}
 
-	if (goalareanum <= 0 || goalareanum > aasworld.numAreas)
+	if (goalareanum <= 0 || goalareanum >= aasworld.numAreas)
 	{
 		BotLib_Print(PRT_ERROR, "%s: goalareanum %d out of range\n", functionName, goalareanum);
 		return false;
@@ -1255,7 +1260,7 @@ static void AAS_AlternativeRouteFloodCluster(int seedareanum,
 	    numclusterareas == NULL ||
 	    stack == NULL ||
 	    seedareanum <= 0 ||
-	    seedareanum > aasworld.numAreas ||
+	    seedareanum >= aasworld.numAreas ||
 	    stackcapacity <= 0)
 	{
 		return;
@@ -1301,7 +1306,7 @@ static void AAS_AlternativeRouteFloodCluster(int seedareanum,
 			const aas_face_t *face = &aasworld.faces[facenum];
 			int otherareanum = (face->frontarea == areanum) ? face->backarea : face->frontarea;
 			if (otherareanum <= 0 ||
-			    otherareanum > aasworld.numAreas ||
+			    otherareanum >= aasworld.numAreas ||
 			    !midrange[otherareanum].valid ||
 			    midrange[otherareanum].visited)
 			{
@@ -1340,7 +1345,7 @@ static int AAS_AlternativeRouteBestClusterArea(const int *clusterareas, int numc
 	for (int index = 0; index < numclusterareas; ++index)
 	{
 		int areanum = clusterareas[index];
-		if (areanum <= 0 || areanum > aasworld.numAreas)
+		if (areanum <= 0 || areanum >= aasworld.numAreas)
 		{
 			continue;
 		}
@@ -1354,7 +1359,7 @@ static int AAS_AlternativeRouteBestClusterArea(const int *clusterareas, int numc
 	for (int index = 0; index < numclusterareas; ++index)
 	{
 		int areanum = clusterareas[index];
-		if (areanum <= 0 || areanum > aasworld.numAreas)
+		if (areanum <= 0 || areanum >= aasworld.numAreas)
 		{
 			continue;
 		}
@@ -1425,7 +1430,7 @@ int AAS_AlternativeRouteGoals(vec3_t start,
 		return 0;
 	}
 
-	size_t numareas = (size_t)aasworld.numAreas + 1U;
+	size_t numareas = (size_t)aasworld.numAreas;
 	aas_altroute_midrange_t *midrange =
 	    (aas_altroute_midrange_t *)calloc(numareas, sizeof(aas_altroute_midrange_t));
 	int *clusterareas = (int *)calloc(numareas, sizeof(int));
@@ -1438,7 +1443,7 @@ int AAS_AlternativeRouteGoals(vec3_t start,
 		return 0;
 	}
 
-	for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
+	for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
 	{
 		if (aasworld.areasettings == NULL || areanum >= aasworld.numAreaSettings)
 		{
@@ -1484,7 +1489,7 @@ int AAS_AlternativeRouteGoals(vec3_t start,
 
 	int numaltroutegoals = 0;
 	for (int areanum = 1;
-	     areanum <= aasworld.numAreas && numaltroutegoals < maxaltroutegoals;
+	     areanum < aasworld.numAreas && numaltroutegoals < maxaltroutegoals;
 	     ++areanum)
 	{
 		if (!midrange[areanum].valid || midrange[areanum].visited)
@@ -1552,7 +1557,8 @@ static int AAS_RandomGoalStartArea(void)
 		return 1;
 	}
 
-	return 1 + (int)(((double)rand() / ((double)RAND_MAX + 1.0)) * (double)aasworld.numAreas);
+	return (int)(((double)rand() / ((double)RAND_MAX + 1.0)) *
+		(double)aasworld.numAreas);
 }
 
 /*
@@ -1568,7 +1574,7 @@ int AAS_RandomGoalArea(int areanum, int travelflags, int *goalareanum, vec3_t go
 	    goalorigin == NULL ||
 	    aasworld.areas == NULL ||
 	    areanum <= 0 ||
-	    areanum > aasworld.numAreas)
+	    areanum >= aasworld.numAreas)
 	{
 		return qfalse;
 	}
@@ -1581,7 +1587,7 @@ int AAS_RandomGoalArea(int areanum, int travelflags, int *goalareanum, vec3_t go
 	int candidate = AAS_RandomGoalStartArea();
 	for (int index = 0; index < aasworld.numAreas; ++index)
 	{
-		if (candidate <= 0 || candidate > aasworld.numAreas)
+		if (candidate <= 0 || candidate >= aasworld.numAreas)
 		{
 			candidate = 1;
 		}
@@ -1748,13 +1754,13 @@ int AAS_NearestHideArea(int srcnum,
 	    aasworld.areasettings == NULL ||
 	    aasworld.reachability == NULL ||
 	    areanum <= 0 ||
-	    areanum > aasworld.numAreas ||
+	    areanum >= aasworld.numAreas ||
 	    areanum >= aasworld.numAreaSettings)
 	{
 		return 0;
 	}
 
-	size_t numareas = (size_t)aasworld.numAreas + 1U;
+	size_t numareas = (size_t)aasworld.numAreas;
 	unsigned short *hidetraveltimes = (unsigned short *)calloc(numareas, sizeof(unsigned short));
 	vec3_t *entryorigins = (vec3_t *)calloc(numareas, sizeof(vec3_t));
 	if (hidetraveltimes == NULL || entryorigins == NULL)
@@ -1796,7 +1802,7 @@ int AAS_NearestHideArea(int srcnum,
 		routing_heap_node_t node = Heap_Pop(&heap);
 		int curareanum = node.area;
 		if (curareanum <= 0 ||
-		    curareanum > aasworld.numAreas ||
+		    curareanum >= aasworld.numAreas ||
 		    curareanum >= aasworld.numAreaSettings ||
 		    hidetraveltimes[curareanum] != (unsigned short)node.time)
 		{
@@ -1816,7 +1822,7 @@ int AAS_NearestHideArea(int srcnum,
 			const aas_reachability_t *reach = &aasworld.reachability[reachnum];
 			int nextareanum = reach->areanum;
 			if (nextareanum <= 0 ||
-			    nextareanum > aasworld.numAreas ||
+			    nextareanum >= aasworld.numAreas ||
 			    nextareanum >= aasworld.numAreaSettings ||
 			    nextareanum == enemyareanum)
 			{

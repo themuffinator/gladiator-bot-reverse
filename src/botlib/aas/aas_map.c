@@ -493,7 +493,7 @@ int AAS_PointAreaNum(const vec3_t point)
 		return (nodenum < 0) ? -nodenum : 0;
 	}
 
-	for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
+	for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
 	{
 		const aas_area_t *area = &aasworld.areas[areanum];
 		if (point[0] < area->mins[0] || point[0] > area->maxs[0])
@@ -3423,7 +3423,6 @@ static void AAS_FixupClusters(aas_cluster_t *clusters, int count)
 	{
 		aas_cluster_t *cluster = &clusters[index];
 		cluster->numareas = AAS_LittleLong(cluster->numareas);
-		cluster->numreachabilityareas = AAS_LittleLong(cluster->numreachabilityareas);
 		cluster->numportals = AAS_LittleLong(cluster->numportals);
 		cluster->firstportal = AAS_LittleLong(cluster->firstportal);
 	}
@@ -3791,7 +3790,279 @@ static long AAS_GetFileSize(FILE *file)
         return -1L;
     }
 
-    return size;
+	return size;
+}
+
+/*
+=============
+AAS_FreeBSPEntities
+
+Free a retail-style linked BSP entity and epair list.
+=============
+*/
+void AAS_FreeBSPEntities(aas_bspentity_t *entities)
+{
+	while (entities != NULL)
+	{
+		aas_bspentity_t *nextentity = entities->next;
+		aas_bspepair_t *epair = entities->epairs;
+		while (epair != NULL)
+		{
+			aas_bspepair_t *nextepair = epair->next;
+			free(epair->key);
+			free(epair->value);
+			free(epair);
+			epair = nextepair;
+		}
+		free(entities);
+		entities = nextentity;
+	}
+}
+
+/*
+=============
+AAS_ParseBSPEntities
+
+Parse a Quake II entity lump into the linked entity/epair representation used
+by the retail reachability generators.
+=============
+*/
+aas_bspentity_t *AAS_ParseBSPEntities(const char *data, size_t length)
+{
+	if (data == NULL || length == 0U)
+	{
+		return NULL;
+	}
+
+	const char *cursor = data;
+	const char *end = data + length;
+	aas_bspentity_t *entities = NULL;
+	aas_bspentity_t **nextentity = &entities;
+	while (cursor < end)
+	{
+		while (cursor < end && isspace((unsigned char)*cursor))
+		{
+			++cursor;
+		}
+		if (cursor >= end)
+		{
+			break;
+		}
+		if (*cursor != '{')
+		{
+			BotLib_Print(PRT_ERROR, "AAS_ParseBSPEntities: invalid %c\n", *cursor);
+			AAS_FreeBSPEntities(entities);
+			return NULL;
+		}
+		++cursor;
+
+		aas_bspentity_t *entity = (aas_bspentity_t *)calloc(1U, sizeof(*entity));
+		if (entity == NULL)
+		{
+			AAS_FreeBSPEntities(entities);
+			return NULL;
+		}
+		aas_bspepair_t **nextepair = &entity->epairs;
+		qboolean closed = qfalse;
+		while (cursor < end)
+		{
+			while (cursor < end && isspace((unsigned char)*cursor))
+			{
+				++cursor;
+			}
+			if (cursor >= end)
+			{
+				break;
+			}
+			if (*cursor == '}')
+			{
+				++cursor;
+				closed = qtrue;
+				break;
+			}
+
+			char *key = NULL;
+			char *value = NULL;
+			if (!AAS_ParseQuotedToken(&cursor, end, &key) ||
+				!AAS_ParseQuotedToken(&cursor, end, &value))
+			{
+				free(key);
+				free(value);
+				AAS_FreeBSPEntities(entity);
+				AAS_FreeBSPEntities(entities);
+				return NULL;
+			}
+
+			aas_bspepair_t *epair = (aas_bspepair_t *)calloc(1U, sizeof(*epair));
+			if (epair == NULL)
+			{
+				free(key);
+				free(value);
+				AAS_FreeBSPEntities(entity);
+				AAS_FreeBSPEntities(entities);
+				return NULL;
+			}
+			epair->key = key;
+			epair->value = value;
+			*nextepair = epair;
+			nextepair = &epair->next;
+		}
+
+		if (!closed)
+		{
+			BotLib_Print(PRT_ERROR, "AAS_ParseBSPEntities: missing }\n");
+			AAS_FreeBSPEntities(entity);
+			AAS_FreeBSPEntities(entities);
+			return NULL;
+		}
+		*nextentity = entity;
+		nextentity = &entity->next;
+	}
+	return entities;
+}
+
+/*
+=============
+AAS_ValueForBSPEpairKey
+
+Return the value for an exact BSP entity key, or NULL when absent.
+=============
+*/
+const char *AAS_ValueForBSPEpairKey(const aas_bspentity_t *entity, const char *key)
+{
+	if (entity == NULL || key == NULL)
+	{
+		return NULL;
+	}
+	for (const aas_bspepair_t *epair = entity->epairs;
+		epair != NULL;
+		epair = epair->next)
+	{
+		if (epair->key != NULL && strcmp(epair->key, key) == 0)
+		{
+			return epair->value;
+		}
+	}
+	return NULL;
+}
+
+/*
+=============
+AAS_VectorForBSPEpairKey
+
+Parse a three-component vector from a BSP entity epair.
+=============
+*/
+qboolean AAS_VectorForBSPEpairKey(const aas_bspentity_t *entity,
+	const char *key,
+	vec3_t value)
+{
+	if (value == NULL)
+	{
+		return qfalse;
+	}
+	VectorClear(value);
+	const char *text = AAS_ValueForBSPEpairKey(entity, key);
+	if (text == NULL)
+	{
+		return qfalse;
+	}
+	return sscanf(text, "%f %f %f", &value[0], &value[1], &value[2]) == 3;
+}
+
+/*
+=============
+AAS_FloatForBSPEpairKey
+
+Return a BSP epair floating-point value, defaulting to zero.
+=============
+*/
+float AAS_FloatForBSPEpairKey(const aas_bspentity_t *entity, const char *key)
+{
+	const char *text = AAS_ValueForBSPEpairKey(entity, key);
+	return text != NULL ? strtof(text, NULL) : 0.0f;
+}
+
+/*
+=============
+AAS_IntForBSPEpairKey
+
+Return a BSP epair integer value, defaulting to zero.
+=============
+*/
+int AAS_IntForBSPEpairKey(const aas_bspentity_t *entity, const char *key)
+{
+	const char *text = AAS_ValueForBSPEpairKey(entity, key);
+	return text != NULL ? (int)strtol(text, NULL, 10) : 0;
+}
+
+/*
+=============
+AAS_LoadBSPEntities
+
+Read and parse the current Quake II map's entity lump for generator passes.
+=============
+*/
+aas_bspentity_t *AAS_LoadBSPEntities(void)
+{
+	char bsppath[MAX_FILEPATH];
+	if (!AAS_BuildPath(bsppath, sizeof(bsppath), aasworld.mapName, ".bsp"))
+	{
+		return NULL;
+	}
+	FILE *file = fopen(bsppath, "rb");
+	if (file == NULL)
+	{
+		return NULL;
+	}
+
+	q2_bsp_header_t header;
+	if (fread(&header, sizeof(header), 1U, file) != 1U)
+	{
+		fclose(file);
+		return NULL;
+	}
+	header.ident = AAS_LittleLong(header.ident);
+	header.version = AAS_LittleLong(header.version);
+	for (int index = 0; index < Q2_BSP_LUMP_MAX; ++index)
+	{
+		header.lumps[index].offset = AAS_LittleLong(header.lumps[index].offset);
+		header.lumps[index].length = AAS_LittleLong(header.lumps[index].length);
+	}
+	if (header.ident != Q2_BSP_IDENT || header.version != Q2_BSP_VERSION)
+	{
+		fclose(file);
+		return NULL;
+	}
+
+	const q2_lump_t *lump = &header.lumps[Q2_BSP_LUMP_ENTITIES];
+	long filesize = AAS_GetFileSize(file);
+	if (lump->offset < 0 || lump->length <= 0 || filesize < 0 ||
+		(long long)lump->offset + (long long)lump->length > (long long)filesize ||
+		fseek(file, lump->offset, SEEK_SET) != 0)
+	{
+		fclose(file);
+		return NULL;
+	}
+
+	size_t length = (size_t)lump->length;
+	char *data = (char *)malloc(length + 1U);
+	if (data == NULL)
+	{
+		fclose(file);
+		return NULL;
+	}
+	if (fread(data, 1U, length, file) != length)
+	{
+		free(data);
+		fclose(file);
+		return NULL;
+	}
+	fclose(file);
+	data[length] = '\0';
+	aas_bspentity_t *entities = AAS_ParseBSPEntities(data, length);
+	free(data);
+	return entities;
 }
 
 static int AAS_ReadLump(FILE *file,
@@ -5018,6 +5289,186 @@ int AAS_LoadMap(const char *mapname,
     AAS_FrameSynchronise(0.0f);
     TranslateEntity_SetWorldLoaded(qtrue);
     return BLERR_NOERROR;
+}
+
+/*
+=============
+AAS_SwapAASFileData
+
+Swap every persisted AAS lump between host and little-endian representation.
+=============
+*/
+static void AAS_SwapAASFileData(void)
+{
+	AAS_FixupBBoxes(aasworld.bboxes, aasworld.numBBoxes);
+	AAS_FixupVertexes(aasworld.vertexes, aasworld.numVertexes);
+	AAS_FixupPlanes(aasworld.planes, aasworld.numPlanes);
+	AAS_FixupEdges(aasworld.edges, aasworld.numEdges);
+	AAS_FixupIntArray(aasworld.edgeIndex, aasworld.edgeIndexSize);
+	AAS_FixupFaces(aasworld.faces, aasworld.numFaces);
+	AAS_FixupIntArray(aasworld.faceIndex, aasworld.faceIndexSize);
+	AAS_FixupAreas(aasworld.areas, aasworld.numAreas);
+	AAS_FixupAreaSettings(aasworld.areasettings, aasworld.numAreaSettings);
+	AAS_FixupReachability(aasworld.reachability, aasworld.numReachability);
+	AAS_FixupNodes(aasworld.nodes, aasworld.numNodes);
+	AAS_FixupPortals(aasworld.portals, aasworld.numPortals);
+	AAS_FixupIntArray(aasworld.portalIndex, aasworld.portalIndexSize);
+	AAS_FixupClusters(aasworld.clusters, aasworld.numClusters);
+}
+
+/*
+=============
+AAS_WriteAASLump
+
+Append one retail AAS lump and record its little-endian offset and length.
+=============
+*/
+static int AAS_WriteAASLump(FILE *file,
+	q2_aas_header_t *header,
+	q2_aas_lump_id_t lumpnum,
+	const void *data,
+	size_t length)
+{
+	long offset = ftell(file);
+	if (offset < 0 || offset > INT32_MAX || length > INT32_MAX)
+	{
+		BotLib_Print(PRT_ERROR, "AAS_WriteAASLump: invalid lump bounds\n");
+		return qfalse;
+	}
+
+	header->lumps[lumpnum].offset = AAS_LittleLong((int32_t)offset);
+	header->lumps[lumpnum].length = AAS_LittleLong((int32_t)length);
+	if (length > 0U &&
+		(data == NULL || fwrite(data, length, 1U, file) != 1U))
+	{
+		BotLib_Print(PRT_ERROR,
+			"AAS_WriteAASLump: error writing lump %d\n",
+			(int)lumpnum);
+		return qfalse;
+	}
+	return qtrue;
+}
+
+/*
+=============
+AAS_WriteAASFile
+
+Write the 14 retail version-3 AAS lumps and then rewrite the completed header.
+=============
+*/
+int AAS_WriteAASFile(const char *filename)
+{
+	if (filename == NULL || *filename == '\0')
+	{
+		return qfalse;
+	}
+
+	BotLib_Print(PRT_MESSAGE, "writing %s\n", filename);
+	FILE *file = fopen(filename, "wb");
+	if (file == NULL)
+	{
+		BotLib_Print(PRT_ERROR, "error opening %s\n", filename);
+		return qfalse;
+	}
+
+	q2_aas_header_t header;
+	memset(&header, 0, sizeof(header));
+	header.ident = AAS_LittleLong(Q2_AAS_IDENT);
+	header.version = AAS_LittleLong(Q2_AAS_VERSION);
+	if (fwrite(&header, sizeof(header), 1U, file) != 1U)
+	{
+		fclose(file);
+		return qfalse;
+	}
+
+	AAS_SwapAASFileData();
+	int success =
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_BBOXES,
+			aasworld.bboxes,
+			(size_t)aasworld.numBBoxes * sizeof(aas_bbox_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_VERTEXES,
+			aasworld.vertexes,
+			(size_t)aasworld.numVertexes * sizeof(aas_vertex_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_PLANES,
+			aasworld.planes,
+			(size_t)aasworld.numPlanes * sizeof(aas_plane_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_EDGES,
+			aasworld.edges,
+			(size_t)aasworld.numEdges * sizeof(aas_edge_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_EDGEINDEX,
+			aasworld.edgeIndex,
+			(size_t)aasworld.edgeIndexSize * sizeof(int)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_FACES,
+			aasworld.faces,
+			(size_t)aasworld.numFaces * sizeof(aas_face_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_FACEINDEX,
+			aasworld.faceIndex,
+			(size_t)aasworld.faceIndexSize * sizeof(int)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_AREAS,
+			aasworld.areas,
+			(size_t)aasworld.numAreas * sizeof(aas_area_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_AREASETTINGS,
+			aasworld.areasettings,
+			(size_t)aasworld.numAreaSettings * sizeof(aas_areasettings_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_REACHABILITY,
+			aasworld.reachability,
+			(size_t)aasworld.numReachability * sizeof(aas_reachability_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_NODES,
+			aasworld.nodes,
+			(size_t)aasworld.numNodes * sizeof(aas_node_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_PORTALS,
+			aasworld.portals,
+			(size_t)aasworld.numPortals * sizeof(aas_portal_t)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_PORTALINDEX,
+			aasworld.portalIndex,
+			(size_t)aasworld.portalIndexSize * sizeof(int)) &&
+		AAS_WriteAASLump(file,
+			&header,
+			Q2_AAS_LUMP_CLUSTERS,
+			aasworld.clusters,
+			(size_t)aasworld.numClusters * sizeof(aas_cluster_t));
+
+	if (success && fseek(file, 0L, SEEK_SET) == 0)
+	{
+		success = fwrite(&header, sizeof(header), 1U, file) == 1U;
+	}
+	else
+	{
+		success = qfalse;
+	}
+
+	AAS_SwapAASFileData();
+	if (fclose(file) != 0)
+	{
+		success = qfalse;
+	}
+	return success;
 }
 
 void AAS_Shutdown(void)

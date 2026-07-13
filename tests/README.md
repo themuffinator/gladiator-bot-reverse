@@ -110,7 +110,34 @@ generator prerequisite layer when the map fixtures below are unavailable.
 Synthetic shared-face and shared-edge worlds additionally validate temporary
 heap allocation, swim/equal-floor generation, crouch and small-area travel
 costs, one-based flattening with the retail index-zero sentinel, and derived
-reachability metadata rebuilding.
+reachability metadata rebuilding. Paired boundary-edge cases pin the combined
+step, barrier-jump, downhill-walk, water-jump, and walk-off-ledge branch order,
+endpoints, and default route costs. A separated-platform collision fixture also
+exercises closest-edge jump prediction, stored jump costs, and crouch rejection.
+Same-facing vertical ladder fixtures pin symmetric shared-edge ladder links,
+their 32-unit transition offsets, face/edge metadata, and 10-unit route costs.
+An in-memory Quake II BSP epair fixture also pins retail `misc_teleporter`
+destination matching, the destination floor trace, expanded crouch-hull source
+area discovery, and the stored 50-unit teleport route cost.
+A synthetic `func_plat` inline model pins the retail elevator perimeter probes,
+bottom-to-top area selection, outward-normalized source point, model/height
+metadata, travel type, and height/speed-derived route cost.
+A split two-area AAS tree and deterministic Quake II wall trace pin retail
+grapple source-floor placement, solid-face selection, safe landing, stored face
+metadata and endpoint, and the fixed-start plus distance-derived route cost.
+A parsed high-value item plus a split-height AAS tree pin retail weapon-jump
+area flag `0x20`, downward rocket knockback, predicted landing, type 12, and the
+fixed 500-unit route cost. Separate exposed-edge fixtures cover the secondary
+walk-off scan's safe 100-unit and damage-fall 3000-unit costs. A minimal
+two-area lifecycle world also verifies one-based incremental progress, final
+entity/ledge passes, sentinel storage, heap cleanup, and delayed initialization.
+A grounded two-plane choke fixture verifies retail portal recognition, the
+12-byte cluster record ABI, front/back cluster assignment, negative portal
+clusters, and cluster-local index lists. An in-memory generated-world fixture
+pins ladder-only face retention, signed geometry index remapping, ordinary
+reachability metadata remapping, and the elevator model-metadata exception in
+the retail optimizer. A three-area route fixture verifies one-based area bounds
+and the intermediate intra-area travel cost used by reverse route calculation.
 
 - Download `test_nav.bsp` and `test_nav.aas` separately (for example, from the
   original Gladiator bot asset distribution) and place them under a directory

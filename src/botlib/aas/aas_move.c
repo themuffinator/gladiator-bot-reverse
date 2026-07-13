@@ -70,6 +70,114 @@ static float AAS_MoveVectorNormalize(vec3_t v)
 
 /*
 =============
+AAS_DropToFloor
+
+Drop an item-sized bounding box at most 100 units onto retail solid geometry.
+=============
+*/
+int AAS_DropToFloor(vec3_t origin, const vec3_t mins, const vec3_t maxs)
+{
+	if (origin == NULL)
+	{
+		return qfalse;
+	}
+
+	vec3_t end;
+	VectorCopy(origin, end);
+	end[2] -= 100.0f;
+	bsp_trace_t trace = AAS_Trace(origin, mins, maxs, end, 0, MASK_SOLID);
+	if (trace.startsolid)
+	{
+		return qfalse;
+	}
+
+	VectorCopy(trace.endpos, origin);
+	return qtrue;
+}
+
+/*
+=============
+AAS_WeaponJumpZVelocity
+
+Calculate the retail vertical knockback velocity from a downward weapon shot.
+=============
+*/
+float AAS_WeaponJumpZVelocity(const vec3_t origin, float radiusdamage)
+{
+	if (origin == NULL)
+	{
+		return AAS_MovePositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
+	}
+
+	const vec3_t rocketoffset = {8.0f, 8.0f, -8.0f};
+	const vec3_t botmins = {-16.0f, -16.0f, -24.0f};
+	const vec3_t botmaxs = {16.0f, 16.0f, 32.0f};
+	const vec3_t forward = {0.0f, 0.0f, -1.0f};
+	const vec3_t right = {0.0f, -1.0f, 0.0f};
+
+	vec3_t start;
+	VectorCopy(origin, start);
+	start[2] += 8.0f;
+	start[0] += forward[0] * rocketoffset[0] +
+		right[0] * rocketoffset[1];
+	start[1] += forward[1] * rocketoffset[0] +
+		right[1] * rocketoffset[1];
+	start[2] += forward[2] * rocketoffset[0] +
+		right[2] * rocketoffset[1] + rocketoffset[2];
+
+	vec3_t end;
+	VectorMA(start, 500.0f, forward, end);
+	bsp_trace_t trace = AAS_Trace(start, NULL, NULL, end, 1, MASK_SOLID);
+
+	vec3_t center;
+	VectorAdd(botmins, botmaxs, center);
+	VectorMA(origin, 0.5f, center, center);
+	vec3_t offset;
+	VectorSubtract(trace.endpos, center, offset);
+	float points = radiusdamage - 0.5f *
+		sqrtf(DotProduct(offset, offset));
+	if (points < 0.0f)
+	{
+		points = 0.0f;
+	}
+	points *= 0.5f;
+
+	vec3_t direction;
+	VectorSubtract(origin, trace.endpos, direction);
+	AAS_MoveVectorNormalize(direction);
+	vec3_t knockbackvelocity;
+	VectorScale(direction, 1600.0f * points / 200.0f,
+		knockbackvelocity);
+	return knockbackvelocity[2] +
+		AAS_MovePositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
+}
+
+/*
+=============
+AAS_RocketJumpZVelocity
+
+Return the retail rocket-jump vertical velocity for a 120-damage blast.
+=============
+*/
+float AAS_RocketJumpZVelocity(const vec3_t origin)
+{
+	return AAS_WeaponJumpZVelocity(origin, 120.0f);
+}
+
+/*
+=============
+AAS_BFGJumpZVelocity
+
+Preserve the retail BFG wrapper's original 120-damage argument.
+=============
+*/
+float AAS_BFGJumpZVelocity(const vec3_t origin)
+{
+	return AAS_WeaponJumpZVelocity(origin, 120.0f);
+}
+
+/*
+=============
 AAS_MoveVectorLengthSquared
 
 Return squared vector length without pulling in higher-level utility linkage.

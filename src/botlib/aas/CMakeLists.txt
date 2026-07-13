@@ -1,9 +1,11 @@
 add_library(botlib_aas STATIC
     aas_debug.c
     aas_debug_commands.c
+    aas_cluster.c
     aas_main.c
     aas_map.c
     aas_move.c
+    aas_optimize.c
     aas_sound.c
     aas_reach.c
     aas_route.c
@@ -14,9 +16,11 @@ register_botlib_sources(
     SOURCES
         aas_debug.c
         aas_debug_commands.c
+        aas_cluster.c
         aas_main.c
         aas_map.c
         aas_move.c
+        aas_optimize.c
         aas_sound.c
         aas_reach.c
         aas_route.c

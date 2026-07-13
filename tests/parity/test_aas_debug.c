@@ -193,15 +193,15 @@ static void BuildMockMap(aas_debug_test_context_t *context)
 
     aasworld.loaded = qtrue;
     aasworld.initialized = qtrue;
-    aasworld.numAreas = 3;
+    aasworld.numAreas = 4;
     aasworld.numReachability = 2;
     aasworld.numAreaSettings = aasworld.numAreas;
 
-    context->areas = (aas_area_t *)calloc((size_t)aasworld.numAreas + 1U, sizeof(aas_area_t));
+    context->areas = (aas_area_t *)calloc((size_t)aasworld.numAreas, sizeof(aas_area_t));
     assert_non_null(context->areas);
     aasworld.areas = context->areas;
 
-    for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
+    for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
     {
         aas_area_t *area = &context->areas[areanum];
         area->areanum = areanum;
@@ -218,12 +218,12 @@ static void BuildMockMap(aas_debug_test_context_t *context)
         area->center[2] = 0.0f;
     }
 
-    context->areasettings = (aas_areasettings_t *)calloc((size_t)aasworld.numAreaSettings + 1U,
+    context->areasettings = (aas_areasettings_t *)calloc((size_t)aasworld.numAreaSettings,
                                                         sizeof(aas_areasettings_t));
     assert_non_null(context->areasettings);
     aasworld.areasettings = context->areasettings;
 
-    for (int areanum = 1; areanum <= aasworld.numAreaSettings; ++areanum)
+    for (int areanum = 1; areanum < aasworld.numAreaSettings; ++areanum)
     {
         aas_areasettings_t *settings = &context->areasettings[areanum];
         settings->cluster = areanum * 10;
@@ -341,7 +341,7 @@ static void ConfigureRoutePredictionFixture(aas_debug_test_context_t *context)
     assert_non_null(context->reachability);
     aasworld.reachability = context->reachability;
 
-    aasworld.numAreaSettings = aasworld.numAreas + 1;
+    aasworld.numAreaSettings = aasworld.numAreas;
     context->areasettings[1].firstreachablearea = 1;
     context->areasettings[1].numreachableareas = 1;
     context->areasettings[1].contents = 0;
@@ -387,8 +387,8 @@ static void ConfigureRoutePassAreaFixture(aas_debug_test_context_t *context)
     assert_non_null(context->reachability);
     aasworld.reachability = context->reachability;
 
-    aasworld.numAreaSettings = aasworld.numAreas + 1;
-    for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
+    aasworld.numAreaSettings = aasworld.numAreas;
+    for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
     {
         context->areasettings[areanum].firstreachablearea = 0;
         context->areasettings[areanum].numreachableareas = 0;
@@ -742,9 +742,9 @@ static void test_aas_sample_helpers_use_loaded_planes_and_area_settings(void **s
     context->clusters = (aas_cluster_t *)calloc((size_t)aasworld.numClusters, sizeof(aas_cluster_t));
     assert_non_null(context->clusters);
     aasworld.clusters = context->clusters;
-    context->clusters[0].numreachabilityareas = 5;
-    context->clusters[1].numreachabilityareas = 7;
-    context->clusters[2].numreachabilityareas = 11;
+	context->clusters[0].numareas = 5;
+	context->clusters[1].numareas = 7;
+	context->clusters[2].numareas = 11;
     assert_int_equal(AAS_PointReachabilityAreaIndex(NULL), 23);
 
     context->areasettings[2].cluster = 1;
@@ -795,7 +795,7 @@ static void test_aas_predict_route_uses_reachability_cache_and_stop_events(void 
 
     assert_int_equal(AAS_AreaReachabilityToGoalArea(1, origin, 3, TFL_DEFAULT), 1);
     assert_int_equal(AAS_AreaReachabilityToGoalArea(2, origin, 3, TFL_DEFAULT), 2);
-    assert_int_equal(AAS_AreaTravelTimeToGoalArea(1, origin, 3, TFL_DEFAULT), 76);
+    assert_int_equal(AAS_AreaTravelTimeToGoalArea(1, origin, 3, TFL_DEFAULT), 77);
 
     aas_predictroute_t route;
     assert_true(AAS_PredictRoute(&route,

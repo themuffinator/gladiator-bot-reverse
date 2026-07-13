@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include "botlib/common/l_log.h"
+#include "botlib/common/l_libvar.h"
+#include "q2bridge/bridge_config.h"
 #include "q2bridge/update_translator.h"
 
 static void AAS_FrameRemoveLink(aas_link_t *link)
@@ -119,7 +121,48 @@ void AAS_ContinueInit(float time)
         return;
     }
 
+	if (aasworld.numReachabilityAreas == 0)
+	{
+		AAS_InitReachability();
+	}
+	if (AAS_ContinueInitReachability())
+	{
+		return;
+	}
+
+	AAS_InitClustering();
+	libvar_t *forcewrite = Bridge_ForceWrite();
+	int shouldwrite = aasworld.saveFile ||
+		(forcewrite != NULL && forcewrite->value != 0.0f);
+	if (shouldwrite && aasworld.aasFilePath[0] != '\0')
+	{
+		if (LibVarValue("nooptimize", "0") == 0.0f)
+		{
+			AAS_Optimize();
+		}
+
+		if (AAS_WriteAASFile(aasworld.aasFilePath))
+		{
+			BotLib_Print(PRT_MESSAGE,
+				"%s written succesfully\n",
+				aasworld.aasFilePath);
+		}
+		else
+		{
+			BotLib_Print(PRT_ERROR,
+				"couldn't write %s\n",
+				aasworld.aasFilePath);
+		}
+	}
+
+	if (AAS_PrepareReachability() != BLERR_NOERROR)
+	{
+		BotLib_Print(PRT_ERROR,
+			"AAS_ContinueInit: failed to prepare reachability data\n");
+		return;
+	}
     aasworld.initialized = qtrue;
+	BotLib_Print(PRT_MESSAGE, "AAS initialized.\n");
 }
 
 void AAS_FrameSynchronise(float time)

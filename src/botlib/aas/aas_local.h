@@ -87,6 +87,19 @@ typedef struct aas_bspbrush_s
 	int contents;
 } aas_bspbrush_t;
 
+typedef struct aas_bspepair_s
+{
+	char *key;
+	char *value;
+	struct aas_bspepair_s *next;
+} aas_bspepair_t;
+
+typedef struct aas_bspentity_s
+{
+	aas_bspepair_t *epairs;
+	struct aas_bspentity_s *next;
+} aas_bspentity_t;
+
 typedef vec3_t aas_vertex_t;
 
 typedef struct aas_bbox_s
@@ -260,6 +273,7 @@ typedef struct aas_entityinfo_s
 #define AAS_AREA_LADDER   2
 #define AAS_AREA_LIQUID   4
 #define AAS_AREA_DISABLED 8
+#define AAS_AREA_WEAPONJUMP 32
 #define AAS_AREA_BRIDGE   16
 
 #define SE_NONE                 0
@@ -378,7 +392,6 @@ typedef struct aas_portal_s
 typedef struct aas_cluster_s
 {
 	int numareas;
-	int numreachabilityareas;
 	int numportals;
 	int firstportal;
 } aas_cluster_t;
@@ -466,13 +479,15 @@ typedef struct aas_routingcache_s
 
 typedef struct aas_world_s
 {
-    qboolean loaded;        /* mirrors data_100667e0 */
-    qboolean initialized;   /* mirrors data_100667e4 */
-    qboolean entitiesValid; /* mirrors data_100667e8 */
-    float time;             /* mirrors data_100667ec */
-    int numFrames;          /* frame counter updated each BotStartFrame */
-    int bspChecksum;        /* checksum recorded during AAS_LoadMap */
-    int aasChecksum;        /* checksum of the loaded .aas file */
+	qboolean loaded;        /* mirrors data_100667e0 */
+	qboolean initialized;   /* mirrors data_100667e4 */
+	qboolean entitiesValid;
+	qboolean saveFile;      /* mirrors data_100667e8 */
+	int numReachabilityAreas;
+	float time;             /* mirrors data_100667ec */
+	int numFrames;          /* frame counter updated each BotStartFrame */
+	int bspChecksum;        /* checksum recorded during AAS_LoadMap */
+	int aasChecksum;        /* checksum of the loaded .aas file */
 
     char aasFilePath[MAX_FILEPATH];
     char mapName[MAX_FILEPATH];
@@ -619,6 +634,15 @@ qboolean AAS_EntityCollision(int entnum,
 aas_trace_t AAS_TraceClientBBox(const vec3_t start, const vec3_t end, int presencetype, int passent);
 int AAS_TraceAreas(const vec3_t start, const vec3_t end, int *areas, vec3_t *points, int maxareas);
 int AAS_BBoxAreas(const vec3_t absmins, const vec3_t absmaxs, int *areas, int maxareas);
+aas_bspentity_t *AAS_ParseBSPEntities(const char *data, size_t length);
+aas_bspentity_t *AAS_LoadBSPEntities(void);
+void AAS_FreeBSPEntities(aas_bspentity_t *entities);
+const char *AAS_ValueForBSPEpairKey(const aas_bspentity_t *entity, const char *key);
+qboolean AAS_VectorForBSPEpairKey(const aas_bspentity_t *entity,
+	const char *key,
+	vec3_t value);
+float AAS_FloatForBSPEpairKey(const aas_bspentity_t *entity, const char *key);
+int AAS_IntForBSPEpairKey(const aas_bspentity_t *entity, const char *key);
 aas_plane_t *AAS_PlaneFromNum(int planenum);
 qboolean AAS_PointInsideFace(int facenum, const vec3_t point, float epsilon);
 aas_face_t *AAS_AreaGroundFace(int areanum, const vec3_t point);
@@ -632,6 +656,10 @@ void AAS_ClearReachabilityData(void);
 int AAS_PrepareReachability(void);
 int AAS_AreaReachability(int areanum);
 int AAS_BestReachableLinkArea(aas_link_t *areas);
+int AAS_BestReachableArea(const vec3_t origin,
+	const vec3_t mins,
+	const vec3_t maxs,
+	vec3_t goalorigin);
 int AAS_AreaCrouch(int areanum);
 int AAS_AreaSwim(int areanum);
 int AAS_AreaLiquid(int areanum);
@@ -654,10 +682,42 @@ void AAS_ShutDownReachabilityHeap(void);
 aas_lreachability_t *AAS_AllocReachability(void);
 void AAS_FreeReachability(aas_lreachability_t *reachability);
 void AAS_InitReachability(void);
+int AAS_ContinueInitReachability(void);
 void AAS_StoreReachability(void);
+void AAS_InitClustering(void);
+void AAS_Optimize(void);
+int AAS_WriteAASFile(const char *filename);
 int AAS_Reachability_Swim(int area1num, int area2num);
 int AAS_Reachability_EqualFloorHeight(int area1num, int area2num);
+int AAS_Reachability_Step_Barrier_WaterJump_WalkOffLedge(int area1num,
+	int area2num);
+float AAS_ClosestEdgePoints(const vec3_t v1,
+	const vec3_t v2,
+	const vec3_t v3,
+	const vec3_t v4,
+	const aas_plane_t *plane1,
+	const aas_plane_t *plane2,
+	vec3_t beststart1,
+	vec3_t bestend1,
+	vec3_t beststart2,
+	vec3_t bestend2,
+	float bestdist);
+int AAS_Reachability_Jump(int area1num, int area2num);
+int AAS_Reachability_Ladder(int area1num, int area2num);
+int AAS_Reachability_TeleportEntityList(const aas_bspentity_t *entities);
+void AAS_Reachability_Teleport(void);
+int AAS_Reachability_ElevatorEntityList(const aas_bspentity_t *entities);
+void AAS_Reachability_Elevator(void);
+int AAS_Reachability_Grapple(int area1num, int area2num);
+int AAS_SetWeaponJumpAreaFlagsEntityList(const aas_bspentity_t *entities);
+void AAS_SetWeaponJumpAreaFlags(void);
+int AAS_Reachability_WeaponJump(int area1num, int area2num);
+void AAS_Reachability_WalkOffLedge(int areanum);
 void AAS_JumpReachRunStart(const aas_reachability_t *reach, vec3_t runstart);
+int AAS_DropToFloor(vec3_t origin, const vec3_t mins, const vec3_t maxs);
+float AAS_WeaponJumpZVelocity(const vec3_t origin, float radiusdamage);
+float AAS_RocketJumpZVelocity(const vec3_t origin);
+float AAS_BFGJumpZVelocity(const vec3_t origin);
 int AAS_HorizontalVelocityForJump(float zvel, const vec3_t start, const vec3_t end, float *velocity);
 int AAS_OnGround(const vec3_t origin, int presencetype, int passent);
 int AAS_Swimming(const vec3_t origin);
