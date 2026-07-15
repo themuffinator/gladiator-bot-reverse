@@ -411,10 +411,10 @@ static void test_bridge_update_client_inactive_logs_contract_message(void **stat
 
 /*
 =============
-test_bridge_update_client_rejects_out_of_range_slot
+test_bridge_update_client_accepts_inclusive_endpoint
 =============
 */
-static void test_bridge_update_client_rejects_out_of_range_slot(void **state)
+static void test_bridge_update_client_accepts_inclusive_endpoint(void **state)
 {
 	translator_test_context_t *context = (translator_test_context_t *)(*state);
 	context->print_count = 0U;
@@ -425,62 +425,11 @@ static void test_bridge_update_client_rejects_out_of_range_slot(void **state)
 	bot_updateclient_t update;
 	memset(&update, 0, sizeof(update));
 
+	Bridge_SetClientActive(2, qtrue);
 	int status = Bridge_UpdateClient(2, &update);
-	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
-	assert_true(context->print_count > 0U);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(context->print_count, 0U);
 
-	const botlib_contract_export_t *guard =
-		BotlibContract_FindExport(&context->catalogue, "GuardClientNumber");
-	assert_non_null(guard);
-	const botlib_contract_scenario_t *scenario =
-		BotlibContract_FindScenario(guard, "failure");
-	if (scenario == NULL)
-	{
-		scenario = BotlibContract_FindScenario(guard, NULL);
-	}
-	assert_non_null(scenario);
-	const botlib_contract_message_t *expected =
-		BotlibContract_FindMessageContaining(scenario, "invalid client number");
-	assert_non_null(expected);
-
-	char formatted[128];
-	snprintf(formatted,
-			 sizeof(formatted),
-			 expected->text,
-			 "BotUpdateClient",
-			 2,
-			 1);
-	assert_string_equal(context->prints[0].message, formatted);
-	assert_int_equal(context->prints[0].severity, expected->severity);
-
-	LibVarSet("maxclients", "4");
-	Bridge_ResetCachedUpdates();
-}
-
-/*
-=============
-test_bridge_update_client_rejects_indices_beyond_mocked_limit
-=============
-*/
-static void test_bridge_update_client_rejects_indices_beyond_mocked_limit(void **state)
-{
-	translator_test_context_t *context = (translator_test_context_t *)(*state);
-
-	translator_set_mock_max_clients(2);
-	context->print_count = 0U;
-
-	bot_updateclient_t update;
-	memset(&update, 0, sizeof(update));
-
-	int status = Bridge_UpdateClient(2, &update);
-	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
-	assert_true(context->print_count > 0U);
-	assert_string_equal(context->prints[0].message, "BotUpdateClient: invalid client number 2, [0, 1]\n");
-	assert_int_equal(context->prints[0].severity, PRT_ERROR);
-
-	LibVarSet("maxclients", "4");
-	Bridge_ResetCachedUpdates();
-	context->print_count = 0U;
 	status = Bridge_UpdateClient(3, &update);
 	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
 	assert_true(context->print_count > 0U);
@@ -505,7 +454,67 @@ static void test_bridge_update_client_rejects_indices_beyond_mocked_limit(void *
 			 expected->text,
 			 "BotUpdateClient",
 			 3,
-			 g_configured_max_clients - 1);
+			 2);
+	assert_string_equal(context->prints[0].message, formatted);
+	assert_int_equal(context->prints[0].severity, expected->severity);
+
+	LibVarSet("maxclients", "4");
+	Bridge_ResetCachedUpdates();
+}
+
+/*
+=============
+test_bridge_update_client_handles_inclusive_mocked_limit
+=============
+*/
+static void test_bridge_update_client_handles_inclusive_mocked_limit(void **state)
+{
+	translator_test_context_t *context = (translator_test_context_t *)(*state);
+
+	translator_set_mock_max_clients(2);
+	context->print_count = 0U;
+
+	bot_updateclient_t update;
+	memset(&update, 0, sizeof(update));
+
+	Bridge_SetClientActive(2, qtrue);
+	int status = Bridge_UpdateClient(2, &update);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(context->print_count, 0U);
+
+	status = Bridge_UpdateClient(3, &update);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	assert_true(context->print_count > 0U);
+	assert_string_equal(context->prints[0].message, "BotUpdateClient: invalid client number 3, [0, 2]\n");
+	assert_int_equal(context->prints[0].severity, PRT_ERROR);
+
+	translator_set_mock_max_clients(4);
+	context->print_count = 0U;
+	status = Bridge_UpdateClient(5, &update);
+	assert_int_equal(status, BLERR_INVALIDCLIENTNUMBER);
+	assert_true(context->print_count > 0U);
+
+	const botlib_contract_export_t *guard =
+		BotlibContract_FindExport(&context->catalogue, "GuardClientNumber");
+	assert_non_null(guard);
+	const botlib_contract_scenario_t *scenario =
+		BotlibContract_FindScenario(guard, "failure");
+	if (scenario == NULL)
+	{
+		scenario = BotlibContract_FindScenario(guard, NULL);
+	}
+	assert_non_null(scenario);
+	const botlib_contract_message_t *expected =
+		BotlibContract_FindMessageContaining(scenario, "invalid client number");
+	assert_non_null(expected);
+
+	char formatted[128];
+	snprintf(formatted,
+			 sizeof(formatted),
+			 expected->text,
+			 "BotUpdateClient",
+			 5,
+			 g_configured_max_clients);
 	assert_string_equal(context->prints[0].message, formatted);
 	assert_int_equal(context->prints[0].severity, expected->severity);
 }
@@ -907,10 +916,10 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_bridge_update_client_inactive_logs_contract_message,
                                         translator_setup,
                                         translator_teardown),
-        cmocka_unit_test_setup_teardown(test_bridge_update_client_rejects_out_of_range_slot,
+        cmocka_unit_test_setup_teardown(test_bridge_update_client_accepts_inclusive_endpoint,
                                         translator_setup,
                                         translator_teardown),
-        cmocka_unit_test_setup_teardown(test_bridge_update_client_rejects_indices_beyond_mocked_limit,
+        cmocka_unit_test_setup_teardown(test_bridge_update_client_handles_inclusive_mocked_limit,
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_update_entity_rejects_indices_beyond_mocked_limit,

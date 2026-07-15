@@ -1,0 +1,29 @@
+{
+	"InstallScripts" : 
+	[
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/src/shared/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/src/botlib/common/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/src/botlib/precomp/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/src/botlib/aas/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/src/botlib/ea/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/src/botlib/ai/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/src/q2bridge/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/src/botlib/interface/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tools/bspc/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-build/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-build/include/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-build/src/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-build/doc/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/parity/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/chat/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/ai/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/ea/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/aas/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/common/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/tools/cmake_install.cmake",
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/bspc/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

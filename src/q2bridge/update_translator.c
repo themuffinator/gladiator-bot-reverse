@@ -35,10 +35,11 @@ typedef struct bridge_entity_slot_s
     AASEntityFrame frame;
 } bridge_entity_slot_t;
 
-static bridge_client_slot_t g_bridge_clients[MAX_CLIENTS];
+/* One sentinel safely mirrors retail's inclusive maxclients validator bug. */
+static bridge_client_slot_t g_bridge_clients[MAX_CLIENTS + 1];
 static bridge_entity_slot_t *g_bridge_entities = NULL;
 static int g_bridge_entity_capacity = 0;
-static int g_bridge_max_client_index = MAX_CLIENTS - 1;
+static int g_bridge_max_client_index = MAX_CLIENTS;
 static int g_bridge_max_entity_index = -1;
 static float g_bridge_frame_time = 0.0f;
 
@@ -108,7 +109,7 @@ static void Bridge_UpdateMaxClientIndex(qboolean force_refresh)
 		max_clients = fallback_clients;
 	}
 
-	g_bridge_max_client_index = max_clients - 1;
+	g_bridge_max_client_index = max_clients;
 }
 
 static int Bridge_ReadConfiguredMaxEntities(void)

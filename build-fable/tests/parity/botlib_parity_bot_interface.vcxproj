@@ -1,0 +1,416 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{BF473450-7D34-3602-96D0-3C721E744DBC}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>botlib_parity_bot_interface</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">botlib_parity_bot_interface.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">botlib_parity_bot_interface</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">botlib_parity_bot_interface.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">botlib_parity_bot_interface</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">botlib_parity_bot_interface.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">botlib_parity_bot_interface</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">botlib_parity_bot_interface.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">botlib_parity_bot_interface</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>
+      </ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;PROJECT_SOURCE_DIR="E:/Repositories/Gladiator-Bot-reverse";_USE_MATH_DEFINES;id386=0;idaxp=0;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;PROJECT_SOURCE_DIR=\"E:/Repositories/Gladiator-Bot-reverse\";_USE_MATH_DEFINES;id386=0;idaxp=0;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>..\..\src\botlib\interface\Debug\botlib_interface.lib;..\..\_deps\cmocka-build\src\Debug\cmocka.lib;..\..\src\botlib\precomp\Debug\botlib_precomp.lib;..\..\src\botlib\aas\Debug\botlib_aas.lib;..\..\src\botlib\ai\Debug\botlib_ai.lib;..\..\src\botlib\ea\Debug\botlib_ea.lib;..\..\src\botlib\common\Debug\botlib_common.lib;..\..\src\q2bridge\Debug\q2bridge.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/Debug/botlib_parity_bot_interface.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/Debug/botlib_parity_bot_interface.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ExceptionHandling>
+      </ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR="E:/Repositories/Gladiator-Bot-reverse";_USE_MATH_DEFINES;id386=0;idaxp=0;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR=\"E:/Repositories/Gladiator-Bot-reverse\";_USE_MATH_DEFINES;id386=0;idaxp=0;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>..\..\src\botlib\interface\Release\botlib_interface.lib;..\..\_deps\cmocka-build\src\Release\cmocka.lib;..\..\src\botlib\precomp\Release\botlib_precomp.lib;..\..\src\botlib\aas\Release\botlib_aas.lib;..\..\src\botlib\ai\Release\botlib_ai.lib;..\..\src\botlib\ea\Release\botlib_ea.lib;..\..\src\botlib\common\Release\botlib_common.lib;..\..\src\q2bridge\Release\q2bridge.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/Release/botlib_parity_bot_interface.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/Release/botlib_parity_bot_interface.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ExceptionHandling>
+      </ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR="E:/Repositories/Gladiator-Bot-reverse";_USE_MATH_DEFINES;id386=0;idaxp=0;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR=\"E:/Repositories/Gladiator-Bot-reverse\";_USE_MATH_DEFINES;id386=0;idaxp=0;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>..\..\src\botlib\interface\MinSizeRel\botlib_interface.lib;..\..\_deps\cmocka-build\src\MinSizeRel\cmocka.lib;..\..\src\botlib\precomp\MinSizeRel\botlib_precomp.lib;..\..\src\botlib\aas\MinSizeRel\botlib_aas.lib;..\..\src\botlib\ai\MinSizeRel\botlib_ai.lib;..\..\src\botlib\ea\MinSizeRel\botlib_ea.lib;..\..\src\botlib\common\MinSizeRel\botlib_common.lib;..\..\src\q2bridge\MinSizeRel\q2bridge.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/MinSizeRel/botlib_parity_bot_interface.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/MinSizeRel/botlib_parity_bot_interface.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>
+      </ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR="E:/Repositories/Gladiator-Bot-reverse";_USE_MATH_DEFINES;id386=0;idaxp=0;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR=\"E:/Repositories/Gladiator-Bot-reverse\";_USE_MATH_DEFINES;id386=0;idaxp=0;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>E:\Repositories\Gladiator-Bot-reverse\src;E:\Repositories\Gladiator-Bot-reverse\src\botlib\common;E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp;E:\Repositories\Gladiator-Bot-reverse\src\shared;E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas;E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai;E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>..\..\src\botlib\interface\RelWithDebInfo\botlib_interface.lib;..\..\_deps\cmocka-build\src\RelWithDebInfo\cmocka.lib;..\..\src\botlib\precomp\RelWithDebInfo\botlib_precomp.lib;..\..\src\botlib\aas\RelWithDebInfo\botlib_aas.lib;..\..\src\botlib\ai\RelWithDebInfo\botlib_ai.lib;..\..\src\botlib\ea\RelWithDebInfo\botlib_ea.lib;..\..\src\botlib\common\RelWithDebInfo\botlib_common.lib;..\..\src\q2bridge\RelWithDebInfo\q2bridge.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/RelWithDebInfo/botlib_parity_bot_interface.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/RelWithDebInfo/botlib_parity_bot_interface.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="E:\Repositories\Gladiator-Bot-reverse\tests\parity\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SE:/Repositories/Gladiator-Bot-reverse -BE:/Repositories/Gladiator-Bot-reverse/build-fable --check-stamp-file E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\CMakeFiles\cmake.verify_globs;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SE:/Repositories/Gladiator-Bot-reverse -BE:/Repositories/Gladiator-Bot-reverse/build-fable --check-stamp-file E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\CMakeFiles\cmake.verify_globs;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SE:/Repositories/Gladiator-Bot-reverse -BE:/Repositories/Gladiator-Bot-reverse/build-fable --check-stamp-file E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\CMakeFiles\cmake.verify_globs;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SE:/Repositories/Gladiator-Bot-reverse -BE:/Repositories/Gladiator-Bot-reverse/build-fable --check-stamp-file E:/Repositories/Gladiator-Bot-reverse/build-fable/tests/parity/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\CMakeFiles\cmake.verify_globs;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\tests\parity\test_bot_interface.c" />
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\tests\parity\botlib_contract_loader.c" />
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\tests\parity\jsmn.c" />
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\tests\support\asset_env.c" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\ZERO_CHECK.vcxproj">
+      <Project>{7BD4E4BA-FAD9-3654-AFF4-19EB6E254579}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\src\botlib\aas\botlib_aas.vcxproj">
+      <Project>{010198BB-9A39-3E6A-8B16-6BD80742A714}</Project>
+      <Name>botlib_aas</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\src\botlib\ai\botlib_ai.vcxproj">
+      <Project>{CBB82C98-BD69-3717-AC44-85F6B2BE44FC}</Project>
+      <Name>botlib_ai</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\src\botlib\common\botlib_common.vcxproj">
+      <Project>{069E40A8-BCDB-3C6E-866D-F3198C0066BC}</Project>
+      <Name>botlib_common</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\src\botlib\ea\botlib_ea.vcxproj">
+      <Project>{0BE07B60-5CF7-370E-9ECB-F1685B1994AF}</Project>
+      <Name>botlib_ea</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\src\botlib\interface\botlib_interface.vcxproj">
+      <Project>{C9AE3185-FC13-323C-945C-5BD53B1885DA}</Project>
+      <Name>botlib_interface</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\src\botlib\precomp\botlib_precomp.vcxproj">
+      <Project>{5A6C3E07-B32C-3659-B61F-58D00FFA87D7}</Project>
+      <Name>botlib_precomp</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-build\src\cmocka.vcxproj">
+      <Project>{F9348054-8659-3238-8F6A-16AD906EACB4}</Project>
+      <Name>cmocka</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\src\q2bridge\q2bridge.vcxproj">
+      <Project>{07AC7279-2EC6-3A0E-9723-A06FA3096B2A}</Project>
+      <Name>q2bridge</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

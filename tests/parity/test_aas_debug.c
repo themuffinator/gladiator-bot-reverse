@@ -15,6 +15,9 @@
 #include "q2bridge/bridge.h"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
+#define TEST_RETAIL_TFL_WALK 0x00000002
+#define TEST_RETAIL_TFL_AIR 0x00008000
+#define TEST_RETAIL_TFL_WATER 0x00010000
 
 typedef struct captured_print_s
 {
@@ -51,6 +54,7 @@ typedef struct aas_debug_test_context_s
     int *faceIndex;
     aas_portal_t *portals;
     aas_cluster_t *clusters;
+	int *portalIndex;
 	aas_bspmodel_t *bspModels;
 	aas_bspnode_t *bspNodes;
 	aas_bspleaf_t *bspLeaves;
@@ -187,6 +191,13 @@ static const char *Mock_FindPrint(const aas_debug_test_context_t *context, const
     return NULL;
 }
 
+/*
+=============
+BuildMockMap
+
+Build a one-based AAS fixture with retail outgoing reachability spans.
+=============
+*/
 static void BuildMockMap(aas_debug_test_context_t *context)
 {
     assert_non_null(context);
@@ -194,7 +205,7 @@ static void BuildMockMap(aas_debug_test_context_t *context)
     aasworld.loaded = qtrue;
     aasworld.initialized = qtrue;
     aasworld.numAreas = 4;
-    aasworld.numReachability = 2;
+	aasworld.numReachability = 3;
     aasworld.numAreaSettings = aasworld.numAreas;
 
     context->areas = (aas_area_t *)calloc((size_t)aasworld.numAreas, sizeof(aas_area_t));
@@ -228,17 +239,23 @@ static void BuildMockMap(aas_debug_test_context_t *context)
         aas_areasettings_t *settings = &context->areasettings[areanum];
         settings->cluster = areanum * 10;
         settings->presencetype = areanum + 4;
-        settings->numreachableareas = 1;
         settings->firstreachablearea = 0;
+		settings->numreachableareas = 0;
         settings->contents = 0;
     }
+	context->areasettings[1].firstreachablearea = 1;
+	context->areasettings[1].numreachableareas = 1;
+	context->areasettings[2].firstreachablearea = 2;
+	context->areasettings[2].numreachableareas = 1;
+	context->areasettings[3].firstreachablearea = 3;
+	context->areasettings[3].numreachableareas = 0;
 
     context->reachability = (aas_reachability_t *)calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
     assert_non_null(context->reachability);
     aasworld.reachability = context->reachability;
 
-    aas_reachability_t *first = &context->reachability[0];
-    first->facenum = 1;
+	aas_reachability_t *first = &context->reachability[1];
+	first->facenum = 1;
     first->areanum = 2;
     first->traveltype = 7;
     first->traveltime = 30;
@@ -249,8 +266,8 @@ static void BuildMockMap(aas_debug_test_context_t *context)
     first->end[1] = 0.0f;
     first->end[2] = 0.0f;
 
-    aas_reachability_t *second = &context->reachability[1];
-    second->facenum = 2;
+	aas_reachability_t *second = &context->reachability[2];
+	second->facenum = 1;
     second->areanum = 3;
     second->traveltype = 9;
     second->traveltime = 45;
@@ -260,6 +277,12 @@ static void BuildMockMap(aas_debug_test_context_t *context)
     second->end[0] = 200.0f;
     second->end[1] = 0.0f;
     second->end[2] = 0.0f;
+
+	aasworld.reachabilityFromArea =
+		(int *)calloc((size_t)aasworld.numReachability, sizeof(int));
+	assert_non_null(aasworld.reachabilityFromArea);
+	aasworld.reachabilityFromArea[1] = 1;
+	aasworld.reachabilityFromArea[2] = 2;
 
     aasworld.numPlanes = 2;
     context->planes = (aas_plane_t *)calloc((size_t)aasworld.numPlanes, sizeof(aas_plane_t));
@@ -336,7 +359,7 @@ static void ConfigureRoutePredictionFixture(aas_debug_test_context_t *context)
     AAS_FreeAllRoutingCaches();
 
     free(context->reachability);
-    aasworld.numReachability = 3;
+	aasworld.numReachability = 3;
     context->reachability = (aas_reachability_t *)calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
     assert_non_null(context->reachability);
     aasworld.reachability = context->reachability;
@@ -368,12 +391,66 @@ static void ConfigureRoutePredictionFixture(aas_debug_test_context_t *context)
     VectorSet(second->start, 100.0f, 0.0f, 0.0f);
     VectorSet(second->end, 200.0f, 0.0f, 0.0f);
 
-    AAS_InitTravelFlagFromType();
-    AAS_InitAreaContentsTravelFlags();
-    assert_int_equal(AAS_PrepareReachability(), BLERR_NOERROR);
-    AAS_InvalidateRouteCache();
+	AAS_InitTravelFlagFromType();
+	AAS_InitAreaContentsTravelFlags();
+	assert_int_equal(AAS_PrepareReachability(), BLERR_NOERROR);
+	assert_true(AAS_InitRetailRoutingCaches());
 }
 
+/*
+=============
+ConfigureAlternativeRouteFaceFixture
+
+Connect the three routed areas in stored face order for retail flood tests.
+=============
+*/
+static void ConfigureAlternativeRouteFaceFixture(
+	aas_debug_test_context_t *context)
+{
+	assert_non_null(context);
+
+	free(context->faces);
+	aasworld.numFaces = 3;
+	context->faces = (aas_face_t *)calloc(
+		(size_t)aasworld.numFaces,
+		sizeof(*context->faces));
+	assert_non_null(context->faces);
+	aasworld.faces = context->faces;
+	context->faces[1].frontarea = 1;
+	context->faces[1].backarea = 2;
+	context->faces[2].frontarea = 2;
+	context->faces[2].backarea = 3;
+
+	free(context->faceIndex);
+	aasworld.faceIndexSize = 4;
+	context->faceIndex = (int *)calloc(
+		(size_t)aasworld.faceIndexSize,
+		sizeof(*context->faceIndex));
+	assert_non_null(context->faceIndex);
+	aasworld.faceIndex = context->faceIndex;
+	context->faceIndex[0] = 1;
+	context->faceIndex[1] = 1;
+	context->faceIndex[2] = 2;
+	context->faceIndex[3] = 2;
+
+	context->areas[1].firstface = 0;
+	context->areas[1].numfaces = 1;
+	context->areas[2].firstface = 1;
+	context->areas[2].numfaces = 2;
+	context->areas[3].firstface = 3;
+	context->areas[3].numfaces = 1;
+	context->areasettings[3].numreachableareas = 1;
+
+	assert_true(AAS_InitRetailRoutingCaches());
+}
+
+/*
+=============
+ConfigureRoutePassAreaFixture
+
+Build the reachability fixture used to verify generated pass-area stops.
+=============
+*/
 static void ConfigureRoutePassAreaFixture(aas_debug_test_context_t *context)
 {
     assert_non_null(context);
@@ -382,7 +459,7 @@ static void ConfigureRoutePassAreaFixture(aas_debug_test_context_t *context)
     AAS_FreeAllRoutingCaches();
 
     free(context->reachability);
-    aasworld.numReachability = 2;
+	aasworld.numReachability = 3;
     context->reachability = (aas_reachability_t *)calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
     assert_non_null(context->reachability);
     aasworld.reachability = context->reachability;
@@ -491,6 +568,350 @@ static void CleanupRoutePredictionFixture(void)
     aasworld.areacontentstravelflags = NULL;
 }
 
+/*
+=============
+ConfigureRetailRouteCacheFixture
+
+Build cluster and portal metadata for the retail cache-table lifecycle tests.
+=============
+*/
+static void ConfigureRetailRouteCacheFixture(aas_debug_test_context_t *context)
+{
+	assert_non_null(context);
+	assert_null(context->clusters);
+	assert_null(context->portals);
+
+	aasworld.numClusters = 2;
+	context->clusters =
+		(aas_cluster_t *)calloc((size_t)aasworld.numClusters, sizeof(aas_cluster_t));
+	assert_non_null(context->clusters);
+	aasworld.clusters = context->clusters;
+	context->clusters[0].numareas = 2;
+	context->clusters[1].numareas = 3;
+
+	aasworld.numPortals = 2;
+	context->portals =
+		(aas_portal_t *)calloc((size_t)aasworld.numPortals, sizeof(aas_portal_t));
+	assert_non_null(context->portals);
+	aasworld.portals = context->portals;
+	context->portals[1].areanum = 3;
+	context->portals[1].frontcluster = 1;
+	context->portals[1].backcluster = 0;
+	context->portals[1].clusterareanum[0] = 2;
+	context->portals[1].clusterareanum[1] = 1;
+
+	context->areasettings[1].cluster = 1;
+	context->areasettings[1].clusterareanum = 0;
+	context->areasettings[2].cluster = 1;
+	context->areasettings[2].clusterareanum = 1;
+	context->areasettings[3].cluster = -1;
+	context->areasettings[3].clusterareanum = 0;
+
+	assert_true(AAS_InitRetailRoutingCaches());
+}
+
+/*
+=============
+ConfigureRetailAreaPropagationFixture
+
+Build a cluster graph that exposes retail FIFO order and equal-time retention.
+=============
+*/
+static void ConfigureRetailAreaPropagationFixture(aas_debug_test_context_t *context)
+{
+	assert_non_null(context);
+	assert_null(context->clusters);
+	assert_null(context->portals);
+
+	AAS_ClearReachabilityData();
+	AAS_FreeAllRoutingCaches();
+	free(context->areas);
+	free(context->areasettings);
+	free(context->reachability);
+	context->areas = NULL;
+	context->areasettings = NULL;
+	context->reachability = NULL;
+
+	aasworld.numAreas = 6;
+	aasworld.numAreaSettings = aasworld.numAreas;
+	aasworld.numReachability = 7;
+	context->areas =
+		(aas_area_t *)calloc((size_t)aasworld.numAreas, sizeof(aas_area_t));
+	context->areasettings = (aas_areasettings_t *)calloc(
+		(size_t)aasworld.numAreaSettings,
+		sizeof(aas_areasettings_t));
+	context->reachability = (aas_reachability_t *)calloc(
+		(size_t)aasworld.numReachability,
+		sizeof(aas_reachability_t));
+	assert_non_null(context->areas);
+	assert_non_null(context->areasettings);
+	assert_non_null(context->reachability);
+	aasworld.areas = context->areas;
+	aasworld.areasettings = context->areasettings;
+	aasworld.reachability = context->reachability;
+
+	aasworld.numClusters = 2;
+	context->clusters =
+		(aas_cluster_t *)calloc((size_t)aasworld.numClusters, sizeof(aas_cluster_t));
+	assert_non_null(context->clusters);
+	aasworld.clusters = context->clusters;
+	context->clusters[1].numareas = 5;
+	aasworld.numPortals = 0;
+	aasworld.portals = NULL;
+
+	for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
+	{
+		context->areas[areanum].areanum = areanum;
+		context->areasettings[areanum].cluster = 1;
+		context->areasettings[areanum].clusterareanum = areanum - 1;
+		context->areasettings[areanum].presencetype = PRESENCE_NORMAL;
+	}
+	context->areasettings[1].firstreachablearea = 1;
+	context->areasettings[1].numreachableareas = 2;
+	context->areasettings[2].firstreachablearea = 3;
+	context->areasettings[2].numreachableareas = 1;
+	context->areasettings[3].firstreachablearea = 4;
+	context->areasettings[3].numreachableareas = 1;
+	context->areasettings[4].firstreachablearea = 5;
+	context->areasettings[4].numreachableareas = 1;
+	context->areasettings[5].firstreachablearea = 6;
+	context->areasettings[5].numreachableareas = 1;
+
+	context->reachability[1].areanum = 2;
+	context->reachability[1].traveltype = TRAVEL_WALK;
+	context->reachability[1].traveltime = 5;
+	context->reachability[1].start[0] = 10.0f;
+	context->reachability[2].areanum = 3;
+	context->reachability[2].traveltype = TRAVEL_WALK;
+	context->reachability[2].traveltime = 5;
+	context->reachability[2].start[0] = 100.0f;
+	context->reachability[3].areanum = 4;
+	context->reachability[3].traveltype = TRAVEL_WALK;
+	context->reachability[3].traveltime = 10;
+	context->reachability[4].areanum = 4;
+	context->reachability[4].traveltype = TRAVEL_WALK;
+	context->reachability[4].traveltime = 10;
+	context->reachability[5].areanum = 4;
+	context->reachability[5].traveltype = TRAVEL_JUMP;
+	context->reachability[5].traveltime = 1;
+	context->reachability[6].areanum = 1;
+	context->reachability[6].traveltype = TRAVEL_WALK;
+	context->reachability[6].traveltime = 5;
+
+	assert_int_equal(AAS_PrepareReachability(), BLERR_NOERROR);
+	assert_true(AAS_InitRetailRoutingCaches());
+}
+
+/*
+=============
+ResetRetailPortalGraphFixture
+
+Replace the default map with cleared routing arrays for a synthetic portal graph.
+=============
+*/
+static void ResetRetailPortalGraphFixture(aas_debug_test_context_t *context,
+	int numareas,
+	int numreachability,
+	int numclusters,
+	int numportals,
+	int portalindexsize)
+{
+	assert_non_null(context);
+
+	AAS_ClearReachabilityData();
+	AAS_FreeAllRoutingCaches();
+	free(context->areas);
+	free(context->areasettings);
+	free(context->reachability);
+	free(context->clusters);
+	free(context->portals);
+	free(context->portalIndex);
+	context->areas = NULL;
+	context->areasettings = NULL;
+	context->reachability = NULL;
+	context->clusters = NULL;
+	context->portals = NULL;
+	context->portalIndex = NULL;
+
+	aasworld.numAreas = numareas;
+	aasworld.numAreaSettings = numareas;
+	aasworld.numReachability = numreachability;
+	aasworld.numClusters = numclusters;
+	aasworld.numPortals = numportals;
+	aasworld.portalIndexSize = portalindexsize;
+	context->areas =
+		(aas_area_t *)calloc((size_t)numareas, sizeof(aas_area_t));
+	context->areasettings = (aas_areasettings_t *)calloc(
+		(size_t)numareas,
+		sizeof(aas_areasettings_t));
+	context->reachability = (aas_reachability_t *)calloc(
+		(size_t)numreachability,
+		sizeof(aas_reachability_t));
+	context->clusters =
+		(aas_cluster_t *)calloc((size_t)numclusters, sizeof(aas_cluster_t));
+	context->portals =
+		(aas_portal_t *)calloc((size_t)numportals, sizeof(aas_portal_t));
+	context->portalIndex =
+		(int *)calloc((size_t)portalindexsize, sizeof(int));
+	assert_non_null(context->areas);
+	assert_non_null(context->areasettings);
+	assert_non_null(context->reachability);
+	assert_non_null(context->clusters);
+	assert_non_null(context->portals);
+	assert_non_null(context->portalIndex);
+	aasworld.areas = context->areas;
+	aasworld.areasettings = context->areasettings;
+	aasworld.reachability = context->reachability;
+	aasworld.clusters = context->clusters;
+	aasworld.portals = context->portals;
+	aasworld.portalIndex = context->portalIndex;
+
+	for (int areanum = 1; areanum < numareas; ++areanum)
+	{
+		context->areas[areanum].areanum = areanum;
+		context->areasettings[areanum].presencetype = PRESENCE_NORMAL;
+	}
+}
+
+/*
+=============
+ConfigureRetailPortalLineFixture
+
+Build a bidirectional two-portal chain spanning three clusters.
+=============
+*/
+static void ConfigureRetailPortalLineFixture(aas_debug_test_context_t *context)
+{
+	ResetRetailPortalGraphFixture(context, 6, 7, 4, 3, 4);
+
+	context->clusters[1].numareas = 2;
+	context->clusters[1].numportals = 1;
+	context->clusters[1].firstportal = 0;
+	context->clusters[2].numareas = 2;
+	context->clusters[2].numportals = 2;
+	context->clusters[2].firstportal = 1;
+	context->clusters[3].numareas = 2;
+	context->clusters[3].numportals = 1;
+	context->clusters[3].firstportal = 3;
+	context->portalIndex[0] = 1;
+	context->portalIndex[1] = 1;
+	context->portalIndex[2] = 2;
+	context->portalIndex[3] = 2;
+
+	context->portals[1].areanum = 4;
+	context->portals[1].frontcluster = 1;
+	context->portals[1].backcluster = 2;
+	context->portals[1].clusterareanum[0] = 1;
+	context->portals[1].clusterareanum[1] = 0;
+	context->portals[2].areanum = 5;
+	context->portals[2].frontcluster = 2;
+	context->portals[2].backcluster = 3;
+	context->portals[2].clusterareanum[0] = 1;
+	context->portals[2].clusterareanum[1] = 1;
+
+	context->areasettings[1].cluster = 1;
+	context->areasettings[1].clusterareanum = 0;
+	context->areasettings[1].firstreachablearea = 1;
+	context->areasettings[1].numreachableareas = 1;
+	context->areasettings[3].cluster = 3;
+	context->areasettings[3].clusterareanum = 0;
+	context->areasettings[3].firstreachablearea = 2;
+	context->areasettings[3].numreachableareas = 1;
+	context->areasettings[4].cluster = -1;
+	context->areasettings[4].firstreachablearea = 3;
+	context->areasettings[4].numreachableareas = 2;
+	context->areasettings[5].cluster = -2;
+	context->areasettings[5].firstreachablearea = 5;
+	context->areasettings[5].numreachableareas = 2;
+
+	context->reachability[1].areanum = 4;
+	context->reachability[2].areanum = 5;
+	context->reachability[3].areanum = 1;
+	context->reachability[4].areanum = 5;
+	context->reachability[5].areanum = 4;
+	context->reachability[6].areanum = 3;
+	for (int reachnum = 1; reachnum < aasworld.numReachability; ++reachnum)
+	{
+		context->reachability[reachnum].traveltype = TRAVEL_WALK;
+		context->reachability[reachnum].traveltime = 4;
+	}
+
+	assert_int_equal(AAS_PrepareReachability(), BLERR_NOERROR);
+	assert_true(AAS_InitRetailRoutingCaches());
+}
+
+/*
+=============
+ConfigureRetailPortalEqualFixture
+
+Build a diamond whose equal third-portal costs expose retained FIFO state.
+=============
+*/
+static void ConfigureRetailPortalEqualFixture(aas_debug_test_context_t *context)
+{
+	ResetRetailPortalGraphFixture(context, 7, 6, 4, 4, 6);
+
+	context->clusters[1].numareas = 3;
+	context->clusters[1].numportals = 2;
+	context->clusters[1].firstportal = 0;
+	context->clusters[2].numareas = 2;
+	context->clusters[2].numportals = 2;
+	context->clusters[2].firstportal = 2;
+	context->clusters[3].numareas = 2;
+	context->clusters[3].numportals = 2;
+	context->clusters[3].firstportal = 4;
+	context->portalIndex[0] = 1;
+	context->portalIndex[1] = 2;
+	context->portalIndex[2] = 1;
+	context->portalIndex[3] = 3;
+	context->portalIndex[4] = 2;
+	context->portalIndex[5] = 3;
+
+	context->portals[1].areanum = 4;
+	context->portals[1].frontcluster = 1;
+	context->portals[1].backcluster = 2;
+	context->portals[1].clusterareanum[0] = 1;
+	context->portals[1].clusterareanum[1] = 0;
+	context->portals[2].areanum = 5;
+	context->portals[2].frontcluster = 1;
+	context->portals[2].backcluster = 3;
+	context->portals[2].clusterareanum[0] = 2;
+	context->portals[2].clusterareanum[1] = 0;
+	context->portals[3].areanum = 6;
+	context->portals[3].frontcluster = 2;
+	context->portals[3].backcluster = 3;
+	context->portals[3].clusterareanum[0] = 1;
+	context->portals[3].clusterareanum[1] = 1;
+
+	context->areasettings[1].cluster = 1;
+	context->areasettings[1].clusterareanum = 0;
+	context->areasettings[1].firstreachablearea = 1;
+	context->areasettings[1].numreachableareas = 1;
+	context->areasettings[4].cluster = -1;
+	context->areasettings[4].firstreachablearea = 2;
+	context->areasettings[4].numreachableareas = 1;
+	context->areasettings[5].cluster = -2;
+	context->areasettings[5].firstreachablearea = 3;
+	context->areasettings[5].numreachableareas = 1;
+	context->areasettings[6].cluster = -3;
+	context->areasettings[6].firstreachablearea = 4;
+	context->areasettings[6].numreachableareas = 2;
+
+	context->reachability[1].areanum = 4;
+	context->reachability[2].areanum = 1;
+	context->reachability[3].areanum = 1;
+	context->reachability[4].areanum = 4;
+	context->reachability[5].areanum = 5;
+	for (int reachnum = 1; reachnum < aasworld.numReachability; ++reachnum)
+	{
+		context->reachability[reachnum].traveltype = TRAVEL_WALK;
+		context->reachability[reachnum].traveltime = 4;
+	}
+
+	assert_int_equal(AAS_PrepareReachability(), BLERR_NOERROR);
+	assert_true(AAS_InitRetailRoutingCaches());
+}
+
 static int setup_aas_debug(void **state)
 {
     aas_debug_test_context_t *context = (aas_debug_test_context_t *)calloc(1, sizeof(*context));
@@ -509,11 +930,22 @@ static int setup_aas_debug(void **state)
     return 0;
 }
 
+/*
+=============
+teardown_aas_debug
+
+Release prepared reachability metadata and the in-memory debug fixture.
+=============
+*/
 static int teardown_aas_debug(void **state)
 {
     aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
-    BotInterface_SetImportTable(NULL);
-    Q2Bridge_ClearImportTable();
+	BotInterface_SetImportTable(NULL);
+	Q2Bridge_ClearImportTable();
+	AAS_ClearReachabilityData();
+	AAS_FreeAllRoutingCaches();
+	free(aasworld.areacontentstravelflags);
+	aasworld.areacontentstravelflags = NULL;
 
     if (context != NULL)
     {
@@ -565,6 +997,10 @@ static int teardown_aas_debug(void **state)
         {
             free(context->clusters);
         }
+		if (context->portalIndex != NULL)
+		{
+			free(context->portalIndex);
+		}
 		if (context->bspModels != NULL)
 		{
 			free(context->bspModels);
@@ -601,6 +1037,13 @@ static int teardown_aas_debug(void **state)
     return 0;
 }
 
+/*
+=============
+test_bot_test_dumps_area_info
+
+Verify area diagnostics enumerate the area's authoritative outgoing span.
+=============
+*/
 static void test_bot_test_dumps_area_info(void **state)
 {
     aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
@@ -614,7 +1057,48 @@ static void test_bot_test_dumps_area_info(void **state)
     assert_true(context->print_count > 0);
     assert_non_null(Mock_FindPrint(context, "bot_test entity 7"));
     assert_non_null(Mock_FindPrint(context, "area 2:"));
-    assert_non_null(Mock_FindPrint(context, "reach[1]: 2 -> 3"));
+	assert_non_null(Mock_FindPrint(context, "reach[2]: 2 -> 3"));
+}
+
+/*
+=============
+test_bot_test_rejects_area_lump_count
+
+Ensure the terminal area-lump count is not accepted as a real area index.
+=============
+*/
+static void test_bot_test_rejects_area_lump_count(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	Mock_Reset(context);
+
+	vec3_t origin = {100.0f, 0.0f, 0.0f};
+	vec3_t angles = {0.0f, 0.0f, 0.0f};
+	AAS_DebugBotTest(7, "4", origin, angles);
+
+	assert_non_null(Mock_FindPrint(context, "area 2:"));
+	assert_null(Mock_FindPrint(context, "area 0:"));
+}
+
+/*
+=============
+test_bot_test_resolves_point_through_aas_tree
+
+Ensure point fallback follows the AAS node tree instead of overlapping bounds.
+=============
+*/
+static void test_bot_test_resolves_point_through_aas_tree(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	Mock_Reset(context);
+	context->areas[1].maxs[0] = 200.0f;
+
+	vec3_t origin = {100.0f, 0.0f, 0.0f};
+	vec3_t angles = {0.0f, 0.0f, 0.0f};
+	AAS_DebugBotTest(7, NULL, origin, angles);
+
+	assert_non_null(Mock_FindPrint(context, "area 2:"));
+	assert_null(Mock_FindPrint(context, "area 1:"));
 }
 
 static void test_aas_showpath_reports_path(void **state)
@@ -629,8 +1113,45 @@ static void test_aas_showpath_reports_path(void **state)
 
     assert_non_null(Mock_FindPrint(context, "aas_showpath start=1 goal=3"));
     assert_non_null(Mock_FindPrint(context, "step 0: 1 -> 2"));
-    assert_non_null(Mock_FindPrint(context, "step 1: 2 -> 3"));
-    assert_non_null(Mock_FindPrint(context, "total steps=2"));
+	assert_non_null(Mock_FindPrint(context, "step 1: 2 -> 3"));
+	assert_non_null(Mock_FindPrint(context, "total steps=2"));
+
+	free(aasworld.reachabilityFromArea);
+	aasworld.reachabilityFromArea = NULL;
+	Mock_Reset(context);
+	AAS_DebugShowPath(1, 3, start, goal);
+
+	assert_non_null(Mock_FindPrint(context, "step 0: 1 -> 2"));
+	assert_non_null(Mock_FindPrint(context, "step 1: 2 -> 3"));
+}
+
+/*
+=============
+test_aas_showpath_reports_unreachable_span
+
+Ensure empty or sentinel-based outgoing spans cannot use unrelated source data.
+=============
+*/
+static void test_aas_showpath_reports_unreachable_span(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	Mock_Reset(context);
+	context->areasettings[2].numreachableareas = 0;
+
+	vec3_t start = {0.0f, 0.0f, 0.0f};
+	vec3_t goal = {200.0f, 0.0f, 0.0f};
+	AAS_DebugShowPath(1, 3, start, goal);
+
+	assert_non_null(Mock_FindPrint(context, "no path found from 1 to 3"));
+	assert_null(Mock_FindPrint(context, "step 0:"));
+
+	Mock_Reset(context);
+	context->areasettings[2].firstreachablearea = 0;
+	context->areasettings[2].numreachableareas = 1;
+	AAS_DebugShowPath(1, 3, start, goal);
+
+	assert_non_null(Mock_FindPrint(context, "no path found from 1 to 3"));
+	assert_null(Mock_FindPrint(context, "step 0:"));
 }
 
 static void test_aas_showareas_lists_requested_areas(void **state)
@@ -647,6 +1168,33 @@ static void test_aas_showareas_lists_requested_areas(void **state)
     assert_non_null(Mock_FindPrint(context, "no reachability links from area 3"));
 }
 
+/*
+=============
+test_aas_showareas_excludes_area_lump_count
+
+Ensure the all-areas diagnostic omits the dummy zero and terminal count slot.
+=============
+*/
+static void test_aas_showareas_excludes_area_lump_count(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	Mock_Reset(context);
+
+	AAS_DebugShowAreas(NULL, 0U);
+
+	assert_non_null(Mock_FindPrint(context, "dumping all 3 areas"));
+	assert_non_null(Mock_FindPrint(context, "area 1:"));
+	assert_non_null(Mock_FindPrint(context, "area 3:"));
+	assert_null(Mock_FindPrint(context, "area 0:"));
+}
+
+/*
+=============
+test_aas_sample_helpers_use_loaded_planes_and_area_settings
+
+Verify sampling and reachability-copy helpers use the loaded AAS records.
+=============
+*/
 static void test_aas_sample_helpers_use_loaded_planes_and_area_settings(void **state)
 {
     aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
@@ -719,9 +1267,9 @@ static void test_aas_sample_helpers_use_loaded_planes_and_area_settings(void **s
     aas_reachability_t copied_reach;
     memset(&copied_reach, 0xff, sizeof(copied_reach));
     AAS_ReachabilityFromNum(1, &copied_reach);
-    assert_int_equal(copied_reach.areanum, 3);
-    assert_int_equal(copied_reach.traveltype, 9);
-    assert_int_equal(copied_reach.traveltime, 45);
+	assert_int_equal(copied_reach.areanum, 2);
+	assert_int_equal(copied_reach.traveltype, 7);
+	assert_int_equal(copied_reach.traveltime, 30);
 
     AAS_ReachabilityFromNum(99, &copied_reach);
     assert_int_equal(copied_reach.areanum, 0);
@@ -816,48 +1364,6 @@ static void test_aas_predict_route_uses_reachability_cache_and_stop_events(void 
     assert_int_equal(route.time, 206);
     assert_float_equal(route.endpos[0], 200.0f, 0.001f);
 
-    vec3_t goal = { 200.0f, 0.0f, 0.0f };
-    aas_altroutegoal_t altroutegoals[4];
-    memset(altroutegoals, 0, sizeof(altroutegoals));
-    int numaltroutegoals = AAS_AlternativeRouteGoals(origin,
-                                                     1,
-                                                     goal,
-                                                     3,
-                                                     TFL_DEFAULT,
-                                                     altroutegoals,
-                                                     (int)ARRAY_LEN(altroutegoals),
-                                                     ALTROUTEGOAL_ALL);
-    assert_int_equal(numaltroutegoals, 1);
-    assert_int_equal(altroutegoals[0].areanum, 2);
-    assert_float_equal(altroutegoals[0].origin[0], 100.0f, 0.001f);
-    assert_int_equal(altroutegoals[0].starttraveltime, 31);
-    assert_int_equal(altroutegoals[0].goaltraveltime, 45);
-    assert_int_equal(altroutegoals[0].extratraveltime, 0);
-
-    assert_int_equal(AAS_AlternativeRouteGoals(origin,
-                                               1,
-                                               goal,
-                                               3,
-                                               TFL_DEFAULT,
-                                               altroutegoals,
-                                               (int)ARRAY_LEN(altroutegoals),
-                                               ALTROUTEGOAL_CLUSTERPORTALS),
-                     0);
-
-    context->areasettings[2].contents |= AAS_AREACONTENTS_CLUSTERPORTAL;
-    memset(altroutegoals, 0, sizeof(altroutegoals));
-    numaltroutegoals = AAS_AlternativeRouteGoals(origin,
-                                                1,
-                                                goal,
-                                                3,
-                                                TFL_DEFAULT,
-                                                altroutegoals,
-                                                (int)ARRAY_LEN(altroutegoals),
-                                                ALTROUTEGOAL_CLUSTERPORTALS);
-    assert_int_equal(numaltroutegoals, 1);
-    assert_int_equal(altroutegoals[0].areanum, 2);
-    context->areasettings[2].contents = 0;
-
     assert_int_equal(AAS_BridgeWalkable(2), qfalse);
     assert_int_equal(AAS_AreaVisible(1, 2), qfalse);
 
@@ -946,7 +1452,143 @@ static void test_aas_predict_route_uses_reachability_cache_and_stop_events(void 
     assert_int_equal(route.stopevent, RSE_NOROUTE);
     assert_int_equal(AAS_EnableRoutingArea(2, 1), qfalse);
 
-    CleanupRoutePredictionFixture();
+	CleanupRoutePredictionFixture();
+}
+
+/*
+=============
+test_retail_alternative_route_reuses_map_scratch_and_face_order
+
+Pin retail endpoint lookup, route-portal filtering, face flooding, and lifetime.
+=============
+*/
+static void test_retail_alternative_route_reuses_map_scratch_and_face_order(
+	void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)(*state);
+	Mock_Reset(context);
+	ConfigureRoutePredictionFixture(context);
+	ConfigureAlternativeRouteFaceFixture(context);
+
+	aas_node_t *savednodes = aasworld.nodes;
+	int savednumnodes = aasworld.numNodes;
+	aasworld.nodes = NULL;
+	aasworld.numNodes = 0;
+
+	vec3_t start = { 0.0f, 0.0f, 0.0f };
+	vec3_t goal = { 200.0f, 0.0f, 0.0f };
+	aas_altroutegoal_t routegoals[4];
+
+	for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
+	{
+		context->areasettings[areanum].contents = 0;
+	}
+	context->areasettings[1].contents = AAS_AREACONTENTS_ROUTEPORTAL;
+
+	assert_int_equal(
+		AAS_AreaTravelTimeToGoalArea(1, NULL, 3, TFL_DEFAULT),
+		76);
+	memset(routegoals, 0, sizeof(routegoals));
+	assert_int_equal(AAS_AlternativeRouteGoals(start,
+		3,
+		goal,
+		1,
+		TFL_DEFAULT,
+		routegoals,
+		(int)ARRAY_LEN(routegoals),
+		ALTROUTEGOAL_VIEWPORTALS),
+		1);
+	assert_int_equal(routegoals[0].areanum, 1);
+	assert_int_equal(routegoals[0].starttraveltime, 1);
+	assert_int_equal(routegoals[0].goaltraveltime, 76);
+	assert_int_equal(routegoals[0].extratraveltime, 1);
+	assert_non_null(Mock_FindPrint(context, "1 alternative route goals"));
+
+	context->areasettings[2].contents = AAS_AREACONTENTS_ROUTEPORTAL;
+	memset(routegoals, 0, sizeof(routegoals));
+	assert_int_equal(AAS_AlternativeRouteGoals(start,
+		0,
+		goal,
+		0,
+		TFL_DEFAULT,
+		routegoals,
+		(int)ARRAY_LEN(routegoals),
+		ALTROUTEGOAL_ALL),
+		1);
+	assert_int_equal(routegoals[0].areanum, 1);
+
+	context->areasettings[3].contents = AAS_AREACONTENTS_ROUTEPORTAL;
+	memset(routegoals, 0, sizeof(routegoals));
+	assert_int_equal(AAS_AlternativeRouteGoals(start,
+		1,
+		goal,
+		3,
+		TFL_DEFAULT,
+		routegoals,
+		(int)ARRAY_LEN(routegoals),
+		ALTROUTEGOAL_ALL),
+		1);
+	assert_int_equal(routegoals[0].areanum, 2);
+	assert_float_equal(routegoals[0].origin[0], 100.0f, 0.001f);
+	assert_int_equal(routegoals[0].starttraveltime, 30);
+	assert_int_equal(routegoals[0].goaltraveltime, 45);
+	assert_int_equal(routegoals[0].extratraveltime, UINT16_MAX);
+
+	context->areasettings[2].contents = 0;
+	memset(routegoals, 0, sizeof(routegoals));
+	assert_int_equal(AAS_AlternativeRouteGoals(start,
+		1,
+		goal,
+		3,
+		TFL_DEFAULT,
+		routegoals,
+		(int)ARRAY_LEN(routegoals),
+		ALTROUTEGOAL_ALL),
+		2);
+	assert_int_equal(routegoals[0].areanum, 1);
+	assert_int_equal(routegoals[1].areanum, 3);
+
+	context->areasettings[1].contents = 0;
+	context->areasettings[2].contents = AAS_AREACONTENTS_ROUTEPORTAL;
+	context->areasettings[3].contents = 0;
+	AAS_InvalidateRouteCache();
+	memset(routegoals, 0, sizeof(routegoals));
+	assert_int_equal(AAS_AlternativeRouteGoals(start,
+		1,
+		goal,
+		3,
+		TFL_DEFAULT,
+		routegoals,
+		(int)ARRAY_LEN(routegoals),
+		ALTROUTEGOAL_ALL),
+		1);
+	assert_int_equal(routegoals[0].areanum, 2);
+
+	AAS_FreeAllRoutingCaches();
+	assert_int_equal(AAS_AlternativeRouteGoals(start,
+		1,
+		goal,
+		3,
+		TFL_DEFAULT,
+		routegoals,
+		(int)ARRAY_LEN(routegoals),
+		ALTROUTEGOAL_ALL),
+		0);
+	assert_true(AAS_InitRetailRoutingCaches());
+	assert_int_equal(AAS_AlternativeRouteGoals(start,
+		1,
+		goal,
+		3,
+		TFL_DEFAULT,
+		routegoals,
+		(int)ARRAY_LEN(routegoals),
+		ALTROUTEGOAL_ALL),
+		1);
+
+	aasworld.nodes = savednodes;
+	aasworld.numNodes = savednumnodes;
+	CleanupRoutePredictionFixture();
 }
 
 static void test_aas_predict_route_checks_generated_reachability_pass_areas(void **state)
@@ -1049,7 +1691,7 @@ static void test_aas_trace_client_bbox_uses_presence_and_tree_hits(void **state)
     assert_float_equal(solid.endpos[0], 49.75f, 0.0001f);
     assert_int_equal(solid.area, 0);
     assert_int_equal(solid.lastarea, 1);
-    assert_int_equal(solid.planenum, 0);
+    assert_int_equal(solid.planenum, 1);
 
     aas_trace_t face_trace;
     memset(&face_trace, 0, sizeof(face_trace));
@@ -1064,6 +1706,171 @@ static void test_aas_trace_client_bbox_uses_presence_and_tree_hits(void **state)
     face_trace.startsolid = qtrue;
     VectorSet(face_trace.endpos, 100.0f, 0.0f, 0.0f);
     assert_null(AAS_TraceEndFace(&face_trace));
+}
+
+/*
+=============
+test_retail_client_bbox_trace_plane_band_clamp_and_presence_mask
+
+Pin the 0x1001b3f3 plane band, 0x1001b497 clamp, and direct presence mask.
+=============
+*/
+static void test_retail_client_bbox_trace_plane_band_clamp_and_presence_mask(
+	void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)(*state);
+	Mock_Reset(context);
+
+	vec3_t nearplane = {49.99975f, 0.0f, 0.0f};
+	aas_trace_t band = AAS_TraceClientBBox(nearplane,
+		nearplane,
+		PRESENCE_CROUCH,
+		-1);
+	assert_false(band.startsolid);
+	assert_float_equal(band.fraction, 1.0f, 0.00001f);
+	assert_int_equal(band.lastarea, 2);
+
+	vec3_t frontpoint = {100.0f, 0.0f, 0.0f};
+	aas_trace_t presence = AAS_TraceClientBBox(frontpoint,
+		frontpoint,
+		PRESENCE_NONE,
+		-1);
+	assert_true(presence.startsolid);
+	assert_float_equal(presence.fraction, 0.0f, 0.00001f);
+	assert_float_equal(presence.endpos[0], frontpoint[0], 0.00001f);
+	assert_int_equal(presence.area, 2);
+
+	int savedbackchild = context->nodes[1].children[1];
+	context->nodes[1].children[1] = 0;
+	vec3_t clampstart = {50.01f, 0.0f, 0.0f};
+	vec3_t clampend = {49.0f, 0.0f, 0.0f};
+	aas_trace_t clamped = AAS_TraceClientBBox(clampstart,
+		clampend,
+		PRESENCE_CROUCH,
+		-1);
+	context->nodes[1].children[1] = savedbackchild;
+
+	assert_true(clamped.startsolid);
+	assert_float_equal(clamped.fraction, 0.0f, 0.00001f);
+	assert_float_equal(clamped.endpos[0], clampstart[0], 0.00001f);
+	assert_int_equal(clamped.lastarea, 2);
+	assert_int_equal(clamped.area, 0);
+	assert_int_equal(clamped.planenum, 0);
+}
+
+/*
+=============
+test_retail_client_bbox_trace_preserves_link_order_and_pass_boundary
+
+Verify equal entity hits retain list-head order and negative passent skips all.
+=============
+*/
+static void test_retail_client_bbox_trace_preserves_link_order_and_pass_boundary(
+	void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)(*state);
+	Mock_Reset(context);
+
+	AASEntityFrame entity;
+	memset(&entity, 0, sizeof(entity));
+	entity.solid = SOLID_BBOX;
+	entity.bounds_dirty = true;
+	entity.origin_dirty = true;
+	VectorSet(entity.origin, 75.0f, 0.0f, 0.0f);
+	VectorSet(entity.previous_origin, 75.0f, 0.0f, 0.0f);
+	VectorSet(entity.mins, -4.0f, -8.0f, -8.0f);
+	VectorSet(entity.maxs, 4.0f, 8.0f, 8.0f);
+
+	assert_int_equal(AAS_UpdateEntity(4, &entity), BLERR_NOERROR);
+	assert_int_equal(AAS_UpdateEntity(5, &entity), BLERR_NOERROR);
+	assert_non_null(aasworld.areaEntityLists[2]);
+	assert_int_equal(aasworld.areaEntityLists[2]->entnum, 5);
+
+	vec3_t start = {0.0f, 0.0f, 0.0f};
+	vec3_t end = {100.0f, 0.0f, 0.0f};
+	aas_trace_t headhit = AAS_TraceClientBBox(start,
+		end,
+		PRESENCE_CROUCH,
+		99);
+	assert_int_equal(headhit.ent, 5);
+	assert_float_equal(headhit.fraction, 0.56f, 0.001f);
+	assert_int_equal(headhit.lastarea, 1);
+	assert_int_equal(headhit.area, 0);
+	assert_int_equal(headhit.planenum, 0);
+
+	aas_trace_t passedhead = AAS_TraceClientBBox(start,
+		end,
+		PRESENCE_CROUCH,
+		5);
+	assert_int_equal(passedhead.ent, 4);
+	assert_float_equal(passedhead.fraction, 0.56f, 0.001f);
+
+	aas_trace_t disabled = AAS_TraceClientBBox(start,
+		end,
+		PRESENCE_CROUCH,
+		-1);
+	assert_int_equal(disabled.ent, 0);
+	assert_float_equal(disabled.fraction, 1.0f, 0.00001f);
+	assert_int_equal(disabled.lastarea, 2);
+
+	assert_int_equal(AAS_UpdateEntity(4, NULL), BLERR_NOERROR);
+	assert_int_equal(AAS_UpdateEntity(5, NULL), BLERR_NOERROR);
+}
+
+/*
+=============
+test_retail_client_bbox_trace_guards_64_entry_stack_geometry
+
+Pin the retail 0x800-byte stack geometry while retaining a safe overflow exit.
+=============
+*/
+static void test_retail_client_bbox_trace_guards_64_entry_stack_geometry(
+	void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)(*state);
+	Mock_Reset(context);
+
+	free(context->planes);
+	aasworld.numPlanes = 64;
+	context->planes = (aas_plane_t *)calloc(
+		(size_t)aasworld.numPlanes,
+		sizeof(*context->planes));
+	assert_non_null(context->planes);
+	aasworld.planes = context->planes;
+
+	free(context->nodes);
+	aasworld.numNodes = 65;
+	context->nodes = (aas_node_t *)calloc(
+		(size_t)aasworld.numNodes,
+		sizeof(*context->nodes));
+	assert_non_null(context->nodes);
+	aasworld.nodes = context->nodes;
+
+	for (int nodenum = 1; nodenum < aasworld.numNodes; ++nodenum)
+	{
+		int planenum = nodenum - 1;
+		VectorSet(context->planes[planenum].normal, 1.0f, 0.0f, 0.0f);
+		context->planes[planenum].dist = 100.0f - (float)nodenum;
+		context->nodes[nodenum].planenum = planenum;
+		context->nodes[nodenum].children[0] = -1;
+		context->nodes[nodenum].children[1] =
+			(nodenum + 1 < aasworld.numNodes) ? nodenum + 1 : -1;
+	}
+
+	vec3_t start = {0.0f, 0.0f, 0.0f};
+	vec3_t end = {100.0f, 0.0f, 0.0f};
+	aas_trace_t trace = AAS_TraceClientBBox(start,
+		end,
+		PRESENCE_CROUCH,
+		-1);
+	assert_false(trace.startsolid);
+	assert_float_equal(trace.fraction, 0.0f, 0.00001f);
+	assert_int_equal(trace.lastarea, 0);
+	assert_non_null(Mock_FindPrint(context,
+		"AAS_TraceBoundingBox: stack overflow"));
 }
 
 static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
@@ -1284,30 +2091,826 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 	aasworld.areaEntityListCount = 0U;
 }
 
+/*
+=============
+test_retail_route_cache_layout_tables_and_lookup
+
+Verify the x86 header layout, contiguous head tables, and exact list lookup.
+=============
+*/
+static void test_retail_route_cache_layout_tables_and_lookup(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailRouteCacheFixture(context);
+
+	assert_int_equal(sizeof(aas_retailroutingcache32_t), 0x2c);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, time), 0x00);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, cluster), 0x04);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, areanum), 0x08);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, origin), 0x0c);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, starttraveltime), 0x18);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, travelflags), 0x1c);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, prev), 0x20);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, next), 0x24);
+	assert_int_equal(offsetof(aas_retailroutingcache32_t, traveltimes), 0x28);
+	assert_int_equal(AAS_RetailRoutingCacheSize(0), 0x2c);
+	assert_int_equal(AAS_RetailRoutingCacheSize(3), 0x32);
+	assert_int_equal(AAS_RetailRoutingCacheSize(-1), 0);
+
+	assert_non_null(aasworld.retailClusterAreaCache);
+	assert_non_null(aasworld.retailPortalCache);
+	assert_ptr_equal(aasworld.retailClusterAreaCache[1],
+		aasworld.retailClusterAreaCache[0] + 2);
+	for (int clusterareanum = 0; clusterareanum < 2; ++clusterareanum)
+	{
+		assert_null(aasworld.retailClusterAreaCache[0][clusterareanum]);
+	}
+	for (int clusterareanum = 0; clusterareanum < 3; ++clusterareanum)
+	{
+		assert_null(aasworld.retailClusterAreaCache[1][clusterareanum]);
+	}
+	for (int areanum = 0; areanum < aasworld.numAreas; ++areanum)
+	{
+		assert_null(aasworld.retailPortalCache[areanum]);
+	}
+
+	aasworld.time = 2.5f;
+	aas_retailroutingcache_t *area =
+		AAS_GetRetailAreaRoutingCache(1, 2, 0x1234);
+	assert_non_null(area);
+	assert_ptr_equal(aasworld.retailClusterAreaCache[1][1], area);
+	assert_int_equal(area->cluster, 1);
+	assert_int_equal(area->areanum, 2);
+	assert_int_equal(area->travelflags, 0x1234);
+	assert_float_equal(area->time, 2.5f, 0.001f);
+	assert_float_equal(area->starttraveltime, 1.0f, 0.001f);
+	assert_float_equal(area->origin[0], context->areas[2].center[0], 0.001f);
+	assert_null(area->prev);
+	assert_null(area->next);
+	for (int index = 0; index < context->clusters[1].numareas; ++index)
+	{
+		assert_int_equal(area->traveltimes[index], 0);
+	}
+
+	aasworld.time = 4.0f;
+	assert_ptr_equal(AAS_GetRetailAreaRoutingCache(1, 2, 0x1234), area);
+	assert_float_equal(area->time, 4.0f, 0.001f);
+
+	aas_retailroutingcache_t *secondarea =
+		AAS_GetRetailAreaRoutingCache(1, 2, 0x5678);
+	assert_non_null(secondarea);
+	assert_ptr_equal(aasworld.retailClusterAreaCache[1][1], secondarea);
+	assert_ptr_equal(secondarea->next, area);
+	assert_ptr_equal(area->prev, secondarea);
+	assert_null(secondarea->prev);
+
+	aas_retailroutingcache_t *portalarea =
+		AAS_GetRetailAreaRoutingCache(1, 3, 0x4567);
+	assert_non_null(portalarea);
+	assert_ptr_equal(aasworld.retailClusterAreaCache[1][2], portalarea);
+
+	aas_retailroutingcache_t *portal =
+		AAS_GetRetailPortalRoutingCache(1, 2, 0x2222);
+	assert_non_null(portal);
+	assert_ptr_equal(aasworld.retailPortalCache[2], portal);
+	assert_int_equal(portal->cluster, 1);
+	assert_int_equal(portal->areanum, 2);
+	assert_int_equal(portal->travelflags, 0x2222);
+	assert_float_equal(portal->origin[0], context->areas[2].center[0], 0.001f);
+	for (int index = 0; index < aasworld.numPortals; ++index)
+	{
+		assert_int_equal(portal->traveltimes[index], 0);
+	}
+
+	aas_retailroutingcache_t *secondportal =
+		AAS_GetRetailPortalRoutingCache(0, 2, 0x3333);
+	assert_non_null(secondportal);
+	assert_ptr_equal(aasworld.retailPortalCache[2], secondportal);
+	assert_ptr_equal(secondportal->next, portal);
+	assert_ptr_equal(portal->prev, secondportal);
+
+	AAS_FreeAllRoutingCaches();
+	assert_null(aasworld.retailClusterAreaCache);
+	assert_null(aasworld.retailPortalCache);
+}
+
+/*
+=============
+test_retail_route_cache_strict_fifteen_second_aging
+
+Verify strict 15-second expiry and correct middle/tail list unlinking.
+=============
+*/
+static void test_retail_route_cache_strict_fifteen_second_aging(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailRouteCacheFixture(context);
+
+	aasworld.time = 0.0f;
+	assert_non_null(AAS_GetRetailAreaRoutingCache(1, 2, 11));
+	assert_non_null(AAS_GetRetailPortalRoutingCache(1, 2, 11));
+	aasworld.time = 5.0f;
+	aas_retailroutingcache_t *boundaryarea =
+		AAS_GetRetailAreaRoutingCache(1, 2, 22);
+	aas_retailroutingcache_t *boundaryportal =
+		AAS_GetRetailPortalRoutingCache(1, 2, 22);
+	assert_non_null(boundaryarea);
+	assert_non_null(boundaryportal);
+	aasworld.time = 10.0f;
+	aas_retailroutingcache_t *fresharea =
+		AAS_GetRetailAreaRoutingCache(1, 2, 33);
+	aas_retailroutingcache_t *freshportal =
+		AAS_GetRetailPortalRoutingCache(1, 2, 33);
+	assert_non_null(fresharea);
+	assert_non_null(freshportal);
+
+	aasworld.time = 20.0f;
+	AAS_AgeRetailRoutingCaches();
+	assert_ptr_equal(aasworld.retailClusterAreaCache[1][1], fresharea);
+	assert_ptr_equal(fresharea->next, boundaryarea);
+	assert_ptr_equal(boundaryarea->prev, fresharea);
+	assert_null(boundaryarea->next);
+	assert_ptr_equal(aasworld.retailPortalCache[2], freshportal);
+	assert_ptr_equal(freshportal->next, boundaryportal);
+	assert_ptr_equal(boundaryportal->prev, freshportal);
+	assert_null(boundaryportal->next);
+
+	assert_ptr_equal(AAS_GetRetailAreaRoutingCache(1, 2, 22), boundaryarea);
+	assert_float_equal(boundaryarea->time, 20.0f, 0.001f);
+	aasworld.time = 25.0f;
+	AAS_AgeRetailRoutingCaches();
+	assert_ptr_equal(aasworld.retailClusterAreaCache[1][1], fresharea);
+	assert_ptr_equal(fresharea->next, boundaryarea);
+	assert_ptr_equal(aasworld.retailPortalCache[2], freshportal);
+	assert_null(freshportal->next);
+
+	aasworld.time = 25.1f;
+	AAS_AgeRetailRoutingCaches();
+	assert_ptr_equal(aasworld.retailClusterAreaCache[1][1], boundaryarea);
+	assert_null(boundaryarea->prev);
+	assert_null(boundaryarea->next);
+	assert_null(aasworld.retailPortalCache[2]);
+
+	aasworld.time = 35.0f;
+	AAS_AgeRetailRoutingCaches();
+	assert_ptr_equal(aasworld.retailClusterAreaCache[1][1], boundaryarea);
+	aasworld.time = 35.1f;
+	AAS_AgeRetailRoutingCaches();
+	assert_null(aasworld.retailClusterAreaCache[1][1]);
+}
+
+/*
+=============
+test_retail_area_cache_propagates_fifo_and_counts
+
+Pin reverse-list order, equal-time route retention, and update accounting.
+=============
+*/
+static void test_retail_area_cache_propagates_fifo_and_counts(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailAreaPropagationFixture(context);
+	AAS_RouteFrameResetDiagnostics();
+
+	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
+	aas_retailroutingcache_t *cache =
+		AAS_GetRetailAreaRoutingCache(1, 4, travelflags);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[0], 18);
+	assert_int_equal(cache->traveltimes[1], 12);
+	assert_int_equal(cache->traveltimes[2], 12);
+	assert_int_equal(cache->traveltimes[3], 1);
+	assert_int_equal(cache->traveltimes[4], 56);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 1);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 1);
+
+	aasworld.time = 3.0f;
+	assert_ptr_equal(AAS_GetRetailAreaRoutingCache(1, 4, travelflags), cache);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 1);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 1);
+
+	AAS_RouteFrameUpdate();
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 1);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 0);
+	assert_non_null(AAS_GetRetailAreaRoutingCache(1,
+		4,
+		travelflags | 0x40000000));
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 2);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 1);
+}
+
+/*
+=============
+test_retail_area_cache_filters_travel_contents_and_cluster
+
+Pin retail reach type, destination contents, and source-cluster filtering.
+=============
+*/
+static void test_retail_area_cache_filters_travel_contents_and_cluster(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailAreaPropagationFixture(context);
+
+	aas_retailroutingcache_t *cache =
+		AAS_GetRetailAreaRoutingCache(1, 4, TEST_RETAIL_TFL_AIR);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[0], 0);
+	assert_int_equal(cache->traveltimes[1], 0);
+	assert_int_equal(cache->traveltimes[2], 0);
+	assert_int_equal(cache->traveltimes[3], 1);
+	assert_int_equal(cache->traveltimes[4], 0);
+
+	assert_true(AAS_InitRetailRoutingCaches());
+	context->areasettings[4].contents = AAS_AREACONTENTS_WATER;
+	cache = AAS_GetRetailAreaRoutingCache(1,
+		4,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[0], 0);
+	assert_int_equal(cache->traveltimes[1], 0);
+	assert_int_equal(cache->traveltimes[2], 0);
+	assert_int_equal(cache->traveltimes[3], 1);
+
+	assert_true(AAS_InitRetailRoutingCaches());
+	cache = AAS_GetRetailAreaRoutingCache(1,
+		4,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_WATER);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[0], 0);
+	assert_int_equal(cache->traveltimes[1], 12);
+	assert_int_equal(cache->traveltimes[2], 12);
+	assert_int_equal(cache->traveltimes[3], 1);
+	assert_int_equal(cache->traveltimes[4], 0);
+
+	assert_true(AAS_InitRetailRoutingCaches());
+	context->areasettings[5].cluster = 2;
+	cache = AAS_GetRetailAreaRoutingCache(1,
+		4,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_WATER |
+			TEST_RETAIL_TFL_AIR);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[0], 18);
+	assert_int_equal(cache->traveltimes[1], 12);
+	assert_int_equal(cache->traveltimes[2], 12);
+	assert_int_equal(cache->traveltimes[3], 1);
+	assert_int_equal(cache->traveltimes[4], 0);
+}
+
+/*
+=============
+test_retail_area_cache_wraps_ushort_travel_times
+
+Verify every propagation addition retains retail unsigned-short wraparound.
+=============
+*/
+static void test_retail_area_cache_wraps_ushort_travel_times(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailAreaPropagationFixture(context);
+	context->reachability[3].traveltime = 0xffffU;
+	context->reachability[4].traveltime = 0xffffU;
+
+	aas_retailroutingcache_t *cache = AAS_GetRetailAreaRoutingCache(1,
+		4,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[0], 7);
+	assert_int_equal(cache->traveltimes[1], 1);
+	assert_int_equal(cache->traveltimes[2], 1);
+	assert_int_equal(cache->traveltimes[3], 1);
+	assert_int_equal(cache->traveltimes[4], 45);
+}
+
+/*
+=============
+test_retail_portal_cache_propagates_both_sides_and_lifecycle
+
+Pin both cluster-side transitions, portal goal seeding, hits, and list aging.
+=============
+*/
+static void test_retail_portal_cache_propagates_both_sides_and_lifecycle(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailPortalLineFixture(context);
+	AAS_RouteFrameResetDiagnostics();
+	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
+
+	aasworld.time = 1.0f;
+	aas_retailroutingcache_t *backcache =
+		AAS_GetRetailPortalRoutingCache(3, 3, travelflags);
+	assert_non_null(backcache);
+	assert_int_equal(backcache->traveltimes[1], 13);
+	assert_int_equal(backcache->traveltimes[2], 7);
+	assert_float_equal(backcache->time, 1.0f, 0.001f);
+	assert_int_equal(AAS_RetailPortalCacheUpdateCount(), 1);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 3);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 3);
+
+	aasworld.time = 2.0f;
+	assert_ptr_equal(AAS_GetRetailPortalRoutingCache(3, 3, travelflags),
+		backcache);
+	assert_float_equal(backcache->time, 2.0f, 0.001f);
+	assert_int_equal(AAS_RetailPortalCacheUpdateCount(), 1);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 3);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 3);
+
+	aasworld.time = 3.0f;
+	aas_retailroutingcache_t *frontcache =
+		AAS_GetRetailPortalRoutingCache(1, 1, travelflags);
+	assert_non_null(frontcache);
+	assert_int_equal(frontcache->traveltimes[1], 7);
+	assert_int_equal(frontcache->traveltimes[2], 13);
+	assert_int_equal(AAS_RetailPortalCacheUpdateCount(), 2);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 6);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 6);
+
+	aasworld.time = 4.0f;
+	aas_retailroutingcache_t *seededcache =
+		AAS_GetRetailPortalRoutingCache(2, 5, travelflags);
+	assert_non_null(seededcache);
+	assert_int_equal(seededcache->traveltimes[1], 7);
+	assert_int_equal(seededcache->traveltimes[2], 1);
+	assert_int_equal(AAS_RetailPortalCacheUpdateCount(), 3);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 6);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 6);
+
+	aasworld.time = 5.0f;
+	aas_retailroutingcache_t *secondback =
+		AAS_GetRetailPortalRoutingCache(3,
+			3,
+			travelflags | 0x40000000);
+	assert_non_null(secondback);
+	assert_ptr_equal(aasworld.retailPortalCache[3], secondback);
+	assert_ptr_equal(secondback->next, backcache);
+	assert_ptr_equal(backcache->prev, secondback);
+	assert_int_equal(secondback->traveltimes[1], 13);
+	assert_int_equal(secondback->traveltimes[2], 7);
+	assert_int_equal(AAS_RetailPortalCacheUpdateCount(), 4);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 9);
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 9);
+
+	aasworld.time = 20.0f;
+	AAS_AgeRetailRoutingCaches();
+	assert_ptr_equal(aasworld.retailPortalCache[3], secondback);
+	assert_null(secondback->prev);
+	assert_null(secondback->next);
+	assert_null(aasworld.retailPortalCache[1]);
+	assert_null(aasworld.retailPortalCache[5]);
+	aasworld.time = 20.1f;
+	AAS_AgeRetailRoutingCaches();
+	assert_null(aasworld.retailPortalCache[3]);
+}
+
+/*
+=============
+test_retail_portal_cache_inherits_travel_and_content_masks
+
+Verify portal expansion uses the exactly filtered cluster-area cache results.
+=============
+*/
+static void test_retail_portal_cache_inherits_travel_and_content_masks(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailPortalLineFixture(context);
+	AAS_RouteFrameResetDiagnostics();
+
+	aas_retailroutingcache_t *cache =
+		AAS_GetRetailPortalRoutingCache(3, 3, TEST_RETAIL_TFL_AIR);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[1], 0);
+	assert_int_equal(cache->traveltimes[2], 0);
+
+	assert_true(AAS_InitRetailRoutingCaches());
+	context->areasettings[3].contents = AAS_AREACONTENTS_WATER;
+	cache = AAS_GetRetailPortalRoutingCache(3,
+		3,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[1], 0);
+	assert_int_equal(cache->traveltimes[2], 0);
+
+	assert_true(AAS_InitRetailRoutingCaches());
+	cache = AAS_GetRetailPortalRoutingCache(3,
+		3,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_WATER);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[1], 0);
+	assert_int_equal(cache->traveltimes[2], 7);
+	assert_int_equal(AAS_RetailPortalCacheUpdateCount(), 3);
+}
+
+/*
+=============
+test_retail_portal_cache_wraps_ushort_costs
+
+Verify cross-cluster accumulation wraps before the strict cache comparison.
+=============
+*/
+static void test_retail_portal_cache_wraps_ushort_costs(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailPortalLineFixture(context);
+	context->reachability[4].traveltime = 29998;
+	context->reachability[6].traveltime = 39998;
+	AAS_RouteFrameResetDiagnostics();
+
+	aas_retailroutingcache_t *cache = AAS_GetRetailPortalRoutingCache(3,
+		3,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[1], 4465);
+	assert_int_equal(cache->traveltimes[2], 40001);
+	assert_int_equal(AAS_RetailPortalCacheUpdateCount(), 1);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 3);
+}
+
+/*
+=============
+test_retail_portal_cache_retains_equal_fifo_side
+
+Pin strict equal-cost rejection by observing which cluster pops the shared portal.
+=============
+*/
+static void test_retail_portal_cache_retains_equal_fifo_side(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailPortalEqualFixture(context);
+	AAS_RouteFrameResetDiagnostics();
+	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
+
+	aas_retailroutingcache_t *cache =
+		AAS_GetRetailPortalRoutingCache(1, 1, travelflags);
+	assert_non_null(cache);
+	assert_int_equal(cache->traveltimes[1], 7);
+	assert_int_equal(cache->traveltimes[2], 7);
+	assert_int_equal(cache->traveltimes[3], 13);
+	assert_non_null(aasworld.retailClusterAreaCache[3][1]);
+	assert_int_equal(aasworld.retailClusterAreaCache[3][1]->areanum, 6);
+	assert_int_equal(aasworld.retailClusterAreaCache[3][1]->travelflags,
+		travelflags);
+	assert_null(aasworld.retailClusterAreaCache[2][1]);
+	assert_int_equal(AAS_RetailPortalCacheUpdateCount(), 1);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 4);
+}
+
+/*
+=============
+test_retail_route_query_same_cluster_origin_and_first_hop
+
+Pin direct cluster-cache consumption, strict first-hop order, and successor
+origin-to-reach local travel-time addition.
+=============
+*/
+static void test_retail_route_query_same_cluster_origin_and_first_hop(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailAreaPropagationFixture(context);
+	AAS_RouteFrameResetDiagnostics();
+	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
+
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		travelflags),
+		18);
+	assert_int_equal(AAS_AreaReachabilityToGoalArea(1,
+		NULL,
+		4,
+		travelflags),
+		1);
+
+	vec3_t origin = {0.0f, 0.0f, 0.0f};
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		origin,
+		4,
+		travelflags),
+		21);
+	VectorSet(origin, 10.0f, 0.0f, 0.0f);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		origin,
+		4,
+		travelflags),
+		19);
+	assert_int_equal(AAS_RetailAreaCacheUpdateCount(), 1);
+}
+
+/*
+=============
+test_retail_route_query_filters_and_projects_travel_flags
+
+Verify raw Gladiator masks filter reach and area contents while the Q3-shaped
+public default mask is projected onto the retail content-bit positions.
+=============
+*/
+static void test_retail_route_query_filters_and_projects_travel_flags(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailAreaPropagationFixture(context);
+	AAS_RouteFrameResetDiagnostics();
+
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		TEST_RETAIL_TFL_WALK),
+		0);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		TEST_RETAIL_TFL_AIR),
+		0);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR),
+		18);
+	assert_int_equal(AAS_AreaReachabilityToGoalArea(1,
+		NULL,
+		4,
+		TEST_RETAIL_TFL_AIR),
+		0);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		TFL_DEFAULT),
+		18);
+
+	context->areasettings[4].contents = AAS_AREACONTENTS_WATER;
+	assert_true(AAS_InitRetailRoutingCaches());
+	AAS_RouteFrameResetDiagnostics();
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR),
+		0);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR |
+			TEST_RETAIL_TFL_WATER),
+		18);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		TFL_DEFAULT),
+		18);
+}
+
+/*
+=============
+test_retail_route_query_crosses_portals_and_adjusts_portal_sides
+
+Pin the portal-cache value at 0x1001a109, its source-cluster area-cache sum,
+and both same-cluster portal adjustment branches.
+=============
+*/
+static void test_retail_route_query_crosses_portals_and_adjusts_portal_sides(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailPortalLineFixture(context);
+	AAS_RouteFrameResetDiagnostics();
+	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
+
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		3,
+		travelflags),
+		19);
+	assert_int_equal(AAS_AreaReachabilityToGoalArea(1,
+		NULL,
+		3,
+		travelflags),
+		1);
+	vec3_t origin = {0.0f, 0.0f, 0.0f};
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		origin,
+		3,
+		travelflags),
+		20);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(4,
+		NULL,
+		3,
+		travelflags),
+		13);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		travelflags),
+		6);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(4,
+		NULL,
+		1,
+		travelflags),
+		6);
+}
+
+/*
+=============
+test_retail_route_query_wraps_cross_cluster_ushort_sum
+
+Verify the public cache consumer wraps the final portal-plus-area addition
+before its strict unsigned-short comparison.
+=============
+*/
+static void test_retail_route_query_wraps_cross_cluster_ushort_sum(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailPortalLineFixture(context);
+	context->reachability[1].traveltime = 65000;
+	context->reachability[4].traveltime = 29998;
+	context->reachability[6].traveltime = 39998;
+	AAS_RouteFrameResetDiagnostics();
+
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		3,
+		TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR),
+		3931);
+}
+
+/*
+=============
+test_retail_route_query_preserves_guards_and_same_area_order
+
+Pin uninitialized and invalid handling, the user-required same-area ordering,
+and retail's frame-routing-update cutoff after ten.
+=============
+*/
+static void test_retail_route_query_preserves_guards_and_same_area_order(void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
+	ConfigureRetailAreaPropagationFixture(context);
+	AAS_RouteFrameResetDiagnostics();
+	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
+
+	aasworld.initialized = qfalse;
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		1,
+		travelflags),
+		0);
+	assert_int_equal(AAS_AreaReachabilityToGoalArea(1,
+		NULL,
+		1,
+		travelflags),
+		0);
+	aasworld.initialized = qtrue;
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(999,
+		NULL,
+		999,
+		travelflags),
+		1);
+	assert_int_equal(AAS_AreaReachabilityToGoalArea(999,
+		NULL,
+		999,
+		travelflags),
+		0);
+
+	Mock_Reset(context);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(0,
+		NULL,
+		4,
+		travelflags),
+		0);
+	assert_non_null(Mock_FindPrint(context, "areanum 0 out of range"));
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		99,
+		travelflags),
+		0);
+	assert_non_null(Mock_FindPrint(context, "goalareanum 99 out of range"));
+
+	for (int index = 0; index < 11; ++index)
+	{
+		assert_non_null(AAS_GetRetailAreaRoutingCache(1,
+			4,
+			travelflags | (index << 24)));
+	}
+	assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 11);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		travelflags),
+		0);
+	assert_int_equal(AAS_AreaReachabilityToGoalArea(1,
+		NULL,
+		4,
+		travelflags),
+		0);
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(4,
+		NULL,
+		4,
+		travelflags),
+		1);
+
+	AAS_RouteFrameResetDiagnostics();
+	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
+		NULL,
+		4,
+		travelflags),
+		18);
+}
+
+/*
+=============
+main
+
+Run the focused AAS debug and sampling parity tests.
+=============
+*/
 int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_bot_test_dumps_area_info, setup_aas_debug, teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_bot_test_rejects_area_lump_count,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_bot_test_resolves_point_through_aas_tree,
+			setup_aas_debug,
+			teardown_aas_debug),
         cmocka_unit_test_setup_teardown(test_aas_showpath_reports_path, setup_aas_debug, teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_aas_showpath_reports_unreachable_span,
+			setup_aas_debug,
+			teardown_aas_debug),
         cmocka_unit_test_setup_teardown(test_aas_showareas_lists_requested_areas, setup_aas_debug, teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_aas_showareas_excludes_area_lump_count,
+			setup_aas_debug,
+			teardown_aas_debug),
         cmocka_unit_test_setup_teardown(test_aas_sample_helpers_use_loaded_planes_and_area_settings,
                                         setup_aas_debug,
                                         teardown_aas_debug),
         cmocka_unit_test_setup_teardown(test_aas_predict_route_uses_reachability_cache_and_stop_events,
                                         setup_aas_debug,
                                         teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_alternative_route_reuses_map_scratch_and_face_order,
+			setup_aas_debug,
+			teardown_aas_debug),
         cmocka_unit_test_setup_teardown(test_aas_predict_route_checks_generated_reachability_pass_areas,
                                         setup_aas_debug,
                                         teardown_aas_debug),
         cmocka_unit_test_setup_teardown(test_aas_trace_client_bbox_uses_presence_and_tree_hits,
                                         setup_aas_debug,
                                         teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_client_bbox_trace_plane_band_clamp_and_presence_mask,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_client_bbox_trace_preserves_link_order_and_pass_boundary,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_client_bbox_trace_guards_64_entry_stack_geometry,
+			setup_aas_debug,
+			teardown_aas_debug),
         cmocka_unit_test_setup_teardown(test_aas_trace_client_bbox_hits_linked_entities,
                                         setup_aas_debug,
                                         teardown_aas_debug),
 		cmocka_unit_test_setup_teardown(test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps,
 		                                setup_aas_debug,
 		                                teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_route_cache_layout_tables_and_lookup,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_route_cache_strict_fifteen_second_aging,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_area_cache_propagates_fifo_and_counts,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_area_cache_filters_travel_contents_and_cluster,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_area_cache_wraps_ushort_travel_times,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_portal_cache_propagates_both_sides_and_lifecycle,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_portal_cache_inherits_travel_and_content_masks,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_portal_cache_wraps_ushort_costs,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_portal_cache_retains_equal_fifo_side,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_route_query_same_cluster_origin_and_first_hop,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_route_query_filters_and_projects_travel_flags,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_route_query_crosses_portals_and_adjusts_portal_sides,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_route_query_wraps_cross_cluster_ushort_sum,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(test_retail_route_query_preserves_guards_and_same_area_order,
+			setup_aas_debug,
+			teardown_aas_debug),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

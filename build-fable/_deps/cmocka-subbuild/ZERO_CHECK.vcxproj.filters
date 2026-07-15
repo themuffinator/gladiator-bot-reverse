@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="E:\Repositories\Gladiator-Bot-reverse\build-fable\_deps\cmocka-subbuild\CMakeFiles\db6cd54a694b694597d6ba3dde1db4d8\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{D9A33EC2-6D3C-3A30-BDD1-CB7084084FD0}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

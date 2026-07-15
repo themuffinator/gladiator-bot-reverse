@@ -4617,6 +4617,21 @@ static int AAS_TraceReachabilityPassAreas(const aas_reachability_t *reach, int *
 		case TRAVEL_GRAPPLEHOOK:
 			return AAS_TraceAreas(reach->start, reach->end, areas, NULL, maxareas);
 
+		/*
+		 * Retail has no reachability pass-area expansion stage.  The successor's
+		 * added table also leaves trajectory-based travel types empty.
+		 */
+		case TRAVEL_JUMP:
+		case TRAVEL_ROCKETJUMP:
+		case TRAVEL_BFGJUMP:
+		case TRAVEL_JUMPPAD:
+			return 0;
+
+		/* The successor likewise records no sampled model path for movers. */
+		case TRAVEL_ELEVATOR:
+		case TRAVEL_FUNCBOB:
+			return 0;
+
 		default:
 			return 0;
 	}

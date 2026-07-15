@@ -1,0 +1,5 @@
+E:\Repositories\Gladiator-Bot-reverse\tests\parity\test_bridge.c;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\botlib_parity_bridge.dir\Debug\test_bridge.obj
+E:\Repositories\Gladiator-Bot-reverse\tests\parity\botlib_contract_loader.c;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\botlib_parity_bridge.dir\Debug\botlib_contract_loader.obj
+E:\Repositories\Gladiator-Bot-reverse\tests\parity\jsmn.c;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\botlib_parity_bridge.dir\Debug\jsmn.obj
+E:\Repositories\Gladiator-Bot-reverse\tests\support\asset_env.c;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\botlib_parity_bridge.dir\Debug\asset_env.obj
+E:\Repositories\Gladiator-Bot-reverse\src\q2bridge\bridge.c;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\parity\botlib_parity_bridge.dir\Debug\bridge.obj

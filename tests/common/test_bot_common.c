@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,8 @@
 #include "botlib/common/l_assets.h"
 #include "botlib/common/l_crc.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_log.h"
+#include "botlib/common/l_memory.h"
 #include "botlib/common/l_struct.h"
 #include "botlib/common/l_utils.h"
 #include "botlib/precomp/l_precomp.h"
@@ -44,6 +47,238 @@
 #define test_unsetenv(name) unsetenv(name)
 #endif
 
+#define TEST_MEMORY_LOG_CAPACITY 4
+#define TEST_MEMORY_LOG_MESSAGE_SIZE 128
+
+typedef struct test_memory_log_capture_s {
+	int count;
+	int levels[TEST_MEMORY_LOG_CAPACITY];
+	char messages[TEST_MEMORY_LOG_CAPACITY][TEST_MEMORY_LOG_MESSAGE_SIZE];
+} test_memory_log_capture_t;
+
+typedef struct test_memory_allocator_capture_s {
+	int allocation_count;
+	int free_count;
+	int last_request_size;
+	void *last_allocated_header;
+	void *last_freed_header;
+} test_memory_allocator_capture_t;
+
+static test_memory_log_capture_t g_test_memory_log;
+static test_memory_allocator_capture_t g_test_memory_allocator_a;
+static test_memory_allocator_capture_t g_test_memory_allocator_b;
+
+/*
+=============
+test_memory_log_callback
+
+Captures allocator diagnostics for parity assertions.
+=============
+*/
+static void test_memory_log_callback(int level, const char *fmt, va_list args)
+{
+	if (g_test_memory_log.count >= TEST_MEMORY_LOG_CAPACITY)
+	{
+		return;
+	}
+
+	int index = g_test_memory_log.count++;
+	g_test_memory_log.levels[index] = level;
+	vsnprintf(g_test_memory_log.messages[index],
+		sizeof(g_test_memory_log.messages[index]), fmt, args);
+}
+
+/*
+=============
+test_memory_allocate_a
+
+Captures allocations made through the first copied engine callback.
+=============
+*/
+static void *test_memory_allocate_a(int size)
+{
+	g_test_memory_allocator_a.allocation_count += 1;
+	g_test_memory_allocator_a.last_request_size = size;
+	g_test_memory_allocator_a.last_allocated_header = malloc((size_t)size);
+	return g_test_memory_allocator_a.last_allocated_header;
+}
+
+/*
+=============
+test_memory_free_a
+
+Captures header pointers released through the first engine callback.
+=============
+*/
+static void test_memory_free_a(void *ptr)
+{
+	g_test_memory_allocator_a.free_count += 1;
+	g_test_memory_allocator_a.last_freed_header = ptr;
+	free(ptr);
+}
+
+/*
+=============
+test_memory_allocate_b
+
+Captures allocations through the alternate callback used by the copy test.
+=============
+*/
+static void *test_memory_allocate_b(int size)
+{
+	g_test_memory_allocator_b.allocation_count += 1;
+	g_test_memory_allocator_b.last_request_size = size;
+	g_test_memory_allocator_b.last_allocated_header = malloc((size_t)size);
+	return g_test_memory_allocator_b.last_allocated_header;
+}
+
+/*
+=============
+test_memory_free_b
+
+Captures releases through the alternate callback used by the copy test.
+=============
+*/
+static void test_memory_free_b(void *ptr)
+{
+	g_test_memory_allocator_b.free_count += 1;
+	g_test_memory_allocator_b.last_freed_header = ptr;
+	free(ptr);
+}
+
+/*
+=============
+test_memory_retail_size_clear_and_logging_contract
+
+Checks the observable tracked-allocation behavior recovered from retail HLIL.
+=============
+*/
+static void test_memory_retail_size_clear_and_logging_contract(void)
+{
+	BotMemory_Shutdown();
+	BotMemory_SetAllocatorCallbacks(NULL, NULL);
+	memset(&g_test_memory_log, 0, sizeof(g_test_memory_log));
+	BotMemory_SetLogCallback(test_memory_log_callback);
+	assert(BotMemory_Init(4096));
+
+	const size_t payload_size = 1024;
+	unsigned char *payload = (unsigned char *)GetClearedMemory(payload_size);
+	assert(payload != NULL);
+	for (size_t i = 0; i < payload_size; ++i)
+	{
+		assert(payload[i] == 0);
+	}
+
+	const size_t tracked_size = BotMemory_TotalAllocated();
+	assert(tracked_size > payload_size);
+	assert(MemoryByteSize(payload) == tracked_size);
+
+	FreeMemory(NULL);
+	assert(MemoryByteSize(NULL) == 0);
+	assert(g_test_memory_log.count == 0);
+
+	const size_t header_size = tracked_size - payload_size;
+	uint32_t *magic = (uint32_t *)(payload - header_size);
+	const uint32_t saved_magic = *magic;
+	*magic = 0;
+	assert(MemoryByteSize(payload) == 0);
+	*magic = saved_magic;
+	assert(g_test_memory_log.count == 1);
+	assert(g_test_memory_log.levels[0] == BOT_MEMORY_LOG_FATAL);
+	assert(strcmp(g_test_memory_log.messages[0],
+		"MemoryByteSize: invalid memory block\n") == 0);
+	memset(&g_test_memory_log, 0, sizeof(g_test_memory_log));
+
+	BotMemory_LogSummary();
+	assert(g_test_memory_log.count == 2);
+	assert(g_test_memory_log.levels[0] == BOT_MEMORY_LOG_INFO);
+	assert(g_test_memory_log.levels[1] == BOT_MEMORY_LOG_INFO);
+
+	char expected_summary[TEST_MEMORY_LOG_MESSAGE_SIZE];
+	snprintf(expected_summary, sizeof(expected_summary),
+		"total botlib memory: %zu KB\n", tracked_size >> 10);
+	assert(strcmp(g_test_memory_log.messages[0], expected_summary) == 0);
+	assert(strcmp(g_test_memory_log.messages[1], "total memory blocks: 1\n") == 0);
+
+	BotMemory_Shutdown();
+	assert(BotMemory_TotalAllocated() == 0);
+	assert(g_test_memory_log.count == 2);
+	BotMemory_SetLogCallback(NULL);
+	BotMemory_SetAllocatorCallbacks(NULL, NULL);
+}
+
+/*
+=============
+test_memory_import_callback_contract
+
+Pins copied import callbacks, header ownership, zero allocations, and teardown.
+=============
+*/
+static void test_memory_import_callback_contract(void)
+{
+	BotMemory_Shutdown();
+	BotMemory_SetAllocatorCallbacks(NULL, NULL);
+	memset(&g_test_memory_allocator_a, 0, sizeof(g_test_memory_allocator_a));
+	memset(&g_test_memory_allocator_b, 0, sizeof(g_test_memory_allocator_b));
+
+	bot_memory_allocate_fn allocate_callback = test_memory_allocate_a;
+	bot_memory_free_fn free_callback = test_memory_free_a;
+	BotMemory_SetAllocatorCallbacks(allocate_callback, free_callback);
+	allocate_callback = test_memory_allocate_b;
+	free_callback = test_memory_free_b;
+
+	bool initialised = BotMemory_Init(1);
+	assert(initialised);
+	const int available_before = AvailableMemory();
+	assert(available_before == INT_MAX);
+	assert(BotMemory_HeapCapacity() == SIZE_MAX);
+
+	const size_t payload_size = 37;
+	void *payload = GetMemory(payload_size);
+	assert(payload != NULL);
+	assert(g_test_memory_allocator_a.allocation_count == 1);
+	assert(g_test_memory_allocator_b.allocation_count == 0);
+	const size_t total_size = MemoryByteSize(payload);
+	assert(total_size > payload_size);
+	assert(g_test_memory_allocator_a.last_request_size == (int)total_size);
+	const size_t header_size = total_size - payload_size;
+	void *header = (unsigned char *)payload - header_size;
+	assert(header == g_test_memory_allocator_a.last_allocated_header);
+	FreeMemory(payload);
+	assert(g_test_memory_allocator_a.free_count == 1);
+	assert(g_test_memory_allocator_a.last_freed_header == header);
+	assert(g_test_memory_allocator_b.free_count == 0);
+
+	void *zero_payload = GetMemory(0);
+	assert(zero_payload != NULL);
+	const size_t zero_total_size = MemoryByteSize(zero_payload);
+	assert(zero_total_size == (size_t)g_test_memory_allocator_a.last_request_size);
+	assert((unsigned char *)zero_payload - zero_total_size ==
+		g_test_memory_allocator_a.last_allocated_header);
+	FreeMemory(zero_payload);
+
+	const size_t large_payload_size = BOT_MEMORY_DEFAULT_HEAP_SIZE + 1u;
+	void *large_payload = GetMemory(large_payload_size);
+	assert(large_payload != NULL);
+	assert(MemoryByteSize(large_payload) > BOT_MEMORY_DEFAULT_HEAP_SIZE);
+	FreeMemory(large_payload);
+	assert(AvailableMemory() == available_before);
+
+	void *shutdown_payload_a = GetMemory(11);
+	void *shutdown_payload_b = GetMemory(29);
+	assert(shutdown_payload_a != NULL);
+	assert(shutdown_payload_b != NULL);
+	assert(BotMemory_TotalAllocated() > 0);
+	const int free_count_before_shutdown = g_test_memory_allocator_a.free_count;
+	BotMemory_Shutdown();
+	assert(g_test_memory_allocator_a.free_count == free_count_before_shutdown + 2);
+	assert(g_test_memory_allocator_b.free_count == 0);
+	assert(BotMemory_TotalAllocated() == 0);
+	assert(AvailableMemory() == available_before);
+
+	BotMemory_SetAllocatorCallbacks(NULL, NULL);
+}
+
 static void test_utils_initialisation_flags(void) {
     L_Utils_Shutdown();
     assert(!L_Utils_IsInitialised());
@@ -69,17 +304,37 @@ static void test_case_insensitive_compare_helpers(void) {
     assert(Q_strnicmp("PrefixValue", "prefix-other", 12) != 0);
 }
 
-static void test_crc_matches_reference(void) {
-    const char payload[] = "gladiator";
-    const uint16_t expected_crc = 0x40FEu;
-    const uint16_t crc = CRC_ProcessString((const uint8_t *)payload, strlen(payload));
-    assert(crc == expected_crc);
+/*
+=============
+test_crc_matches_reference
 
-    uint16_t running = CRC_INIT_VALUE;
-    for (size_t i = 0; i < strlen(payload); ++i) {
-        CRC_ProcessByte(&running, (uint8_t)payload[i]);
-    }
-    assert(CRC_Value(running) == expected_crc);
+Pins the retail checksum and signed-length iteration contracts.
+=============
+*/
+static void test_crc_matches_reference(void)
+{
+	char payload[] = "gladiator";
+	const int payload_length = (int)strlen(payload);
+	const uint16_t expected_crc = 0x40FEu;
+	uint16_t crc = CRC_ProcessString((uint8_t *)payload, payload_length);
+	assert(crc == expected_crc);
+	assert(CRC_ProcessString(NULL, 0) == CRC_INIT_VALUE);
+	assert(CRC_ProcessString(NULL, -7) == CRC_INIT_VALUE);
+
+	uint16_t running = CRC_INIT_VALUE;
+	for (int index = 0; index < payload_length; ++index)
+	{
+		CRC_ProcessByte(&running, (uint8_t)payload[index]);
+	}
+	assert(CRC_Value(running) == expected_crc);
+
+	running = CRC_INIT_VALUE;
+	CRC_ContinueProcessString(&running, payload, 4);
+	CRC_ContinueProcessString(&running, payload + 4, payload_length - 4);
+	assert(CRC_Value(running) == expected_crc);
+	crc = running;
+	CRC_ContinueProcessString(&running, NULL, -1);
+	assert(running == crc);
 }
 
 typedef struct test_sample_s {
@@ -100,6 +355,39 @@ static const fielddef_t g_test_sample_fields[] = {
 static const structdef_t g_test_sample_struct = {
     (int)sizeof(test_sample_t),
     g_test_sample_fields,
+};
+
+typedef struct test_nested_inner_s {
+	int value;
+} test_nested_inner_t;
+
+typedef struct test_nested_outer_s {
+	int prefix;
+	test_nested_inner_t nested;
+} test_nested_outer_t;
+
+static const fielddef_t g_test_nested_inner_fields[] = {
+	{"value", (int)offsetof(test_nested_inner_t, value), FT_INT,
+		0, 0.0f, 0.0f, NULL},
+	{NULL, 0, 0, 0, 0.0f, 0.0f, NULL},
+};
+
+static const structdef_t g_test_nested_inner_struct = {
+	(int)sizeof(test_nested_inner_t),
+	g_test_nested_inner_fields,
+};
+
+static const fielddef_t g_test_nested_outer_fields[] = {
+	{"prefix", (int)offsetof(test_nested_outer_t, prefix), FT_INT,
+		0, 0.0f, 0.0f, NULL},
+	{"nested", (int)offsetof(test_nested_outer_t, nested), FT_STRUCT,
+		0, 0.0f, 0.0f, &g_test_nested_inner_struct},
+	{NULL, 0, 0, 0, 0.0f, 0.0f, NULL},
+};
+
+static const structdef_t g_test_nested_outer_struct = {
+	(int)sizeof(test_nested_outer_t),
+	g_test_nested_outer_fields,
 };
 
 static void test_read_structure_parses_basic_types(void) {
@@ -124,6 +412,65 @@ static void test_read_structure_parses_basic_types(void) {
     PC_ShutdownLexer();
 }
 
+/*
+=============
+test_struct_retail_nested_and_array_quirks
+
+Pins the DLL's ignored nested-read result, array limit, and writer base quirk.
+=============
+*/
+static void test_struct_retail_nested_and_array_quirks(void)
+{
+	PC_InitLexer();
+
+	const char array_script[] = "{ flags { 1, 2, 3, }";
+	pc_source_t *source = PC_LoadSourceMemory("retail_array", array_script,
+		strlen(array_script));
+	assert(source != NULL);
+	test_sample_t sample;
+	memset(&sample, 0, sizeof(sample));
+	assert(ReadStructure(source, &g_test_sample_struct, &sample));
+	assert(sample.flags[0] == 1);
+	assert(sample.flags[1] == 2);
+	assert(sample.flags[2] == 3);
+	PC_FreeSource(source);
+
+	const char nested_script[] =
+		"{ prefix 7 nested { value not_a_number } }";
+	source = PC_LoadSourceMemory("retail_nested", nested_script,
+		strlen(nested_script));
+	assert(source != NULL);
+	test_nested_outer_t parsed;
+	memset(&parsed, 0, sizeof(parsed));
+	assert(ReadStructure(source, &g_test_nested_outer_struct, &parsed));
+	assert(parsed.prefix == 7);
+	assert(parsed.nested.value == 0);
+	assert(PC_ExpectTokenString(source, "}"));
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+
+	test_nested_outer_t written;
+	written.prefix = 7;
+	written.nested.value = 42;
+	FILE *file = tmpfile();
+	assert(file != NULL);
+	assert(WriteStructure(file, &g_test_nested_outer_struct, &written));
+	assert(fflush(file) == 0);
+	assert(fseek(file, 0, SEEK_SET) == 0);
+	char contents[256];
+	size_t length = fread(contents, 1, sizeof(contents) - 1, file);
+	assert(fclose(file) == 0);
+	contents[length] = '\0';
+	assert(strcmp(contents,
+		"{\r\n"
+		"\tprefix\t7\r\n"
+		"\tnested\t\t{\r\n"
+		"\t\tvalue\t7\r\n"
+		"\t}\r\n"
+		"\r\n"
+		"}\r\n") == 0);
+}
+
 static void test_vector2angles_and_angle_helpers(void) {
     vec3_t forward = {0.0f, 1.0f, 0.0f};
     vec3_t angles;
@@ -136,33 +483,111 @@ static void test_vector2angles_and_angle_helpers(void) {
     assert(fabsf(angles[PITCH] + 90.0f) < 0.001f);
     assert(fabsf(angles[YAW] - 0.0f) < 0.001f);
 
-    assert(fabsf(AngleNormalize360(370.0f) - 10.0f) < 0.001f);
-    assert(fabsf(AngleNormalize180(200.0f) + 160.0f) < 0.001f);
-    assert(fabsf(AngleDelta(10.0f, 350.0f) - 20.0f) < 0.001f);
+	vec3_t diagonal = {2.0f, 1.0f, 1.0f};
+	Vector2Angles(diagonal, angles);
+	assert(angles[PITCH] == -24.0f);
+	assert(angles[YAW] == 26.0f);
+	assert(angles[ROLL] == 0.0f);
+
+	assert(fabsf(AngleNormalize360(370.0f) - 9.99755859375f) < 0.000001f);
+	assert(fabsf(AngleNormalize180(200.0f) + 160.0048828125f) < 0.000001f);
+	assert(fabsf(AngleDelta(10.0f, 350.0f) - 20.0006103515625f) < 0.000001f);
+	assert(fabsf(AngleMod(-1.0f) - 359.000244140625f) < 0.000001f);
 }
 
-static void test_path_helpers(void) {
-    char buffer[64];
-    strcpy(buffer, "base");
-    AppendPathSeperator(buffer, sizeof(buffer));
-    size_t len = strlen(buffer);
-    assert(len > 0);
-    assert(buffer[len - 1] == BOTLIB_PATH_SEPARATOR_CHAR);
+/*
+=============
+test_path_helpers
 
-    strcpy(buffer, "base\\game");
-    ConvertPath(buffer);
-    for (size_t i = 0; i < strlen(buffer); ++i) {
-        if (buffer[i] == BOTLIB_PATH_SEPARATOR_CHAR) {
-            continue;
-        }
-        assert(buffer[i] != '/' && buffer[i] != '\\');
-    }
+Pins retail separator conversion and signed append-capacity behavior.
+=============
+*/
+static void test_path_helpers(void)
+{
+	char buffer[64];
+	strcpy(buffer, "base");
+	AppendPathSeperator(buffer, (int)sizeof(buffer));
+	size_t length = strlen(buffer);
+	assert(length > 0);
+	assert(buffer[length - 1] == BOTLIB_PATH_SEPARATOR_CHAR);
 
-    char stripped[64];
-    BotUtils_StripExtension("scripts/test.bot", stripped, sizeof(stripped));
-    assert(strcmp(stripped, "scripts/test") == 0);
+	char negative_length[8] = "abc";
+	AppendPathSeperator(negative_length, -1);
+	assert(strcmp(negative_length, "abc") == 0);
 
-    assert(BotUtils_FileExists(__FILE__));
+	strcpy(buffer, "base\\game");
+	ConvertPath(buffer);
+	for (size_t index = 0; index < strlen(buffer); ++index)
+	{
+		if (buffer[index] == BOTLIB_PATH_SEPARATOR_CHAR)
+		{
+			continue;
+		}
+		assert(buffer[index] != '/' && buffer[index] != '\\');
+	}
+
+	char stripped[64];
+	BotUtils_StripExtension("scripts/test.bot", stripped, sizeof(stripped));
+	assert(strcmp(stripped, "scripts/test") == 0);
+
+	assert(BotUtils_FileExists(__FILE__));
+}
+
+/*
+=============
+test_log_retail_write_and_timestamp_contract
+
+Pins CRLF writes, botlib-frame timestamps, and the persistent write count.
+=============
+*/
+static void test_log_retail_write_and_timestamp_contract(void)
+{
+	const char *first_path = "bot_common_retail_first.log";
+	const char *second_path = "bot_common_retail_second.log";
+	test_unlink(first_path);
+	test_unlink(second_path);
+	BotLib_LogShutdown();
+	LibVar_Shutdown();
+	LibVar_Init();
+	LibVarSet("log", "1");
+
+	BotLib_LogOpen(first_path);
+	assert(BotLib_LogFile() != NULL);
+	BotLib_Print(PRT_ERROR, "engine-only diagnostic\n");
+	BotLib_LogWrite("alpha");
+	BotLib_LogWrite("%s", "beta");
+	BotLib_LogSetTime(3661.25f);
+	BotLib_LogWriteTimeStamped("first");
+	BotLib_LogClose();
+	assert(BotLib_LogFile() == NULL);
+
+	FILE *file = fopen(first_path, "rb");
+	assert(file != NULL);
+	char contents[256];
+	size_t length = fread(contents, 1, sizeof(contents) - 1, file);
+	assert(fclose(file) == 0);
+	contents[length] = '\0';
+	assert(strcmp(contents,
+		"alpha\r\nbeta\r\n0   01:61:3661:25   first\r\n") == 0);
+
+	BotLib_LogOpen(second_path);
+	assert(BotLib_LogFile() != NULL);
+	BotLib_LogSetTime(5.5f);
+	BotLib_LogWriteTimeStamped("second");
+	BotLib_LogClose();
+
+	file = fopen(second_path, "rb");
+	assert(file != NULL);
+	length = fread(contents, 1, sizeof(contents) - 1, file);
+	assert(fclose(file) == 0);
+	contents[length] = '\0';
+	assert(strcmp(contents,
+		"1   00:00:05:50   second\r\n") == 0);
+
+	BotLib_LogShutdown();
+	LibVar_Shutdown();
+	assert(test_unlink(first_path) == 0);
+	assert(test_unlink(second_path) == 0);
 }
 
 static bool test_create_temp_directory(char *buffer, size_t size, const char *prefix)
@@ -615,19 +1040,65 @@ static void test_resolve_asset_path_prefers_override_to_pak(void)
     test_rmdir(basedir);
 }
 
-int main(void) {
-    test_utils_initialisation_flags();
-    test_struct_initialisation_flags();
-    test_case_insensitive_compare_helpers();
-    test_crc_matches_reference();
-    test_read_structure_parses_basic_types();
-    test_vector2angles_and_angle_helpers();
-    test_path_helpers();
-    test_locate_asset_root_prefers_basedir();
-    test_resolve_asset_path_prefers_cddir_over_new_knob();
-    test_resolve_asset_path_reads_from_pak_when_available();
-    test_resolve_asset_path_prefers_override_to_pak();
+/*
+=============
+main
 
-    printf("bot_common_tests: all checks passed\n");
-    return 0;
+Runs the common subsystem checks or the isolated allocator parity regression.
+=============
+*/
+int main(int argc, char **argv)
+{
+	if (argc == 2 && strcmp(argv[1], "--memory-only") == 0)
+	{
+		test_memory_retail_size_clear_and_logging_contract();
+		test_memory_import_callback_contract();
+		printf("bot_common_tests: allocator checks passed\n");
+		return 0;
+	}
+	if (argc == 2 && strcmp(argv[1], "--crc-only") == 0)
+	{
+		test_crc_matches_reference();
+		printf("bot_common_tests: CRC checks passed\n");
+		return 0;
+	}
+	if (argc == 2 && strcmp(argv[1], "--log-only") == 0)
+	{
+		test_log_retail_write_and_timestamp_contract();
+		printf("bot_common_tests: logging checks passed\n");
+		return 0;
+	}
+	if (argc == 2 && strcmp(argv[1], "--utils-only") == 0)
+	{
+		test_vector2angles_and_angle_helpers();
+		test_path_helpers();
+		printf("bot_common_tests: utility checks passed\n");
+		return 0;
+	}
+	if (argc == 2 && strcmp(argv[1], "--struct-only") == 0)
+	{
+		test_read_structure_parses_basic_types();
+		test_struct_retail_nested_and_array_quirks();
+		printf("bot_common_tests: structure checks passed\n");
+		return 0;
+	}
+
+	test_utils_initialisation_flags();
+	test_struct_initialisation_flags();
+	test_case_insensitive_compare_helpers();
+	test_crc_matches_reference();
+	test_read_structure_parses_basic_types();
+	test_struct_retail_nested_and_array_quirks();
+	test_vector2angles_and_angle_helpers();
+	test_path_helpers();
+	test_log_retail_write_and_timestamp_contract();
+	test_locate_asset_root_prefers_basedir();
+	test_resolve_asset_path_prefers_cddir_over_new_knob();
+	test_resolve_asset_path_reads_from_pak_when_available();
+	test_resolve_asset_path_prefers_override_to_pak();
+	test_memory_retail_size_clear_and_logging_contract();
+	test_memory_import_callback_contract();
+
+	printf("bot_common_tests: all checks passed\n");
+	return 0;
 }

@@ -1,0 +1,11 @@
+# cmocka pkg-config source file
+
+prefix=C:/Program Files (x86)/gladiator-bot-reverse
+libdir=C:/Program Files (x86)/gladiator-bot-reverse/lib
+includedir=C:/Program Files (x86)/gladiator-bot-reverse/include
+
+Name: cmocka
+Description: The cmocka unit testing library
+Version: 1.1.7
+Libs: -L${libdir} -lcmocka
+Cflags: -I${includedir}

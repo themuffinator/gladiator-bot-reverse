@@ -1,7 +1,6 @@
 #ifndef BOTLIB_COMMON_L_CRC_H
 #define BOTLIB_COMMON_L_CRC_H
 
-#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -20,8 +19,8 @@ extern "C" {
 void CRC_Init(uint16_t *crcvalue);
 void CRC_ProcessByte(uint16_t *crcvalue, uint8_t data);
 uint16_t CRC_Value(uint16_t crcvalue);
-uint16_t CRC_ProcessString(const uint8_t *data, size_t length);
-void CRC_ContinueProcessString(uint16_t *crc, const char *data, size_t length);
+uint16_t CRC_ProcessString(uint8_t *data, int length);
+void CRC_ContinueProcessString(uint16_t *crc, char *data, int length);
 
 #ifdef __cplusplus
 } // extern "C"

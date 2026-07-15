@@ -1,0 +1,10 @@
+^E:\REPOSITORIES\GLADIATOR-BOT-REVERSE\SRC\BOTLIB\AAS\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SE:/Repositories/Gladiator-Bot-reverse -BE:/Repositories/Gladiator-Bot-reverse/build-fable --check-stamp-file E:/Repositories/Gladiator-Bot-reverse/build-fable/src/botlib/aas/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

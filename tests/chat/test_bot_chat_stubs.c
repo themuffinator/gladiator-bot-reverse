@@ -12,6 +12,7 @@
 
 static int g_last_botlib_message_type = 0;
 static char g_last_botlib_message[1024];
+static float g_aas_time = 0.0f;
 typedef struct botlib_test_libvar_s {
         char name[64];
         char string[128];
@@ -72,6 +73,7 @@ Clears the cached libvar overrides for the test harness.
 void BotLib_TestResetLibVars(void)
 {
 	g_botlib_test_libvar_count = 0;
+	g_aas_time = 0.0f;
 
 	g_bridge_maxclients.value = strtof(g_bridge_maxclients_string, NULL);
 	g_bridge_maxclients.modified = 0;
@@ -245,6 +247,30 @@ BotLibraryInitialized
 bool BotLibraryInitialized(void)
 {
 	return true;
+}
+
+/*
+=============
+BotLib_TestSetAASTime
+
+Overrides the frame timestamp stored in newly queued console-message nodes.
+=============
+*/
+void BotLib_TestSetAASTime(float time)
+{
+	g_aas_time = time;
+}
+
+/*
+=============
+AAS_Time
+
+Provides the frame timestamp stored with retail console-message nodes.
+=============
+*/
+float AAS_Time(void)
+{
+	return g_aas_time;
 }
 
 /*

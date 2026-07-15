@@ -844,6 +844,15 @@ static float BotGoal_AvoidTimeForItem(const bot_levelitem_t *item)
 	return BotGoal_RespawnAvoidTimeForItem(item);
 }
 
+/*
+=============
+BotGoal_PointAreaNum
+
+Linear-scan fallback for resolving the area containing a point. Valid area
+numbers run from one to numAreas minus one because retail counts the dummy
+zero area in numAreas.
+=============
+*/
 static int BotGoal_PointAreaNum(const vec3_t origin)
 {
     if (!aasworld.loaded || aasworld.areas == NULL || aasworld.numAreas <= 0)
@@ -851,7 +860,7 @@ static int BotGoal_PointAreaNum(const vec3_t origin)
         return 0;
     }
 
-    for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
+    for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
     {
         const aas_area_t *area = &aasworld.areas[areanum];
         if (origin[0] < area->mins[0] || origin[0] > area->maxs[0])

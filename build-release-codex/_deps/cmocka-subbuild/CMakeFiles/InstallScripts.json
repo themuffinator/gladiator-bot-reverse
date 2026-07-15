@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

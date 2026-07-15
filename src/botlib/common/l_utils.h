@@ -24,7 +24,7 @@ bool L_Utils_IsInitialised(void);
 
 void Vector2Angles(const vec3_t value1, vec3_t angles);
 void ConvertPath(char *path);
-void AppendPathSeperator(char *path, size_t length);
+void AppendPathSeperator(char *path, int length);
 
 float AngleNormalize360(float angle);
 float AngleNormalize180(float angle);

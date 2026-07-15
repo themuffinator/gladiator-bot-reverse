@@ -1,6 +1,8 @@
 #ifndef Q2BRIDGE_BOTLIB_H
 #define Q2BRIDGE_BOTLIB_H
 
+#include <stddef.h>
+
 #include "shared/bot_types.h"
 #include "shared/platform_export.h"
 #include "shared/q_shared.h"
@@ -163,8 +165,9 @@ typedef struct bot_input_s {
     vec3_t dir;
     float speed;
     vec3_t viewangles;
-    int   weapon;
     int   actionflags;
+    /* Quake III compatibility extension; outside the retail structure. */
+    int   weapon;
 } bot_input_t;
 
 // Client state update fed into the botlib
@@ -224,6 +227,7 @@ typedef struct bot_export_s {
     int (*BotLoadMap)(char *mapname, int modelindexes, char *modelindex[],
                       int soundindexes, char *soundindex[],
                       int imageindexes, char *imageindex[]);
+    /* Unlike adjacent exports, BotSetupClient is boolean: non-zero on success. */
     int (*BotSetupClient)(int client, bot_settings_t *settings);
     int (*BotShutdownClient)(int client);
     int (*BotMoveClient)(int oldclnum, int newclnum);
@@ -346,13 +350,15 @@ typedef struct bot_export_s {
     void (*BotMutateGoalFuzzyLogic)(int goalstate, float range);
 } bot_export_t;
 
-// Bot library imported functions
+/*
+ * Bot library imported functions. The first ten callbacks are the immutable
+ * Gladiator 0.96 ABI; reconstruction-only bridge callbacks must remain after
+ * DebugLineShow so retail callers retain their original prefix layout.
+ */
 typedef struct bot_import_s {
     void (*BotInput)(int client, bot_input_t *bi);
     void (*BotClientCommand)(int client, char *str, ...);
     void (*Print)(int type, char *fmt, ...);
-    cvar_t *(*CvarGet)(const char *name, const char *default_value, int flags);
-    void (*Error)(const char *fmt, ...);
     bsp_trace_t (*Trace)(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end,
                          int passent, int contentmask);
     int  (*PointContents)(vec3_t point);
@@ -361,13 +367,19 @@ typedef struct bot_import_s {
     int  (*DebugLineCreate)(void);
     void (*DebugLineDelete)(int line);
     void (*DebugLineShow)(int line, vec3_t start, vec3_t end, int color);
+    cvar_t *(*CvarGet)(const char *name, const char *default_value, int flags);
+    void (*Error)(const char *fmt, ...);
     void (*AddCommand)(const char *name, void (*function)(void));
     void (*RemoveCommand)(const char *name);
     int (*CmdArgc)(void);
     const char *(*CmdArgv)(int index);
 } bot_import_t;
 
+#define BOT_IMPORT_RETAIL_SIZE offsetof(bot_import_t, CvarGet)
+
 GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import);
+GLADIATOR_API bot_export_t *GetBotAPIEx(bot_import_t *import,
+	size_t import_size);
 
 #ifdef __cplusplus
 }

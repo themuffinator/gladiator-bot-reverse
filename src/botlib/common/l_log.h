@@ -17,6 +17,11 @@ extern "C" {
 #endif
 
 /**
+ * Updates the botlib-global frame time used by timestamped log records.
+ */
+void BotLib_LogSetTime(float time);
+
+/**
  * Opens a botlib diagnostic log file if the \"log\" libvar is enabled.
  */
 void BotLib_LogOpen(const char *filename);
@@ -40,8 +45,8 @@ void BotLib_LogShutdown(void);
 void BotLib_LogWrite(const char *fmt, ...);
 
 /**
- * Writes a message that is prefixed with a monotonically increasing counter and
- * a clock based timestamp to aid debugging of long running sessions.
+ * Writes a message prefixed with the retail sequence counter and botlib frame
+ * time fields.
  */
 void BotLib_LogWriteTimeStamped(const char *fmt, ...);
 

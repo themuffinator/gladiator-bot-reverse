@@ -58,6 +58,11 @@ typedef struct ai_dm_metrics_s {
     float attack_strafe_interval;
     vec3_t last_enemy_origin;
     vec3_t last_enemy_velocity;
+	vec3_t viewangles;
+	vec3_t ideal_viewangles;
+	vec3_t viewanglespeed;
+	vec3_t aim_target;
+	bool attack_latched;
 } ai_dm_metrics_t;
 
 ai_dm_state_t *AI_DMState_Create(int client_number);
@@ -65,6 +70,9 @@ void AI_DMState_Destroy(ai_dm_state_t *state);
 void AI_DMState_Reset(ai_dm_state_t *state);
 void AI_DMState_SetClient(ai_dm_state_t *state, int client_number);
 void AI_DMState_GetMetrics(const ai_dm_state_t *state, ai_dm_metrics_t *out_metrics);
+void AI_DMState_SetAttackChaseTestState(ai_dm_state_t *state,
+	float attackchase_time,
+	int last_enemy_area);
 void AI_DMState_Update(ai_dm_state_t *state,
                        const bot_client_state_t *client_state,
                        const ai_goal_selection_t *selection,

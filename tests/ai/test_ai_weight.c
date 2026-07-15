@@ -104,8 +104,8 @@ static int weight_tests_teardown(void **state)
 	(void)state;
 
 	BotShutdownWeights();
-	BotMemory_Shutdown();
 	LibVar_Shutdown();
+	BotMemory_Shutdown();
 	return 0;
 }
 

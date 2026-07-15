@@ -60,6 +60,8 @@ typedef struct test_log_message_s {
 typedef struct test_client_command_s {
 	int client;
 	char text[256];
+	char argument[256];
+	bool terminated;
 } test_client_command_t;
 
 typedef struct test_environment_s {
@@ -83,12 +85,21 @@ static struct {
 	int count;
 } g_test_client_commands;
 
+/*
+=============
+test_reset_client_commands
+
+Clears captured command tokens, arguments, and terminator state.
+=============
+*/
 static void test_reset_client_commands(void)
 {
 	g_test_client_commands.count = 0;
 	for (int i = 0; i < TEST_MAX_CLIENT_COMMANDS; ++i) {
 		g_test_client_commands.entries[i].client = -1;
 		g_test_client_commands.entries[i].text[0] = '\0';
+		g_test_client_commands.entries[i].argument[0] = '\0';
+		g_test_client_commands.entries[i].terminated = false;
 	}
 }
 
@@ -171,6 +182,13 @@ static void test_bot_input(int client, bot_input_t *input)
     (void)input;
 }
 
+/*
+=============
+test_bot_client_command
+
+Captures the retail token, first argument, and explicit NULL terminator.
+=============
+*/
 static void test_bot_client_command(int client, char *fmt, ...)
 {
 	if (g_test_client_commands.count >= TEST_MAX_CLIENT_COMMANDS) {
@@ -180,6 +198,20 @@ static void test_bot_client_command(int client, char *fmt, ...)
 	test_client_command_t *slot = &g_test_client_commands.entries[g_test_client_commands.count++];
 	slot->client = client;
 	snprintf(slot->text, sizeof(slot->text), "%s", fmt != NULL ? fmt : "");
+	if (fmt != NULL &&
+		(strcmp(fmt, "gender") == 0 || strcmp(fmt, "name") == 0))
+	{
+		va_list args;
+		va_start(args, fmt);
+		const char *argument = va_arg(args, const char *);
+		const void *terminator = va_arg(args, const void *);
+		va_end(args);
+		snprintf(slot->argument,
+			sizeof(slot->argument),
+			"%s",
+			argument != NULL ? argument : "");
+		slot->terminated = terminator == NULL;
+	}
 }
 
 static bsp_trace_t test_trace(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask)
@@ -308,14 +340,14 @@ static int character_profile_teardown(void **state)
         env->weapon_library = NULL;
     }
 
-    if (env->memory_initialised) {
-        BotMemory_Shutdown();
-        env->memory_initialised = false;
-    }
-
     if (env->libvar_initialised) {
         LibVar_Shutdown();
         env->libvar_initialised = false;
+    }
+
+    if (env->memory_initialised) {
+        BotMemory_Shutdown();
+        env->memory_initialised = false;
     }
 
     if (env->import_table_set) {
@@ -973,7 +1005,7 @@ static void test_bot_setup_client_exposes_profile(void **state)
 
 	test_reset_log();
 	assert_int_equal(env->exports->BotLoadCharacter("bots/babe_c.c", 1.0f), 0);
-	assert_true(test_log_contains("BotLoadCharacter: library not initialised"));
+	assert_true(test_log_contains("BotLoadCharacter: bot library used before being setup\n"));
 
 	char guarded_string[16];
 	memset(guarded_string, 'x', sizeof(guarded_string));
@@ -1033,7 +1065,7 @@ static void test_bot_setup_client_exposes_profile(void **state)
 
     test_reset_log();
     status = env->exports->BotSetupClient(0, &settings);
-    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(status);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
     assert_true(test_log_contains("bytes weapon index"));
     assert_true(test_log_contains("bytes item index"));
@@ -1109,7 +1141,9 @@ static void test_bot_setup_client_exposes_profile(void **state)
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_int_equal(g_test_client_commands.count, 1);
 	assert_int_equal(g_test_client_commands.entries[0].client, 0);
-	assert_string_equal(g_test_client_commands.entries[0].text, "gender female");
+	assert_string_equal(g_test_client_commands.entries[0].text, "gender");
+	assert_string_equal(g_test_client_commands.entries[0].argument, "female");
+	assert_true(g_test_client_commands.entries[0].terminated);
 
 	test_reset_client_commands();
 	BotState_EmitPendingClientCommands(state_slot);
@@ -1125,7 +1159,7 @@ static void test_bot_setup_client_exposes_profile(void **state)
 
 	env->exports->BotLibVarSet("altnames", "1");
 	status = env->exports->BotSetupClient(0, &settings);
-	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(status);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
 	env->client_active = true;
 
@@ -1153,9 +1187,13 @@ static void test_bot_setup_client_exposes_profile(void **state)
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_int_equal(g_test_client_commands.count, 2);
 	assert_int_equal(g_test_client_commands.entries[0].client, 0);
-	assert_string_equal(g_test_client_commands.entries[0].text, "gender female");
+	assert_string_equal(g_test_client_commands.entries[0].text, "gender");
+	assert_string_equal(g_test_client_commands.entries[0].argument, "female");
+	assert_true(g_test_client_commands.entries[0].terminated);
 	assert_int_equal(g_test_client_commands.entries[1].client, 0);
-	assert_string_equal(g_test_client_commands.entries[1].text, "name Epsilon");
+	assert_string_equal(g_test_client_commands.entries[1].text, "name");
+	assert_string_equal(g_test_client_commands.entries[1].argument, "Epsilon");
+	assert_true(g_test_client_commands.entries[1].terminated);
 
 	memset(&live_client_settings, 0, sizeof(live_client_settings));
 	snprintf(live_client_settings.netname, sizeof(live_client_settings.netname), "Moved Babe");
@@ -1247,7 +1285,7 @@ static void test_bot_state_map_reset_preserves_character_wiring(void **state)
 	snprintf(settings.charactername, sizeof(settings.charactername), "babe");
 
 	status = env->exports->BotSetupClient(0, &settings);
-	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(status);
 	env->client_active = true;
 
 	bot_client_state_t *state_slot = BotState_Get(0);

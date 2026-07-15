@@ -107,6 +107,13 @@ void AAS_InvalidateEntities(void)
     aasworld.entitiesValid = qfalse;
 }
 
+/*
+=============
+AAS_ContinueInit
+
+Finish reachability and clustering, then create retail routing-cache tables.
+=============
+*/
 void AAS_ContinueInit(float time)
 {
     (void)time;
@@ -161,7 +168,8 @@ void AAS_ContinueInit(float time)
 			"AAS_ContinueInit: failed to prepare reachability data\n");
 		return;
 	}
-    aasworld.initialized = qtrue;
+	(void)AAS_InitRetailRoutingCaches();
+	aasworld.initialized = qtrue;
 	BotLib_Print(PRT_MESSAGE, "AAS initialized.\n");
 }
 

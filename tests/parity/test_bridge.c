@@ -68,6 +68,10 @@ typedef struct bridge_import_mock_s
     int debug_line_delete_calls;
     int debug_line_show_calls;
     int next_debug_line_id;
+	int last_debug_line_show_id;
+	int last_debug_line_show_color;
+	bool last_debug_line_start_null;
+	bool last_debug_line_end_null;
 
     int error_calls;
     char last_error[1024];
@@ -113,6 +117,10 @@ static void BridgeMock_Reset(bridge_import_mock_t *mock)
     mock->debug_line_delete_calls = 0;
     mock->debug_line_show_calls = 0;
     mock->next_debug_line_id = 1;
+	mock->last_debug_line_show_id = 0;
+	mock->last_debug_line_show_color = 0;
+	mock->last_debug_line_start_null = false;
+	mock->last_debug_line_end_null = false;
     mock->error_calls = 0;
     mock->last_error[0] = '\0';
     mock->cvar_calls = 0;
@@ -440,17 +448,16 @@ static void Mock_DebugLineDelete(int line)
 
 static void Mock_DebugLineShow(int line, vec3_t start, vec3_t end, int color)
 {
-    (void)line;
-    (void)start;
-    (void)end;
-    (void)color;
-
     if (g_active_bridge_mock == NULL)
     {
         return;
     }
 
     g_active_bridge_mock->debug_line_show_calls += 1;
+	g_active_bridge_mock->last_debug_line_show_id = line;
+	g_active_bridge_mock->last_debug_line_show_color = color;
+	g_active_bridge_mock->last_debug_line_start_null = start == NULL;
+	g_active_bridge_mock->last_debug_line_end_null = end == NULL;
 }
 
 static void BridgeTest_SetMaxClients(int value)
@@ -596,7 +603,14 @@ static void BridgeTest_AssertInvalidClientLog(const bridge_test_context_t *conte
 	assert_string_equal(print->message, expected);
 }
 
-static void test_bridge_rejects_invalid_bot_input(void **state)
+/*
+=============
+test_bridge_accepts_inclusive_bot_input_endpoint
+
+Pins the retail maxclients endpoint and rejects only the following slot.
+=============
+*/
+static void test_bridge_accepts_inclusive_bot_input_endpoint(void **state)
 {
     bridge_test_context_t *context = (bridge_test_context_t *)*state;
     BridgeMock_Reset(&context->mock);
@@ -607,8 +621,12 @@ static void test_bridge_rejects_invalid_bot_input(void **state)
 
     Q2_BotInput(4, &input);
 
-    assert_int_equal(context->mock.bot_input_calls, 0);
-    BridgeTest_AssertInvalidClientLog(context, "BotInput", 4, 3);
+	assert_int_equal(context->mock.bot_input_calls, 1);
+	assert_int_equal(context->mock.print_count, 0U);
+
+	Q2_BotInput(5, &input);
+	assert_int_equal(context->mock.bot_input_calls, 1);
+	BridgeTest_AssertInvalidClientLog(context, "BotInput", 5, 4);
 }
 
 static void test_bridge_formats_bot_client_command(void **state)
@@ -636,7 +654,7 @@ static void test_bridge_formats_bot_client_command(void **state)
     Q2_BotClientCommand(6, "echo test");
 
     assert_int_equal(context->mock.command_calls, 0);
-    BridgeTest_AssertInvalidClientLog(context, "BotClientCommand", 6, 3);
+	BridgeTest_AssertInvalidClientLog(context, "BotClientCommand", 6, 4);
 }
 
 static void test_bridge_cvar_get_forwards(void **state)
@@ -739,6 +757,24 @@ static void test_bridge_debug_line_toggle(void **state)
 
     Q2_DebugLineShow(enabled_id, start, end, LINECOLOR_GREEN);
     assert_int_equal(context->mock.debug_line_show_calls, 1);
+	assert_int_equal(context->mock.last_debug_line_show_id, enabled_id);
+	assert_int_equal(context->mock.last_debug_line_show_color, (int)LINECOLOR_GREEN);
+	assert_false(context->mock.last_debug_line_start_null);
+	assert_false(context->mock.last_debug_line_end_null);
+
+	Q2_DebugLineShow(enabled_id, NULL, NULL, LINECOLOR_NONE);
+	assert_int_equal(context->mock.debug_line_show_calls, 2);
+	assert_int_equal(context->mock.last_debug_line_show_id, enabled_id);
+	assert_int_equal(context->mock.last_debug_line_show_color, LINECOLOR_NONE);
+	assert_true(context->mock.last_debug_line_start_null);
+	assert_true(context->mock.last_debug_line_end_null);
+	assert_int_equal(context->mock.print_count, 0U);
+
+	Q2_DebugLineShow(-7, NULL, NULL, LINECOLOR_NONE);
+	assert_int_equal(context->mock.debug_line_show_calls, 3);
+	assert_int_equal(context->mock.last_debug_line_show_id, -7);
+	assert_int_equal(context->mock.last_debug_line_show_color, LINECOLOR_NONE);
+	assert_int_equal(context->mock.print_count, 0U);
 
     Q2Bridge_SetDebugLinesEnabled(false);
     Q2_DebugLineDelete(enabled_id);
@@ -869,7 +905,7 @@ static void test_bridge_cmd_arg_wrappers(void **state)
 int main(void)
 {
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test_setup_teardown(test_bridge_rejects_invalid_bot_input,
+        cmocka_unit_test_setup_teardown(test_bridge_accepts_inclusive_bot_input_endpoint,
                                         bridge_test_setup,
                                         bridge_test_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_formats_bot_client_command,

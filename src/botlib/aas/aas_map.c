@@ -10,9 +10,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <direct.h>
+#include <io.h>
+#define chdir _chdir
+#define getcwd _getcwd
+#define unlink _unlink
+#else
+#include <unistd.h>
+#endif
+
 #include "aas_local.h"
 #include "aas_sound.h"
 #include "botlib/ai_move/mover_catalogue.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
@@ -35,8 +50,9 @@ static void AAS_ClearWorld(void);
 static void AAS_ParseEntityLump(const char *data, size_t length);
 
 #define AAS_AREA_STACK_SIZE 128
+#define AAS_CLIENT_TRACE_STACK_SIZE 64
 #define AAS_TRACEPLANE_EPSILON 0.125f
-#define AAS_TRACE_ON_EPSILON 0.0f
+#define AAS_TRACE_ON_EPSILON 0.0005f
 #define AAS_BSP_TRACE_EPSILON 0.005f
 #define AAS_DEG2RAD 0.01745329251994329577f
 
@@ -59,6 +75,12 @@ typedef struct aas_clienttrace_stack_s
 	int planenum;
 	int nodenum;
 } aas_clienttrace_stack_t;
+
+typedef char aas_clienttrace_stack_entry_size[
+	(sizeof(aas_clienttrace_stack_t) == 0x20U) ? 1 : -1];
+typedef char aas_clienttrace_stack_storage_size[
+	(sizeof(aas_clienttrace_stack_t) * AAS_CLIENT_TRACE_STACK_SIZE == 0x800U) ?
+		1 : -1];
 
 typedef struct aas_bsptrace_stack_s
 {
@@ -585,11 +607,6 @@ Check whether an area accepts the requested presence type.
 */
 static qboolean AAS_AreaAllowsPresence(int areanum, int presencetype)
 {
-	if (presencetype == PRESENCE_NONE)
-	{
-		return qtrue;
-	}
-
 	if (aasworld.areasettings == NULL ||
 	    areanum <= 0 ||
 	    areanum >= aasworld.numAreaSettings)
@@ -1108,6 +1125,7 @@ static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
 	float enterfrac = -1.0f;
 	float leavefrac = 1.0f;
 	const aas_plane_t *clipplane = NULL;
+	float clipdist = 0.0f;
 	int clipside = -1;
 	qboolean startsout = qfalse;
 	qboolean endsout = qfalse;
@@ -1156,6 +1174,7 @@ static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
 			{
 				enterfrac = fraction;
 				clipplane = plane;
+				clipdist = expandedDist;
 				clipside = brushsideindex;
 			}
 		}
@@ -1189,6 +1208,12 @@ static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
 		trace->fraction = enterfrac;
 		trace->contents = brush->contents;
 		trace->sidenum = clipside;
+		trace->exp_dist = clipdist;
+		/*
+		 * Retail sub_10004310 stores the global brush-side index at 0x10004432,
+		 * then skips the trace surface payload before storing contents at
+		 * 0x10004474.  Keep surface zeroed even though the side retains texinfo.
+		 */
 		AAS_CopyBSPTracePlane(trace, clipplane);
 		return qtrue;
 	}
@@ -1609,7 +1634,7 @@ static qboolean AAS_SamePoint(const vec3_t a, const vec3_t b)
 =============
 AAS_TraceFacingPlanenum
 
-Return the paired plane when the loaded plane pair faces the trace start.
+Return the paired plane when the loaded split normal points with the trace.
 =============
 */
 static int AAS_TraceFacingPlanenum(int planenum, const vec3_t direction)
@@ -1625,19 +1650,7 @@ static int AAS_TraceFacingPlanenum(int planenum, const vec3_t direction)
 		return planenum;
 	}
 
-	int paired = planenum ^ 1;
-	if (paired < 0 || paired >= aasworld.numPlanes)
-	{
-		return planenum;
-	}
-
-	const aas_plane_t *opposite = &aasworld.planes[paired];
-	if (DotProduct(plane->normal, opposite->normal) > -0.999f)
-	{
-		return planenum;
-	}
-
-	return paired;
+	return planenum ^ 1;
 }
 
 /*
@@ -1925,7 +1938,7 @@ int AAS_BBoxAreas(const vec3_t absmins, const vec3_t absmaxs, int *areas, int ma
 =============
 AAS_PushClientTraceSegment
 
-Push a client-bbox trace segment onto the traversal stack.
+Push a segment within retail's 64-entry geometry, guarding its unchecked edge.
 =============
 */
 static qboolean AAS_PushClientTraceSegment(aas_clienttrace_stack_t *stack,
@@ -1935,8 +1948,11 @@ static qboolean AAS_PushClientTraceSegment(aas_clienttrace_stack_t *stack,
                                            const vec3_t start,
                                            const vec3_t end)
 {
-	if (stack == NULL || stacktop == NULL || *stacktop >= AAS_AREA_STACK_SIZE)
+	if (stack == NULL ||
+		stacktop == NULL ||
+		*stacktop >= AAS_CLIENT_TRACE_STACK_SIZE)
 	{
+		/* Retail has no overflow branch; keep its geometry without corruption. */
 		BotLib_Print(PRT_ERROR, "AAS_TraceBoundingBox: stack overflow\n");
 		return qfalse;
 	}
@@ -2005,7 +2021,6 @@ static qboolean AAS_AreaEntityCollision(int areanum,
 	}
 
 	trace->startsolid = bsptrace.startsolid;
-	trace->fraction = bsptrace.fraction;
 	trace->ent = bsptrace.ent;
 	VectorCopy(bsptrace.endpos, trace->endpos);
 	trace->area = 0;
@@ -2075,7 +2090,7 @@ aas_trace_t AAS_TraceClientBBox(const vec3_t start, const vec3_t end, int presen
 		return AAS_TraceClientBBoxFallback(start, end, presencetype);
 	}
 
-	aas_clienttrace_stack_t stack[AAS_AREA_STACK_SIZE];
+	aas_clienttrace_stack_t stack[AAS_CLIENT_TRACE_STACK_SIZE];
 	int stacktop = 0;
 	if (!AAS_PushClientTraceSegment(stack, &stacktop, 1, 0, start, end))
 	{
@@ -2153,7 +2168,7 @@ aas_trace_t AAS_TraceClientBBox(const vec3_t start, const vec3_t end, int presen
 		const aas_plane_t *plane = &aasworld.planes[node->planenum];
 		float front = DotProduct(current.start, plane->normal) - plane->dist;
 		float back = DotProduct(current.end, plane->normal) - plane->dist;
-		if (front >= -AAS_TRACE_ON_EPSILON && back >= -AAS_TRACE_ON_EPSILON)
+		if (front > -AAS_TRACE_ON_EPSILON && back > -AAS_TRACE_ON_EPSILON)
 		{
 			if (!AAS_PushClientTraceSegment(stack,
 			                                &stacktop,
@@ -2181,21 +2196,16 @@ aas_trace_t AAS_TraceClientBBox(const vec3_t start, const vec3_t end, int presen
 			continue;
 		}
 
-		if (front == back)
-		{
-			front -= 0.001f;
-		}
-
 		float frac = (front < 0.0f)
 		                 ? (front + AAS_TRACEPLANE_EPSILON) / (front - back)
 		                 : (front - AAS_TRACEPLANE_EPSILON) / (front - back);
 		if (frac < 0.0f)
 		{
-			frac = 0.001f;
+			frac = 0.0f;
 		}
 		else if (frac > 1.0f)
 		{
-			frac = 0.999f;
+			frac = 1.0f;
 		}
 
 		vec3_t middle;
@@ -2509,7 +2519,8 @@ int AAS_Init(void)
 
 static int32_t AAS_LittleLong(int32_t value)
 {
-#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#if defined(_WIN32) || \
+	(defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__))
     return value;
 #else
     uint32_t u = (uint32_t)value;
@@ -2522,7 +2533,8 @@ static int32_t AAS_LittleLong(int32_t value)
 
 static uint32_t AAS_LittleUnsigned(uint32_t value)
 {
-#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#if defined(_WIN32) || \
+	(defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__))
     return value;
 #else
     return (uint32_t)AAS_LittleLong((int32_t)value);
@@ -2531,7 +2543,8 @@ static uint32_t AAS_LittleUnsigned(uint32_t value)
 
 static uint16_t AAS_LittleShort(uint16_t value)
 {
-#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#if defined(_WIN32) || \
+	(defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__))
     return value;
 #else
     return (uint16_t)((value >> 8) | (value << 8));
@@ -2540,7 +2553,8 @@ static uint16_t AAS_LittleShort(uint16_t value)
 
 static float AAS_LittleFloat(float value)
 {
-#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#if defined(_WIN32) || \
+	(defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__))
     return value;
 #else
     union
@@ -2552,6 +2566,153 @@ static float AAS_LittleFloat(float value)
     swapper.u = AAS_LittleUnsigned(swapper.u);
     return swapper.f;
 #endif
+}
+
+/*
+=============
+AAS_BSPPointLeafNumber
+
+Find the Quake II BSP leaf containing a point for visibility queries.
+=============
+*/
+static int AAS_BSPPointLeafNumber(const vec3_t point)
+{
+	if (point == NULL || aasworld.bspNodes == NULL ||
+		aasworld.bspPlanes == NULL || aasworld.bspLeaves == NULL)
+	{
+		return -1;
+	}
+
+	int nodenum = 0;
+	while (nodenum >= 0)
+	{
+		if (nodenum >= aasworld.numBspNodes)
+		{
+			return -1;
+		}
+		const aas_bspnode_t *node = &aasworld.bspNodes[nodenum];
+		if (node->planenum < 0 || node->planenum >= aasworld.numBspPlanes)
+		{
+			return -1;
+		}
+		const aas_plane_t *plane = &aasworld.bspPlanes[node->planenum];
+		float distance = DotProduct(point, plane->normal) - plane->dist;
+		nodenum = node->children[distance < 0.0f ? 1 : 0];
+	}
+
+	int leafnum = -1 - nodenum;
+	return leafnum >= 0 && leafnum < aasworld.numBspLeaves
+		? leafnum
+		: -1;
+}
+
+/*
+=============
+AAS_BSPVisibilityOffset
+
+Read one host-endian Quake II dvis offset from the retained visibility lump.
+=============
+*/
+static qboolean AAS_BSPVisibilityOffset(int cluster,
+	int type,
+	int *out_offset)
+{
+	if (out_offset == NULL || cluster < 0 ||
+		cluster >= aasworld.numBspVisibilityClusters ||
+		type < 0 || type > 1 || aasworld.bspVisibility == NULL)
+	{
+		return qfalse;
+	}
+
+	size_t offset = sizeof(int32_t) +
+		((size_t)cluster * 2U + (size_t)type) * sizeof(int32_t);
+	if (offset > aasworld.bspVisibilitySize ||
+		aasworld.bspVisibilitySize - offset < sizeof(int32_t))
+	{
+		return qfalse;
+	}
+	int32_t value;
+	memcpy(&value, aasworld.bspVisibility + offset, sizeof(value));
+	*out_offset = value;
+	return qtrue;
+}
+
+/*
+=============
+AAS_InPVS
+
+Test the Quake II compressed PVS row for the BSP leaves containing two points.
+=============
+*/
+qboolean AAS_InPVS(const vec3_t point1, const vec3_t point2)
+{
+	if (aasworld.bspVisibility == NULL ||
+		aasworld.bspVisibilitySize == 0U ||
+		aasworld.bspNodes == NULL)
+	{
+		return qtrue;
+	}
+
+	int leaf1 = AAS_BSPPointLeafNumber(point1);
+	int leaf2 = AAS_BSPPointLeafNumber(point2);
+	if (leaf1 < 0 || leaf2 < 0)
+	{
+		return qfalse;
+	}
+	int cluster1 = aasworld.bspLeaves[leaf1].cluster;
+	int cluster2 = aasworld.bspLeaves[leaf2].cluster;
+	if (cluster1 < 0 || cluster2 < 0 ||
+		cluster1 >= aasworld.numBspVisibilityClusters ||
+		cluster2 >= aasworld.numBspVisibilityClusters)
+	{
+		return qfalse;
+	}
+
+	int input_offset;
+	if (!AAS_BSPVisibilityOffset(cluster1, 0, &input_offset))
+	{
+		return qfalse;
+	}
+	if (input_offset < 0)
+	{
+		return qtrue;
+	}
+
+	size_t input = (size_t)input_offset;
+	size_t output = 0U;
+	size_t target_byte = (size_t)cluster2 >> 3;
+	size_t row_bytes = ((size_t)aasworld.numBspVisibilityClusters + 7U) >> 3;
+	while (output < row_bytes && input < aasworld.bspVisibilitySize)
+	{
+		unsigned char value = aasworld.bspVisibility[input++];
+		if (value != 0U)
+		{
+			if (output == target_byte)
+			{
+				return (value & (1U << ((unsigned int)cluster2 & 7U))) != 0U;
+			}
+			output += 1U;
+			continue;
+		}
+
+		if (input >= aasworld.bspVisibilitySize)
+		{
+			return qfalse;
+		}
+		unsigned char repeat = aasworld.bspVisibility[input++];
+		if (repeat == 0U)
+		{
+			BotLib_Print(PRT_ERROR, "AAS_DecompressVis: 0 repeat\n");
+			return qfalse;
+		}
+		if (target_byte >= output &&
+			target_byte < output + (size_t)repeat)
+		{
+			return qfalse;
+		}
+		output += (size_t)repeat;
+	}
+	return qfalse;
 }
 
 typedef struct aas_parsed_entity_s
@@ -3561,6 +3722,37 @@ static void AAS_FixupBSPLeafBrushes(unsigned short *leafbrushes, int count)
 
 /*
 =============
+AAS_FixupBSPTexInfo
+
+Convert loaded Quake II BSP texture-info records from little endian.
+=============
+*/
+static void AAS_FixupBSPTexInfo(aas_bsptexinfo_t *texinfo, int count)
+{
+	if (texinfo == NULL || count <= 0)
+	{
+		return;
+	}
+
+	for (int index = 0; index < count; ++index)
+	{
+		aas_bsptexinfo_t *entry = &texinfo[index];
+		for (int axis = 0; axis < 2; ++axis)
+		{
+			for (int component = 0; component < 4; ++component)
+			{
+				entry->vecs[axis][component] =
+					AAS_LittleFloat(entry->vecs[axis][component]);
+			}
+		}
+		entry->flags = AAS_LittleLong(entry->flags);
+		entry->value = AAS_LittleLong(entry->value);
+		entry->nexttexinfo = AAS_LittleLong(entry->nexttexinfo);
+	}
+}
+
+/*
+=============
 AAS_FixupBSPBrushSides
 
 Convert loaded Quake II BSP brush-side records from little endian.
@@ -3640,37 +3832,66 @@ static uint32_t AAS_CRC32Update(uint32_t crc, const void *data, size_t length)
     return ~crc;
 }
 
-static qboolean AAS_ComputeFileChecksum(const char *path, uint32_t *checksum)
+/*
+=============
+AAS_ComputeFileChecksumRange
+
+Computes the checksum of one loose file or one bounded archive entry.
+=============
+*/
+static qboolean AAS_ComputeFileChecksumRange(const char *path,
+	long offset,
+	long length,
+	uint32_t *checksum)
 {
-    if (path == NULL || checksum == NULL)
-    {
-        return qfalse;
-    }
+	if (path == NULL || offset < 0L || length < -1L || checksum == NULL)
+	{
+		return qfalse;
+	}
 
-    FILE *file = fopen(path, "rb");
-    if (file == NULL)
-    {
-        return qfalse;
-    }
+	FILE *file = fopen(path, "rb");
+	if (file == NULL)
+	{
+		return qfalse;
+	}
+	if (fseek(file, offset, SEEK_SET) != 0)
+	{
+		fclose(file);
+		return qfalse;
+	}
 
-    uint8_t buffer[8192];
-    size_t bytesRead;
-    uint32_t crc = 0U;
+	uint8_t buffer[8192];
+	uint32_t crc = 0U;
+	long remaining = length;
 
-    while ((bytesRead = fread(buffer, 1U, sizeof(buffer), file)) > 0U)
-    {
-        crc = AAS_CRC32Update(crc, buffer, bytesRead);
-    }
+	while (remaining != 0L)
+	{
+		size_t requested = sizeof(buffer);
+		if (remaining > 0L && (long)requested > remaining)
+		{
+			requested = (size_t)remaining;
+		}
+		size_t bytesRead = fread(buffer, 1U, requested, file);
+		if (bytesRead == 0U)
+		{
+			break;
+		}
+		crc = AAS_CRC32Update(crc, buffer, bytesRead);
+		if (remaining > 0L)
+		{
+			remaining -= (long)bytesRead;
+		}
+	}
 
-    if (ferror(file))
-    {
-        fclose(file);
-        return qfalse;
-    }
+	if (ferror(file) || remaining > 0L)
+	{
+		fclose(file);
+		return qfalse;
+	}
 
-    fclose(file);
-    *checksum = crc;
-    return qtrue;
+	fclose(file);
+	*checksum = crc;
+	return qtrue;
 }
 
 static int AAS_StringEndsWithIgnoreCase(const char *value, const char *suffix)
@@ -3718,7 +3939,7 @@ static qboolean AAS_BuildPath(char *buffer,
 
     buffer[0] = '\0';
 
-    if (mapname == NULL || *mapname == '\0')
+    if (mapname == NULL)
     {
         return qfalse;
     }
@@ -3732,7 +3953,11 @@ static qboolean AAS_BuildPath(char *buffer,
     int written;
     if (prefixNeeded)
     {
-        written = snprintf(buffer, bufferSize, "maps/%s", mapname);
+#ifdef _WIN32
+		written = snprintf(buffer, bufferSize, "maps\\%s", mapname);
+#else
+		written = snprintf(buffer, bufferSize, "maps/%s", mapname);
+#endif
     }
     else
     {
@@ -3759,6 +3984,880 @@ static qboolean AAS_BuildPath(char *buffer,
     }
 
     return qtrue;
+}
+
+/*
+=============
+AAS_BuildAASCandidatePath
+
+Builds one of the retail AAS discovery candidates in probe order.
+=============
+*/
+static qboolean AAS_BuildAASCandidatePath(char *buffer,
+	size_t bufferSize,
+	const char *mapname,
+	int candidate)
+{
+	if (buffer == NULL || bufferSize == 0U || mapname == NULL ||
+		(candidate != 0 && candidate != 1))
+	{
+		return qfalse;
+	}
+
+	const char *prefix = "";
+	if (candidate == 1)
+	{
+#ifdef _WIN32
+		prefix = "maps\\";
+#else
+		prefix = "maps/";
+#endif
+	}
+
+	int written = snprintf(buffer, bufferSize, "%s%s.aas", prefix, mapname);
+	if (written < 0 || (size_t)written >= bufferSize)
+	{
+		buffer[0] = '\0';
+		return qfalse;
+	}
+
+	return qtrue;
+}
+
+#define AAS_PAK_IDENT 0x4B434150
+#define AAS_PAK_ENTRY_NAME_SIZE 56
+#define AAS_PAK_ENTRY_SIZE 64
+
+typedef struct aas_pak_header_s
+{
+	int32_t ident;
+	int32_t directoryOffset;
+	int32_t directoryLength;
+} aas_pak_header_t;
+
+typedef struct aas_pak_entry_s
+{
+	char name[AAS_PAK_ENTRY_NAME_SIZE];
+	int32_t offset;
+	int32_t length;
+} aas_pak_entry_t;
+
+typedef struct aas_map_file_source_s
+{
+	char physicalPath[MAX_FILEPATH];
+	char logicalPath[MAX_FILEPATH];
+	char archivePath[MAX_FILEPATH];
+	char originalDirectory[MAX_FILEPATH];
+	long offset;
+	long length;
+	qboolean archived;
+	qboolean zipped;
+} aas_map_file_source_t;
+
+typedef qboolean (*aas_zip_extract_callback_t)(const char *archivePath,
+	const char *memberName);
+
+static aas_zip_extract_callback_t g_aasZipExtractCallback;
+
+#if defined(_WIN32) && UINTPTR_MAX == UINT32_MAX
+typedef struct aas_unzip_options_s
+{
+	int extractOnlyNewer;
+	int spaceToUnderscore;
+	int promptToOverwrite;
+	int quiet;
+	int writeToStdout;
+	int testArchive;
+	int verbose;
+	int update;
+	int displayComment;
+	int restoreDirectories;
+	int overwriteAll;
+	int convertText;
+	int zipInfoMode;
+	int caseInsensitive;
+	int restorePrivileges;
+	char *archiveName;
+	char *extractDirectory;
+} aas_unzip_options_t;
+
+typedef struct aas_unzip_callbacks_s
+{
+	FARPROC print;
+	FARPROC sound;
+	FARPROC replace;
+	FARPROC password;
+	FARPROC applicationMessage;
+	FARPROC service;
+	uint32_t totalCompressedSize;
+	uint32_t totalSize;
+	uint32_t compressionFactor;
+	uint32_t memberCount;
+} aas_unzip_callbacks_t;
+
+typedef int (WINAPI *aas_windll_unzip_t)(int includeCount,
+	char **includeNames,
+	int excludeCount,
+	char **excludeNames,
+	aas_unzip_options_t *options,
+	aas_unzip_callbacks_t *callbacks);
+
+typedef char aas_unzip_options_size_must_be_68_bytes[
+	sizeof(aas_unzip_options_t) == 0x44 ? 1 : -1];
+typedef char aas_unzip_callbacks_size_must_be_40_bytes[
+	sizeof(aas_unzip_callbacks_t) == 0x28 ? 1 : -1];
+
+/*
+=============
+AAS_ZipPrintCallback
+
+Forward the retail UNZIP32 text callback through the botlib print channel.
+=============
+*/
+static int WINAPI AAS_ZipPrintCallback(char *message, unsigned long length)
+{
+	if (message != NULL && length > 0UL)
+	{
+		int printableLength = length > (unsigned long)INT_MAX
+			? INT_MAX
+			: (int)length;
+		BotLib_Print(PRT_MESSAGE, "%.*s", printableLength, message);
+	}
+	return (int)length;
+}
+
+/*
+=============
+AAS_ZipReplaceCallback
+
+Select the retail replace-existing-member behavior during extraction.
+=============
+*/
+static int WINAPI AAS_ZipReplaceCallback(char *filename,
+	unsigned filenameSize)
+{
+	(void)filename;
+	(void)filenameSize;
+	return 1;
+}
+
+/*
+=============
+AAS_ZipPasswordCallback
+
+Reject password prompting while retaining the retail callback table shape.
+=============
+*/
+static int WINAPI AAS_ZipPasswordCallback(char *password,
+	int passwordSize,
+	const char *promptMessage,
+	const char *entryName)
+{
+	(void)password;
+	(void)passwordSize;
+	(void)promptMessage;
+	(void)entryName;
+	return 1;
+}
+
+/*
+=============
+AAS_ZipApplicationMessageCallback
+
+Retain the retail 13-argument callback ABI and compression-text formatting.
+=============
+*/
+static void WINAPI AAS_ZipApplicationMessageCallback(
+	unsigned long uncompressedSize,
+	unsigned long compressedSize,
+	unsigned compressionFactor,
+	unsigned month,
+	unsigned day,
+	unsigned year,
+	unsigned hour,
+	unsigned minute,
+	char indicator,
+	const char *filename,
+	const char *method,
+	unsigned long crc,
+	char encrypted)
+{
+	char compressionText[16];
+	if (compressionFactor == 100U)
+	{
+		lstrcpyA(compressionText, "100%%");
+	}
+	else
+	{
+		wsprintfA(compressionText,
+			"%c%d%%",
+			uncompressedSize < compressedSize ? '-' : ' ',
+			(int)compressionFactor);
+	}
+
+	(void)month;
+	(void)day;
+	(void)year;
+	(void)hour;
+	(void)minute;
+	(void)indicator;
+	(void)filename;
+	(void)method;
+	(void)crc;
+	(void)encrypted;
+}
+#endif
+
+/*
+=============
+AAS_SetZipExtractorForTests
+
+Install a transient extractor used only by deterministic filesystem tests.
+=============
+*/
+void AAS_SetZipExtractorForTests(aas_zip_extract_callback_t extractor)
+{
+	g_aasZipExtractCallback = extractor;
+}
+
+/*
+=============
+AAS_ExtractZipMember
+
+Invoke the retail Info-ZIP DLL ABI, or a deterministic test extractor.
+=============
+*/
+static qboolean AAS_ExtractZipMember(const char *archivePath,
+	const char *memberName)
+{
+	if (archivePath == NULL || memberName == NULL)
+	{
+		return qfalse;
+	}
+	if (g_aasZipExtractCallback != NULL)
+	{
+		return g_aasZipExtractCallback(archivePath, memberName);
+	}
+
+#if defined(_WIN32) && UINTPTR_MAX == UINT32_MAX
+	char searchBuffer[0x80];
+	char *filePart = NULL;
+	if (SearchPathA(NULL,
+		"UNZIP32.DLL",
+		NULL,
+		(DWORD)sizeof(searchBuffer),
+		searchBuffer,
+		&filePart) == 0U)
+	{
+		return qfalse;
+	}
+
+	HMODULE unzipModule = LoadLibraryA("UNZIP32.DLL");
+	if (unzipModule == NULL)
+	{
+		return qfalse;
+	}
+
+	aas_windll_unzip_t unzip =
+		(aas_windll_unzip_t)GetProcAddress(unzipModule, "windll_unzip");
+	if (unzip == NULL)
+	{
+		FreeLibrary(unzipModule);
+		return qfalse;
+	}
+
+	aas_unzip_options_t options;
+	memset(&options, 0, sizeof(options));
+	options.quiet = 2;
+	options.overwriteAll = 1;
+	options.caseInsensitive = 1;
+	options.archiveName = (char *)archivePath;
+
+	aas_unzip_callbacks_t callbacks;
+	memset(&callbacks, 0, sizeof(callbacks));
+	callbacks.print = (FARPROC)AAS_ZipPrintCallback;
+	callbacks.replace = (FARPROC)AAS_ZipReplaceCallback;
+	callbacks.password = (FARPROC)AAS_ZipPasswordCallback;
+	callbacks.applicationMessage =
+		(FARPROC)AAS_ZipApplicationMessageCallback;
+
+	char *includeNames[] = {(char *)memberName};
+	int result = unzip(1,
+		includeNames,
+		0,
+		NULL,
+		&options,
+		&callbacks);
+	FreeLibrary(unzipModule);
+	return result == 0 ? qtrue : qfalse;
+#else
+	return qfalse;
+#endif
+}
+
+/*
+=============
+AAS_NormalizeSearchPath
+
+Normalizes both loose and PAK paths to the platform's retail separator form.
+=============
+*/
+static void AAS_NormalizeSearchPath(char *path)
+{
+	if (path == NULL)
+	{
+		return;
+	}
+
+	const char separator =
+#ifdef _WIN32
+		'\\';
+#else
+		'/';
+#endif
+	for (char *cursor = path; *cursor != '\0'; ++cursor)
+	{
+		if (*cursor == '/' || *cursor == '\\')
+		{
+			*cursor = separator;
+		}
+	}
+}
+
+/*
+=============
+AAS_SearchPathEqual
+
+Compares normalized PAK entry names with retail ASCII case folding.
+=============
+*/
+static qboolean AAS_SearchPathEqual(const char *lhs, const char *rhs)
+{
+	if (lhs == NULL || rhs == NULL)
+	{
+		return qfalse;
+	}
+
+	while (*lhs != '\0' || *rhs != '\0')
+	{
+		int left = (unsigned char)*lhs;
+		int right = (unsigned char)*rhs;
+		if (left >= 'a' && left <= 'z')
+		{
+			left -= 'a' - 'A';
+		}
+		if (right >= 'a' && right <= 'z')
+		{
+			right -= 'a' - 'A';
+		}
+		if (left != right)
+		{
+			return qfalse;
+		}
+		if (*lhs != '\0')
+		{
+			++lhs;
+		}
+		if (*rhs != '\0')
+		{
+			++rhs;
+		}
+	}
+
+	return qtrue;
+}
+
+/*
+=============
+AAS_BuildLoosePath
+
+Builds one retail loose-file path from a filesystem root and game directory.
+=============
+*/
+static qboolean AAS_BuildLoosePath(char *buffer,
+	size_t bufferSize,
+	const char *root,
+	const char *directory,
+	const char *requested)
+{
+	if (buffer == NULL || bufferSize == 0U || requested == NULL)
+	{
+		return qfalse;
+	}
+
+	buffer[0] = '\0';
+	const char separator =
+#ifdef _WIN32
+		'\\';
+#else
+		'/';
+#endif
+
+	const char *rootPart = root != NULL ? root : "";
+	int written = snprintf(buffer, bufferSize, "%s", rootPart);
+	if (written < 0 || (size_t)written >= bufferSize)
+	{
+		buffer[0] = '\0';
+		return qfalse;
+	}
+
+	size_t length = (size_t)written;
+	if (length > 0U && buffer[length - 1U] != '/' &&
+		buffer[length - 1U] != '\\')
+	{
+		if (length + 2U > bufferSize)
+		{
+			buffer[0] = '\0';
+			return qfalse;
+		}
+		buffer[length++] = separator;
+		buffer[length] = '\0';
+	}
+
+	const char *directoryPart = directory != NULL ? directory : "";
+	if (*directoryPart != '\0')
+	{
+		written = snprintf(buffer + length,
+			bufferSize - length,
+			"%s",
+			directoryPart);
+		if (written < 0 || (size_t)written >= bufferSize - length)
+		{
+			buffer[0] = '\0';
+			return qfalse;
+		}
+		length += (size_t)written;
+		if (length > 0U && buffer[length - 1U] != '/' &&
+			buffer[length - 1U] != '\\')
+		{
+			if (length + 2U > bufferSize)
+			{
+				buffer[0] = '\0';
+				return qfalse;
+			}
+			buffer[length++] = separator;
+			buffer[length] = '\0';
+		}
+	}
+
+	written = snprintf(buffer + length,
+		bufferSize - length,
+		"%s",
+		requested);
+	if (written < 0 || (size_t)written >= bufferSize - length)
+	{
+		buffer[0] = '\0';
+		return qfalse;
+	}
+
+	AAS_NormalizeSearchPath(buffer);
+
+	return qtrue;
+}
+
+/*
+=============
+AAS_LooseFileReadable
+
+Tests the same read-access condition used by the retail filesystem discovery.
+=============
+*/
+static qboolean AAS_LooseFileReadable(const char *path)
+{
+	if (path == NULL || *path == '\0')
+	{
+		return qfalse;
+	}
+
+#ifdef _WIN32
+	return _access(path, 4) == 0 ? qtrue : qfalse;
+#else
+	return access(path, 4) == 0 ? qtrue : qfalse;
+#endif
+}
+
+/*
+=============
+AAS_FindPakEntry
+
+Finds one normalized logical filename in a Quake II PAK directory.
+=============
+*/
+static qboolean AAS_FindPakEntry(const char *pakPath,
+	const char *requested,
+	long *entryOffset,
+	long *entryLength)
+{
+	if (pakPath == NULL || requested == NULL || entryOffset == NULL ||
+		entryLength == NULL)
+	{
+		return qfalse;
+	}
+
+	FILE *pak = fopen(pakPath, "rb");
+	if (pak == NULL)
+	{
+		return qfalse;
+	}
+
+	aas_pak_header_t header;
+	if (fread(&header, 1U, sizeof(header), pak) != sizeof(header))
+	{
+		fclose(pak);
+		return qfalse;
+	}
+	header.ident = AAS_LittleLong(header.ident);
+	header.directoryOffset = AAS_LittleLong(header.directoryOffset);
+	header.directoryLength = AAS_LittleLong(header.directoryLength);
+	if (header.ident != AAS_PAK_IDENT || header.directoryOffset < 0 ||
+		header.directoryLength < 0)
+	{
+		fclose(pak);
+		return qfalse;
+	}
+
+	size_t entryCount =
+		(size_t)header.directoryLength / AAS_PAK_ENTRY_SIZE;
+	if (entryCount == 0U ||
+		entryCount > SIZE_MAX / sizeof(aas_pak_entry_t) ||
+		fseek(pak, header.directoryOffset, SEEK_SET) != 0)
+	{
+		fclose(pak);
+		return qfalse;
+	}
+
+	aas_pak_entry_t *entries =
+		(aas_pak_entry_t *)malloc(entryCount * sizeof(*entries));
+	if (entries == NULL)
+	{
+		fclose(pak);
+		return qfalse;
+	}
+	if (fread(entries, sizeof(*entries), entryCount, pak) != entryCount)
+	{
+		free(entries);
+		fclose(pak);
+		return qfalse;
+	}
+	fclose(pak);
+
+	char normalizedRequested[MAX_FILEPATH];
+	snprintf(normalizedRequested,
+		sizeof(normalizedRequested),
+		"%s",
+		requested);
+	AAS_NormalizeSearchPath(normalizedRequested);
+	for (size_t index = 0; index < entryCount; ++index)
+	{
+		char normalizedName[AAS_PAK_ENTRY_NAME_SIZE + 1U];
+		memcpy(normalizedName, entries[index].name, AAS_PAK_ENTRY_NAME_SIZE);
+		normalizedName[AAS_PAK_ENTRY_NAME_SIZE] = '\0';
+		AAS_NormalizeSearchPath(normalizedName);
+		if (!AAS_SearchPathEqual(normalizedName, normalizedRequested))
+		{
+			continue;
+		}
+
+		int32_t offset = AAS_LittleLong(entries[index].offset);
+		int32_t length = AAS_LittleLong(entries[index].length);
+		free(entries);
+		if (offset < 0 || length < 0)
+		{
+			return qfalse;
+		}
+		*entryOffset = (long)offset;
+		*entryLength = (long)length;
+		return qtrue;
+	}
+
+	free(entries);
+	return qfalse;
+}
+
+/*
+=============
+AAS_DiscoverMapFile
+
+Discovers a loose file or PAK entry in exact retail checkpoint order.
+=============
+*/
+static qboolean AAS_DiscoverMapFile(const char *requested,
+	aas_map_file_source_t *source)
+{
+	if (requested == NULL || source == NULL)
+	{
+		return qfalse;
+	}
+
+	memset(source, 0, sizeof(*source));
+	source->length = -1L;
+	snprintf(source->logicalPath,
+		sizeof(source->logicalPath),
+		"%s",
+		requested);
+
+	const char *rootVariables[] = {"basedir", "cddir"};
+	for (size_t rootIndex = 0;
+		rootIndex < sizeof(rootVariables) / sizeof(rootVariables[0]);
+		++rootIndex)
+	{
+		const char *gameDirectory = LibVarGetString("gamedir");
+		const char *root = LibVarGetString(rootVariables[rootIndex]);
+		const char *directories[] = {gameDirectory, "baseq2"};
+		for (size_t directoryIndex = 0;
+			directoryIndex < sizeof(directories) / sizeof(directories[0]);
+			++directoryIndex)
+		{
+			char path[MAX_FILEPATH];
+			if (AAS_BuildLoosePath(path,
+				sizeof(path),
+				root,
+				directories[directoryIndex],
+				requested))
+			{
+				BotLib_LogWrite("accessing %s", path);
+				if (AAS_LooseFileReadable(path))
+				{
+					snprintf(source->physicalPath,
+						sizeof(source->physicalPath),
+						"%s",
+						path);
+					source->offset = 0L;
+					source->length = -1L;
+					source->archived = qfalse;
+					return qtrue;
+				}
+			}
+
+			for (int pakIndex = 0; pakIndex < 10; ++pakIndex)
+			{
+				char pakName[16];
+				snprintf(pakName, sizeof(pakName), "pak%d.pak", pakIndex);
+				char pakPath[MAX_FILEPATH];
+				if (!AAS_BuildLoosePath(pakPath,
+					sizeof(pakPath),
+					root,
+					directories[directoryIndex],
+					pakName) ||
+					!AAS_LooseFileReadable(pakPath))
+				{
+					continue;
+				}
+
+				BotLib_LogWrite("searching %s in %s",
+					requested,
+					pakPath);
+				long entryOffset = 0L;
+				long entryLength = 0L;
+				if (!AAS_FindPakEntry(pakPath,
+					requested,
+					&entryOffset,
+					&entryLength))
+				{
+					continue;
+				}
+
+				snprintf(source->physicalPath,
+					sizeof(source->physicalPath),
+					"%s",
+					pakPath);
+				source->offset = entryOffset;
+				source->length = entryLength;
+				source->archived = qtrue;
+				return qtrue;
+			}
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+=============
+AAS_RestoreZipDirectory
+
+Restore the process directory saved around the retail ZIP extraction pass.
+=============
+*/
+static void AAS_RestoreZipDirectory(const aas_map_file_source_t *source)
+{
+	if (source == NULL || !source->zipped ||
+		source->originalDirectory[0] == '\0')
+	{
+		return;
+	}
+	(void)chdir(source->originalDirectory);
+}
+
+/*
+=============
+AAS_DiscoverZipAAS
+
+Run the separate retail aas0.zip through aas9.zip extraction fallback.
+=============
+*/
+static qboolean AAS_DiscoverZipAAS(const char *mapname,
+	aas_map_file_source_t *source)
+{
+	if (mapname == NULL || source == NULL)
+	{
+		return qfalse;
+	}
+
+	char originalDirectory[MAX_FILEPATH];
+	if (getcwd(originalDirectory, sizeof(originalDirectory)) == NULL)
+	{
+		return qfalse;
+	}
+
+	const char *basedir = LibVarGetString("basedir");
+	const char *gamedir = LibVarGetString("gamedir");
+	char workingDirectory[MAX_FILEPATH];
+	if (!AAS_BuildLoosePath(workingDirectory,
+		sizeof(workingDirectory),
+		basedir,
+		gamedir,
+		"") ||
+		chdir(workingDirectory) != 0)
+	{
+		return qfalse;
+	}
+
+	char memberName[MAX_FILEPATH];
+	int memberLength = snprintf(memberName,
+		sizeof(memberName),
+		"%s.aas",
+		mapname);
+	if (memberLength < 0 || (size_t)memberLength >= sizeof(memberName))
+	{
+		(void)chdir(originalDirectory);
+		return qfalse;
+	}
+
+	const char *directories[] = {gamedir, "baseq2"};
+	for (size_t directoryIndex = 0;
+		directoryIndex < sizeof(directories) / sizeof(directories[0]);
+		++directoryIndex)
+	{
+		for (int zipIndex = 0; zipIndex < 10; ++zipIndex)
+		{
+			char zipName[16];
+			snprintf(zipName, sizeof(zipName), "aas%d.zip", zipIndex);
+			char archivePath[MAX_FILEPATH];
+			if (!AAS_BuildLoosePath(archivePath,
+				sizeof(archivePath),
+				"..",
+				directories[directoryIndex],
+				zipName) ||
+				!AAS_LooseFileReadable(archivePath))
+			{
+				continue;
+			}
+
+			BotLib_LogWrite("searching %s in %s",
+				memberName,
+				archivePath);
+			if (!AAS_ExtractZipMember(archivePath, memberName))
+			{
+				BotLib_LogWrite("could not find %s in %s",
+					memberName,
+					archivePath);
+				continue;
+			}
+
+			memset(source, 0, sizeof(*source));
+			source->length = -1L;
+			source->zipped = qtrue;
+			snprintf(source->physicalPath,
+				sizeof(source->physicalPath),
+				"%s",
+				memberName);
+			snprintf(source->logicalPath,
+				sizeof(source->logicalPath),
+				"%s",
+				memberName);
+			snprintf(source->archivePath,
+				sizeof(source->archivePath),
+				"%s",
+				archivePath);
+			snprintf(source->originalDirectory,
+				sizeof(source->originalDirectory),
+				"%s",
+				originalDirectory);
+			return qtrue;
+		}
+	}
+
+	(void)chdir(originalDirectory);
+	return qfalse;
+}
+
+/*
+=============
+AAS_ReturnAASLoadFailure
+
+Preserve the retail ZIP helper's final no-AAS status after member load errors.
+=============
+*/
+static int AAS_ReturnAASLoadFailure(const aas_map_file_source_t *source,
+	int errorCode)
+{
+	if (source == NULL || !source->zipped)
+	{
+		return errorCode;
+	}
+
+	BotLib_Print(PRT_FATAL, "no AAS file available\n");
+	return BLERR_NOAASFILE;
+}
+
+/*
+=============
+AAS_PrintLoadedMapFile
+
+Reports a loose physical path or an archive/logical path pair like retail.
+=============
+*/
+static void AAS_PrintLoadedMapFile(const aas_map_file_source_t *source)
+{
+	if (source == NULL)
+	{
+		return;
+	}
+
+	if (source->zipped)
+	{
+#ifdef _WIN32
+		BotLib_Print(PRT_MESSAGE,
+			"loaded %s\\%s\n",
+			source->archivePath,
+			source->logicalPath);
+#else
+		BotLib_Print(PRT_MESSAGE,
+			"loaded %s/%s\n",
+			source->archivePath,
+			source->logicalPath);
+#endif
+		return;
+	}
+
+	if (source->archived)
+	{
+#ifdef _WIN32
+		BotLib_Print(PRT_MESSAGE,
+			"loaded %s\\%s\n",
+			source->physicalPath,
+			source->logicalPath);
+#else
+		BotLib_Print(PRT_MESSAGE,
+			"loaded %s/%s\n",
+			source->physicalPath,
+			source->logicalPath);
+#endif
+		return;
+	}
+
+	BotLib_Print(PRT_MESSAGE, "loaded %s\n", source->physicalPath);
 }
 
 static long AAS_GetFileSize(FILE *file)
@@ -4065,83 +5164,131 @@ aas_bspentity_t *AAS_LoadBSPEntities(void)
 	return entities;
 }
 
-static int AAS_ReadLump(FILE *file,
-                        const q2_lump_t *lump,
-                        size_t elementSize,
-                        void **outBuffer,
-                        int *outCount,
-                        long fileSize,
-                        int seekError,
-                        int readError)
+/*
+=============
+AAS_LumpFailure
+
+Prints the retail BSP/AAS lump diagnostic and returns its shared load status.
+=============
+*/
+static int AAS_LumpFailure(int errorCode,
+	const char *lumpName,
+	qboolean seekFailure)
 {
-    if (outBuffer == NULL)
-    {
-        return readError;
-    }
+	if (errorCode == BLERR_CANNOTREADBSPLUMP)
+	{
+		BotLib_Print(PRT_FATAL,
+			seekFailure ? "can't seek to bsp lump %s\n" :
+				"can't read bsp lump %s\n",
+			lumpName != NULL ? lumpName : "");
+	}
+	else
+	{
+		BotLib_Print(PRT_FATAL,
+			seekFailure ? "can't seek to aas lump\n" :
+				"can't read aas lump\n");
+	}
 
-    *outBuffer = NULL;
-    if (outCount != NULL)
-    {
-        *outCount = 0;
-    }
+	return errorCode;
+}
 
-    if (lump == NULL || file == NULL)
-    {
-        return readError;
-    }
+/*
+=============
+AAS_ReadLump
 
-    if (lump->length == 0)
-    {
-        return BLERR_NOERROR;
-    }
+Reads one retail lump while preserving BSP alignment and exact failure output.
+=============
+*/
+static int AAS_ReadLump(FILE *file,
+	const q2_lump_t *lump,
+	size_t elementSize,
+	void **outBuffer,
+	int *outCount,
+	long baseOffset,
+	long fileSize,
+	int readError,
+	const char *lumpName)
+{
+	if (outBuffer == NULL)
+	{
+		return readError;
+	}
 
-    if (lump->offset < 0 || lump->length < 0)
-    {
-        return readError;
-    }
+	*outBuffer = NULL;
+	if (outCount != NULL)
+	{
+		*outCount = 0;
+	}
 
-    long end = (long)lump->offset + (long)lump->length;
-    if (fileSize >= 0 && (lump->offset > fileSize || end > fileSize))
-    {
-        return readError;
-    }
+	if (lump == NULL || file == NULL || baseOffset < 0L)
+	{
+		return readError;
+	}
 
-    if (elementSize == 0U || (size_t)lump->length % elementSize != 0U)
-    {
-        return readError;
-    }
+	if (lump->length == 0)
+	{
+		return BLERR_NOERROR;
+	}
 
-    size_t count = (size_t)lump->length / elementSize;
-    if (count > (size_t)INT_MAX)
-    {
-        return readError;
-    }
+	if (readError == BLERR_CANNOTREADBSPLUMP &&
+		(elementSize == 0U || (size_t)lump->length % elementSize != 0U))
+	{
+		BotLib_Print(PRT_FATAL, "odd %s bsp lump size\n",
+			lumpName != NULL ? lumpName : "");
+		return readError;
+	}
 
-    if (fseek(file, lump->offset, SEEK_SET) != 0)
-    {
-        return seekError;
-    }
+	if (elementSize == 0U || lump->length < 0)
+	{
+		return AAS_LumpFailure(readError, lumpName, qfalse);
+	}
 
-    void *buffer = malloc(count * elementSize);
-    if (buffer == NULL)
-    {
-        return readError;
-    }
+	if (lump->offset < 0)
+	{
+		return AAS_LumpFailure(readError, lumpName, qtrue);
+	}
 
-    size_t read = fread(buffer, elementSize, count, file);
-    if (read != count)
-    {
-        free(buffer);
-        return readError;
-    }
+	size_t length = (size_t)lump->length;
+	size_t count = length / elementSize;
+	if (count > (size_t)INT_MAX)
+	{
+		return AAS_LumpFailure(readError, lumpName, qfalse);
+	}
 
-    *outBuffer = buffer;
-    if (outCount != NULL)
-    {
-        *outCount = (int)count;
-    }
+	int64_t end = (int64_t)lump->offset + (int64_t)lump->length;
+	if (fileSize >= 0 &&
+		((int64_t)lump->offset > (int64_t)fileSize ||
+		end > (int64_t)fileSize))
+	{
+		return AAS_LumpFailure(readError, lumpName, qfalse);
+	}
 
-    return BLERR_NOERROR;
+	int64_t absoluteOffset = (int64_t)baseOffset + (int64_t)lump->offset;
+	if (absoluteOffset < 0 || absoluteOffset > LONG_MAX ||
+		fseek(file, (long)absoluteOffset, SEEK_SET) != 0)
+	{
+		return AAS_LumpFailure(readError, lumpName, qtrue);
+	}
+
+	void *buffer = malloc(length);
+	if (buffer == NULL)
+	{
+		return AAS_LumpFailure(readError, lumpName, qfalse);
+	}
+
+	if (fread(buffer, 1U, length, file) != length)
+	{
+		free(buffer);
+		return AAS_LumpFailure(readError, lumpName, qfalse);
+	}
+
+	*outBuffer = buffer;
+	if (outCount != NULL)
+	{
+		*outCount = (int)count;
+	}
+
+	return BLERR_NOERROR;
 }
 
 /*
@@ -4156,6 +5303,7 @@ static void AAS_FreeLoadedBSPCollisionData(aas_bspmodel_t *models,
                                            aas_bspleaf_t *leaves,
                                            unsigned short *leafbrushes,
                                            aas_plane_t *planes,
+	                                       aas_bsptexinfo_t *texinfo,
                                            aas_bspbrushside_t *brushsides,
                                            aas_bspbrush_t *brushes)
 {
@@ -4164,6 +5312,7 @@ static void AAS_FreeLoadedBSPCollisionData(aas_bspmodel_t *models,
 	free(leaves);
 	free(leafbrushes);
 	free(planes);
+	free(texinfo);
 	free(brushsides);
 	free(brushes);
 }
@@ -4172,10 +5321,12 @@ static void AAS_FreeLoadedBSPCollisionData(aas_bspmodel_t *models,
 =============
 AAS_LoadBSPCollisionData
 
-Load the Quake II BSP collision lumps needed by inline brush-model tracing.
+Load Quake II BSP records retained beside the inline brush-model collision
+graph. Retail owns texinfo here even though its internal trace never resolves
+a brush-side texinfo index into the trace surface payload.
 =============
 */
-static int AAS_LoadBSPCollisionData(const char *bspPath,
+static int AAS_LoadBSPCollisionData(const aas_map_file_source_t *bspSource,
                                     aas_bspmodel_t **outModels,
                                     int *outNumModels,
                                     aas_bspnode_t **outNodes,
@@ -4186,12 +5337,15 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
                                     int *outLeafBrushIndexSize,
                                     aas_plane_t **outPlanes,
                                     int *outNumPlanes,
+	                                aas_bsptexinfo_t **outTexInfo,
+	                                int *outNumTexInfo,
                                     aas_bspbrushside_t **outBrushSides,
                                     int *outNumBrushSides,
                                     aas_bspbrush_t **outBrushes,
                                     int *outNumBrushes)
 {
-	if (outModels == NULL ||
+	if (bspSource == NULL ||
+	    outModels == NULL ||
 	    outNumModels == NULL ||
 	    outNodes == NULL ||
 	    outNumNodes == NULL ||
@@ -4201,6 +5355,8 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	    outLeafBrushIndexSize == NULL ||
 	    outPlanes == NULL ||
 	    outNumPlanes == NULL ||
+	    outTexInfo == NULL ||
+	    outNumTexInfo == NULL ||
 	    outBrushSides == NULL ||
 	    outNumBrushSides == NULL ||
 	    outBrushes == NULL ||
@@ -4219,16 +5375,36 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	*outLeafBrushIndexSize = 0;
 	*outPlanes = NULL;
 	*outNumPlanes = 0;
+	*outTexInfo = NULL;
+	*outNumTexInfo = 0;
 	*outBrushSides = NULL;
 	*outNumBrushSides = 0;
 	*outBrushes = NULL;
 	*outNumBrushes = 0;
 
-	FILE *file = fopen(bspPath, "rb");
+	FILE *file = fopen(bspSource->physicalPath, "rb");
 	if (file == NULL)
 	{
-		BotLib_Print(PRT_ERROR, "AAS_LoadMap: cannot reopen BSP %s (%s)\n", bspPath, strerror(errno));
+		BotLib_Print(PRT_ERROR,
+			"AAS_LoadMap: cannot reopen BSP %s (%s)\n",
+			bspSource->physicalPath,
+			strerror(errno));
 		return BLERR_CANNOTOPENBSPFILE;
+	}
+	if (fseek(file, bspSource->offset, SEEK_SET) != 0)
+	{
+		fclose(file);
+		return BLERR_CANNOTSEEKTOBSPFILE;
+	}
+	long fileSize = bspSource->length;
+	if (!bspSource->archived)
+	{
+		fileSize = AAS_GetFileSize(file);
+	}
+	if (fileSize < 0L || fileSize < (long)sizeof(q2_bsp_header_t))
+	{
+		fclose(file);
+		return BLERR_CANNOTREADBSPHEADER;
 	}
 
 	q2_bsp_header_t header;
@@ -4257,13 +5433,6 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 		return BLERR_WRONGBSPFILEVERSION;
 	}
 
-	long fileSize = AAS_GetFileSize(file);
-	if (fileSize < 0)
-	{
-		fclose(file);
-		return BLERR_CANNOTREADBSPHEADER;
-	}
-
 	aas_bspmodel_t *models = NULL;
 	int numModels = 0;
 	int result = AAS_ReadLump(file,
@@ -4271,9 +5440,10 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	                          sizeof(aas_bspmodel_t),
 	                          (void **)&models,
 	                          &numModels,
+	                          bspSource->offset,
 	                          fileSize,
-	                          BLERR_CANNOTSEEKTOBSPFILE,
-	                          BLERR_CANNOTREADBSPLUMP);
+	                          BLERR_CANNOTREADBSPLUMP,
+	                          "models");
 	if (result != BLERR_NOERROR)
 	{
 		fclose(file);
@@ -4287,9 +5457,10 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	                      sizeof(aas_bspnode_t),
 	                      (void **)&nodes,
 	                      &numNodes,
+	                      bspSource->offset,
 	                      fileSize,
-	                      BLERR_CANNOTSEEKTOBSPFILE,
-	                      BLERR_CANNOTREADBSPLUMP);
+	                      BLERR_CANNOTREADBSPLUMP,
+	                      "nodes");
 	if (result != BLERR_NOERROR)
 	{
 		free(models);
@@ -4304,9 +5475,10 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	                      sizeof(aas_bspleaf_t),
 	                      (void **)&leaves,
 	                      &numLeaves,
+	                      bspSource->offset,
 	                      fileSize,
-	                      BLERR_CANNOTSEEKTOBSPFILE,
-	                      BLERR_CANNOTREADBSPLUMP);
+	                      BLERR_CANNOTREADBSPLUMP,
+	                      "leafs");
 	if (result != BLERR_NOERROR)
 	{
 		free(models);
@@ -4322,9 +5494,10 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	                      sizeof(unsigned short),
 	                      (void **)&leafbrushes,
 	                      &leafBrushIndexSize,
+	                      bspSource->offset,
 	                      fileSize,
-	                      BLERR_CANNOTSEEKTOBSPFILE,
-	                      BLERR_CANNOTREADBSPLUMP);
+	                      BLERR_CANNOTREADBSPLUMP,
+	                      "leaf brushes");
 	if (result != BLERR_NOERROR)
 	{
 		free(models);
@@ -4341,9 +5514,10 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	                      sizeof(aas_plane_t),
 	                      (void **)&planes,
 	                      &numPlanes,
+	                      bspSource->offset,
 	                      fileSize,
-	                      BLERR_CANNOTSEEKTOBSPFILE,
-	                      BLERR_CANNOTREADBSPLUMP);
+	                      BLERR_CANNOTREADBSPLUMP,
+	                      "planes");
 	if (result != BLERR_NOERROR)
 	{
 		free(models);
@@ -4354,16 +5528,17 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 		return result;
 	}
 
-	aas_bspbrushside_t *brushsides = NULL;
-	int numBrushSides = 0;
+	aas_bsptexinfo_t *texinfo = NULL;
+	int numTexInfo = 0;
 	result = AAS_ReadLump(file,
-	                      &header.lumps[Q2_BSP_LUMP_BRUSHSIDES],
-	                      sizeof(aas_bspbrushside_t),
-	                      (void **)&brushsides,
-	                      &numBrushSides,
+	                      &header.lumps[Q2_BSP_LUMP_TEXINFO],
+	                      sizeof(aas_bsptexinfo_t),
+	                      (void **)&texinfo,
+	                      &numTexInfo,
+	                      bspSource->offset,
 	                      fileSize,
-	                      BLERR_CANNOTSEEKTOBSPFILE,
-	                      BLERR_CANNOTREADBSPLUMP);
+	                      BLERR_CANNOTREADBSPLUMP,
+	                      "texinfo");
 	if (result != BLERR_NOERROR)
 	{
 		free(models);
@@ -4375,6 +5550,29 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 		return result;
 	}
 
+	aas_bspbrushside_t *brushsides = NULL;
+	int numBrushSides = 0;
+	result = AAS_ReadLump(file,
+	                      &header.lumps[Q2_BSP_LUMP_BRUSHSIDES],
+	                      sizeof(aas_bspbrushside_t),
+	                      (void **)&brushsides,
+	                      &numBrushSides,
+	                      bspSource->offset,
+	                      fileSize,
+	                      BLERR_CANNOTREADBSPLUMP,
+	                      "brush sides");
+	if (result != BLERR_NOERROR)
+	{
+		free(models);
+		free(nodes);
+		free(leaves);
+		free(leafbrushes);
+		free(planes);
+		free(texinfo);
+		fclose(file);
+		return result;
+	}
+
 	aas_bspbrush_t *brushes = NULL;
 	int numBrushes = 0;
 	result = AAS_ReadLump(file,
@@ -4382,9 +5580,10 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	                      sizeof(aas_bspbrush_t),
 	                      (void **)&brushes,
 	                      &numBrushes,
+	                      bspSource->offset,
 	                      fileSize,
-	                      BLERR_CANNOTSEEKTOBSPFILE,
-	                      BLERR_CANNOTREADBSPLUMP);
+	                      BLERR_CANNOTREADBSPLUMP,
+	                      "brushes");
 	fclose(file);
 	if (result != BLERR_NOERROR)
 	{
@@ -4393,6 +5592,7 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 		                               leaves,
 		                               leafbrushes,
 		                               planes,
+		                               texinfo,
 		                               brushsides,
 		                               NULL);
 		return result;
@@ -4403,6 +5603,7 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	AAS_FixupBSPLeaves(leaves, numLeaves);
 	AAS_FixupBSPLeafBrushes(leafbrushes, leafBrushIndexSize);
 	AAS_FixupPlanes(planes, numPlanes);
+	AAS_FixupBSPTexInfo(texinfo, numTexInfo);
 	AAS_FixupBSPBrushSides(brushsides, numBrushSides);
 	AAS_FixupBSPBrushes(brushes, numBrushes);
 
@@ -4416,11 +5617,129 @@ static int AAS_LoadBSPCollisionData(const char *bspPath,
 	*outLeafBrushIndexSize = leafBrushIndexSize;
 	*outPlanes = planes;
 	*outNumPlanes = numPlanes;
+	*outTexInfo = texinfo;
+	*outNumTexInfo = numTexInfo;
 	*outBrushSides = brushsides;
 	*outNumBrushSides = numBrushSides;
 	*outBrushes = brushes;
 	*outNumBrushes = numBrushes;
 	return BLERR_NOERROR;
+}
+
+/*
+=============
+AAS_LoadBSPVisibilityData
+
+Retain and endian-fix the Quake II dvis lump used by retail AAS_InPVS.
+=============
+*/
+static qboolean AAS_LoadBSPVisibilityData(
+	const aas_map_file_source_t *bsp_source,
+	unsigned char **out_visibility,
+	size_t *out_visibility_size,
+	int *out_num_clusters)
+{
+	if (bsp_source == NULL || out_visibility == NULL ||
+		out_visibility_size == NULL || out_num_clusters == NULL)
+	{
+		return qfalse;
+	}
+	*out_visibility = NULL;
+	*out_visibility_size = 0U;
+	*out_num_clusters = 0;
+
+	FILE *file = fopen(bsp_source->physicalPath, "rb");
+	if (file == NULL || fseek(file, bsp_source->offset, SEEK_SET) != 0)
+	{
+		if (file != NULL)
+		{
+			fclose(file);
+		}
+		return qfalse;
+	}
+	long file_size = bsp_source->archived
+		? bsp_source->length
+		: AAS_GetFileSize(file);
+	if (file_size < (long)sizeof(q2_bsp_header_t))
+	{
+		fclose(file);
+		return qfalse;
+	}
+
+	q2_bsp_header_t header;
+	if (fread(&header, sizeof(header), 1U, file) != 1U)
+	{
+		fclose(file);
+		return qfalse;
+	}
+	header.ident = AAS_LittleLong(header.ident);
+	header.version = AAS_LittleLong(header.version);
+	for (int index = 0; index < Q2_BSP_LUMP_MAX; ++index)
+	{
+		header.lumps[index].offset = AAS_LittleLong(
+			header.lumps[index].offset);
+		header.lumps[index].length = AAS_LittleLong(
+			header.lumps[index].length);
+	}
+	if (header.ident != Q2_BSP_IDENT || header.version != Q2_BSP_VERSION)
+	{
+		fclose(file);
+		return qfalse;
+	}
+
+	unsigned char *visibility = NULL;
+	int visibility_size = 0;
+	int result = AAS_ReadLump(file,
+		&header.lumps[Q2_BSP_LUMP_VISIBILITY],
+		1U,
+		(void **)&visibility,
+		&visibility_size,
+		bsp_source->offset,
+		file_size,
+		BLERR_CANNOTREADBSPLUMP,
+		"visibility");
+	fclose(file);
+	if (result != BLERR_NOERROR)
+	{
+		free(visibility);
+		return qfalse;
+	}
+	if (visibility == NULL || visibility_size == 0)
+	{
+		return qtrue;
+	}
+	if (visibility_size < (int)sizeof(int32_t))
+	{
+		free(visibility);
+		return qfalse;
+	}
+
+	int32_t num_clusters;
+	memcpy(&num_clusters, visibility, sizeof(num_clusters));
+	num_clusters = AAS_LittleLong(num_clusters);
+	if (num_clusters < 0 ||
+		(size_t)num_clusters >
+		((size_t)visibility_size - sizeof(int32_t)) /
+			(2U * sizeof(int32_t)))
+	{
+		free(visibility);
+		return qfalse;
+	}
+	memcpy(visibility, &num_clusters, sizeof(num_clusters));
+	for (int index = 0; index < num_clusters * 2; ++index)
+	{
+		size_t offset = sizeof(int32_t) +
+			(size_t)index * sizeof(int32_t);
+		int32_t bit_offset;
+		memcpy(&bit_offset, visibility + offset, sizeof(bit_offset));
+		bit_offset = AAS_LittleLong(bit_offset);
+		memcpy(visibility + offset, &bit_offset, sizeof(bit_offset));
+	}
+
+	*out_visibility = visibility;
+	*out_visibility_size = (size_t)visibility_size;
+	*out_num_clusters = num_clusters;
+	return qtrue;
 }
 
 static size_t AAS_AreaBitWordCount(void)
@@ -4494,6 +5813,12 @@ static void AAS_ClearWorld(void)
 		aasworld.bspLeaves = NULL;
 	}
 
+	if (aasworld.bspVisibility != NULL)
+	{
+		free(aasworld.bspVisibility);
+		aasworld.bspVisibility = NULL;
+	}
+
 	if (aasworld.bspLeafBrushes != NULL)
 	{
 		free(aasworld.bspLeafBrushes);
@@ -4504,6 +5829,12 @@ static void AAS_ClearWorld(void)
 	{
 		free(aasworld.bspPlanes);
 		aasworld.bspPlanes = NULL;
+	}
+
+	if (aasworld.bspTexInfo != NULL)
+	{
+		free(aasworld.bspTexInfo);
+		aasworld.bspTexInfo = NULL;
 	}
 
 	if (aasworld.bspBrushSides != NULL)
@@ -4610,57 +5941,100 @@ static void AAS_ClearWorld(void)
     TranslateEntity_SetWorldLoaded(qfalse);
 }
 
+/*
+=============
+AAS_LoadMap
+
+Loads navigation data or refreshes asset indexes without disturbing a live world.
+=============
+*/
 int AAS_LoadMap(const char *mapname,
-                int modelindexes, char *modelindex[],
-                int soundindexes, char *soundindex[],
-                int imageindexes, char *imageindex[])
+	int modelindexes, char *modelindex[],
+	int soundindexes, char *soundindex[],
+	int imageindexes, char *imageindex[])
 {
-    TranslateEntity_SetWorldLoaded(qfalse);
+	(void)modelindexes;
+	(void)modelindex;
+	(void)imageindexes;
+	(void)imageindex;
 
-    (void)modelindexes;
-    (void)modelindex;
-    (void)imageindexes;
-    (void)imageindex;
+	if (mapname == NULL)
+	{
+		if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
+		{
+			BotLib_Print(PRT_WARNING,
+				"AAS_LoadMap: failed to refresh sound asset indexes\n");
+		}
+		return BLERR_NOERROR;
+	}
 
-    if (mapname == NULL || *mapname == '\0')
-    {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: map name not specified\n");
-        return BLERR_NOAASFILE;
-    }
+	TranslateEntity_SetWorldLoaded(qfalse);
 
     AAS_ClearWorld();
+	if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
+	{
+		BotLib_Print(PRT_FATAL,
+			"AAS_LoadMap: failed to register sound assets for %s\n",
+			mapname);
+		return BLERR_INVALIDIMPORT;
+	}
 
     strncpy(aasworld.mapName, mapname, sizeof(aasworld.mapName) - 1U);
     aasworld.mapName[sizeof(aasworld.mapName) - 1U] = '\0';
 
-    char bspPath[MAX_FILEPATH];
-    char aasPath[MAX_FILEPATH];
+    char bspCandidate[MAX_FILEPATH];
+    char aasCandidate[MAX_FILEPATH];
+	aas_map_file_source_t bspSource;
+	aas_map_file_source_t aasSource;
 
-    if (!AAS_BuildPath(bspPath, sizeof(bspPath), mapname, ".bsp"))
+    if (!AAS_BuildPath(bspCandidate,
+		sizeof(bspCandidate),
+		mapname,
+		".bsp"))
     {
         BotLib_Print(PRT_ERROR, "AAS_LoadMap: BSP path too long for %s\n", mapname);
         return BLERR_NOAASFILE;
     }
 
-    if (!AAS_BuildPath(aasPath, sizeof(aasPath), mapname, ".aas"))
+	if (!AAS_DiscoverMapFile(bspCandidate, &bspSource))
     {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: AAS path too long for %s\n", mapname);
-        return BLERR_NOAASFILE;
-    }
+		BotLib_Print(PRT_FATAL,
+			"couldn't find the bsp file %s\n",
+			bspCandidate);
+		return BLERR_NOBSPFILE;
+	}
 
-    FILE *bspFile = fopen(bspPath, "rb");
+	FILE *bspFile = fopen(bspSource.physicalPath, "rb");
     if (bspFile == NULL)
     {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: cannot open BSP %s (%s)\n", bspPath, strerror(errno));
-        return BLERR_CANNOTOPENBSPFILE;
+		BotLib_Print(PRT_FATAL,
+			"can't open bsp file %s\n",
+			bspSource.physicalPath);
+		return BLERR_CANNOTOPENBSPFILE;
     }
+	if (fseek(bspFile, bspSource.offset, SEEK_SET) != 0)
+	{
+		BotLib_Print(PRT_FATAL,
+			"can't seek to bsp file %s\n",
+			bspSource.physicalPath);
+		fclose(bspFile);
+		return BLERR_CANNOTSEEKTOBSPFILE;
+	}
+	long bspFileSize = bspSource.length;
+	if (!bspSource.archived)
+	{
+		bspFileSize = AAS_GetFileSize(bspFile);
+	}
 
     q2_bsp_header_t bspHeader;
-    if (fread(&bspHeader, sizeof(bspHeader), 1U, bspFile) != 1U)
+	if (bspFileSize < (long)sizeof(bspHeader) ||
+		fread(&bspHeader, sizeof(bspHeader), 1U, bspFile) != 1U)
     {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: failed to read BSP header from %s\n", bspPath);
-        fclose(bspFile);
-        return BLERR_CANNOTREADBSPHEADER;
+		BotLib_Print(PRT_FATAL,
+			"can't read header of bsp file %s\n",
+			bspSource.physicalPath);
+		fclose(bspFile);
+		return BLERR_CANNOTREADBSPHEADER;
     }
 
     bspHeader.ident = AAS_LittleLong(bspHeader.ident);
@@ -4673,97 +6047,137 @@ int AAS_LoadMap(const char *mapname,
 
     if (bspHeader.ident != Q2_BSP_IDENT)
     {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: %s is not a Quake II BSP\n", bspPath);
-        fclose(bspFile);
-        return BLERR_WRONGBSPFILEID;
+		BotLib_Print(PRT_FATAL,
+			"%s is not an BSP file\n",
+			bspSource.physicalPath);
+		fclose(bspFile);
+		return BLERR_WRONGBSPFILEID;
     }
 
     if (bspHeader.version != Q2_BSP_VERSION)
     {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_LoadMap: BSP %s has version %d (expected %d)\n",
-                     bspPath,
-                     bspHeader.version,
-                     Q2_BSP_VERSION);
-        fclose(bspFile);
-        return BLERR_WRONGBSPFILEVERSION;
+		BotLib_Print(PRT_FATAL,
+			"bsp file %s is version %i, not %i\n",
+			bspSource.physicalPath,
+			bspHeader.version,
+			Q2_BSP_VERSION);
+		fclose(bspFile);
+		return BLERR_WRONGBSPFILEVERSION;
     }
 
-    const q2_lump_t *entitiesLump = &bspHeader.lumps[Q2_BSP_LUMP_ENTITIES];
-    if (entitiesLump->length < 0)
+    if (bspFileSize < 0L)
     {
-        BotLib_Print(PRT_WARNING,
-                     "AAS_LoadMap: BSP %s has invalid entity lump length %d\n",
-                     bspPath,
-                     entitiesLump->length);
-    }
-    else if (entitiesLump->length > 0)
-    {
-        if (entitiesLump->offset < 0)
-        {
-            BotLib_Print(PRT_WARNING,
-                         "AAS_LoadMap: BSP %s has invalid entity lump offset %d\n",
-                         bspPath,
-                         entitiesLump->offset);
-        }
-        else if (fseek(bspFile, entitiesLump->offset, SEEK_SET) != 0)
-        {
-            BotLib_Print(PRT_WARNING,
-                         "AAS_LoadMap: failed to seek to entity lump in %s (%s)\n",
-                         bspPath,
-                         strerror(errno));
-        }
-        else
-        {
-            size_t lumpLength = (size_t)entitiesLump->length;
-            char *entityData = (char *)malloc(lumpLength + 1U);
-            if (entityData == NULL)
-            {
-                BotLib_Print(PRT_WARNING,
-                             "AAS_LoadMap: out of memory reading entity lump from %s\n",
-                             bspPath);
-            }
-            else
-            {
-                size_t readLength = fread(entityData, 1U, lumpLength, bspFile);
-                if (readLength != lumpLength)
-                {
-                    BotLib_Print(PRT_WARNING,
-                                 "AAS_LoadMap: failed to read entity lump from %s\n",
-                                 bspPath);
-                }
-                else
-                {
-                    entityData[lumpLength] = '\0';
-                    AAS_ParseEntityLump(entityData, lumpLength);
-                }
-                free(entityData);
-            }
-        }
-    }
+		BotLib_Print(PRT_FATAL,
+			"can't seek to bsp file %s\n",
+			bspSource.physicalPath);
+		fclose(bspFile);
+		return BLERR_CANNOTSEEKTOBSPFILE;
+	}
+
+	char *entityData = NULL;
+	int entityLength = 0;
+	int entityStatus = AAS_ReadLump(bspFile,
+		&bspHeader.lumps[Q2_BSP_LUMP_ENTITIES],
+		1U,
+		(void **)&entityData,
+		&entityLength,
+		bspSource.offset,
+		bspFileSize,
+		BLERR_CANNOTREADBSPLUMP,
+		"entity");
+	if (entityStatus != BLERR_NOERROR)
+	{
+		fclose(bspFile);
+		return entityStatus;
+	}
+
+	if (entityData != NULL)
+	{
+		AAS_ParseEntityLump(entityData, (size_t)entityLength);
+		free(entityData);
+	}
 
     fclose(bspFile);
 
     uint32_t bspChecksum = 0U;
-    if (!AAS_ComputeFileChecksum(bspPath, &bspChecksum))
+    if (!AAS_ComputeFileChecksumRange(bspSource.physicalPath,
+		bspSource.offset,
+		bspSource.length,
+		&bspChecksum))
     {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: failed to compute BSP checksum for %s\n", bspPath);
+		BotLib_Print(PRT_ERROR,
+			"AAS_LoadMap: failed to compute BSP checksum for %s\n",
+			bspSource.physicalPath);
         return BLERR_CANNOTREADBSPHEADER;
     }
+	AAS_PrintLoadedMapFile(&bspSource);
 
-    FILE *aasFile = fopen(aasPath, "rb");
-    if (aasFile == NULL)
-    {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: cannot open AAS %s (%s)\n", aasPath, strerror(errno));
-        return BLERR_CANNOTOPENAASFILE;
-    }
+	FILE *aasFile = NULL;
+	qboolean aasDiscovered = qfalse;
+	for (int candidate = 0; candidate < 2; ++candidate)
+	{
+		if (!AAS_BuildAASCandidatePath(aasCandidate,
+			sizeof(aasCandidate),
+			mapname,
+			candidate))
+		{
+			continue;
+		}
+
+		if (!AAS_DiscoverMapFile(aasCandidate, &aasSource))
+		{
+			continue;
+		}
+
+		aasDiscovered = qtrue;
+		break;
+	}
+
+	if (!aasDiscovered)
+	{
+		aasDiscovered = AAS_DiscoverZipAAS(mapname, &aasSource);
+	}
+	if (!aasDiscovered)
+	{
+		BotLib_Print(PRT_FATAL, "no AAS file available\n");
+		return BLERR_NOAASFILE;
+	}
+
+	aasFile = fopen(aasSource.physicalPath, "rb");
+	if (aasFile == NULL)
+	{
+		BotLib_Print(PRT_FATAL,
+			"can't open %s\n",
+			aasSource.physicalPath);
+		return AAS_ReturnAASLoadFailure(&aasSource,
+			BLERR_CANNOTOPENAASFILE);
+	}
+	if (fseek(aasFile, aasSource.offset, SEEK_SET) != 0)
+	{
+		BotLib_Print(PRT_FATAL,
+			"can't seek to file %s\n",
+			aasSource.physicalPath);
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource,
+			BLERR_CANNOTSEEKTOAASFILE);
+	}
+
+	long aasFileSize = aasSource.length;
+	if (!aasSource.archived)
+	{
+		aasFileSize = AAS_GetFileSize(aasFile);
+	}
 
     q2_aas_header_t aasHeader;
-    if (fread(&aasHeader, sizeof(aasHeader), 1U, aasFile) != 1U)
+	if (aasFileSize < (long)sizeof(aasHeader) ||
+		fread(&aasHeader, sizeof(aasHeader), 1U, aasFile) != 1U)
     {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: failed to read AAS header from %s\n", aasPath);
-        fclose(aasFile);
-        return BLERR_CANNOTREADAASHEADER;
+		BotLib_Print(PRT_FATAL,
+			"can't read header of file %s\n",
+			aasSource.physicalPath);
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource,
+			BLERR_CANNOTREADAASHEADER);
     }
 
     aasHeader.ident = AAS_LittleLong(aasHeader.ident);
@@ -4776,32 +6190,39 @@ int AAS_LoadMap(const char *mapname,
 
     if (aasHeader.ident != Q2_AAS_IDENT)
     {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: %s is not an AAS file\n", aasPath);
-        fclose(aasFile);
-        return BLERR_WRONGAASFILEID;
+		BotLib_Print(PRT_FATAL,
+			"%s is not an AAS file\n",
+			aasSource.physicalPath);
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource,
+			BLERR_WRONGAASFILEID);
     }
 
     if (aasHeader.version == Q2_AAS_VERSION_OLD)
     {
-        BotLib_Print(PRT_WARNING, "AAS_LoadMap: %s uses the deprecated AAS version 2\n", aasPath);
+		BotLib_Print(PRT_WARNING,
+			"found an old AAS file, create a new AAS file\n");
     }
     else if (aasHeader.version != Q2_AAS_VERSION)
     {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_LoadMap: %s has version %d (expected %d)\n",
-                     aasPath,
-                     aasHeader.version,
-                     Q2_AAS_VERSION);
-        fclose(aasFile);
-        return BLERR_WRONGAASFILEVERSION;
+		BotLib_Print(PRT_FATAL,
+			"aas file %s is version %i, not %i\n",
+			aasSource.physicalPath,
+			aasHeader.version,
+			Q2_AAS_VERSION);
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource,
+			BLERR_WRONGAASFILEVERSION);
     }
 
-    long aasFileSize = AAS_GetFileSize(aasFile);
-    if (aasFileSize < 0)
+    if (aasFileSize < 0L)
     {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: failed to determine size of %s\n", aasPath);
-        fclose(aasFile);
-        return BLERR_CANNOTREADAASHEADER;
+		BotLib_Print(PRT_FATAL,
+			"can't seek to file %s\n",
+			aasSource.physicalPath);
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource,
+			BLERR_CANNOTSEEKTOAASFILE);
     }
 
 	aas_bbox_t *bboxes = NULL;
@@ -4811,13 +6232,14 @@ int AAS_LoadMap(const char *mapname,
 	                          sizeof(aas_bbox_t),
 	                          (void **)&bboxes,
 	                          &numBBoxes,
+	                          aasSource.offset,
 	                          aasFileSize,
-	                          BLERR_CANNOTSEEKTOAASFILE,
-	                          BLERR_CANNOTREADAASLUMP);
+	                          BLERR_CANNOTREADAASLUMP,
+	                          NULL);
 	if (result != BLERR_NOERROR)
 	{
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
 	aas_vertex_t *vertexes = NULL;
@@ -4827,14 +6249,15 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(aas_vertex_t),
 	                      (void **)&vertexes,
 	                      &numVertexes,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
 	aas_edge_t *edges = NULL;
@@ -4844,15 +6267,16 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(aas_edge_t),
 	                      (void **)&edges,
 	                      &numEdges,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
 		free(vertexes);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
 	int *edgeIndex = NULL;
@@ -4862,16 +6286,17 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(int),
 	                      (void **)&edgeIndex,
 	                      &edgeIndexSize,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
 		free(vertexes);
 		free(edges);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
 	aas_face_t *faces = NULL;
@@ -4881,9 +6306,10 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(aas_face_t),
 	                      (void **)&faces,
 	                      &numFaces,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
@@ -4891,7 +6317,7 @@ int AAS_LoadMap(const char *mapname,
 		free(edges);
 		free(edgeIndex);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
 	int *faceIndex = NULL;
@@ -4901,9 +6327,10 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(int),
 	                      (void **)&faceIndex,
 	                      &faceIndexSize,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
@@ -4912,7 +6339,7 @@ int AAS_LoadMap(const char *mapname,
 		free(edgeIndex);
 		free(faces);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
     aas_area_t *areas = NULL;
@@ -4922,9 +6349,10 @@ int AAS_LoadMap(const char *mapname,
                               sizeof(aas_area_t),
                               (void **)&areas,
                               &numAreas,
+	                          aasSource.offset,
                               aasFileSize,
-                              BLERR_CANNOTSEEKTOAASFILE,
-                              BLERR_CANNOTREADAASLUMP);
+                              BLERR_CANNOTREADAASLUMP,
+                              NULL);
     if (result != BLERR_NOERROR)
     {
 		free(bboxes);
@@ -4933,8 +6361,8 @@ int AAS_LoadMap(const char *mapname,
 		free(edgeIndex);
 		free(faces);
 		free(faceIndex);
-        fclose(aasFile);
-        return result;
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
     }
 
     aas_areasettings_t *areasettings = NULL;
@@ -4944,9 +6372,10 @@ int AAS_LoadMap(const char *mapname,
                           sizeof(aas_areasettings_t),
                           (void **)&areasettings,
                           &numAreaSettings,
+	                      aasSource.offset,
                           aasFileSize,
-                          BLERR_CANNOTSEEKTOAASFILE,
-                          BLERR_CANNOTREADAASLUMP);
+                          BLERR_CANNOTREADAASLUMP,
+                          NULL);
     if (result != BLERR_NOERROR)
     {
 		free(bboxes);
@@ -4956,8 +6385,8 @@ int AAS_LoadMap(const char *mapname,
 		free(faces);
 		free(faceIndex);
         free(areas);
-        fclose(aasFile);
-        return result;
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
     }
 
     aas_reachability_t *reachability = NULL;
@@ -4967,9 +6396,10 @@ int AAS_LoadMap(const char *mapname,
                           sizeof(aas_reachability_t),
                           (void **)&reachability,
                           &numReachability,
+	                      aasSource.offset,
                           aasFileSize,
-                          BLERR_CANNOTSEEKTOAASFILE,
-                          BLERR_CANNOTREADAASLUMP);
+                          BLERR_CANNOTREADAASLUMP,
+                          NULL);
     if (result != BLERR_NOERROR)
     {
 		free(bboxes);
@@ -4980,8 +6410,8 @@ int AAS_LoadMap(const char *mapname,
 		free(faceIndex);
         free(areas);
         free(areasettings);
-        fclose(aasFile);
-        return result;
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
     }
 
 	aas_plane_t *planes = NULL;
@@ -4991,9 +6421,10 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(aas_plane_t),
 	                      (void **)&planes,
 	                      &numPlanes,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
@@ -5006,7 +6437,7 @@ int AAS_LoadMap(const char *mapname,
 		free(areasettings);
 		free(reachability);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
     aas_node_t *nodes = NULL;
@@ -5016,9 +6447,10 @@ int AAS_LoadMap(const char *mapname,
                           sizeof(aas_node_t),
                           (void **)&nodes,
                           &numNodes,
+	                      aasSource.offset,
                           aasFileSize,
-                          BLERR_CANNOTSEEKTOAASFILE,
-                          BLERR_CANNOTREADAASLUMP);
+                          BLERR_CANNOTREADAASLUMP,
+                          NULL);
     if (result != BLERR_NOERROR)
     {
 		free(bboxes);
@@ -5031,8 +6463,8 @@ int AAS_LoadMap(const char *mapname,
         free(areasettings);
         free(reachability);
 		free(planes);
-        fclose(aasFile);
-        return result;
+		fclose(aasFile);
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
     }
 
 	aas_portal_t *portals = NULL;
@@ -5042,9 +6474,10 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(aas_portal_t),
 	                      (void **)&portals,
 	                      &numPortals,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
@@ -5059,7 +6492,7 @@ int AAS_LoadMap(const char *mapname,
 		free(planes);
 		free(nodes);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
 	int *portalIndex = NULL;
@@ -5069,9 +6502,10 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(int),
 	                      (void **)&portalIndex,
 	                      &portalIndexSize,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
@@ -5087,7 +6521,7 @@ int AAS_LoadMap(const char *mapname,
 		free(nodes);
 		free(portals);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
 	aas_cluster_t *clusters = NULL;
@@ -5097,9 +6531,10 @@ int AAS_LoadMap(const char *mapname,
 	                      sizeof(aas_cluster_t),
 	                      (void **)&clusters,
 	                      &numClusters,
+	                      aasSource.offset,
 	                      aasFileSize,
-	                      BLERR_CANNOTSEEKTOAASFILE,
-	                      BLERR_CANNOTREADAASLUMP);
+	                      BLERR_CANNOTREADAASLUMP,
+	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
 		free(bboxes);
@@ -5116,7 +6551,7 @@ int AAS_LoadMap(const char *mapname,
 		free(portals);
 		free(portalIndex);
 		fclose(aasFile);
-		return result;
+		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
 
     fclose(aasFile);
@@ -5136,10 +6571,15 @@ int AAS_LoadMap(const char *mapname,
 	AAS_FixupIntArray(portalIndex, portalIndexSize);
 	AAS_FixupClusters(clusters, numClusters);
 
-    uint32_t aasChecksum = 0U;
-    if (!AAS_ComputeFileChecksum(aasPath, &aasChecksum))
-    {
-        BotLib_Print(PRT_ERROR, "AAS_LoadMap: failed to compute checksum for %s\n", aasPath);
+	uint32_t aasChecksum = 0U;
+	if (!AAS_ComputeFileChecksumRange(aasSource.physicalPath,
+		aasSource.offset,
+		aasSource.length,
+		&aasChecksum))
+	{
+		BotLib_Print(PRT_ERROR,
+			"AAS_LoadMap: failed to compute checksum for %s\n",
+			aasSource.physicalPath);
 		free(bboxes);
 		free(vertexes);
 		free(edges);
@@ -5154,8 +6594,21 @@ int AAS_LoadMap(const char *mapname,
 		free(portals);
 		free(portalIndex);
 		free(clusters);
-        return BLERR_CANNOTREADAASHEADER;
+		return AAS_ReturnAASLoadFailure(&aasSource,
+			BLERR_CANNOTREADAASHEADER);
     }
+
+	qboolean aasSuccessReported = qfalse;
+	if (aasSource.zipped)
+	{
+		(void)unlink(aasSource.physicalPath);
+		AAS_PrintLoadedMapFile(&aasSource);
+		BotLib_LogWrite("found %s in %s",
+			aasSource.logicalPath,
+			aasSource.archivePath);
+		AAS_RestoreZipDirectory(&aasSource);
+		aasSuccessReported = qtrue;
+	}
 
 	aas_bspmodel_t *bspModels = NULL;
 	int numBspModels = 0;
@@ -5167,11 +6620,13 @@ int AAS_LoadMap(const char *mapname,
 	int bspLeafBrushIndexSize = 0;
 	aas_plane_t *bspPlanes = NULL;
 	int numBspPlanes = 0;
+	aas_bsptexinfo_t *bspTexInfo = NULL;
+	int numBspTexInfo = 0;
 	aas_bspbrushside_t *bspBrushSides = NULL;
 	int numBspBrushSides = 0;
 	aas_bspbrush_t *bspBrushes = NULL;
 	int numBspBrushes = 0;
-	result = AAS_LoadBSPCollisionData(bspPath,
+	result = AAS_LoadBSPCollisionData(&bspSource,
 	                                  &bspModels,
 	                                  &numBspModels,
 	                                  &bspNodes,
@@ -5182,6 +6637,8 @@ int AAS_LoadMap(const char *mapname,
 	                                  &bspLeafBrushIndexSize,
 	                                  &bspPlanes,
 	                                  &numBspPlanes,
+	                                  &bspTexInfo,
+	                                  &numBspTexInfo,
 	                                  &bspBrushSides,
 	                                  &numBspBrushSides,
 	                                  &bspBrushes,
@@ -5204,9 +6661,32 @@ int AAS_LoadMap(const char *mapname,
 		free(clusters);
 		return result;
 	}
+	unsigned char *bspVisibility = NULL;
+	size_t bspVisibilitySize = 0U;
+	int numBspVisibilityClusters = 0;
+	(void)AAS_LoadBSPVisibilityData(&bspSource,
+		&bspVisibility,
+		&bspVisibilitySize,
+		&numBspVisibilityClusters);
+	if (!aasSuccessReported)
+	{
+		AAS_PrintLoadedMapFile(&aasSource);
+	}
 
-    strncpy(aasworld.aasFilePath, aasPath, sizeof(aasworld.aasFilePath) - 1U);
-    aasworld.aasFilePath[sizeof(aasworld.aasFilePath) - 1U] = '\0';
+	if (aasSource.zipped)
+	{
+		aasworld.aasFilePath[0] = '\0';
+	}
+	else
+	{
+		const char *storedAASPath = aasSource.archived
+			? aasSource.logicalPath
+			: aasSource.physicalPath;
+		strncpy(aasworld.aasFilePath,
+			storedAASPath,
+			sizeof(aasworld.aasFilePath) - 1U);
+		aasworld.aasFilePath[sizeof(aasworld.aasFilePath) - 1U] = '\0';
+	}
 
     aasworld.bspChecksum = (int)bspChecksum;
     aasworld.aasChecksum = (int)aasChecksum;
@@ -5216,10 +6696,15 @@ int AAS_LoadMap(const char *mapname,
 	aasworld.bspNodes = bspNodes;
 	aasworld.numBspLeaves = numBspLeaves;
 	aasworld.bspLeaves = bspLeaves;
+	aasworld.numBspVisibilityClusters = numBspVisibilityClusters;
+	aasworld.bspVisibilitySize = bspVisibilitySize;
+	aasworld.bspVisibility = bspVisibility;
 	aasworld.bspLeafBrushIndexSize = bspLeafBrushIndexSize;
 	aasworld.bspLeafBrushes = bspLeafBrushes;
 	aasworld.numBspPlanes = numBspPlanes;
 	aasworld.bspPlanes = bspPlanes;
+	aasworld.numBspTexInfo = numBspTexInfo;
+	aasworld.bspTexInfo = bspTexInfo;
 	aasworld.numBspBrushSides = numBspBrushSides;
 	aasworld.bspBrushSides = bspBrushSides;
 	aasworld.numBspBrushes = numBspBrushes;
@@ -5258,15 +6743,6 @@ int AAS_LoadMap(const char *mapname,
     aasworld.numFrames = 0;
     aasworld.loaded = qtrue;
     aasworld.initialized = qfalse;
-
-    if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
-    {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_LoadMap: failed to register sound assets for %s\n",
-                     mapname);
-        AAS_ClearWorld();
-        return BLERR_INVALIDIMPORT;
-    }
 
     AAS_InitTravelFlagFromType();
     AAS_InitAreaContentsTravelFlags();

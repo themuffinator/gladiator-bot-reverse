@@ -1,0 +1,18 @@
+# CMake generated Testfile for 
+# Source directory: E:/Repositories/Gladiator-Bot-reverse/tests/parity
+# Build directory: E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/parity
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+add_test(botlib_parity_bot_interface "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/parity/botlib_parity_bot_interface.exe")
+set_tests_properties(botlib_parity_bot_interface PROPERTIES  FIXTURES_REQUIRED "parity_assets" LABELS "Parity" _BACKTRACE_TRIPLES "E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;22;add_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;31;add_botlib_parity_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;0;")
+add_test(botlib_parity_bot_move "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/parity/botlib_parity_bot_move.exe")
+set_tests_properties(botlib_parity_bot_move PROPERTIES  FIXTURES_REQUIRED "parity_assets" LABELS "Parity" _BACKTRACE_TRIPLES "E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;22;add_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;34;add_botlib_parity_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;0;")
+add_test(botlib_parity_precompiler_lexer "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/parity/botlib_parity_precompiler_lexer.exe")
+set_tests_properties(botlib_parity_precompiler_lexer PROPERTIES  FIXTURES_REQUIRED "parity_assets" LABELS "Parity" _BACKTRACE_TRIPLES "E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;22;add_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;37;add_botlib_parity_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;0;")
+add_test(botlib_parity_aas_debug "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/parity/botlib_parity_aas_debug.exe")
+set_tests_properties(botlib_parity_aas_debug PROPERTIES  FIXTURES_REQUIRED "parity_assets" LABELS "Parity" _BACKTRACE_TRIPLES "E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;22;add_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;40;add_botlib_parity_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;0;")
+add_test(botlib_parity_bridge "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/parity/botlib_parity_bridge.exe")
+set_tests_properties(botlib_parity_bridge PROPERTIES  FIXTURES_REQUIRED "parity_assets" LABELS "Parity" _BACKTRACE_TRIPLES "E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;22;add_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;43;add_botlib_parity_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;0;")
+add_test(botlib_parity_update_translator "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/tests/parity/botlib_parity_update_translator.exe")
+set_tests_properties(botlib_parity_update_translator PROPERTIES  FIXTURES_REQUIRED "parity_assets" LABELS "Parity" _BACKTRACE_TRIPLES "E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;22;add_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;48;add_botlib_parity_test;E:/Repositories/Gladiator-Bot-reverse/tests/parity/CMakeLists.txt;0;")

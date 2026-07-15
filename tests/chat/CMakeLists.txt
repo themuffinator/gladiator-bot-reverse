@@ -21,4 +21,12 @@ target_compile_definitions(bot_chat_tests PRIVATE
     BOT_ASSET_ROOT="${PROJECT_SOURCE_DIR}/dev_tools/assets"
     BOTLIB_TEST_INJECT_SCRIPT_CREATE_FAILURE=1)
 
+# The standalone harness intentionally uses standard assert() for calls whose
+# side effects build its fixtures. Keep those checks active in Release builds.
+if(MSVC)
+    target_compile_options(bot_chat_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(bot_chat_tests PRIVATE -UNDEBUG)
+endif()
+
 add_test(NAME bot_chat COMMAND bot_chat_tests)

@@ -9,6 +9,10 @@
 extern "C" {
 #endif
 
+void AAS_ClearShownDebugLines(void);
+
+void AAS_DebugLine(vec3_t start, vec3_t end, int color);
+
 void AAS_DebugBotTest(int entnum, const char *arguments, const vec3_t origin, const vec3_t angles);
 
 void AAS_DebugShowPath(int startArea, int goalArea, const vec3_t start, const vec3_t goal);

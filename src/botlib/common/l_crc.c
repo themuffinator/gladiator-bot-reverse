@@ -39,49 +39,110 @@ static const uint16_t g_crc_table[257] = {
     0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0
 };
 
-void CRC_Init(uint16_t *crcvalue) {
-    if (crcvalue == NULL) {
-        return;
-    }
+/*
+=============
+CRC_Init
 
-    *crcvalue = (uint16_t)CRC_INIT_VALUE;
+Initializes the retail 16-bit CCITT accumulator.
+=============
+*/
+void CRC_Init(uint16_t *crcvalue)
+{
+	if (crcvalue == NULL)
+	{
+		return;
+	}
+
+	*crcvalue = (uint16_t)CRC_INIT_VALUE;
 }
 
-void CRC_ProcessByte(uint16_t *crcvalue, uint8_t data) {
-    if (crcvalue == NULL) {
-        return;
-    }
+/*
+=============
+CRC_ProcessByte
 
-    const uint16_t index = (uint16_t)((*crcvalue >> 8) ^ data);
-    *crcvalue = (uint16_t)((*crcvalue << 8) ^ g_crc_table[index]);
+Advances the retail accumulator by one unsigned byte.
+=============
+*/
+void CRC_ProcessByte(uint16_t *crcvalue, uint8_t data)
+{
+	if (crcvalue == NULL)
+	{
+		return;
+	}
+
+	uint16_t index = (uint16_t)((*crcvalue >> 8) ^ data);
+	*crcvalue = (uint16_t)((*crcvalue << 8) ^ g_crc_table[index]);
 }
 
-uint16_t CRC_Value(uint16_t crcvalue) {
-    return (uint16_t)(crcvalue ^ CRC_XOR_VALUE);
+/*
+=============
+CRC_Value
+
+Returns the final accumulator through the retail zero XOR mask.
+=============
+*/
+uint16_t CRC_Value(uint16_t crcvalue)
+{
+	return (uint16_t)(crcvalue ^ CRC_XOR_VALUE);
 }
 
-uint16_t CRC_ProcessString(const uint8_t *data, size_t length) {
-    if (data == NULL || length == 0) {
-        return CRC_Value((uint16_t)CRC_INIT_VALUE);
-    }
+/*
+=============
+CRC_ProcessString
 
-    uint16_t crcvalue = (uint16_t)CRC_INIT_VALUE;
+Processes a signed retail byte count, including the zero-iteration negative
+length path retained by the DLL.
+=============
+*/
+uint16_t CRC_ProcessString(uint8_t *data, int length)
+{
+	uint16_t crcvalue;
+	CRC_Init(&crcvalue);
 
-    for (size_t i = 0; i < length; ++i) {
-        const uint16_t index = (uint16_t)((crcvalue >> 8) ^ data[i]);
-        crcvalue = (uint16_t)((crcvalue << 8) ^ g_crc_table[index]);
-    }
+	if (length <= 0)
+	{
+		return CRC_Value(crcvalue);
+	}
+	if (data == NULL)
+	{
+		return CRC_Value(crcvalue);
+	}
 
-    return CRC_Value(crcvalue);
+	for (int index = 0; index < length; ++index)
+	{
+		int table_index = (crcvalue >> 8) ^ data[index];
+		if (table_index < 0 || table_index > 256)
+		{
+			table_index = 0;
+		}
+		crcvalue = (uint16_t)((crcvalue << 8) ^
+			g_crc_table[table_index]);
+	}
+
+	return CRC_Value(crcvalue);
 }
 
-void CRC_ContinueProcessString(uint16_t *crc, const char *data, size_t length) {
-    if (crc == NULL || data == NULL) {
-        return;
-    }
+/*
+=============
+CRC_ContinueProcessString
 
-    for (size_t i = 0; i < length; ++i) {
-        const uint16_t index = (uint16_t)((*crc >> 8) ^ (uint8_t)data[i]);
-        *crc = (uint16_t)((*crc << 8) ^ g_crc_table[index]);
-    }
+Continues a retail CRC over a signed character count.
+=============
+*/
+void CRC_ContinueProcessString(uint16_t *crc, char *data, int length)
+{
+	if (crc == NULL || length <= 0)
+	{
+		return;
+	}
+	if (data == NULL)
+	{
+		return;
+	}
+
+	for (int index = 0; index < length; ++index)
+	{
+		int table_index = (*crc >> 8) ^ data[index];
+		*crc = (uint16_t)((*crc << 8) ^ g_crc_table[table_index]);
+	}
 }

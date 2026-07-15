@@ -12,6 +12,21 @@ extern "C" {
 
 typedef struct bot_chatstate_s bot_chatstate_t;
 
+#define BOT_CONSOLE_MESSAGE_STORAGE_CHARS 0x98U
+
+/**
+ * Gladiator's timestamped console-message node. The retail 32-bit layout is
+ * 0xa8 bytes: time at 0, type at 4, message at 8, and the list links at 0xa0
+ * and 0xa4. Native pointer width changes only the two link fields.
+ */
+typedef struct bot_console_message_node_s {
+	float time;
+	int type;
+	char message[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
+	struct bot_console_message_node_s *prev;
+	struct bot_console_message_node_s *next;
+} bot_console_message_node_t;
+
 #ifndef CHAT_GENDERLESS
 #define CHAT_GENDERLESS 0
 #endif
@@ -24,7 +39,7 @@ typedef struct bot_chatstate_s bot_chatstate_t;
 
 /**
  * Allocates a chat state that owns parsed chat templates, reply tables,
- * random-string tables, cooldown state, and the diagnostic FIFO queue.
+ * random-string tables, cooldown state, and its linked console-message queue.
  */
 bot_chatstate_t *BotAllocChatState(void);
 
@@ -47,18 +62,41 @@ void BotShutdownChatAI(void);
 void BotFreeChatFile(bot_chatstate_t *state);
 
 /**
- * Enqueues a console message for later inspection. The queue lets the interface
- * and regression tests observe diagnostics and constructed chat output.
+ * Enqueues an incoming console message in the shared retail max_messages pool.
+ * Gladiator copies at most 150 payload bytes; this compatibility surface adds
+ * a terminating NUL immediately after that retail payload boundary.
  */
 void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message);
 
 /**
- * Pops the next queued message. Returns 1 when a message is copied into the
- * caller supplied buffers and 0 when no messages are pending.
+ * Peeks at the oldest retail console-message node without removing it. The
+ * returned identity remains valid until that node is removed or the shared
+ * message heap is shut down. Gladiator's reader uses the timestamp to defer a
+ * recent CMS_CHAT message while fewer than ten messages are queued when
+ * `time > AAS_Time() - (1 + (rand() & 0x7fff) / 32767.0f)`.
+ */
+const bot_console_message_node_t *BotNextConsoleMessageNode(
+	const bot_chatstate_t *state);
+
+/**
+ * Removes the exact retail node identity and returns the remaining queue
+ * count. Unknown identities are ignored by this safe native adaptation.
+ */
+int BotRemoveConsoleMessageNode(bot_chatstate_t *state,
+	const bot_console_message_node_t *message);
+
+/**
+ * Pops the oldest queued message. Returns 1 when a message is copied into the
+ * caller supplied buffers and 0 when no messages are pending. This established
+ * bridge compatibility wrapper is intentionally destructive; node-level retail
+ * callers use BotNextConsoleMessageNode and BotRemoveConsoleMessageNode.
  */
 int BotNextConsoleMessage(bot_chatstate_t *state, int *type, char *buffer, size_t buffer_size);
 
-/** Removes the first message of the requested type from the queue. */
+/**
+ * Removes the first message of the requested type. This established bridge
+ * compatibility wrapper remains separate from retail identity removal.
+ */
 int BotRemoveConsoleMessage(bot_chatstate_t *state, int type);
 
 /** Returns the number of queued console messages regardless of type. */
@@ -102,8 +140,10 @@ int BotChat_Insult(bot_chatstate_t *state, int client, int sendto);
 int BotChat_Praise(bot_chatstate_t *state, int client, int sendto);
 
 /**
- * Constructs a scripted reply. The return value mirrors Quake III's API:
- * non-zero indicates a reply was constructed and dispatched.
+ * Selects a scripted retail reply. The compatibility context argument is
+ * ignored because Gladiator constructs replies with fixed contexts 0 and 16.
+ * A non-zero return means a response was selected; later construction
+ * diagnostics do not change the retail selection result.
  */
 int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context);
 

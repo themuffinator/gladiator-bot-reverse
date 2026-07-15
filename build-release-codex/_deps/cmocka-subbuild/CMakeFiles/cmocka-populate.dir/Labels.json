@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/CMakeFiles/cmocka-populate"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/CMakeFiles/cmocka-populate.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/CMakeFiles/cmocka-populate-complete.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-build.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-configure.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-download.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-install.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-mkdir.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-patch.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-test.rule"
+		},
+		{
+			"file" : "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-subbuild/cmocka-populate-prefix/src/cmocka-populate-stamp/cmocka-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"cmocka-populate"
+		],
+		"name" : "cmocka-populate"
+	}
+}

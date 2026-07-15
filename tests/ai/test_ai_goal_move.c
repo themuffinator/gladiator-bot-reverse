@@ -374,7 +374,7 @@ static void activate_test_client(test_environment_t *env)
     configure_standard_bot_settings(&settings);
 
     int status = env->exports->BotSetupClient(0, &settings);
-    assert_int_equal(status, BLERR_NOERROR);
+    assert_true(status);
     env->client_active = true;
 }
 
@@ -1236,7 +1236,7 @@ static void test_goal_aas_fixture_begin(test_goal_aas_fixture_t *fixture, int ma
 	aasworld.loaded = qtrue;
 	aasworld.initialized = qtrue;
 	aasworld.time = 0.0f;
-	aasworld.numAreas = 1;
+	aasworld.numAreas = 2; /* retail counts the dummy zero area: one real area */
 	aasworld.numAreaSettings = 2;
 	aasworld.maxEntities = max_entities;
 

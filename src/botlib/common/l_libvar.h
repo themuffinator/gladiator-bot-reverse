@@ -1,19 +1,21 @@
 #ifndef BOTLIB_COMMON_L_LIBVAR_H
 #define BOTLIB_COMMON_L_LIBVAR_H
 
-#include <stdbool.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct libvar_s {
-    char *name;
-    char *string;
-    float value;
-    bool modified;
-    struct libvar_s *next;
+	char *name;
+	char *string;
+	int flags;
+	int modified;
+	float value;
+	struct libvar_s *next;
 } libvar_t;
+
+float LibVarStringValue(const char *string);
+void LibVarDeAllocAll(void);
 
 void LibVar_Init(void);
 void LibVar_Shutdown(void);
@@ -29,7 +31,7 @@ float LibVarValue(const char *var_name, const char *value);
 
 void LibVarSet(const char *var_name, const char *value);
 int LibVarSetStatus(const char *var_name, const char *value);
-bool LibVarChanged(const char *var_name);
+int LibVarChanged(const char *var_name);
 void LibVarSetNotModified(const char *var_name);
 
 #ifdef __cplusplus

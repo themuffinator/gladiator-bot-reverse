@@ -1,7 +1,10 @@
 # Botlib Parity Audit Plan
 
 ## Baseline audit
-- Parity tests are built by default when `BUILD_TESTING=ON`, and remaining `cmocka_skip()` markers in `test_bot_interface.c` signal unimplemented scenarios that need assertions once the HLIL behaviour is confirmed.【F:docs/parity_testing_guide.md†L26-L47】
+- Parity tests are built by default when `BUILD_TESTING=ON`. The remaining
+  `cmocka_skip()` calls in `test_bot_interface.c` are fixture/setup gates for
+  unavailable assets or an unusable temporary environment; they are not
+  placeholder test bodies.【F:docs/parity_testing_guide.md†L26-L47】
 - Several parity fixtures skip when required sample assets are missing, including mover coverage that depends on `dev_tools/assets/maps/test_mover.{bsp,aas}` and bot interface setup helpers that halt if the asset environment cannot be staged.【F:tests/README.md†L95-L113】【F:tests/parity/test_bot_interface.c†L546-L670】
 - AI weight regression tests also skip when reference weight scripts are unavailable, indicating asset availability is a recurring prerequisite across parity checks.【F:tests/ai/test_ai_weight.c†L18-L36】
 - The headless Quake II parity harness remains opt-in and requires external game assets and environment variables before it can validate runtime parity against a dedicated server.【F:docs/testing/headless_quake2_parity_check.md†L1-L105】
@@ -14,10 +17,14 @@ The items below are ordered; "Work on the plan" means executing the next uncheck
    - Documented the minimal asset pack and environment setup in `tests/README.md` with exact paths for mover (`dev_tools/assets/maps/test_mover.{bsp,aas}`), lexer samples, weight scripts, and Quake II assets.
    - Added a `dev_tools/scripts/verify_parity_assets.sh` helper that checks presence/permissions for all required assets and exits non-zero with remediation hints.
    - Wired the verifier into CTest as a pre-step so missing assets surface as failed setup rather than silent skips. CI inherits the same check via `ctest`.
-3. [ ] Replace remaining `cmocka_skip()` placeholders in `tests/parity/test_bot_interface.c` with assertions that mirror the HLIL contract and `tests/parity/README.md` scenarios.
-   - Catalogue each skip with the intended behaviour, data fixture, and any HLIL reference needed; track progress in an in-file checklist comment.
-   - Implement deterministic fixtures that do not rely on ad hoc runtime availability (e.g., staged movers/weights) and assert expected exports/state transitions.
-   - Remove `cmocka_skip()` usage except for cases explicitly blocked by documented upstream gaps; ensure such gaps are cross-referenced in this plan.
+3. [ ] Make asset-gated parity fixtures reproducible and keep their assertions aligned with the HLIL contract.
+   - Catalogue each skip with its required asset or setup condition; do not
+     classify setup-gated tests as unimplemented behavior.
+   - Prefer deterministic generated text fixtures where the retail behavior
+     does not require BSP/AAS data. Keep map and mover cases gated on the
+     documented binary reference assets.
+   - Replace a skip only when the prerequisite can be provided portably; retain
+     and document legitimate environment gates.
 4. [ ] Expand subsystem parity coverage using expectations from `tests/parity/README.md` and `docs/parity_testing_guide.md`.
    - Weight config guards: add tests for malformed weights, missing parameters, and boundary handling against `tests/reference/botlib_contract.json`.
    - Movement state exports: extend mover parity to cover crouch/ladder/water states and navigation flags, reusing staged `test_mover` assets.

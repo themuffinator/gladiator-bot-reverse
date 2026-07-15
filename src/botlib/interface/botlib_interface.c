@@ -346,70 +346,38 @@ const botlib_import_capture_t *BotInterface_GetImportCapture(void)
 	return g_import_capture;
 }
 
+/*
+=============
+BotSetupLibrary
+
+Sets the retail setup flag before AAS and AI setup and preserves it on error.
+=============
+*/
 int BotSetupLibrary(void)
 {
-    if (g_library_initialised) {
-        return BLERR_LIBRARYALREADYSETUP;
-    }
+	if (g_library_initialised)
+	{
+		return BLERR_LIBRARYALREADYSETUP;
+	}
 
-    if (g_import_table == NULL || g_import_table->BotLibVarGet == NULL) {
-        return BLERR_INVALIDIMPORT;
-    }
+	if (g_import_table == NULL || g_import_table->BotLibVarGet == NULL)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
 
-    if (!BotMemory_Init(BOT_MEMORY_DEFAULT_HEAP_SIZE)) {
-        return BLERR_INVALIDIMPORT;
-    }
+	if (!BotMemory_Init(BOT_MEMORY_DEFAULT_HEAP_SIZE))
+	{
+		return BLERR_INVALIDIMPORT;
+	}
 
-    Botlib_ResetSubsystemState();
-    Botlib_ResetLibraryVariables();
-    LibVar_ResetCache();
-    BotLib_LogShutdown();
+	Botlib_ResetSubsystemState();
+	Botlib_ResetLibraryVariables();
+	LibVar_ResetCache();
+	BotLib_LogShutdown();
 
-    int status = Botlib_SetupUtilities();
-    if (status != BLERR_NOERROR) {
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return status;
-    }
-
-    Botlib_CacheLibraryVariables();
-
-    status = Botlib_SetupAASSubsystem();
-    if (status != BLERR_NOERROR) {
-        Botlib_ShutdownUtilities();
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return status;
-    }
-
-    status = Botlib_SetupEASubsystem();
-    if (status != BLERR_NOERROR) {
-        Botlib_ShutdownAASSubsystem();
-        Botlib_ShutdownUtilities();
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return status;
-    }
-
-    /*
-     * The Gladiator HLIL initialises shared data before exposing the bot state
-     * table: item configuration is loaded via sub_100309d0 ("itemconfig") and
-     * the weapon library comes online through sub_10035680 ("weaponconfig")
-     * before sub_1002ebb0 loads shared chat assets. Character setup routines
-     * then request per-bot weight handles and chat files after these shared
-     * caches exist.
-     */
-	status = Botlib_SetupAISubsystem();
-	if (status != BLERR_NOERROR) {
-		Botlib_ShutdownEASubsystem();
-		Botlib_ShutdownAASSubsystem();
-		Botlib_ShutdownUtilities();
+	int status = Botlib_SetupUtilities();
+	if (status != BLERR_NOERROR)
+	{
 		Botlib_ResetLibraryVariables();
 		Botlib_ResetSubsystemState();
 		LibVar_Shutdown();
@@ -417,59 +385,82 @@ int BotSetupLibrary(void)
 		return status;
 	}
 
-    status = Botlib_SetupSoundSubsystem();
-    if (status != BLERR_NOERROR) {
-        Botlib_ShutdownAISubsystem();
-        Botlib_ShutdownEASubsystem();
-        Botlib_ShutdownAASSubsystem();
-        Botlib_ShutdownUtilities();
-        Botlib_ResetLibraryVariables();
-        Botlib_ResetSubsystemState();
-        LibVar_Shutdown();
-        BotMemory_Shutdown();
-        return status;
-    }
+	/* Retail 0x10037c04 commits setup before reading limits or starting AAS. */
+	g_library_initialised = true;
+	Botlib_CacheLibraryVariables();
 
-    AAS_DebugRegisterConsoleCommands();
+	/* Retail 0x10037c48 calls AAS setup, then forces the checked status to zero. */
+	(void)Botlib_SetupAASSubsystem();
 
-    g_library_initialised = true;
-    return BLERR_NOERROR;
+	/*
+	 * Retail 0x10029c90 sets up shared AI data before 0x10037660 allocates
+	 * the elementary-action client array. A later error does not roll back
+	 * the already-committed library or AAS state.
+	 */
+	status = Botlib_SetupAISubsystem();
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	status = Botlib_SetupEASubsystem();
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	status = Botlib_SetupSoundSubsystem();
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	AAS_DebugRegisterConsoleCommands();
+	return BLERR_NOERROR;
 }
 
+/*
+=============
+BotShutdownLibrary
+
+Tears down a committed setup, including one left partial by a setup error.
+=============
+*/
 int BotShutdownLibrary(void)
 {
-    if (!g_library_initialised) {
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!g_library_initialised)
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    AAS_DebugUnregisterConsoleCommands();
+	AAS_DebugUnregisterConsoleCommands();
 
-    Botlib_ShutdownSoundSubsystem();
-    Botlib_ShutdownAISubsystem();
-    Botlib_ShutdownEASubsystem();
-    Botlib_ShutdownAASSubsystem();
-    Botlib_ShutdownUtilities();
+	Botlib_ShutdownAISubsystem();
+	Botlib_ShutdownSoundSubsystem();
+	Botlib_ShutdownAASSubsystem();
+	Botlib_ShutdownEASubsystem();
+	Botlib_ShutdownUtilities();
 
-    Botlib_ResetLibraryVariables();
-    Botlib_ResetSubsystemState();
-    LibVar_Shutdown();
+	Botlib_ResetLibraryVariables();
+	Botlib_ResetSubsystemState();
+	LibVar_Shutdown();
 
-    g_library_initialised = false;
+	g_library_initialised = false;
 
-    BotMemory_Shutdown();
-    return BLERR_NOERROR;
+	BotMemory_Shutdown();
+	return BLERR_NOERROR;
 }
 
 /*
 =============
 BotLibraryInitialized
 
-Reports whether the botlib has been successfully initialised.
+Reports the retail setup flag, which remains set after downstream errors.
 =============
 */
 bool BotLibraryInitialized(void)
 {
-	return g_library_initialised && g_import_table != NULL;
+	return g_library_initialised;
 }
 
 /*

@@ -48,14 +48,13 @@ static bool Q2Bridge_ValidateClientNumber(const char *context, int client)
     }
 
     int max_clients = Q2Bridge_MaxClients();
-    if (client < 0 || client >= max_clients)
+    if (client < 0 || client > max_clients)
     {
-        int upper_bound = (max_clients > 0) ? (max_clients - 1) : -1;
         Q2_Print(PRT_ERROR,
                  "%s: invalid client number %d, [0, %d]\n",
                  context,
                  client,
-                 upper_bound);
+                 max_clients);
         return false;
     }
 
@@ -417,33 +416,29 @@ void Q2_DebugLineDelete(int line)
     imports->DebugLineDelete(line);
 }
 
+/*
+=============
+Q2_DebugLineShow
+
+Forward the retail debug-line import verbatim; NULL endpoints with color -1
+hide an existing shared AAS line.
+=============
+*/
 void Q2_DebugLineShow(int line, vec3_t start, vec3_t end, int color)
 {
-    if (!g_q2_debug_lines_enabled)
-    {
-        return;
-    }
+	if (!g_q2_debug_lines_enabled)
+	{
+		return;
+	}
 
-    if (line < 0)
-    {
-        Q2_Print(PRT_WARNING, "[q2bridge] DebugLineShow: invalid line %d\n", line);
-        return;
-    }
+	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+	if (imports == NULL || imports->DebugLineShow == NULL)
+	{
+		Q2_Print(PRT_WARNING, "[q2bridge] DebugLineShow: import not available\n");
+		return;
+	}
 
-    if (start == NULL || end == NULL)
-    {
-        Q2_Print(PRT_ERROR, "[q2bridge] DebugLineShow: invalid endpoints\n");
-        return;
-    }
-
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
-    if (imports == NULL || imports->DebugLineShow == NULL)
-    {
-        Q2_Print(PRT_WARNING, "[q2bridge] DebugLineShow: import not available\n");
-        return;
-    }
-
-    imports->DebugLineShow(line, start, end, color);
+	imports->DebugLineShow(line, start, end, color);
 }
 
 /*

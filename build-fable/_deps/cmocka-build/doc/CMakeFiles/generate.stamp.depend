@@ -1,0 +1,6 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-4.2/Modules/FindDoxygen.cmake
+C:/Program Files/CMake/share/cmake-4.2/Modules/FindPackageHandleStandardArgs.cmake
+C:/Program Files/CMake/share/cmake-4.2/Modules/FindPackageMessage.cmake
+E:/Repositories/Gladiator-Bot-reverse/build-fable/CMakeFiles/cmake.verify_globs
+E:/Repositories/Gladiator-Bot-reverse/build-fable/_deps/cmocka-src/doc/CMakeLists.txt

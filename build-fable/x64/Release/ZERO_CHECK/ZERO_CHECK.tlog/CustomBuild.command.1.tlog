@@ -1,0 +1,10 @@
+^E:\REPOSITORIES\GLADIATOR-BOT-REVERSE\BUILD-FABLE\CMAKEFILES\E9BA3A2D47A279295B4F816A307F0DE8\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SE:/Repositories/Gladiator-Bot-reverse -BE:/Repositories/Gladiator-Bot-reverse/build-fable --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file E:/Repositories/Gladiator-Bot-reverse/build-fable/gladiator-bot-reverse.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

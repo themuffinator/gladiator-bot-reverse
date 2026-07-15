@@ -1,4 +1,5 @@
 #include <stdarg.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +20,10 @@
 #define chdir _chdir
 #define getcwd _getcwd
 #define unlink _unlink
+#define rmdir _rmdir
+#else
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #ifndef PATH_MAX
@@ -27,7 +32,9 @@
 
 #include "botlib/aas/aas_map.h"
 #include "botlib/aas/aas_local.h"
+#include "botlib/aas/aas_sound.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/aas_translation.h"
@@ -40,6 +47,23 @@
 #endif
 
 #define TEST_BOTLIB_HEAP_SIZE (1u << 18)
+#define TEST_PRINT_HISTORY_SIZE 8
+#define TEST_PAK_HEADER_SIZE 12U
+#define TEST_PAK_ENTRY_NAME_SIZE 56U
+#define TEST_PAK_ENTRY_SIZE 64U
+#define TEST_ZIP_HISTORY_SIZE 8U
+
+typedef qboolean (*test_zip_extract_callback_t)(const char *archive_path,
+	const char *member_name);
+
+void AAS_SetZipExtractorForTests(test_zip_extract_callback_t extractor);
+
+typedef struct test_pak_fixture_entry_s
+{
+	const char *name;
+	const void *data;
+	size_t size;
+} test_pak_fixture_entry_t;
 
 typedef struct aas_test_environment_s {
     char asset_root[PATH_MAX];
@@ -51,10 +75,268 @@ typedef struct aas_test_environment_s {
     bool bridge_config_initialised;
 } aas_test_environment_t;
 
+static int g_test_print_priority;
+static int g_test_print_count;
+static char g_test_print_message[1024];
+static int g_test_print_priority_history[TEST_PRINT_HISTORY_SIZE];
+static char g_test_print_message_history[TEST_PRINT_HISTORY_SIZE][1024];
+static int g_test_zip_extract_mode;
+static size_t g_test_zip_extract_count;
+static char g_test_zip_archive_history[TEST_ZIP_HISTORY_SIZE][PATH_MAX];
+static char g_test_zip_member_history[TEST_ZIP_HISTORY_SIZE][PATH_MAX];
+static char g_test_zip_game_success_path[PATH_MAX];
+static char g_test_zip_base_success_path[PATH_MAX];
+static char g_test_zip_expected_member[PATH_MAX];
+static const void *g_test_zip_member_data;
+static size_t g_test_zip_member_size;
+
+/*
+=============
+test_make_directory
+
+Create a fixture directory with the platform's native directory API.
+=============
+*/
+static int test_make_directory(const char *path)
+{
+#ifdef _WIN32
+	return _mkdir(path);
+#else
+	return mkdir(path, 0700);
+#endif
+}
+
+/*
+=============
+test_write_fixture
+
+Write one transient loader fixture and report whether every byte was stored.
+=============
+*/
+static qboolean test_write_fixture(const char *path,
+	const void *data,
+	size_t size)
+{
+	FILE *file = fopen(path, "wb");
+	if (file == NULL)
+	{
+		return qfalse;
+	}
+
+	size_t written = 0;
+	if (size > 0)
+	{
+		written = fwrite(data, 1, size, file);
+	}
+	int close_status = fclose(file);
+	return (size == 0 || written == size) && close_status == 0;
+}
+
+/*
+=============
+test_write_little_uint32
+
+Encode one PAK header or directory field without relying on host endianness.
+=============
+*/
+static void test_write_little_uint32(unsigned char *destination,
+	uint32_t value)
+{
+	destination[0] = (unsigned char)(value & 0xFFU);
+	destination[1] = (unsigned char)((value >> 8) & 0xFFU);
+	destination[2] = (unsigned char)((value >> 16) & 0xFFU);
+	destination[3] = (unsigned char)((value >> 24) & 0xFFU);
+}
+
+/*
+=============
+test_write_pak_fixture
+
+Write a transient Quake II PAK with standard offset/length directory entries.
+=============
+*/
+static qboolean test_write_pak_fixture(const char *path,
+	const test_pak_fixture_entry_t *entries,
+	size_t entry_count)
+{
+	if (path == NULL || (entry_count > 0U && entries == NULL) ||
+		entry_count > (size_t)INT32_MAX / TEST_PAK_ENTRY_SIZE)
+	{
+		return qfalse;
+	}
+
+	size_t data_size = 0U;
+	for (size_t index = 0U; index < entry_count; ++index)
+	{
+		if (entries[index].name == NULL ||
+			strlen(entries[index].name) > TEST_PAK_ENTRY_NAME_SIZE ||
+			(entries[index].size > 0U && entries[index].data == NULL) ||
+			entries[index].size > (size_t)INT32_MAX ||
+			data_size > (size_t)INT32_MAX - entries[index].size)
+		{
+			return qfalse;
+		}
+		data_size += entries[index].size;
+	}
+
+	if (data_size > (size_t)INT32_MAX - TEST_PAK_HEADER_SIZE)
+	{
+		return qfalse;
+	}
+	size_t directory_offset = TEST_PAK_HEADER_SIZE + data_size;
+	size_t directory_length = entry_count * TEST_PAK_ENTRY_SIZE;
+	if (directory_offset > SIZE_MAX - directory_length)
+	{
+		return qfalse;
+	}
+
+	size_t pak_size = directory_offset + directory_length;
+	unsigned char *pak = (unsigned char *)calloc(pak_size, 1U);
+	if (pak == NULL)
+	{
+		return qfalse;
+	}
+
+	memcpy(pak, "PACK", 4U);
+	test_write_little_uint32(pak + 4U, (uint32_t)directory_offset);
+	test_write_little_uint32(pak + 8U, (uint32_t)directory_length);
+
+	size_t data_offset = TEST_PAK_HEADER_SIZE;
+	for (size_t index = 0U; index < entry_count; ++index)
+	{
+		if (entries[index].size > 0U)
+		{
+			memcpy(pak + data_offset,
+				entries[index].data,
+				entries[index].size);
+		}
+
+		unsigned char *directory_entry = pak + directory_offset +
+			index * TEST_PAK_ENTRY_SIZE;
+		memcpy(directory_entry,
+			entries[index].name,
+			strlen(entries[index].name));
+		test_write_little_uint32(directory_entry + TEST_PAK_ENTRY_NAME_SIZE,
+			(uint32_t)data_offset);
+		test_write_little_uint32(directory_entry + TEST_PAK_ENTRY_NAME_SIZE + 4U,
+			(uint32_t)entries[index].size);
+		data_offset += entries[index].size;
+	}
+
+	qboolean written = test_write_fixture(path, pak, pak_size);
+	free(pak);
+	return written;
+}
+
+/*
+=============
+test_crc32
+
+Compute an independent CRC-32 for archive-entry checksum assertions.
+=============
+*/
+static uint32_t test_crc32(const void *data, size_t size)
+{
+	const unsigned char *bytes = (const unsigned char *)data;
+	uint32_t crc = UINT32_MAX;
+	for (size_t index = 0U; index < size; ++index)
+	{
+		crc ^= bytes[index];
+		for (int bit = 0; bit < 8; ++bit)
+		{
+			uint32_t mask = 0U - (crc & 1U);
+			crc = (crc >> 1) ^ (0xEDB88320U & mask);
+		}
+	}
+	return ~crc;
+}
+
+/*
+=============
+test_extract_zip_member
+
+Record retail ZIP probes and emulate UNZIP32 extraction into the current path.
+=============
+*/
+static qboolean test_extract_zip_member(const char *archive_path,
+	const char *member_name)
+{
+	if (archive_path == NULL || member_name == NULL)
+	{
+		return qfalse;
+	}
+
+	if (g_test_zip_extract_count < TEST_ZIP_HISTORY_SIZE)
+	{
+		snprintf(g_test_zip_archive_history[g_test_zip_extract_count],
+			sizeof(g_test_zip_archive_history[g_test_zip_extract_count]),
+			"%s",
+			archive_path);
+		snprintf(g_test_zip_member_history[g_test_zip_extract_count],
+			sizeof(g_test_zip_member_history[g_test_zip_extract_count]),
+			"%s",
+			member_name);
+	}
+	g_test_zip_extract_count += 1U;
+
+	if (g_test_zip_extract_mode == 0 ||
+		strcmp(member_name, g_test_zip_expected_member) != 0 ||
+		(strcmp(archive_path, g_test_zip_game_success_path) != 0 &&
+		strcmp(archive_path, g_test_zip_base_success_path) != 0))
+	{
+		return qfalse;
+	}
+
+	return test_write_fixture(member_name,
+		g_test_zip_member_data,
+		g_test_zip_member_size);
+}
+
+/*
+=============
+test_reset_print_capture
+
+Reset the exact diagnostic capture between malformed loader cases.
+=============
+*/
+static void test_reset_print_capture(void)
+{
+	g_test_print_priority = 0;
+	g_test_print_count = 0;
+	g_test_print_message[0] = '\0';
+	memset(g_test_print_priority_history,
+		0,
+		sizeof(g_test_print_priority_history));
+	memset(g_test_print_message_history,
+		0,
+		sizeof(g_test_print_message_history));
+}
+
+/*
+=============
+test_capture_print
+
+Capture the most recent botlib diagnostic for exact AAS contract assertions.
+=============
+*/
 static void test_capture_print(int priority, const char *fmt, ...)
 {
-    (void)priority;
-    (void)fmt;
+	g_test_print_priority = priority;
+
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(g_test_print_message, sizeof(g_test_print_message), fmt, args);
+	va_end(args);
+
+	if (g_test_print_count < TEST_PRINT_HISTORY_SIZE)
+	{
+		g_test_print_priority_history[g_test_print_count] = priority;
+		snprintf(g_test_print_message_history[g_test_print_count],
+			sizeof(g_test_print_message_history[g_test_print_count]),
+			"%s",
+			g_test_print_message);
+	}
+	g_test_print_count += 1;
 }
 
 static void test_capture_dprint(const char *fmt, ...)
@@ -354,14 +636,14 @@ static int aas_environment_teardown(void **state)
         env->bridge_config_initialised = false;
     }
 
-    if (env->memory_initialised) {
-        BotMemory_Shutdown();
-        env->memory_initialised = false;
-    }
-
     if (env->libvar_initialised) {
         LibVar_Shutdown();
         env->libvar_initialised = false;
+    }
+
+    if (env->memory_initialised) {
+        BotMemory_Shutdown();
+        env->memory_initialised = false;
     }
 
     if (env->import_table_set) {
@@ -435,6 +717,1536 @@ static void assert_travel_time_for_area(int areanum, unsigned short expected_tim
         }
     }
     assert_true(matched);
+}
+
+/*
+=============
+test_aas_in_pvs_decodes_retail_visibility_rows
+
+Pins direct dvis bit lookup, compressed zero runs, malformed zero repeats,
+and the retail all-visible fallback when no visibility lump is available.
+=============
+*/
+static void test_aas_in_pvs_decodes_retail_visibility_rows(void **state)
+{
+	(void)state;
+	memset(&aasworld, 0, sizeof(aasworld));
+	test_reset_print_capture();
+	BotInterface_SetImportTable(&g_test_imports);
+
+	aas_plane_t planes[1] = {0};
+	aas_bspnode_t nodes[1] = {0};
+	aas_bspleaf_t leaves[2] = {0};
+	unsigned char visibility[22] = {0};
+	int32_t num_clusters = 2;
+	int32_t data_offset = 20;
+
+	planes[0].normal[0] = 1.0f;
+	nodes[0].planenum = 0;
+	nodes[0].children[0] = -1;
+	nodes[0].children[1] = -2;
+	leaves[0].cluster = 0;
+	leaves[1].cluster = 1;
+	memcpy(visibility, &num_clusters, sizeof(num_clusters));
+	memcpy(visibility + 4, &data_offset, sizeof(data_offset));
+	memcpy(visibility + 8, &data_offset, sizeof(data_offset));
+	memcpy(visibility + 12, &data_offset, sizeof(data_offset));
+	memcpy(visibility + 16, &data_offset, sizeof(data_offset));
+
+	aasworld.numBspPlanes = 1;
+	aasworld.bspPlanes = planes;
+	aasworld.numBspNodes = 1;
+	aasworld.bspNodes = nodes;
+	aasworld.numBspLeaves = 2;
+	aasworld.bspLeaves = leaves;
+	aasworld.numBspVisibilityClusters = num_clusters;
+	aasworld.bspVisibilitySize = sizeof(visibility);
+	aasworld.bspVisibility = visibility;
+
+	vec3_t cluster_zero = {1.0f, 0.0f, 0.0f};
+	vec3_t cluster_one = {-1.0f, 0.0f, 0.0f};
+	visibility[20] = 1U << 1;
+	assert_true(AAS_InPVS(cluster_zero, cluster_one));
+
+	visibility[20] = 0;
+	visibility[21] = 1;
+	assert_false(AAS_InPVS(cluster_zero, cluster_one));
+	assert_int_equal(g_test_print_count, 0);
+
+	visibility[21] = 0;
+	assert_false(AAS_InPVS(cluster_zero, cluster_one));
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_ERROR);
+	assert_string_equal(g_test_print_message,
+		"AAS_DecompressVis: 0 repeat\n");
+
+	aasworld.bspVisibility = NULL;
+	aasworld.bspVisibilitySize = 0U;
+	assert_true(AAS_InPVS(cluster_zero, cluster_one));
+
+	memset(&aasworld, 0, sizeof(aasworld));
+	BotInterface_SetImportTable(NULL);
+}
+
+/*
+=============
+test_aas_null_map_refreshes_assets_without_world_reset
+
+Proves NULL map loads refresh string indexes without reading or clearing a world.
+=============
+*/
+static void test_aas_null_map_refreshes_assets_without_world_reset(void **state)
+{
+	(void)state;
+	AAS_SoundSubsystem_ClearMapAssets();
+	memset(&aasworld, 0, sizeof(aasworld));
+
+	aas_area_t retained_areas[2] = {0};
+	aasworld.loaded = qtrue;
+	aasworld.initialized = qtrue;
+	aasworld.time = 37.5f;
+	aasworld.numAreas = 2;
+	aasworld.areas = retained_areas;
+	snprintf(aasworld.mapName, sizeof(aasworld.mapName), "retained_world");
+
+	char *models[] = {"maps/retained.bsp", "*1"};
+	char *sounds[] = {"sound/old.wav", "sound/refreshed.wav"};
+	char *images[] = {"pics/retained.pcx"};
+
+	int status = AAS_LoadMap(NULL, 2, models, 2, sounds, 1, images);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(aasworld.loaded);
+	assert_true(aasworld.initialized);
+	assert_float_equal(aasworld.time, 37.5f, 0.0001f);
+	assert_int_equal(aasworld.numAreas, 2);
+	assert_ptr_equal(aasworld.areas, retained_areas);
+	assert_string_equal(aasworld.mapName, "retained_world");
+	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/old.wav");
+	assert_string_equal(AAS_SoundSubsystem_AssetName(1), "sound/refreshed.wav");
+
+	char *replacement_sounds[] = {"sound/replacement.wav"};
+	status = AAS_LoadMap(NULL, 0, NULL, 1, replacement_sounds, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(aasworld.loaded);
+	assert_ptr_equal(aasworld.areas, retained_areas);
+	assert_string_equal(aasworld.mapName, "retained_world");
+	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/replacement.wav");
+	assert_null(AAS_SoundSubsystem_AssetName(1));
+
+	AAS_SoundSubsystem_ClearMapAssets();
+	aasworld.areas = NULL;
+	memset(&aasworld, 0, sizeof(aasworld));
+}
+
+/*
+=============
+test_aas_empty_map_reports_retail_missing_bsp
+
+Pins the retail filesystem-discovery failure used even for an empty map name.
+=============
+*/
+static void test_aas_empty_map_reports_retail_missing_bsp(void **state)
+{
+	(void)state;
+	memset(&aasworld, 0, sizeof(aasworld));
+	test_reset_print_capture();
+	BotInterface_SetImportTable(&g_test_imports);
+
+	int status = AAS_LoadMap("", 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOBSPFILE);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+#ifdef _WIN32
+	assert_string_equal(g_test_print_message,
+		"couldn't find the bsp file maps\\.bsp\n");
+#else
+	assert_string_equal(g_test_print_message,
+		"couldn't find the bsp file maps/.bsp\n");
+#endif
+	assert_false(aasworld.loaded);
+
+	AAS_Shutdown();
+	BotInterface_SetImportTable(NULL);
+}
+
+/*
+=============
+test_aas_loader_preserves_retail_header_error_contracts
+
+Exercises exact fatal diagnostics and status codes for malformed BSP/AAS files.
+=============
+*/
+static void test_aas_loader_preserves_retail_header_error_contracts(void **state)
+{
+	(void)state;
+	const char *map_name = "__gladiator_loader_contract";
+	const char *bsp_path = "maps/__gladiator_loader_contract.bsp";
+	const char *root_aas_path = "__gladiator_loader_contract.aas";
+	const char *aas_path = "maps/__gladiator_loader_contract.aas";
+#ifdef _WIN32
+	const char *reported_bsp_path =
+		"maps\\__gladiator_loader_contract.bsp";
+	const char *reported_aas_path =
+		"maps\\__gladiator_loader_contract.aas";
+#else
+	const char *reported_bsp_path = bsp_path;
+	const char *reported_aas_path = aas_path;
+#endif
+
+	unlink(bsp_path);
+	unlink(root_aas_path);
+	unlink(aas_path);
+	errno = 0;
+	int directory_status = test_make_directory("maps");
+	qboolean remove_directory = directory_status == 0;
+	assert_true(remove_directory || errno == EEXIST);
+	BotInterface_SetImportTable(&g_test_imports);
+	memset(&aasworld, 0, sizeof(aasworld));
+
+	const unsigned char truncated_bsp = 0;
+	assert_true(test_write_fixture(bsp_path, &truncated_bsp, 1));
+	test_reset_print_capture();
+	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADBSPHEADER);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	char expected[PATH_MAX];
+	snprintf(expected,
+		sizeof(expected),
+		"can't read header of bsp file %s\n",
+		reported_bsp_path);
+	assert_string_equal(g_test_print_message, expected);
+
+	q2_bsp_header_t bsp_header;
+	memset(&bsp_header, 0, sizeof(bsp_header));
+	assert_true(test_write_fixture(bsp_path, &bsp_header, sizeof(bsp_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_WRONGBSPFILEID);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	snprintf(expected,
+		sizeof(expected),
+		"%s is not an BSP file\n",
+		reported_bsp_path);
+	assert_string_equal(g_test_print_message, expected);
+
+	bsp_header.ident = Q2_BSP_IDENT;
+	bsp_header.version = Q2_BSP_VERSION - 1;
+	assert_true(test_write_fixture(bsp_path, &bsp_header, sizeof(bsp_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_WRONGBSPFILEVERSION);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	snprintf(expected,
+		sizeof(expected),
+		"bsp file %s is version %i, not %i\n",
+		reported_bsp_path,
+		Q2_BSP_VERSION - 1,
+		Q2_BSP_VERSION);
+	assert_string_equal(g_test_print_message, expected);
+
+	bsp_header.version = Q2_BSP_VERSION;
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].offset = -1;
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].length = 1;
+	assert_true(test_write_fixture(bsp_path, &bsp_header, sizeof(bsp_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message,
+		"can't seek to bsp lump entity\n");
+
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].offset =
+		(int32_t)sizeof(bsp_header);
+	assert_true(test_write_fixture(bsp_path, &bsp_header, sizeof(bsp_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message,
+		"can't read bsp lump entity\n");
+
+	memset(&bsp_header.lumps[Q2_BSP_LUMP_ENTITIES],
+		0,
+		sizeof(bsp_header.lumps[Q2_BSP_LUMP_ENTITIES]));
+	assert_true(test_write_fixture(bsp_path, &bsp_header, sizeof(bsp_header)));
+	unlink(aas_path);
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOAASFILE);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message, "no AAS file available\n");
+
+	assert_true(test_write_fixture(aas_path, NULL, 0));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADAASHEADER);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	snprintf(expected,
+		sizeof(expected),
+		"can't read header of file %s\n",
+		reported_aas_path);
+	assert_string_equal(g_test_print_message, expected);
+
+	q2_aas_header_t aas_header;
+	memset(&aas_header, 0, sizeof(aas_header));
+	assert_true(test_write_fixture(aas_path, &aas_header, sizeof(aas_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_WRONGAASFILEID);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	snprintf(expected,
+		sizeof(expected),
+		"%s is not an AAS file\n",
+		reported_aas_path);
+	assert_string_equal(g_test_print_message, expected);
+
+	aas_header.ident = Q2_AAS_IDENT;
+	aas_header.version = Q2_AAS_VERSION + 1;
+	assert_true(test_write_fixture(aas_path, &aas_header, sizeof(aas_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_WRONGAASFILEVERSION);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	snprintf(expected,
+		sizeof(expected),
+		"aas file %s is version %i, not %i\n",
+		reported_aas_path,
+		Q2_AAS_VERSION + 1,
+		Q2_AAS_VERSION);
+	assert_string_equal(g_test_print_message, expected);
+
+	aas_header.version = Q2_AAS_VERSION;
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].offset =
+		(int32_t)sizeof(aas_header);
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].length = 1;
+	assert_true(test_write_fixture(aas_path, &aas_header, sizeof(aas_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADAASLUMP);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message, "can't read aas lump\n");
+
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].offset = -1;
+	assert_true(test_write_fixture(aas_path, &aas_header, sizeof(aas_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADAASLUMP);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message, "can't seek to aas lump\n");
+
+	unsigned char aas_with_odd_bbox[sizeof(aas_header) + 1U];
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].offset =
+		(int32_t)sizeof(aas_header);
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].length = 1;
+	memcpy(aas_with_odd_bbox, &aas_header, sizeof(aas_header));
+	aas_with_odd_bbox[sizeof(aas_header)] = 0;
+	assert_true(test_write_fixture(aas_path,
+		aas_with_odd_bbox,
+		sizeof(aas_with_odd_bbox)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_MESSAGE);
+	snprintf(expected, sizeof(expected), "loaded %s\n", reported_aas_path);
+	assert_string_equal(g_test_print_message, expected);
+	assert_true(aasworld.loaded);
+	AAS_Shutdown();
+
+	memset(&aas_header.lumps, 0, sizeof(aas_header.lumps));
+	assert_true(test_write_fixture(aas_path, &aas_header, sizeof(aas_header)));
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].offset = -1;
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].length =
+		(int32_t)sizeof(aas_plane_t);
+	assert_true(test_write_fixture(bsp_path, &bsp_header, sizeof(bsp_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message,
+		"can't seek to bsp lump planes\n");
+
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].offset =
+		(int32_t)sizeof(bsp_header);
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].length =
+		(int32_t)sizeof(aas_plane_t);
+	assert_true(test_write_fixture(bsp_path, &bsp_header, sizeof(bsp_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message,
+		"can't read bsp lump planes\n");
+
+	unsigned char bsp_with_odd_plane[sizeof(bsp_header) + 1U];
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].length = 1;
+	memcpy(bsp_with_odd_plane, &bsp_header, sizeof(bsp_header));
+	bsp_with_odd_plane[sizeof(bsp_header)] = 0;
+	assert_true(test_write_fixture(bsp_path,
+		bsp_with_odd_plane,
+		sizeof(bsp_with_odd_plane)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message,
+		"odd planes bsp lump size\n");
+
+	unlink(aas_path);
+	unlink(root_aas_path);
+	unlink(bsp_path);
+	AAS_Shutdown();
+	BotInterface_SetImportTable(NULL);
+	if (remove_directory)
+	{
+		assert_int_equal(rmdir("maps"), 0);
+	}
+}
+
+/*
+=============
+test_bsp_texinfo_payload_load_and_retail_trace_boundary
+
+Loads a synthetic BSP texinfo/brush graph and pins the retail internal-trace
+boundary: the hit retains its brush-side index and expanded distance, while
+the surface payload remains zero rather than being synthesized from texinfo.
+=============
+*/
+static void test_bsp_texinfo_payload_load_and_retail_trace_boundary(void **state)
+{
+	(void)state;
+	const char *map_name = "__gladiator_bsp_texinfo";
+	const char *bsp_path = "maps/__gladiator_bsp_texinfo.bsp";
+	const char *root_aas_path = "__gladiator_bsp_texinfo.aas";
+	const char *aas_path = "maps/__gladiator_bsp_texinfo.aas";
+
+	unlink(bsp_path);
+	unlink(root_aas_path);
+	unlink(aas_path);
+	errno = 0;
+	int directory_status = test_make_directory("maps");
+	qboolean remove_directory = directory_status == 0;
+	assert_true(remove_directory || errno == EEXIST);
+
+	assert_int_equal(sizeof(aas_bsptexinfo_t), 0x4c);
+	assert_int_equal(offsetof(aas_bsptexinfo_t, flags), 0x20);
+	assert_int_equal(offsetof(aas_bsptexinfo_t, value), 0x24);
+	assert_int_equal(offsetof(aas_bsptexinfo_t, texture), 0x28);
+	assert_int_equal(offsetof(aas_bsptexinfo_t, nexttexinfo), 0x48);
+
+	aas_plane_t bsp_planes[6];
+	memset(bsp_planes, 0, sizeof(bsp_planes));
+	VectorSet(bsp_planes[0].normal, -1.0f, 0.0f, 0.0f);
+	bsp_planes[0].dist = 0.0f;
+	bsp_planes[0].type = 0;
+	VectorSet(bsp_planes[1].normal, 1.0f, 0.0f, 0.0f);
+	bsp_planes[1].dist = 10.0f;
+	bsp_planes[1].type = 0;
+	VectorSet(bsp_planes[2].normal, 0.0f, -1.0f, 0.0f);
+	bsp_planes[2].dist = 16.0f;
+	bsp_planes[2].type = 1;
+	VectorSet(bsp_planes[3].normal, 0.0f, 1.0f, 0.0f);
+	bsp_planes[3].dist = 16.0f;
+	bsp_planes[3].type = 1;
+	VectorSet(bsp_planes[4].normal, 0.0f, 0.0f, -1.0f);
+	bsp_planes[4].dist = 16.0f;
+	bsp_planes[4].type = 2;
+	VectorSet(bsp_planes[5].normal, 0.0f, 0.0f, 1.0f);
+	bsp_planes[5].dist = 16.0f;
+	bsp_planes[5].type = 2;
+
+	aas_bsptexinfo_t bsp_texinfo[2];
+	memset(bsp_texinfo, 0, sizeof(bsp_texinfo));
+	for (int axis = 0; axis < 2; ++axis)
+	{
+		for (int component = 0; component < 4; ++component)
+		{
+			bsp_texinfo[1].vecs[axis][component] =
+				(float)(axis * 10 + component) + 0.25f;
+		}
+	}
+	bsp_texinfo[0].flags = 1;
+	bsp_texinfo[0].value = 11;
+	strncpy(bsp_texinfo[0].texture,
+		"textures/default",
+		sizeof(bsp_texinfo[0].texture) - 1U);
+	bsp_texinfo[0].nexttexinfo = 1;
+	bsp_texinfo[1].flags = 4;
+	bsp_texinfo[1].value = 321;
+	strncpy(bsp_texinfo[1].texture,
+		"textures/sky_payload",
+		sizeof(bsp_texinfo[1].texture) - 1U);
+	bsp_texinfo[1].nexttexinfo = -1;
+
+	aas_bspleaf_t bsp_leaf;
+	memset(&bsp_leaf, 0, sizeof(bsp_leaf));
+	bsp_leaf.contents = CONTENTS_SOLID;
+	bsp_leaf.cluster = -1;
+	bsp_leaf.firstleafbrush = 0;
+	bsp_leaf.numleafbrushes = 1;
+	unsigned short bsp_leafbrush = 0;
+
+	aas_bspmodel_t bsp_model;
+	memset(&bsp_model, 0, sizeof(bsp_model));
+	VectorSet(bsp_model.mins, 0.0f, -16.0f, -16.0f);
+	VectorSet(bsp_model.maxs, 10.0f, 16.0f, 16.0f);
+	bsp_model.headnode = -1;
+
+	aas_bspbrushside_t bsp_brushsides[6];
+	memset(bsp_brushsides, 0, sizeof(bsp_brushsides));
+	for (int index = 0; index < 6; ++index)
+	{
+		bsp_brushsides[index].planenum = (unsigned short)index;
+		bsp_brushsides[index].texinfo = 0;
+	}
+	bsp_brushsides[0].texinfo = 1;
+
+	aas_bspbrush_t bsp_brush;
+	memset(&bsp_brush, 0, sizeof(bsp_brush));
+	bsp_brush.firstside = 0;
+	bsp_brush.numsides = 6;
+	bsp_brush.contents = CONTENTS_SOLID;
+
+	q2_bsp_header_t bsp_header;
+	memset(&bsp_header, 0, sizeof(bsp_header));
+	bsp_header.ident = Q2_BSP_IDENT;
+	bsp_header.version = Q2_BSP_VERSION;
+	unsigned char bsp_data[sizeof(bsp_header) + sizeof(bsp_planes) +
+		sizeof(bsp_texinfo) + sizeof(bsp_leaf) + sizeof(bsp_leafbrush) +
+		sizeof(bsp_model) + sizeof(bsp_brushsides) + sizeof(bsp_brush)];
+	size_t bsp_offset = sizeof(bsp_header);
+
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].offset = (int32_t)bsp_offset;
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].length = (int32_t)sizeof(bsp_planes);
+	memcpy(bsp_data + bsp_offset, bsp_planes, sizeof(bsp_planes));
+	bsp_offset += sizeof(bsp_planes);
+	bsp_header.lumps[Q2_BSP_LUMP_TEXINFO].offset = (int32_t)bsp_offset;
+	bsp_header.lumps[Q2_BSP_LUMP_TEXINFO].length = (int32_t)sizeof(bsp_texinfo);
+	memcpy(bsp_data + bsp_offset, bsp_texinfo, sizeof(bsp_texinfo));
+	bsp_offset += sizeof(bsp_texinfo);
+	bsp_header.lumps[Q2_BSP_LUMP_LEAFS].offset = (int32_t)bsp_offset;
+	bsp_header.lumps[Q2_BSP_LUMP_LEAFS].length = (int32_t)sizeof(bsp_leaf);
+	memcpy(bsp_data + bsp_offset, &bsp_leaf, sizeof(bsp_leaf));
+	bsp_offset += sizeof(bsp_leaf);
+	bsp_header.lumps[Q2_BSP_LUMP_LEAFBRUSHES].offset = (int32_t)bsp_offset;
+	bsp_header.lumps[Q2_BSP_LUMP_LEAFBRUSHES].length =
+		(int32_t)sizeof(bsp_leafbrush);
+	memcpy(bsp_data + bsp_offset, &bsp_leafbrush, sizeof(bsp_leafbrush));
+	bsp_offset += sizeof(bsp_leafbrush);
+	bsp_header.lumps[Q2_BSP_LUMP_MODELS].offset = (int32_t)bsp_offset;
+	bsp_header.lumps[Q2_BSP_LUMP_MODELS].length = (int32_t)sizeof(bsp_model);
+	memcpy(bsp_data + bsp_offset, &bsp_model, sizeof(bsp_model));
+	bsp_offset += sizeof(bsp_model);
+	bsp_header.lumps[Q2_BSP_LUMP_BRUSHSIDES].offset = (int32_t)bsp_offset;
+	bsp_header.lumps[Q2_BSP_LUMP_BRUSHSIDES].length =
+		(int32_t)sizeof(bsp_brushsides);
+	memcpy(bsp_data + bsp_offset, bsp_brushsides, sizeof(bsp_brushsides));
+	bsp_offset += sizeof(bsp_brushsides);
+	bsp_header.lumps[Q2_BSP_LUMP_BRUSHES].offset = (int32_t)bsp_offset;
+	bsp_header.lumps[Q2_BSP_LUMP_BRUSHES].length = (int32_t)sizeof(bsp_brush);
+	memcpy(bsp_data + bsp_offset, &bsp_brush, sizeof(bsp_brush));
+	bsp_offset += sizeof(bsp_brush);
+	assert_int_equal(bsp_offset, sizeof(bsp_data));
+	memcpy(bsp_data, &bsp_header, sizeof(bsp_header));
+	assert_true(test_write_fixture(bsp_path, bsp_data, sizeof(bsp_data)));
+
+	q2_aas_header_t aas_header;
+	memset(&aas_header, 0, sizeof(aas_header));
+	aas_header.ident = Q2_AAS_IDENT;
+	aas_header.version = Q2_AAS_VERSION;
+	assert_true(test_write_fixture(aas_path, &aas_header, sizeof(aas_header)));
+
+	BotInterface_SetImportTable(&g_test_imports);
+	memset(&aasworld, 0, sizeof(aasworld));
+	test_reset_print_capture();
+	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(aasworld.loaded);
+	assert_int_equal(aasworld.numBspTexInfo, 2);
+	assert_non_null(aasworld.bspTexInfo);
+	assert_float_equal(aasworld.bspTexInfo[1].vecs[0][0], 0.25f, 0.00001f);
+	assert_float_equal(aasworld.bspTexInfo[1].vecs[1][3], 13.25f, 0.00001f);
+	assert_int_equal(aasworld.bspTexInfo[1].flags, 4);
+	assert_int_equal(aasworld.bspTexInfo[1].value, 321);
+	assert_string_equal(aasworld.bspTexInfo[1].texture,
+		"textures/sky_payload");
+	assert_int_equal(aasworld.bspTexInfo[1].nexttexinfo, -1);
+	assert_int_equal(aasworld.numBspBrushSides, 6);
+	assert_int_equal(aasworld.bspBrushSides[0].texinfo, 1);
+
+	vec3_t trace_start = {-10.0f, 0.0f, 0.0f};
+	vec3_t trace_mins = {-1.0f, -1.0f, -1.0f};
+	vec3_t trace_maxs = {1.0f, 1.0f, 1.0f};
+	vec3_t trace_end = {20.0f, 0.0f, 0.0f};
+	bsp_trace_t trace = AAS_TraceBSPModel(0,
+		NULL,
+		NULL,
+		trace_start,
+		trace_mins,
+		trace_maxs,
+		trace_end,
+		CONTENTS_SOLID);
+	assert_false(trace.allsolid);
+	assert_false(trace.startsolid);
+	assert_float_equal(trace.fraction, (11.0f - 0.005f) / 30.0f, 0.00001f);
+	assert_float_equal(trace.endpos[0], 0.995f, 0.0001f);
+	assert_float_equal(trace.plane.normal[0], -1.0f, 0.00001f);
+	assert_float_equal(trace.plane.dist, 0.0f, 0.00001f);
+	assert_float_equal(trace.exp_dist, -1.0f, 0.00001f);
+	assert_int_equal(trace.sidenum, 0);
+	assert_int_equal(trace.contents, CONTENTS_SOLID);
+	bsp_surface_t empty_surface;
+	memset(&empty_surface, 0, sizeof(empty_surface));
+	assert_memory_equal(&trace.surface, &empty_surface, sizeof(empty_surface));
+
+	aasworld.bspBrushSides[0].texinfo = 0x7fff;
+	bsp_trace_t invalid_texinfo_trace = AAS_TraceBSPModel(0,
+		NULL,
+		NULL,
+		trace_start,
+		trace_mins,
+		trace_maxs,
+		trace_end,
+		CONTENTS_SOLID);
+	assert_float_equal(invalid_texinfo_trace.fraction,
+		trace.fraction,
+		0.00001f);
+	assert_float_equal(invalid_texinfo_trace.exp_dist,
+		trace.exp_dist,
+		0.00001f);
+	assert_int_equal(invalid_texinfo_trace.sidenum, trace.sidenum);
+	assert_int_equal(invalid_texinfo_trace.contents, trace.contents);
+	assert_memory_equal(&invalid_texinfo_trace.surface,
+		&empty_surface,
+		sizeof(empty_surface));
+
+	AAS_Shutdown();
+	assert_int_equal(aasworld.numBspTexInfo, 0);
+	assert_null(aasworld.bspTexInfo);
+	BotInterface_SetImportTable(NULL);
+	unlink(aas_path);
+	unlink(root_aas_path);
+	unlink(bsp_path);
+	if (remove_directory)
+	{
+		assert_int_equal(rmdir("maps"), 0);
+	}
+}
+
+/*
+=============
+test_aas_loader_uses_retail_candidate_order_and_reports_selected_paths
+
+Pins the loose-file AAS probe order and the BSP/AAS paths printed after discovery.
+=============
+*/
+static void test_aas_loader_uses_retail_candidate_order_and_reports_selected_paths(
+	void **state)
+{
+	(void)state;
+	const char *map_name = "__gladiator_loader_candidates";
+	const char *bsp_path = "maps/__gladiator_loader_candidates.bsp";
+	const char *root_aas_path = "__gladiator_loader_candidates.aas";
+	const char *maps_aas_path = "maps/__gladiator_loader_candidates.aas";
+#ifdef _WIN32
+	const char *reported_bsp_path =
+		"maps\\__gladiator_loader_candidates.bsp";
+	const char *reported_maps_aas_path =
+		"maps\\__gladiator_loader_candidates.aas";
+#else
+	const char *reported_bsp_path = bsp_path;
+	const char *reported_maps_aas_path = maps_aas_path;
+#endif
+
+	unlink(bsp_path);
+	unlink(root_aas_path);
+	unlink(maps_aas_path);
+	errno = 0;
+	int directory_status = test_make_directory("maps");
+	qboolean remove_directory = directory_status == 0;
+	assert_true(remove_directory || errno == EEXIST);
+	BotInterface_SetImportTable(&g_test_imports);
+	memset(&aasworld, 0, sizeof(aasworld));
+
+	q2_bsp_header_t bsp_header;
+	memset(&bsp_header, 0, sizeof(bsp_header));
+	bsp_header.ident = Q2_BSP_IDENT;
+	bsp_header.version = Q2_BSP_VERSION;
+	assert_true(test_write_fixture(bsp_path,
+		&bsp_header,
+		sizeof(bsp_header)));
+
+	q2_aas_header_t aas_header;
+	memset(&aas_header, 0, sizeof(aas_header));
+	aas_header.ident = Q2_AAS_IDENT;
+	aas_header.version = Q2_AAS_VERSION;
+	assert_true(test_write_fixture(maps_aas_path,
+		&aas_header,
+		sizeof(aas_header)));
+
+	test_reset_print_capture();
+	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
+	assert_int_equal(g_test_print_priority_history[1], PRT_MESSAGE);
+	char expected[PATH_MAX];
+	snprintf(expected, sizeof(expected), "loaded %s\n", reported_bsp_path);
+	assert_string_equal(g_test_print_message_history[0], expected);
+	snprintf(expected,
+		sizeof(expected),
+		"loaded %s\n",
+		reported_maps_aas_path);
+	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(aasworld.aasFilePath, reported_maps_aas_path);
+	AAS_Shutdown();
+
+	assert_true(test_write_fixture(root_aas_path,
+		&aas_header,
+		sizeof(aas_header)));
+	const unsigned char truncated_aas = 0;
+	assert_true(test_write_fixture(maps_aas_path, &truncated_aas, 1U));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(g_test_print_count, 2);
+	snprintf(expected, sizeof(expected), "loaded %s\n", root_aas_path);
+	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(aasworld.aasFilePath, root_aas_path);
+	AAS_Shutdown();
+
+	assert_true(test_write_fixture(root_aas_path, &truncated_aas, 1U));
+	assert_true(test_write_fixture(maps_aas_path,
+		&aas_header,
+		sizeof(aas_header)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADAASHEADER);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
+	assert_int_equal(g_test_print_priority_history[1], PRT_FATAL);
+	snprintf(expected,
+		sizeof(expected),
+		"can't read header of file %s\n",
+		root_aas_path);
+	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_false(aasworld.loaded);
+
+	unlink(root_aas_path);
+	unlink(maps_aas_path);
+	unlink(bsp_path);
+	AAS_Shutdown();
+	BotInterface_SetImportTable(NULL);
+	if (remove_directory)
+	{
+		assert_int_equal(rmdir("maps"), 0);
+	}
+}
+
+/*
+=============
+test_assert_resolved_map_load
+
+Loads one transient map and verifies both resolved loose-file diagnostics.
+=============
+*/
+static void test_assert_resolved_map_load(const char *map_name,
+	const char *expected_bsp_path,
+	const char *expected_aas_path)
+{
+	char reported_bsp_path[PATH_MAX];
+	char reported_aas_path[PATH_MAX];
+	snprintf(reported_bsp_path,
+		sizeof(reported_bsp_path),
+		"%s",
+		expected_bsp_path);
+	snprintf(reported_aas_path,
+		sizeof(reported_aas_path),
+		"%s",
+		expected_aas_path);
+#ifdef _WIN32
+	for (char *cursor = reported_bsp_path; *cursor != '\0'; ++cursor)
+	{
+		if (*cursor == '/')
+		{
+			*cursor = '\\';
+		}
+	}
+	for (char *cursor = reported_aas_path; *cursor != '\0'; ++cursor)
+	{
+		if (*cursor == '/')
+		{
+			*cursor = '\\';
+		}
+	}
+#endif
+
+	test_reset_print_capture();
+	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
+	assert_int_equal(g_test_print_priority_history[1], PRT_MESSAGE);
+	char expected[PATH_MAX + 16];
+	snprintf(expected,
+		sizeof(expected),
+		"loaded %s\n",
+		reported_bsp_path);
+	assert_string_equal(g_test_print_message_history[0], expected);
+	snprintf(expected,
+		sizeof(expected),
+		"loaded %s\n",
+		reported_aas_path);
+	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(aasworld.aasFilePath, reported_aas_path);
+	AAS_Shutdown();
+}
+
+/*
+=============
+test_aas_loader_resolves_retail_loose_directory_precedence
+
+Pins basedir/cddir and gamedir/baseq2 ordering without archive participation.
+=============
+*/
+static void test_aas_loader_resolves_retail_loose_directory_precedence(
+	void **state)
+{
+	(void)state;
+	const char *map_name = "__gladiator_loose_roots";
+	const char *basedir = "__gladiator_loose_basedir";
+	const char *cddir = "__gladiator_loose_cddir";
+	const char *gamedir = "retailgame";
+	const char *directories[] = {
+		"__gladiator_loose_basedir",
+		"__gladiator_loose_basedir/retailgame",
+		"__gladiator_loose_basedir/retailgame/maps",
+		"__gladiator_loose_basedir/baseq2",
+		"__gladiator_loose_basedir/baseq2/maps",
+		"__gladiator_loose_cddir",
+		"__gladiator_loose_cddir/retailgame",
+		"__gladiator_loose_cddir/retailgame/maps",
+		"__gladiator_loose_cddir/baseq2",
+		"__gladiator_loose_cddir/baseq2/maps"
+	};
+	const char *bsp_paths[] = {
+		"__gladiator_loose_basedir/retailgame/maps/__gladiator_loose_roots.bsp",
+		"__gladiator_loose_basedir/baseq2/maps/__gladiator_loose_roots.bsp",
+		"__gladiator_loose_cddir/retailgame/maps/__gladiator_loose_roots.bsp",
+		"__gladiator_loose_cddir/baseq2/maps/__gladiator_loose_roots.bsp"
+	};
+	const char *aas_paths[] = {
+		"__gladiator_loose_basedir/retailgame/__gladiator_loose_roots.aas",
+		"__gladiator_loose_basedir/baseq2/__gladiator_loose_roots.aas",
+		"__gladiator_loose_cddir/retailgame/__gladiator_loose_roots.aas",
+		"__gladiator_loose_cddir/baseq2/__gladiator_loose_roots.aas"
+	};
+	const char *basedir_maps_aas =
+		"__gladiator_loose_basedir/retailgame/maps/__gladiator_loose_roots.aas";
+
+	for (size_t index = 0;
+		index < sizeof(bsp_paths) / sizeof(bsp_paths[0]);
+		++index)
+	{
+		unlink(bsp_paths[index]);
+		unlink(aas_paths[index]);
+	}
+	unlink(basedir_maps_aas);
+	for (size_t index = sizeof(directories) / sizeof(directories[0]);
+		index > 0U;
+		--index)
+	{
+		rmdir(directories[index - 1U]);
+	}
+	for (size_t index = 0;
+		index < sizeof(directories) / sizeof(directories[0]);
+		++index)
+	{
+		errno = 0;
+		int status = test_make_directory(directories[index]);
+		assert_true(status == 0 || errno == EEXIST);
+	}
+
+	BotInterface_SetImportTable(&g_test_imports);
+	LibVar_Init();
+	LibVarSet("basedir", basedir);
+	LibVarSet("gamedir", gamedir);
+	LibVarSet("cddir", cddir);
+	memset(&aasworld, 0, sizeof(aasworld));
+
+	q2_bsp_header_t bsp_header;
+	memset(&bsp_header, 0, sizeof(bsp_header));
+	bsp_header.ident = Q2_BSP_IDENT;
+	bsp_header.version = Q2_BSP_VERSION;
+	q2_aas_header_t aas_header;
+	memset(&aas_header, 0, sizeof(aas_header));
+	aas_header.ident = Q2_AAS_IDENT;
+	aas_header.version = Q2_AAS_VERSION;
+	for (size_t index = 0;
+		index < sizeof(bsp_paths) / sizeof(bsp_paths[0]);
+		++index)
+	{
+		assert_true(test_write_fixture(bsp_paths[index],
+			&bsp_header,
+			sizeof(bsp_header)));
+		assert_true(test_write_fixture(aas_paths[index],
+			&aas_header,
+			sizeof(aas_header)));
+	}
+
+	test_assert_resolved_map_load(map_name, bsp_paths[0], aas_paths[0]);
+	unlink(bsp_paths[0]);
+	unlink(aas_paths[0]);
+	test_assert_resolved_map_load(map_name, bsp_paths[1], aas_paths[1]);
+	unlink(bsp_paths[1]);
+	unlink(aas_paths[1]);
+	test_assert_resolved_map_load(map_name, bsp_paths[2], aas_paths[2]);
+	unlink(bsp_paths[2]);
+	unlink(aas_paths[2]);
+	test_assert_resolved_map_load(map_name, bsp_paths[3], aas_paths[3]);
+
+	assert_true(test_write_fixture(bsp_paths[0],
+		&bsp_header,
+		sizeof(bsp_header)));
+	assert_true(test_write_fixture(basedir_maps_aas,
+		&aas_header,
+		sizeof(aas_header)));
+	test_assert_resolved_map_load(map_name, bsp_paths[0], aas_paths[3]);
+
+	LibVar_Shutdown();
+	BotInterface_SetImportTable(NULL);
+	for (size_t index = 0;
+		index < sizeof(bsp_paths) / sizeof(bsp_paths[0]);
+		++index)
+	{
+		unlink(bsp_paths[index]);
+		unlink(aas_paths[index]);
+	}
+	unlink(basedir_maps_aas);
+	for (size_t index = sizeof(directories) / sizeof(directories[0]);
+		index > 0U;
+		--index)
+	{
+		assert_int_equal(rmdir(directories[index - 1U]), 0);
+	}
+}
+
+/*
+=============
+test_aas_loader_probes_retail_paks_and_reads_bounded_entries
+
+Pins per-directory pak0..pak9 checkpoints, access/search log records, normalized
+entry lookup, bounded checksums, archive diagnostics, and logical writeback.
+=============
+*/
+static void test_aas_loader_probes_retail_paks_and_reads_bounded_entries(
+	void **state)
+{
+	(void)state;
+	const char *map_name = "__gladiator_pak_roots";
+	const char *logical_bsp = "maps/__gladiator_pak_roots.bsp";
+	const char *logical_aas = "__gladiator_pak_roots.aas";
+	const char *basedir = "__gladiator_pak_basedir";
+	const char *gamedir = "retailgame";
+	const char *log_path = "__gladiator_pak_search.log";
+	const char *directories[] = {
+		"__gladiator_pak_basedir",
+		"__gladiator_pak_basedir/retailgame",
+		"__gladiator_pak_basedir/baseq2",
+		"__gladiator_pak_basedir/baseq2/maps"
+	};
+	const char *pak0_path =
+		"__gladiator_pak_basedir/retailgame/pak0.pak";
+	const char *pak1_path =
+		"__gladiator_pak_basedir/retailgame/pak1.pak";
+	const char *missing_loose_bsp =
+		"__gladiator_pak_basedir/retailgame/maps/__gladiator_pak_roots.bsp";
+	const char *missing_loose_aas =
+		"__gladiator_pak_basedir/retailgame/__gladiator_pak_roots.aas";
+	const char *later_loose_bsp =
+		"__gladiator_pak_basedir/baseq2/maps/__gladiator_pak_roots.bsp";
+	const char *later_loose_aas =
+		"__gladiator_pak_basedir/baseq2/__gladiator_pak_roots.aas";
+
+	unlink(pak0_path);
+	unlink(pak1_path);
+	unlink(later_loose_bsp);
+	unlink(later_loose_aas);
+	unlink(logical_aas);
+	unlink(log_path);
+	for (size_t index = sizeof(directories) / sizeof(directories[0]);
+		index > 0U;
+		--index)
+	{
+		rmdir(directories[index - 1U]);
+	}
+	for (size_t index = 0U;
+		index < sizeof(directories) / sizeof(directories[0]);
+		++index)
+	{
+		errno = 0;
+		int status = test_make_directory(directories[index]);
+		assert_true(status == 0 || errno == EEXIST);
+	}
+
+	q2_bsp_header_t bsp_header;
+	memset(&bsp_header, 0, sizeof(bsp_header));
+	bsp_header.ident = Q2_BSP_IDENT;
+	bsp_header.version = Q2_BSP_VERSION;
+	const char bsp_entities[] = "{}";
+	aas_plane_t bsp_plane;
+	memset(&bsp_plane, 0, sizeof(bsp_plane));
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].offset =
+		(int32_t)sizeof(bsp_header);
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].length =
+		(int32_t)sizeof(bsp_entities);
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].offset =
+		(int32_t)(sizeof(bsp_header) + sizeof(bsp_entities));
+	bsp_header.lumps[Q2_BSP_LUMP_PLANES].length =
+		(int32_t)sizeof(bsp_plane);
+	unsigned char bsp_entry[sizeof(bsp_header) + sizeof(bsp_entities) +
+		sizeof(bsp_plane)];
+	memcpy(bsp_entry, &bsp_header, sizeof(bsp_header));
+	memcpy(bsp_entry + sizeof(bsp_header),
+		bsp_entities,
+		sizeof(bsp_entities));
+	memcpy(bsp_entry + sizeof(bsp_header) + sizeof(bsp_entities),
+		&bsp_plane,
+		sizeof(bsp_plane));
+
+	q2_aas_header_t aas_header;
+	memset(&aas_header, 0, sizeof(aas_header));
+	aas_header.ident = Q2_AAS_IDENT;
+	aas_header.version = Q2_AAS_VERSION;
+	aas_bbox_t aas_bbox;
+	memset(&aas_bbox, 0, sizeof(aas_bbox));
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].offset =
+		(int32_t)sizeof(aas_header);
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].length =
+		(int32_t)sizeof(aas_bbox);
+	unsigned char aas_entry[sizeof(aas_header) + sizeof(aas_bbox)];
+	memcpy(aas_entry, &aas_header, sizeof(aas_header));
+	memcpy(aas_entry + sizeof(aas_header), &aas_bbox, sizeof(aas_bbox));
+
+	const unsigned char ignored_data[] = {0xA5U, 0x5AU, 0xC3U};
+	const test_pak_fixture_entry_t pak0_entries[] = {
+		{"scripts/ignored.bin", ignored_data, sizeof(ignored_data)},
+		{"__GLADIATOR_PAK_ROOTS.AAS", aas_entry, sizeof(aas_entry)}
+	};
+	const test_pak_fixture_entry_t pak1_entries[] = {
+		{"MAPS/__GLADIATOR_PAK_ROOTS.BSP", bsp_entry, sizeof(bsp_entry)}
+	};
+	assert_true(test_write_pak_fixture(pak0_path,
+		pak0_entries,
+		sizeof(pak0_entries) / sizeof(pak0_entries[0])));
+	assert_true(test_write_pak_fixture(pak1_path,
+		pak1_entries,
+		sizeof(pak1_entries) / sizeof(pak1_entries[0])));
+
+	q2_bsp_header_t loose_bsp_decoy;
+	memset(&loose_bsp_decoy, 0, sizeof(loose_bsp_decoy));
+	q2_aas_header_t loose_aas_decoy;
+	memset(&loose_aas_decoy, 0, sizeof(loose_aas_decoy));
+	assert_true(test_write_fixture(later_loose_bsp,
+		&loose_bsp_decoy,
+		sizeof(loose_bsp_decoy)));
+	assert_true(test_write_fixture(later_loose_aas,
+		&loose_aas_decoy,
+		sizeof(loose_aas_decoy)));
+
+	BotInterface_SetImportTable(&g_test_imports);
+	LibVar_Init();
+	LibVarSet("basedir", basedir);
+	LibVarSet("gamedir", gamedir);
+	LibVarSet("cddir", "__gladiator_pak_missing_cddir");
+	LibVarSet("log", "1");
+	memset(&aasworld, 0, sizeof(aasworld));
+	BotLib_LogOpen(log_path);
+	assert_non_null(BotLib_LogFile());
+	test_reset_print_capture();
+
+	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(aasworld.loaded);
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
+	assert_int_equal(g_test_print_priority_history[1], PRT_MESSAGE);
+
+	char reported_pak0[PATH_MAX];
+	char reported_pak1[PATH_MAX];
+	char reported_logical_bsp[PATH_MAX];
+	char reported_loose_bsp[PATH_MAX];
+	char reported_loose_aas[PATH_MAX];
+	snprintf(reported_pak0, sizeof(reported_pak0), "%s", pak0_path);
+	snprintf(reported_pak1, sizeof(reported_pak1), "%s", pak1_path);
+	snprintf(reported_logical_bsp,
+		sizeof(reported_logical_bsp),
+		"%s",
+		logical_bsp);
+	snprintf(reported_loose_bsp,
+		sizeof(reported_loose_bsp),
+		"%s",
+		missing_loose_bsp);
+	snprintf(reported_loose_aas,
+		sizeof(reported_loose_aas),
+		"%s",
+		missing_loose_aas);
+#ifdef _WIN32
+	char *reported_paths[] = {
+		reported_pak0,
+		reported_pak1,
+		reported_logical_bsp,
+		reported_loose_bsp,
+		reported_loose_aas
+	};
+	for (size_t path_index = 0U;
+		path_index < sizeof(reported_paths) / sizeof(reported_paths[0]);
+		++path_index)
+	{
+		for (char *cursor = reported_paths[path_index];
+			*cursor != '\0';
+			++cursor)
+		{
+			if (*cursor == '/')
+			{
+				*cursor = '\\';
+			}
+		}
+	}
+	const char archive_separator = '\\';
+#else
+	const char archive_separator = '/';
+#endif
+	char expected[PATH_MAX * 2U];
+	snprintf(expected,
+		sizeof(expected),
+		"loaded %s%c%s\n",
+		reported_pak1,
+		archive_separator,
+		reported_logical_bsp);
+	assert_string_equal(g_test_print_message_history[0], expected);
+	snprintf(expected,
+		sizeof(expected),
+		"loaded %s%c%s\n",
+		reported_pak0,
+		archive_separator,
+		logical_aas);
+	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(aasworld.aasFilePath, logical_aas);
+	assert_int_equal(aasworld.numBspPlanes, 1);
+	assert_int_equal(aasworld.numBBoxes, 1);
+	assert_int_equal(aasworld.bspChecksum,
+		(int32_t)test_crc32(bsp_entry, sizeof(bsp_entry)));
+	assert_int_equal(aasworld.aasChecksum,
+		(int32_t)test_crc32(aas_entry, sizeof(aas_entry)));
+
+	AAS_Shutdown();
+	BotLib_LogClose();
+	FILE *log_file = fopen(log_path, "rb");
+	assert_non_null(log_file);
+	char log_contents[2048];
+	size_t log_length = fread(log_contents,
+		1U,
+		sizeof(log_contents) - 1U,
+		log_file);
+	assert_false(ferror(log_file));
+	assert_int_equal(fclose(log_file), 0);
+	log_contents[log_length] = '\0';
+	char expected_log[2048];
+	int expected_log_length = snprintf(expected_log,
+		sizeof(expected_log),
+		"accessing %s\r\n"
+		"searching %s in %s\r\n"
+		"searching %s in %s\r\n"
+		"accessing %s\r\n"
+		"searching %s in %s\r\n",
+		reported_loose_bsp,
+		reported_logical_bsp, reported_pak0,
+		reported_logical_bsp, reported_pak1,
+		reported_loose_aas,
+		logical_aas, reported_pak0);
+	assert_true(expected_log_length >= 0 &&
+		(size_t)expected_log_length < sizeof(expected_log));
+	assert_string_equal(log_contents, expected_log);
+	LibVar_Shutdown();
+	BotInterface_SetImportTable(NULL);
+	unlink(logical_aas);
+	unlink(pak0_path);
+	unlink(pak1_path);
+	unlink(later_loose_bsp);
+	unlink(later_loose_aas);
+	unlink(log_path);
+	for (size_t index = sizeof(directories) / sizeof(directories[0]);
+		index > 0U;
+		--index)
+	{
+		assert_int_equal(rmdir(directories[index - 1U]), 0);
+	}
+}
+
+/*
+=============
+test_aas_loader_runs_retail_zip_fallback_as_a_separate_extraction_pass
+
+Pins normal-search precedence, ZIP order/logging, retail failure residue,
+successful extracted-member deletion/CWD restore, and empty ZIP writeback paths.
+=============
+*/
+static void test_aas_loader_runs_retail_zip_fallback_as_a_separate_extraction_pass(
+	void **state)
+{
+	(void)state;
+	const char *map_name = "__gladiator_zip_roots";
+	const char *basedir = "__gladiator_zip_basedir";
+	const char *gamedir = "retailgame";
+	const char *logical_member = "__gladiator_zip_roots.aas";
+	const char *log_path = "__gladiator_zip_search.log";
+	const char *directories[] = {
+		"__gladiator_zip_basedir",
+		"__gladiator_zip_basedir/retailgame",
+		"__gladiator_zip_basedir/retailgame/maps",
+		"__gladiator_zip_basedir/baseq2"
+	};
+	const char *bsp_path =
+		"__gladiator_zip_basedir/retailgame/maps/__gladiator_zip_roots.bsp";
+	const char *normal_aas_path =
+		"__gladiator_zip_basedir/retailgame/maps/__gladiator_zip_roots.aas";
+	const char *extracted_aas_path =
+		"__gladiator_zip_basedir/retailgame/__gladiator_zip_roots.aas";
+	const char *game_zip0_path =
+		"__gladiator_zip_basedir/retailgame/aas0.zip";
+	const char *game_zip1_path =
+		"__gladiator_zip_basedir/retailgame/aas1.zip";
+	const char *base_zip0_path =
+		"__gladiator_zip_basedir/baseq2/aas0.zip";
+#ifdef _WIN32
+	const char *relative_game_zip0 = "..\\retailgame\\aas0.zip";
+	const char *relative_game_zip1 = "..\\retailgame\\aas1.zip";
+	const char *relative_base_zip0 = "..\\baseq2\\aas0.zip";
+	const char archive_separator = '\\';
+#else
+	const char *relative_game_zip0 = "../retailgame/aas0.zip";
+	const char *relative_game_zip1 = "../retailgame/aas1.zip";
+	const char *relative_base_zip0 = "../baseq2/aas0.zip";
+	const char archive_separator = '/';
+#endif
+
+	unlink(bsp_path);
+	unlink(normal_aas_path);
+	unlink(extracted_aas_path);
+	unlink(game_zip0_path);
+	unlink(game_zip1_path);
+	unlink(base_zip0_path);
+	unlink(log_path);
+	for (size_t index = sizeof(directories) / sizeof(directories[0]);
+		index > 0U;
+		--index)
+	{
+		rmdir(directories[index - 1U]);
+	}
+	for (size_t index = 0U;
+		index < sizeof(directories) / sizeof(directories[0]);
+		++index)
+	{
+		errno = 0;
+		int status = test_make_directory(directories[index]);
+		assert_true(status == 0 || errno == EEXIST);
+	}
+
+	q2_bsp_header_t bsp_header;
+	memset(&bsp_header, 0, sizeof(bsp_header));
+	bsp_header.ident = Q2_BSP_IDENT;
+	bsp_header.version = Q2_BSP_VERSION;
+	assert_true(test_write_fixture(bsp_path,
+		&bsp_header,
+		sizeof(bsp_header)));
+
+	q2_aas_header_t aas_header;
+	memset(&aas_header, 0, sizeof(aas_header));
+	aas_header.ident = Q2_AAS_IDENT;
+	aas_header.version = Q2_AAS_VERSION;
+	aas_bbox_t aas_bbox;
+	memset(&aas_bbox, 0, sizeof(aas_bbox));
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].offset =
+		(int32_t)sizeof(aas_header);
+	aas_header.lumps[Q2_AAS_LUMP_BBOXES].length =
+		(int32_t)sizeof(aas_bbox);
+	unsigned char aas_member[sizeof(aas_header) + sizeof(aas_bbox)];
+	memcpy(aas_member, &aas_header, sizeof(aas_header));
+	memcpy(aas_member + sizeof(aas_header), &aas_bbox, sizeof(aas_bbox));
+
+	const unsigned char archive_marker[] = {0x50U, 0x4BU, 0x03U, 0x04U};
+	assert_true(test_write_fixture(game_zip0_path,
+		archive_marker,
+		sizeof(archive_marker)));
+	assert_true(test_write_fixture(game_zip1_path,
+		archive_marker,
+		sizeof(archive_marker)));
+	assert_true(test_write_fixture(base_zip0_path,
+		archive_marker,
+		sizeof(archive_marker)));
+
+	snprintf(g_test_zip_game_success_path,
+		sizeof(g_test_zip_game_success_path),
+		"%s",
+		relative_game_zip1);
+	snprintf(g_test_zip_base_success_path,
+		sizeof(g_test_zip_base_success_path),
+		"%s",
+		relative_base_zip0);
+	snprintf(g_test_zip_expected_member,
+		sizeof(g_test_zip_expected_member),
+		"%s",
+		logical_member);
+	g_test_zip_member_data = aas_member;
+	g_test_zip_member_size = sizeof(aas_member);
+	AAS_SetZipExtractorForTests(test_extract_zip_member);
+
+	char original_directory[PATH_MAX];
+	assert_non_null(getcwd(original_directory, sizeof(original_directory)));
+	BotInterface_SetImportTable(&g_test_imports);
+	LibVar_Init();
+	LibVarSet("basedir", basedir);
+	LibVarSet("gamedir", gamedir);
+	LibVarSet("cddir", "__gladiator_zip_missing_cddir");
+	LibVarSet("log", "1");
+	memset(&aasworld, 0, sizeof(aasworld));
+	BotLib_LogOpen(log_path);
+	assert_non_null(BotLib_LogFile());
+
+	assert_true(test_write_fixture(normal_aas_path,
+		aas_member,
+		sizeof(aas_member)));
+	g_test_zip_extract_mode = 1;
+	g_test_zip_extract_count = 0U;
+	test_reset_print_capture();
+	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(g_test_zip_extract_count, 0);
+	char reported_normal_aas[PATH_MAX];
+	snprintf(reported_normal_aas,
+		sizeof(reported_normal_aas),
+		"%s",
+		normal_aas_path);
+#ifdef _WIN32
+	for (char *cursor = reported_normal_aas; *cursor != '\0'; ++cursor)
+	{
+		if (*cursor == '/')
+		{
+			*cursor = '\\';
+		}
+	}
+#endif
+	assert_string_equal(aasworld.aasFilePath, reported_normal_aas);
+	AAS_Shutdown();
+	unlink(normal_aas_path);
+
+	g_test_zip_extract_mode = 0;
+	g_test_zip_extract_count = 0U;
+	memset(g_test_zip_archive_history, 0, sizeof(g_test_zip_archive_history));
+	memset(g_test_zip_member_history, 0, sizeof(g_test_zip_member_history));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOAASFILE);
+	assert_int_equal(g_test_zip_extract_count, 3);
+	assert_string_equal(g_test_zip_archive_history[0], relative_game_zip0);
+	assert_string_equal(g_test_zip_archive_history[1], relative_game_zip1);
+	assert_string_equal(g_test_zip_archive_history[2], relative_base_zip0);
+	for (size_t index = 0U; index < 3U; ++index)
+	{
+		assert_string_equal(g_test_zip_member_history[index], logical_member);
+	}
+	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
+	assert_int_equal(g_test_print_priority_history[1], PRT_FATAL);
+	assert_string_equal(g_test_print_message, "no AAS file available\n");
+	char current_directory[PATH_MAX];
+	assert_non_null(getcwd(current_directory, sizeof(current_directory)));
+	assert_string_equal(current_directory, original_directory);
+	AAS_Shutdown();
+
+	g_test_zip_member_data = archive_marker;
+	g_test_zip_member_size = sizeof(archive_marker);
+	g_test_zip_extract_mode = 1;
+	g_test_zip_extract_count = 0U;
+	memset(g_test_zip_archive_history, 0, sizeof(g_test_zip_archive_history));
+	memset(g_test_zip_member_history, 0, sizeof(g_test_zip_member_history));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOAASFILE);
+	assert_int_equal(g_test_zip_extract_count, 2);
+	assert_string_equal(g_test_zip_archive_history[0], relative_game_zip0);
+	assert_string_equal(g_test_zip_archive_history[1], relative_game_zip1);
+	assert_string_equal(g_test_print_message, "no AAS file available\n");
+	assert_non_null(getcwd(current_directory, sizeof(current_directory)));
+	char retained_directory[PATH_MAX];
+	snprintf(retained_directory,
+		sizeof(retained_directory),
+		"%s%c%s%c%s",
+		original_directory,
+		archive_separator,
+		basedir,
+		archive_separator,
+		gamedir);
+	assert_string_equal(current_directory, retained_directory);
+	FILE *retained_aas = fopen(logical_member, "rb");
+	assert_non_null(retained_aas);
+	unsigned char retained_bytes[sizeof(archive_marker)];
+	assert_int_equal(fread(retained_bytes,
+		1U,
+		sizeof(retained_bytes),
+		retained_aas),
+		sizeof(retained_bytes));
+	assert_int_equal(fclose(retained_aas), 0);
+	assert_memory_equal(retained_bytes,
+		archive_marker,
+		sizeof(retained_bytes));
+	assert_int_equal(chdir(original_directory), 0);
+	assert_int_equal(unlink(extracted_aas_path), 0);
+	AAS_Shutdown();
+
+	g_test_zip_member_data = aas_member;
+	g_test_zip_member_size = sizeof(aas_member);
+	g_test_zip_extract_mode = 1;
+	g_test_zip_extract_count = 0U;
+	memset(g_test_zip_archive_history, 0, sizeof(g_test_zip_archive_history));
+	memset(g_test_zip_member_history, 0, sizeof(g_test_zip_member_history));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(aasworld.loaded);
+	assert_int_equal(g_test_zip_extract_count, 2);
+	assert_string_equal(g_test_zip_archive_history[0], relative_game_zip0);
+	assert_string_equal(g_test_zip_archive_history[1], relative_game_zip1);
+	assert_string_equal(g_test_zip_member_history[0], logical_member);
+	assert_string_equal(g_test_zip_member_history[1], logical_member);
+	assert_int_equal(g_test_print_count, 2);
+	char expected[PATH_MAX * 2U];
+	snprintf(expected,
+		sizeof(expected),
+		"loaded %s%c%s\n",
+		relative_game_zip1,
+		archive_separator,
+		logical_member);
+	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(aasworld.aasFilePath, "");
+	assert_int_equal(aasworld.numBBoxes, 1);
+	assert_int_equal(aasworld.aasChecksum,
+		(int32_t)test_crc32(aas_member, sizeof(aas_member)));
+	FILE *extracted_aas = fopen(extracted_aas_path, "rb");
+	assert_null(extracted_aas);
+	assert_non_null(getcwd(current_directory, sizeof(current_directory)));
+	assert_string_equal(current_directory, original_directory);
+
+	AAS_Shutdown();
+	BotLib_LogClose();
+	FILE *log_file = fopen(log_path, "rb");
+	assert_non_null(log_file);
+	char log_contents[16384];
+	size_t log_length = fread(log_contents,
+		1U,
+		sizeof(log_contents) - 1U,
+		log_file);
+	assert_int_equal(fgetc(log_file), EOF);
+	assert_false(ferror(log_file));
+	assert_int_equal(fclose(log_file), 0);
+	log_contents[log_length] = '\0';
+	char zip_log_contents[4096];
+	size_t zip_log_length = 0U;
+	const char *line_start = log_contents;
+	while (*line_start != '\0')
+	{
+		const char *line_end = strstr(line_start, "\r\n");
+		assert_non_null(line_end);
+		const char *member_position = strstr(line_start, logical_member);
+		bool zip_record = member_position != NULL &&
+			member_position < line_end &&
+			(strncmp(line_start,
+				"searching ",
+				sizeof("searching ") - 1U) == 0 ||
+			strncmp(line_start,
+				"could not find ",
+				sizeof("could not find ") - 1U) == 0 ||
+			strncmp(line_start,
+				"found ",
+				sizeof("found ") - 1U) == 0);
+		if (zip_record)
+		{
+			size_t line_length = (size_t)(line_end - line_start);
+			assert_true(zip_log_length + line_length + 2U <
+				sizeof(zip_log_contents));
+			memcpy(zip_log_contents + zip_log_length,
+				line_start,
+				line_length + 2U);
+			zip_log_length += line_length + 2U;
+		}
+		line_start = line_end + 2;
+	}
+	zip_log_contents[zip_log_length] = '\0';
+	char expected_log[4096];
+	int expected_log_length = snprintf(expected_log,
+		sizeof(expected_log),
+		"searching %s in %s\r\n"
+		"could not find %s in %s\r\n"
+		"searching %s in %s\r\n"
+		"could not find %s in %s\r\n"
+		"searching %s in %s\r\n"
+		"could not find %s in %s\r\n"
+		"searching %s in %s\r\n"
+		"could not find %s in %s\r\n"
+		"searching %s in %s\r\n"
+		"searching %s in %s\r\n"
+		"could not find %s in %s\r\n"
+		"searching %s in %s\r\n"
+		"found %s in %s\r\n",
+		logical_member, relative_game_zip0,
+		logical_member, relative_game_zip0,
+		logical_member, relative_game_zip1,
+		logical_member, relative_game_zip1,
+		logical_member, relative_base_zip0,
+		logical_member, relative_base_zip0,
+		logical_member, relative_game_zip0,
+		logical_member, relative_game_zip0,
+		logical_member, relative_game_zip1,
+		logical_member, relative_game_zip0,
+		logical_member, relative_game_zip0,
+		logical_member, relative_game_zip1,
+		logical_member, relative_game_zip1);
+	assert_true(expected_log_length >= 0 &&
+		(size_t)expected_log_length < sizeof(expected_log));
+	assert_string_equal(zip_log_contents, expected_log);
+	AAS_SetZipExtractorForTests(NULL);
+	LibVar_Shutdown();
+	BotInterface_SetImportTable(NULL);
+	g_test_zip_member_data = NULL;
+	g_test_zip_member_size = 0U;
+	unlink(bsp_path);
+	unlink(normal_aas_path);
+	unlink(extracted_aas_path);
+	unlink(game_zip0_path);
+	unlink(game_zip1_path);
+	unlink(base_zip0_path);
+	unlink(log_path);
+	for (size_t index = sizeof(directories) / sizeof(directories[0]);
+		index > 0U;
+		--index)
+	{
+		assert_int_equal(rmdir(directories[index - 1U]), 0);
+	}
 }
 
 static void test_aas_loads_sample_map(void **state)
@@ -2207,6 +4019,19 @@ static void test_retail_routing_intra_area_travel_cost(void **state)
 int main(void)
 {
     const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_aas_in_pvs_decodes_retail_visibility_rows),
+		cmocka_unit_test(test_aas_null_map_refreshes_assets_without_world_reset),
+		cmocka_unit_test(test_aas_empty_map_reports_retail_missing_bsp),
+		cmocka_unit_test(test_aas_loader_preserves_retail_header_error_contracts),
+		cmocka_unit_test(test_bsp_texinfo_payload_load_and_retail_trace_boundary),
+		cmocka_unit_test(
+			test_aas_loader_uses_retail_candidate_order_and_reports_selected_paths),
+		cmocka_unit_test(
+			test_aas_loader_resolves_retail_loose_directory_precedence),
+		cmocka_unit_test(
+			test_aas_loader_probes_retail_paks_and_reads_bounded_entries),
+		cmocka_unit_test(
+			test_aas_loader_runs_retail_zip_fallback_as_a_separate_extraction_pass),
         cmocka_unit_test_setup_teardown(test_aas_loads_sample_map,
                                         aas_environment_setup,
                                         aas_environment_teardown),

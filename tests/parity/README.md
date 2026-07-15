@@ -101,7 +101,7 @@ engineered details surface.
 
 ### Weight configuration exports
 * **Handle guards** &mdash; Exercise `BotAllocWeightConfig`, `BotFreeWeightConfig`, and `BotReadWeightsFile` with the library uninitialised to confirm
-  the wrappers surface the `[bot_interface] ...: library not initialised` diagnostic without leaking handles.
+  the wrappers surface the retail `...: bot library used before being setup` diagnostic without leaking handles.
 * **Parser parity** &mdash; Load a known-good weight script through the export table and verify the resulting handle matches the direct
   `BotLoadItemWeights` path used in client setup. Follow up with `BotWriteWeights` to assert the exported path serialises back to disk.
 * **Mutation safeguards** &mdash; Use `BotSetWeight` and `BotWeightIndex` to confirm invalid handles, unknown classnames, and read-only configurations
@@ -134,9 +134,15 @@ engineered details surface.
 * **State lifecycle** &mdash; Allocate and free chat states through the export table, ensuring `BotLoadChatFile` and `BotFreeChatFile` mirror the
   behaviour exercised by `BotConsoleMessage` during runtime tests.
 * **Queue semantics** &mdash; Push and drain console messages with `BotQueueConsoleMessage`, `BotNextConsoleMessage`, and
-  `BotNumConsoleMessages`, validating that the guard paths clear the caller's buffers when the library is not initialised.
-* **Reply scaffolding** &mdash; Exercise `BotReplyChat` and `BotEnterChat` with the stub implementation so fixtures can assert the exported paths
-  continue to return zero until the full HLIL behaviour is reconstructed.
+  `BotNumConsoleMessages`, validating that the guard paths clear the caller's buffers when the library is not initialised. Runtime fixtures
+  also pin the raw-node FIFO consumer: fewer than ten queued chat messages block on a recent head for exactly `1 + random()` seconds, while a
+  ten-message flood drains immediately and leaves a newly exposed recent head deferred.
+* **Reply caller flow** &mdash; Exercise self-message removal, context-7 match classification, `nochat` suppression, reply probability gates,
+  exact-node removal only on a successful reply, chat-length stand timing, stationary stand input, and eventual
+  `BotEnterChat(..., client, 0)` dispatch. Death-message coverage pins the subtype and enemy death-time updates. Focused dispatcher tests
+  cover match types 3&ndash;21: teammate/entity/item goal branches, CTF flag gates, leadership/status/subteam/formation/dismissal, and the
+  camp/checkpoint/patrol list and partial-failure effects. The remaining documented differences are architectural adapters rather than
+  missing downstream team-order cases.
 
 The tests above will share a harness that wires recording doubles into the mocked `bot_import_t` table and exposes helper assertions for
 sequence ordering, argument capture, and log comparison.

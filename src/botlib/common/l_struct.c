@@ -319,17 +319,22 @@ bool ReadString(pc_source_t *source, const fielddef_t *fd, void *p) {
     return true;
 }
 
+/*
+=============
+ReadStructField
+
+Reads one scalar or fixed-array field with the retail array-close behavior.
+=============
+*/
 static bool ReadStructField(pc_source_t *source,
                             const fielddef_t *fd,
                             void *base,
                             int count) {
     unsigned char *cursor = (unsigned char *)base;
-    bool closed = false;
 
     for (int index = 0; index < count; ++index) {
         if ((fd->type & FT_ARRAY) != 0) {
             if (PC_CheckTokenString(source, "}")) {
-                closed = true;
                 break;
             }
         }
@@ -364,9 +369,7 @@ static bool ReadStructField(pc_source_t *source,
                 SourceError(source, "BUG: no sub structure defined");
                 return false;
             }
-            if (!ReadStructure(source, fd->substruct, cursor)) {
-                return false;
-            }
+			(void)ReadStructure(source, fd->substruct, cursor);
             cursor += fd->substruct->size;
             break;
         default:
@@ -381,7 +384,6 @@ static bool ReadStructField(pc_source_t *source,
             }
 
             if (strcmp(token.string, "}") == 0) {
-                closed = true;
                 break;
             }
 
@@ -392,15 +394,16 @@ static bool ReadStructField(pc_source_t *source,
         }
     }
 
-    if ((fd->type & FT_ARRAY) != 0 && !closed) {
-        if (!PC_ExpectTokenString(source, "}")) {
-            return false;
-        }
-    }
-
     return true;
 }
 
+/*
+=============
+ReadStructure
+
+Reads a named-field structure using the retail fixed-array grammar.
+=============
+*/
 bool ReadStructure(pc_source_t *source, const structdef_t *def, void *structure) {
     if (source == NULL || def == NULL || structure == NULL) {
         return false;
@@ -484,6 +487,13 @@ bool WriteFloat(FILE *fp, float value) {
     return fprintf(fp, "%s", buffer) >= 0;
 }
 
+/*
+=============
+WriteStructWithIndent
+
+Writes a structure while preserving the retail nested-structure base quirk.
+=============
+*/
 static bool WriteStructWithIndent(FILE *fp,
                                   const structdef_t *def,
                                   const void *structure,
@@ -542,7 +552,7 @@ static bool WriteStructWithIndent(FILE *fp,
             case FT_STRUCT:
                 if (!WriteStructWithIndent(fp,
                                             fd->substruct,
-                                            cursor,
+											structure,
                                             indent)) {
                     return false;
                 }

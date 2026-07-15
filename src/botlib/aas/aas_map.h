@@ -109,6 +109,7 @@ bsp_trace_t AAS_Trace(const vec3_t start,
                       int passent,
                       int contentmask);
 int AAS_PointContents(const vec3_t point);
+qboolean AAS_InPVS(const vec3_t point1, const vec3_t point2);
 void AAS_EntityInfo(int entnum, aas_entityinfo_t *info);
 void AAS_EntityOrigin(int entnum, vec3_t origin);
 int AAS_EntityModelindex(int entnum);
@@ -138,6 +139,12 @@ qboolean AAS_EntityCollision(int entnum,
 aas_trace_t AAS_TraceClientBBox(const vec3_t start, const vec3_t end, int presencetype, int passent);
 int AAS_TraceAreas(const vec3_t start, const vec3_t end, int *areas, vec3_t *points, int maxareas);
 int AAS_BBoxAreas(const vec3_t absmins, const vec3_t absmaxs, int *areas, int maxareas);
+qboolean AAS_BSPTracePointLight(const vec3_t start,
+	const vec3_t end,
+	vec3_t hit,
+	int *red,
+	int *green,
+	int *blue);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -3,9 +3,12 @@
 #include <math.h>
 #include <string.h>
 
+#include "aas_debug.h"
 #include "botlib/common/l_utils.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/bridge_config.h"
+
+#define AAS_RETAIL_DEFAULT_ENDCONTENTS 4
 
 /*
 =============
@@ -52,7 +55,7 @@ Normalize a vector in place and return its original length.
 static float AAS_MoveVectorNormalize(vec3_t v)
 {
 	float length = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-	if (length > 1e-6f)
+	if (length > 0.0f)
 	{
 		float scale = 1.0f / length;
 		v[0] *= scale;
@@ -178,23 +181,6 @@ float AAS_BFGJumpZVelocity(const vec3_t origin)
 
 /*
 =============
-AAS_MoveVectorLengthSquared
-
-Return squared vector length without pulling in higher-level utility linkage.
-=============
-*/
-static float AAS_MoveVectorLengthSquared(const vec3_t v)
-{
-	if (v == NULL)
-	{
-		return 0.0f;
-	}
-
-	return v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-}
-
-/*
-=============
 AAS_MoveApplyFriction
 
 Apply Q3-style horizontal friction to a velocity vector in units per second.
@@ -222,33 +208,46 @@ static void AAS_MoveApplyFriction(vec3_t velocity, float friction, float stopspe
 
 /*
 =============
-AAS_MoveAccelerate
+AAS_MoveApplyCommandVelocity
 
-Accelerate a velocity vector toward a desired movement direction.
+Apply Gladiator's per-axis command acceleration and mode velocity clamps.
 =============
 */
-static void AAS_MoveAccelerate(vec3_t velocity,
-                               float frametime,
-                               const vec3_t wishdir,
-                               float wishspeed,
-                               float accel)
+static void AAS_MoveApplyCommandVelocity(vec3_t velocity,
+	const vec3_t cmdmove,
+	int axes,
+	float frametime,
+	float maxacceleration,
+	float maxvelocity)
 {
-	float currentspeed = DotProduct(velocity, wishdir);
-	float addspeed = wishspeed - currentspeed;
-	if (addspeed <= 0.0f)
-	{
-		return;
-	}
+	float frame_maxacceleration = maxacceleration * frametime;
+	float frame_maxvelocity = maxvelocity * frametime;
 
-	float accelspeed = accel * frametime * wishspeed;
-	if (accelspeed > addspeed)
+	for (int i = 0; i < axes; ++i)
 	{
-		accelspeed = addspeed;
-	}
+		float velocity_change = cmdmove[i] * frametime - velocity[i];
+		if (velocity_change > frame_maxacceleration)
+		{
+			velocity_change = frame_maxacceleration;
+		}
+		else if (velocity_change < -frame_maxacceleration)
+		{
+			velocity_change = -frame_maxacceleration;
+		}
 
-	for (int i = 0; i < 3; ++i)
-	{
-		velocity[i] += accelspeed * wishdir[i];
+		float new_velocity = velocity[i] + velocity_change;
+		if (new_velocity > frame_maxvelocity)
+		{
+			velocity[i] = frame_maxvelocity;
+		}
+		else if (new_velocity < -frame_maxvelocity)
+		{
+			velocity[i] = -frame_maxvelocity;
+		}
+		else
+		{
+			velocity[i] = new_velocity;
+		}
 	}
 }
 
@@ -256,7 +255,7 @@ static void AAS_MoveAccelerate(vec3_t velocity,
 =============
 AAS_MoveTraceClientBBox
 
-Trace the AAS presence bounds through the loaded AAS tree or partial-world fallback.
+Trace the AAS presence bounds through the retail AAS client trace path.
 =============
 */
 static aas_trace_t AAS_MoveTraceClientBBox(const vec3_t start,
@@ -264,96 +263,18 @@ static aas_trace_t AAS_MoveTraceClientBBox(const vec3_t start,
                                            int presencetype,
                                            int passent)
 {
-	aas_trace_t trace;
-	memset(&trace, 0, sizeof(trace));
-	trace.fraction = 1.0f;
-
-	if (start == NULL || end == NULL)
-	{
-		return trace;
-	}
-
-	if (aasworld.nodes != NULL &&
-	    aasworld.numNodes > 1 &&
-	    aasworld.planes != NULL &&
-	    aasworld.numPlanes > 0)
-	{
-		return AAS_TraceClientBBox(start, end, presencetype, passent);
-	}
-
-	vec3_t mins;
-	vec3_t maxs;
-	AAS_PresenceTypeBoundingBox(presencetype, mins, maxs);
-
-	bsp_trace_t bsptrace = AAS_Trace(start,
-	                                 mins,
-	                                 maxs,
-	                                 end,
-	                                 passent,
-	                                 CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	trace.startsolid = bsptrace.startsolid;
-	trace.fraction = bsptrace.fraction;
-	trace.ent = bsptrace.ent;
-	trace.plane = bsptrace.plane;
-	if (trace.fraction >= 1.0f && !trace.startsolid)
-	{
-		VectorCopy(end, trace.endpos);
-	}
-	else
-	{
-		VectorCopy(bsptrace.endpos, trace.endpos);
-	}
-	trace.area = AAS_PointAreaNum(trace.endpos);
-
-	return trace;
+	return AAS_TraceClientBBox(start, end, presencetype, passent);
 }
 
 /*
 =============
-AAS_MoveAreaContentsEvents
+AAS_MoveFeetContentsEvents
 
-Translate AAS area contents at a point into prediction stop events.
+Translate the retail feet probe's low contents byte into stop events.  The
+original maps both slime and water to SE_ENTERSLIME.
 =============
 */
-static int AAS_MoveAreaContentsEvents(const vec3_t point)
-{
-	if (!aasworld.loaded || aasworld.areasettings == NULL || point == NULL)
-	{
-		return SE_NONE;
-	}
-
-	int areanum = AAS_PointAreaNum(point);
-	if (areanum <= 0 || areanum >= aasworld.numAreaSettings)
-	{
-		return SE_NONE;
-	}
-
-	int events = SE_NONE;
-	int contents = aasworld.areasettings[areanum].contents;
-	if ((contents & AAS_AREACONTENTS_WATER) != 0)
-	{
-		events |= SE_ENTERWATER;
-	}
-	if ((contents & AAS_AREACONTENTS_SLIME) != 0)
-	{
-		events |= SE_ENTERSLIME;
-	}
-	if ((contents & AAS_AREACONTENTS_LAVA) != 0)
-	{
-		events |= SE_ENTERLAVA;
-	}
-
-	return events;
-}
-
-/*
-=============
-AAS_MovePointContentsEvents
-
-Translate BSP contents at a point into prediction stop events.
-=============
-*/
-static int AAS_MovePointContentsEvents(const vec3_t point, int *outcontents)
+static int AAS_MoveFeetContentsEvents(const vec3_t point, int *outcontents)
 {
 	int contents = 0;
 	if (point != NULL)
@@ -368,17 +289,13 @@ static int AAS_MovePointContentsEvents(const vec3_t point, int *outcontents)
 	}
 
 	int events = SE_NONE;
-	if ((contents & CONTENTS_WATER) != 0)
-	{
-		events |= SE_ENTERWATER;
-	}
-	if ((contents & CONTENTS_SLIME) != 0)
-	{
-		events |= SE_ENTERSLIME;
-	}
 	if ((contents & CONTENTS_LAVA) != 0)
 	{
 		events |= SE_ENTERLAVA;
+	}
+	if ((contents & (CONTENTS_SLIME | CONTENTS_WATER)) != 0)
+	{
+		events |= SE_ENTERSLIME;
 	}
 
 	return events;
@@ -386,9 +303,33 @@ static int AAS_MovePointContentsEvents(const vec3_t point, int *outcontents)
 
 /*
 =============
+AAS_MoveStoreTrace
+
+Copy the internal trace prefix into the retail 0x24-byte result trace.
+=============
+*/
+static void AAS_MoveStoreTrace(aas_clientmove_trace_t *destination,
+	const aas_trace_t *source)
+{
+	if (destination == NULL || source == NULL)
+	{
+		return;
+	}
+
+	destination->startsolid = source->startsolid;
+	destination->fraction = source->fraction;
+	VectorCopy(source->endpos, destination->endpos);
+	destination->ent = source->ent;
+	destination->lastarea = source->lastarea;
+	destination->area = source->area;
+	destination->planenum = source->planenum;
+}
+
+/*
+=============
 AAS_MoveStoreClientMove
 
-Populate the public prediction result using the current frame velocity.
+Populate the public prediction result using the retail frame displacement.
 =============
 */
 static void AAS_MoveStoreClientMove(aas_clientmove_t *move,
@@ -407,18 +348,10 @@ static void AAS_MoveStoreClientMove(aas_clientmove_t *move,
 	}
 
 	VectorCopy(endpos, move->endpos);
-	move->endarea = AAS_PointAreaNum(endpos);
-	if (frametime > 0.0f)
-	{
-		VectorScale(frame_velocity, 1.0f / frametime, move->velocity);
-	}
-	else
-	{
-		VectorClear(move->velocity);
-	}
+	VectorCopy(frame_velocity, move->velocity);
 	if (trace != NULL)
 	{
-		move->trace = *trace;
+		AAS_MoveStoreTrace(&move->trace, trace);
 	}
 	move->presencetype = presencetype;
 	move->stopevent = stopevent;
@@ -487,15 +420,8 @@ int AAS_Swimming(const vec3_t origin)
 	VectorCopy(origin, sample);
 	sample[2] -= 2.0f;
 
-	int contents = 0;
-	int events = AAS_MovePointContentsEvents(sample, &contents);
-	if ((events & (SE_ENTERWATER | SE_ENTERSLIME | SE_ENTERLAVA)) != 0)
-	{
-		return qtrue;
-	}
-
-	events = AAS_MoveAreaContentsEvents(sample);
-	return (events & (SE_ENTERWATER | SE_ENTERSLIME | SE_ENTERLAVA)) != 0;
+	return (Q2_PointContents(sample) &
+		(CONTENTS_LAVA | CONTENTS_SLIME | CONTENTS_WATER)) != 0;
 }
 
 /*
@@ -514,20 +440,26 @@ int AAS_OnGround(const vec3_t origin, int presencetype, int passent)
 
 	vec3_t end;
 	VectorCopy(origin, end);
-	end[2] -= 10.0f;
+	end[2] -= 4.0f;
 
 	aas_trace_t trace = AAS_MoveTraceClientBBox(origin, end, presencetype, passent);
 	if (trace.startsolid || trace.fraction >= 1.0f)
 	{
 		return qfalse;
 	}
-	if (origin[2] - trace.endpos[2] > 10.0f)
+	if (origin[2] - trace.endpos[2] > 2.0f)
+	{
+		return qfalse;
+	}
+
+	const aas_plane_t *plane = AAS_PlaneFromNum(trace.planenum);
+	if (plane == NULL)
 	{
 		return qfalse;
 	}
 
 	float maxsteepness = AAS_MoveLibVarValue(Bridge_MaxSteepness(), 0.7f);
-	return trace.plane.normal[2] >= maxsteepness;
+	return plane->normal[2] >= maxsteepness;
 }
 
 /*
@@ -633,7 +565,7 @@ int AAS_HorizontalVelocityForJump(float zvel, const vec3_t start, const vec3_t e
 =============
 AAS_PredictClientMovement
 
-Predict client movement through the Q3 AAS stop-event state machine.
+Predict client movement through the Gladiator retail stop-event state machine.
 =============
 */
 int AAS_PredictClientMovement(aas_clientmove_t *move,
@@ -650,7 +582,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
                               int stopareanum,
                               int visualize)
 {
-	(void)visualize;
+	(void)stopareanum;
 
 	if (move == NULL || origin == NULL || velocity == NULL || cmdmove == NULL)
 	{
@@ -658,19 +590,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 	}
 
 	memset(move, 0, sizeof(*move));
-
-	if (frametime <= 0.0f)
-	{
-		frametime = 0.1f;
-	}
-	if (maxframes <= 0)
-	{
-		maxframes = 1;
-	}
-	if (cmdframes < 0)
-	{
-		cmdframes = 0;
-	}
+	unsigned char retail_stopevent = (unsigned char)stopevent;
 
 	float phys_friction = AAS_MovePositiveLibVarValue(Bridge_Friction(), 6.0f);
 	float phys_stopspeed = AAS_MovePositiveLibVarValue(Bridge_StopSpeed(), 100.0f);
@@ -680,9 +600,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 	float phys_maxwalkvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxWalkVelocity(), 320.0f);
 	float phys_maxcrouchvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxCrouchVelocity(), 100.0f);
 	float phys_maxswimvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxSwimVelocity(), 150.0f);
-	float phys_walkaccelerate = 10.0f;
-	float phys_airaccelerate = AAS_MovePositiveLibVarValue(Bridge_AirAccelerate(), 1.0f);
-	float phys_swimaccelerate = 4.0f;
+	float phys_maxacceleration = AAS_MoveLibVarValue(Bridge_MaxAcceleration(), 2200.0f);
 	float phys_maxstep = AAS_MovePositiveLibVarValue(Bridge_MaxStep(), 18.0f);
 	float phys_maxbarrier = AAS_MovePositiveLibVarValue(Bridge_MaxBarrier(), 50.0f);
 	float phys_maxsteepness = AAS_MovePositiveLibVarValue(Bridge_MaxSteepness(), 0.7f);
@@ -700,7 +618,8 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 	trace.fraction = 1.0f;
 
 	int jump_frame = -1;
-	for (int frame = 0; frame < maxframes; ++frame)
+	int frame = 0;
+	for (; frame < maxframes; ++frame)
 	{
 		int swimming = AAS_Swimming(org);
 		float gravity = swimming ? phys_watergravity : phys_gravity;
@@ -708,19 +627,17 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 
 		if (onground || swimming)
 		{
-			float friction = swimming ? phys_waterfriction : phys_friction;
-			VectorScale(frame_test_vel, 1.0f / frametime, frame_test_vel);
+			float friction = swimming ? phys_friction : phys_waterfriction;
+			VectorScale(frame_test_vel, 10.0f, frame_test_vel);
 			AAS_MoveApplyFriction(frame_test_vel, friction, phys_stopspeed, frametime);
-			VectorScale(frame_test_vel, frametime, frame_test_vel);
+			VectorScale(frame_test_vel, 0.1f, frame_test_vel);
 		}
 
 		int crouch = qfalse;
 		if (frame < cmdframes)
 		{
 			float maxvel = phys_maxwalkvelocity;
-			float accelerate = phys_airaccelerate;
-			vec3_t wishdir;
-			VectorCopy(cmdmove, wishdir);
+			int command_axes = 0;
 
 			if (onground)
 			{
@@ -733,31 +650,24 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 				{
 					frame_test_vel[2] = phys_jumpvel - gravity * 0.1f * frametime + 5.0f;
 					jump_frame = frame;
-					accelerate = phys_airaccelerate;
 				}
-				else
-				{
-					accelerate = phys_walkaccelerate;
-				}
+				command_axes = 2;
 			}
 			if (swimming)
 			{
 				maxvel = phys_maxswimvelocity;
-				accelerate = phys_swimaccelerate;
-			}
-			else
-			{
-				wishdir[2] = 0.0f;
+				command_axes = 3;
 			}
 
-			float wishspeed = AAS_MoveVectorNormalize(wishdir);
-			if (wishspeed > maxvel)
+			if (command_axes > 0)
 			{
-				wishspeed = maxvel;
+				AAS_MoveApplyCommandVelocity(frame_test_vel,
+					cmdmove,
+					command_axes,
+					frametime,
+					phys_maxacceleration,
+					maxvel);
 			}
-			VectorScale(frame_test_vel, 1.0f / frametime, frame_test_vel);
-			AAS_MoveAccelerate(frame_test_vel, frametime, wishdir, wishspeed, accelerate);
-			VectorScale(frame_test_vel, frametime, frame_test_vel);
 		}
 
 		if (crouch)
@@ -781,60 +691,56 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 			vec3_t end;
 			VectorAdd(org, left_test_vel, end);
 			trace = AAS_MoveTraceClientBBox(org, end, presencetype, entnum);
-
-			if ((stopevent & SE_ENTERAREA) != 0 && stopareanum > 0)
+			if (visualize)
 			{
-				int areas[20];
-				vec3_t points[20];
-				int count = AAS_TraceAreas(org, trace.endpos, areas, points, 20);
-				for (int i = 0; i < count; ++i)
+				if (trace.startsolid)
 				{
-					if (areas[i] == stopareanum)
-					{
-						AAS_MoveStoreClientMove(move,
-						                        points[i],
-						                        frame_test_vel,
-						                        &trace,
-						                        presencetype,
-						                        SE_ENTERAREA,
-						                        0,
-						                        frametime,
-						                        frame);
-						return qtrue;
-					}
+					Q2_Print(PRT_MESSAGE, "PredictMovement: start solid\n");
 				}
+				AAS_DebugLine(org, trace.endpos, LINECOLOR_RED);
 			}
 
 			VectorCopy(trace.endpos, org);
 			if (trace.fraction >= 1.0f)
 			{
+				if (clip >= 20)
+				{
+					memset(move, 0, sizeof(*move));
+					return qfalse;
+				}
 				break;
 			}
 
-			vec3_t normal;
-			VectorCopy(trace.plane.normal, normal);
-			if (AAS_MoveVectorLengthSquared(normal) <= 0.0001f)
-			{
-				VectorSet(normal, 0.0f, 0.0f, 1.0f);
-			}
+			const aas_plane_t *plane = AAS_PlaneFromNum(trace.planenum);
 
 			int step = qfalse;
-			if (fabsf(normal[2]) <= 0.0001f && (jump_frame < 0 || frame - jump_frame > 2))
+			if (plane->normal[2] == 0.0f && (jump_frame < 0 || frame - jump_frame > 2))
 			{
 				vec3_t start;
 				vec3_t stepend;
-				VectorMA(org, -0.25f, normal, start);
+				VectorMA(org, -0.25f, plane->normal, start);
 				VectorCopy(start, stepend);
 				start[2] += phys_maxstep;
 
 				aas_trace_t steptrace = AAS_MoveTraceClientBBox(start, stepend, presencetype, entnum);
-				if (!steptrace.startsolid && steptrace.plane.normal[2] > phys_maxsteepness)
+				if (!steptrace.startsolid)
 				{
-					VectorSubtract(end, steptrace.endpos, left_test_vel);
-					left_test_vel[2] = 0.0f;
-					frame_test_vel[2] = 0.0f;
-					org[2] = steptrace.endpos[2];
-					step = qtrue;
+					const aas_plane_t *stepplane = AAS_PlaneFromNum(steptrace.planenum);
+					if (stepplane->normal[2] > phys_maxsteepness)
+					{
+						VectorSubtract(end, steptrace.endpos, left_test_vel);
+						left_test_vel[2] = 0.0f;
+						frame_test_vel[2] = 0.0f;
+						if (visualize && steptrace.endpos[2] - org[2] > 0.125f)
+						{
+							vec3_t step_line_end;
+							VectorCopy(org, step_line_end);
+							step_line_end[2] = steptrace.endpos[2];
+							AAS_DebugLine(org, step_line_end, LINECOLOR_BLUE);
+						}
+						org[2] = steptrace.endpos[2];
+						step = qtrue;
+					}
 				}
 			}
 
@@ -843,14 +749,20 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 				vec3_t old_frame_test_vel;
 				VectorCopy(frame_test_vel, old_frame_test_vel);
 
-				VectorMA(left_test_vel, -DotProduct(left_test_vel, normal), normal, left_test_vel);
-				VectorMA(frame_test_vel, -DotProduct(frame_test_vel, normal), normal, frame_test_vel);
-				if (normal[2] > phys_maxsteepness)
+				VectorMA(left_test_vel,
+					-DotProduct(left_test_vel, plane->normal),
+					plane->normal,
+					left_test_vel);
+				VectorMA(frame_test_vel,
+					-DotProduct(frame_test_vel, plane->normal),
+					plane->normal,
+					frame_test_vel);
+				if (plane->normal[2] > phys_maxsteepness)
 				{
 					onground = qtrue;
 				}
 
-				if ((stopevent & SE_HITGROUNDDAMAGE) != 0)
+				if ((retail_stopevent & SE_HITGROUNDDAMAGE) != 0)
 				{
 					float delta = 0.0f;
 					if (old_frame_test_vel[2] < 0.0f &&
@@ -871,7 +783,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 						{
 							delta = 0.0f;
 						}
-						if (delta > 40.0f)
+						if (delta > 30.0f)
 						{
 							AAS_MoveStoreClientMove(move,
 							                        org,
@@ -879,7 +791,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 							                        &trace,
 							                        presencetype,
 							                        SE_HITGROUNDDAMAGE,
-							                        0,
+							                        AAS_RETAIL_DEFAULT_ENDCONTENTS,
 							                        frametime,
 							                        frame);
 							return qtrue;
@@ -887,25 +799,30 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 					}
 				}
 			}
+
+			if (clip >= 20)
+			{
+				memset(move, 0, sizeof(*move));
+				return qfalse;
+			}
 		}
 
-		if (frame_test_vel[2] <= 10.0f)
+		if (frame_test_vel[2] <= 0.0f)
 		{
 			vec3_t feet;
 			VectorCopy(org, feet);
 			feet[2] -= 22.0f;
 
 			int pointcontents = 0;
-			int event = AAS_MovePointContentsEvents(feet, &pointcontents);
-			event |= AAS_MoveAreaContentsEvents(org);
-			if ((event & stopevent) != 0)
+			int event = AAS_MoveFeetContentsEvents(feet, &pointcontents);
+			if ((event & retail_stopevent) != 0)
 			{
 				AAS_MoveStoreClientMove(move,
 				                        org,
 				                        frame_test_vel,
-				                        &trace,
+				                        NULL,
 				                        presencetype,
-				                        event & stopevent,
+				                        event & retail_stopevent,
 				                        pointcontents,
 				                        frametime,
 				                        frame);
@@ -916,7 +833,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 		onground = AAS_OnGround(org, presencetype, entnum);
 		if (onground)
 		{
-			if ((stopevent & SE_HITGROUND) != 0)
+			if ((retail_stopevent & SE_HITGROUND) != 0)
 			{
 				AAS_MoveStoreClientMove(move,
 				                        org,
@@ -924,13 +841,13 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 				                        &trace,
 				                        presencetype,
 				                        SE_HITGROUND,
-				                        0,
+				                        AAS_RETAIL_DEFAULT_ENDCONTENTS,
 				                        frametime,
 				                        frame);
 				return qtrue;
 			}
 		}
-		else if ((stopevent & SE_LEAVEGROUND) != 0)
+		else if ((retail_stopevent & SE_LEAVEGROUND) != 0)
 		{
 			AAS_MoveStoreClientMove(move,
 			                        org,
@@ -938,12 +855,12 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 			                        &trace,
 			                        presencetype,
 			                        SE_LEAVEGROUND,
-			                        0,
+			                        AAS_RETAIL_DEFAULT_ENDCONTENTS,
 			                        frametime,
 			                        frame);
 			return qtrue;
 		}
-		else if ((stopevent & SE_GAP) != 0)
+		else if ((retail_stopevent & SE_GAP) != 0)
 		{
 			vec3_t end;
 			VectorCopy(org, end);
@@ -962,7 +879,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 					                        &trace,
 					                        presencetype,
 					                        SE_GAP,
-					                        0,
+					                        AAS_RETAIL_DEFAULT_ENDCONTENTS,
 					                        frametime,
 					                        frame);
 					return qtrue;
@@ -974,11 +891,56 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 	AAS_MoveStoreClientMove(move,
 	                        org,
 	                        frame_test_vel,
-	                        &trace,
+	                        NULL,
 	                        presencetype,
 	                        SE_NONE,
-	                        0,
+	                        AAS_RETAIL_DEFAULT_ENDCONTENTS,
 	                        frametime,
-	                        maxframes);
+	                        frame);
 	return qtrue;
+}
+
+/*
+=============
+AAS_TestMovementPrediction
+
+Run the retail visual movement-prediction probe after hiding the prior frame's
+shared debug lines.
+=============
+*/
+void AAS_TestMovementPrediction(int entnum,
+	vec3_t origin,
+	vec3_t direction)
+{
+	vec3_t velocity;
+	vec3_t cmdmove;
+	aas_clientmove_t move;
+
+	VectorClear(velocity);
+	if (!AAS_Swimming(origin))
+	{
+		direction[2] = 0.0f;
+	}
+	AAS_MoveVectorNormalize(direction);
+	VectorScale(direction, 400.0f, cmdmove);
+	cmdmove[2] = 224.0f;
+
+	AAS_ClearShownDebugLines();
+	AAS_PredictClientMovement(&move,
+		entnum,
+		origin,
+		PRESENCE_NORMAL,
+		qtrue,
+		velocity,
+		cmdmove,
+		13,
+		13,
+		0.1f,
+		SE_HITGROUND,
+		0,
+		qtrue);
+	if ((move.stopevent & SE_LEAVEGROUND) != 0)
+	{
+		Q2_Print(PRT_MESSAGE, "leave ground\n");
+	}
 }

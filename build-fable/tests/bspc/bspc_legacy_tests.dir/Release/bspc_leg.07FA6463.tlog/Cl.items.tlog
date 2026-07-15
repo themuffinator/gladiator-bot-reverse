@@ -1,0 +1,7 @@
+E:\Repositories\Gladiator-Bot-reverse\tests\bspc\test_legacy_primitives.cpp;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\bspc\bspc_legacy_tests.dir\Release\test_legacy_primitives.obj
+E:\Repositories\Gladiator-Bot-reverse\tools\bspc\src\legacy_common.cpp;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\bspc\bspc_legacy_tests.dir\Release\legacy_common.obj
+E:\Repositories\Gladiator-Bot-reverse\tools\bspc\src\brush_bsp.cpp;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\bspc\bspc_legacy_tests.dir\Release\brush_bsp.obj
+E:\Repositories\Gladiator-Bot-reverse\tools\bspc\src\csg.cpp;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\bspc\bspc_legacy_tests.dir\Release\csg.obj
+E:\Repositories\Gladiator-Bot-reverse\tools\bspc\src\portals.cpp;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\bspc\bspc_legacy_tests.dir\Release\portals.obj
+E:\Repositories\Gladiator-Bot-reverse\tools\bspc\src\tree.cpp;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\bspc\bspc_legacy_tests.dir\Release\tree.obj
+E:\Repositories\Gladiator-Bot-reverse\tools\bspc\src\leakfile.cpp;E:\Repositories\Gladiator-Bot-reverse\build-fable\tests\bspc\bspc_legacy_tests.dir\Release\leakfile.obj

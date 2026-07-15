@@ -37,11 +37,21 @@ inventory at `src2/maps/abi_inventory.json`. The first generated pass found:
   `BotLibLoadMap` -> `BotLoadMap` and `BotLibTestHook` -> `Test`. Regenerate
   it with `src2/scripts/generate_export_aliases.py`.
 
+The production header now preserves those retail prefixes explicitly. The
+first twenty `bot_export_t` callbacks and first ten `bot_import_t` callbacks
+are contiguous in original order, and runtime parity tests fail on any slot
+offset drift. `GetBotAPI` copies exactly the ten-callback retail prefix into
+library-owned storage, so it neither over-reads a 0.96 caller nor follows later
+caller-table mutation. The explicit-size `GetBotAPIEx` compatibility entry
+point admits the six bridge-only trailing callbacks for in-repo integrations.
+Likewise, `bot_input_t.actionflags` is back in its original prefix slot;
+the successor-only `weapon` field follows it as a trailing extension.
+
 | Area | Original 0.96 header | Current reconstructed headers | Intake action |
 | --- | --- | --- | --- |
-| Export table | Classic lifecycle/client/map/test functions | Additional goal, movement, weight, weapon, character, and chat entries | Keep external ABI isolated; treat extra entries as internal/reconstructed extensions until address-backed. |
-| `bot_input_t` | Smaller command input layout | Includes an extra `weapon` field in `src/q2bridge/botlib.h` | Verify layout from Ghidra before using it across the DLL boundary. |
-| Import table | Quake II engine callbacks such as input, command, cvar, trace, memory, and debug line hooks | Internal `botlib_import_table_t` currently models print, libvar, command helpers | Reconcile bridge shim separately from binary import layout. |
+| Export table | Classic lifecycle/client/map/test functions | Original 20-slot prefix followed by goal, movement, weight, weapon, character, and chat extensions | Keep extensions after the tested retail prefix. |
+| `bot_input_t` | Five-field command input layout | Original fields retain their offsets; trailing `weapon` supports successor code | Keep the trailing extension outside the retail prefix. |
+| Import table | Ten callbacks from `BotInput` through `DebugLineShow` | `GetBotAPI` reads only the original 10-slot prefix; `GetBotAPIEx` accepts the six-callback compatibility tail; a separate internal shim adapts libvars and commands | Keep all three boundaries explicit and prevent prefix drift or caller over-read. |
 | Error codes | Botlib error vocabulary from the original interface | Mirrored in multiple headers with local additions | Keep values address-backed and de-duplicate once ABI is stable. |
 | Libvar cache | Defaults observed in HLIL contract | Bridge cache in `src/q2bridge/bridge_config.c` extends current behavior | Use `src2/maps/address_to_name.csv` `DAT_` mappings as evidence for original cache slots. |
 

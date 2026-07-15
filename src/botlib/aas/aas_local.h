@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "shared/q_shared.h"
 #include "q2bridge/botlib.h"
@@ -41,6 +42,16 @@ typedef struct aas_plane_s
 	int type;
 } aas_plane_t;
 
+/* Raw Quake II dtexinfo_t layout; retail loads each record as 0x4c bytes. */
+typedef struct aas_bsptexinfo_s
+{
+	float vecs[2][4];
+	int flags;
+	int value;
+	char texture[32];
+	int nexttexinfo;
+} aas_bsptexinfo_t;
+
 typedef struct aas_bspmodel_s
 {
 	vec3_t mins;
@@ -60,6 +71,36 @@ typedef struct aas_bspnode_s
 	unsigned short firstface;
 	unsigned short numfaces;
 } aas_bspnode_t;
+
+/* Raw Quake II dface_t layout; retail loads each record as 0x14 bytes. */
+typedef struct aas_bspface_s
+{
+	unsigned short planenum;
+	short side;
+	int firstedge;
+	short numedges;
+	short texinfo;
+	unsigned char styles[4];
+	int lightofs;
+} aas_bspface_t;
+
+/* Raw Quake II dedge_t layout; retail loads each record as four bytes. */
+typedef struct aas_bspedge_s
+{
+	unsigned short v[2];
+} aas_bspedge_t;
+
+/* Retail cache generated for each BSP face by its surface-extent pass. */
+typedef struct aas_bspsurfaceextent_s
+{
+	short texturemins[2];
+	short extents[2];
+} aas_bspsurfaceextent_t;
+
+typedef char aas_bspface_size[(sizeof(aas_bspface_t) == 0x14U) ? 1 : -1];
+typedef char aas_bspedge_size[(sizeof(aas_bspedge_t) == 0x04U) ? 1 : -1];
+typedef char aas_bspsurfaceextent_size[
+	(sizeof(aas_bspsurfaceextent_t) == 0x08U) ? 1 : -1];
 
 typedef struct aas_bspleaf_s
 {
@@ -303,12 +344,28 @@ typedef struct aas_trace_s
 	cplane_t plane;
 } aas_trace_t;
 
+/*
+ * The retail client-movement result embeds the original 0x24-byte AAS trace
+ * prefix.  The reconstruction's internal aas_trace_t additionally caches the
+ * resolved collision plane, so keep the public result trace compact and copy
+ * the shared fields explicitly at the prediction boundary.
+ */
+typedef struct aas_clientmove_trace_s
+{
+	qboolean startsolid;
+	float fraction;
+	vec3_t endpos;
+	int ent;
+	int lastarea;
+	int area;
+	int planenum;
+} aas_clientmove_trace_t;
+
 typedef struct aas_clientmove_s
 {
 	vec3_t endpos;
-	int endarea;
 	vec3_t velocity;
-	aas_trace_t trace;
+	aas_clientmove_trace_t trace;
 	int presencetype;
 	int stopevent;
 	int endcontents;
@@ -477,6 +534,38 @@ typedef struct aas_routingcache_s
     struct aas_routingcache_s *next;
 } aas_routingcache_t;
 
+/*
+ * Fixed-width mirror of the retail x86 routing-cache header.  Runtime cache
+ * links use native pointers below, while this type records the original ABI
+ * offsets independently of host pointer width.
+ */
+typedef struct aas_retailroutingcache32_s
+{
+	float time;
+	int32_t cluster;
+	int32_t areanum;
+	float origin[3];
+	float starttraveltime;
+	int32_t travelflags;
+	uint32_t prev;
+	uint32_t next;
+	uint16_t traveltimes[1];
+} aas_retailroutingcache32_t;
+
+/* Host-native representation of the retail variable-sized cache record. */
+typedef struct aas_retailroutingcache_s
+{
+	float time;
+	int cluster;
+	int areanum;
+	vec3_t origin;
+	float starttraveltime;
+	int travelflags;
+	struct aas_retailroutingcache_s *prev;
+	struct aas_retailroutingcache_s *next;
+	unsigned short traveltimes[1];
+} aas_retailroutingcache_t;
+
 typedef struct aas_world_s
 {
 	qboolean loaded;        /* mirrors data_100667e0 */
@@ -500,12 +589,34 @@ typedef struct aas_world_s
 
 	int numBspLeaves;
 	aas_bspleaf_t *bspLeaves;
+	int numBspVisibilityClusters;
+	size_t bspVisibilitySize;
+	unsigned char *bspVisibility;
 
 	int bspLeafBrushIndexSize;
 	unsigned short *bspLeafBrushes;
 
 	int numBspPlanes;
 	aas_plane_t *bspPlanes;
+
+	int numBspTexInfo;
+	aas_bsptexinfo_t *bspTexInfo;
+
+	int numBspVertexes;
+	vec3_t *bspVertexes;
+
+	int numBspEdges;
+	aas_bspedge_t *bspEdges;
+
+	int bspSurfEdgeIndexSize;
+	int *bspSurfEdges;
+
+	int numBspFaces;
+	aas_bspface_t *bspFaces;
+	aas_bspsurfaceextent_t *bspSurfaceExtents;
+
+	int bspLightDataSize;
+	unsigned char *bspLightData;
 
 	int numBspBrushSides;
 	aas_bspbrushside_t *bspBrushSides;
@@ -573,6 +684,8 @@ typedef struct aas_world_s
     aas_routingcache_t **routingCacheTable;
     aas_routingcache_t *routingCacheHead;
     aas_routingcache_t *routingCacheTail;
+	aas_retailroutingcache_t ***retailClusterAreaCache;
+	aas_retailroutingcache_t **retailPortalCache;
 
     int *areacontentstravelflags;
 } aas_world_t;
@@ -734,8 +847,24 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
                               int stopevent,
                               int stopareanum,
                               int visualize);
+void AAS_TestMovementPrediction(int entnum,
+	vec3_t origin,
+	vec3_t direction);
 void AAS_FreeAllRoutingCaches(void);
 void AAS_InvalidateRouteCache(void);
+size_t AAS_RetailRoutingCacheSize(int numtraveltimes);
+qboolean AAS_InitRetailRoutingCaches(void);
+void AAS_FreeRetailRoutingCaches(void);
+aas_retailroutingcache_t *AAS_GetRetailAreaRoutingCache(int clusternum,
+	int areanum,
+	int travelflags);
+aas_retailroutingcache_t *AAS_GetRetailPortalRoutingCache(int clusternum,
+	int areanum,
+	int travelflags);
+void AAS_AgeRetailRoutingCaches(void);
+int AAS_RetailAreaCacheUpdateCount(void);
+int AAS_RetailPortalCacheUpdateCount(void);
+int AAS_RetailFrameRoutingUpdateCount(void);
 void AAS_ContinueInit(float time);
 void AAS_UnlinkInvalidEntities(void);
 void AAS_InvalidateEntities(void);

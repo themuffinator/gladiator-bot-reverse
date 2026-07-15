@@ -2,6 +2,7 @@
 
 #include "botlib/common/l_log.h"
 #include "aas_local.h"
+#include "q2bridge/bridge.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -9,10 +10,68 @@
 #include <string.h>
 
 #define AAS_DEBUG_MAX_PATH_DEPTH 128
+#define AAS_DEBUG_MAX_LINES 256
 
+static int g_aasDebugLines[AAS_DEBUG_MAX_LINES];
+static int g_aasDebugLineVisible[AAS_DEBUG_MAX_LINES];
+static int g_aasNumDebugLines;
+
+/*
+=============
+AAS_ClearShownDebugLines
+
+Hide every lazily-created retail debug line and make its slot reusable.
+=============
+*/
+void AAS_ClearShownDebugLines(void)
+{
+	for (int line = 0; line < AAS_DEBUG_MAX_LINES; ++line)
+	{
+		if (g_aasDebugLines[line] != 0)
+		{
+			Q2_DebugLineShow(g_aasDebugLines[line], NULL, NULL, LINECOLOR_NONE);
+			g_aasDebugLineVisible[line] = qfalse;
+		}
+	}
+}
+
+/*
+=============
+AAS_DebugLine
+
+Show one line through the retail shared 256-slot lazy handle pool.
+=============
+*/
+void AAS_DebugLine(vec3_t start, vec3_t end, int color)
+{
+	for (int line = 0; line < AAS_DEBUG_MAX_LINES; ++line)
+	{
+		if (g_aasDebugLines[line] == 0)
+		{
+			g_aasDebugLines[line] = Q2_DebugLineCreate();
+			g_aasDebugLineVisible[line] = qfalse;
+			g_aasNumDebugLines += 1;
+		}
+
+		if (!g_aasDebugLineVisible[line])
+		{
+			Q2_DebugLineShow(g_aasDebugLines[line], start, end, color);
+			g_aasDebugLineVisible[line] = qtrue;
+			return;
+		}
+	}
+}
+
+/*
+=============
+AAS_DebugWorldLoaded
+
+Return whether debug commands have a loaded world with at least one real area.
+=============
+*/
 static bool AAS_DebugWorldLoaded(const char *command)
 {
-    if (aasworld.loaded && aasworld.areas != NULL && aasworld.numAreas > 0)
+	if (aasworld.loaded && aasworld.areas != NULL && aasworld.numAreas > 1)
     {
         return true;
     }
@@ -23,16 +82,27 @@ static bool AAS_DebugWorldLoaded(const char *command)
     return false;
 }
 
+/*
+=============
+AAS_DebugValidArea
+
+Validate a one-based real area index against the area lump count.
+=============
+*/
 static bool AAS_DebugValidArea(int areanum)
 {
-    if (areanum <= 0 || areanum > aasworld.numAreas || aasworld.areas == NULL)
-    {
-        return false;
-    }
-
-    return true;
+	return aasworld.areas != NULL &&
+		   areanum > 0 &&
+		   areanum < aasworld.numAreas;
 }
 
+/*
+=============
+AAS_DebugGetArea
+
+Return a valid area record from the loaded one-based area table.
+=============
+*/
 static const aas_area_t *AAS_DebugGetArea(int areanum)
 {
     if (!AAS_DebugValidArea(areanum))
@@ -43,70 +113,174 @@ static const aas_area_t *AAS_DebugGetArea(int areanum)
     return &aasworld.areas[areanum];
 }
 
-static int AAS_DebugReachabilityFromArea(const aas_reachability_t *reach)
-{
-    if (reach == NULL)
-    {
-        return 0;
-    }
+/*
+=============
+AAS_DebugReachabilityRange
 
-    /*
-     * The Gladiator HLIL stores the source area index in the reachability
-     * struct alongside the target `areanum`. While the reverse engineered
-     * loader has not reconstructed the supporting area setting tables yet, the
-     * diagnostics extracted from the DLL relied on this convention. Treat the
-     * `facenum` field as the originating area until the full graph loader is
-     * recovered.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L43703-L43732】
-     */
-    return reach->facenum;
+Resolve the contiguous outgoing reachability span stored in an area's settings.
+=============
+*/
+static bool AAS_DebugReachabilityRange(int fromArea, int *first, int *count)
+{
+	if (first == NULL || count == NULL)
+	{
+		return false;
+	}
+
+	*first = 0;
+	*count = 0;
+	if (!AAS_DebugValidArea(fromArea) ||
+		aasworld.areasettings == NULL ||
+		fromArea >= aasworld.numAreaSettings)
+	{
+		return false;
+	}
+
+	const aas_areasettings_t *settings = &aasworld.areasettings[fromArea];
+	if (settings->firstreachablearea < 0 || settings->numreachableareas < 0)
+	{
+		return false;
+	}
+
+	if (settings->numreachableareas > 0 &&
+		(settings->firstreachablearea == 0 ||
+		 settings->firstreachablearea >= aasworld.numReachability ||
+		 settings->numreachableareas >
+			 aasworld.numReachability - settings->firstreachablearea))
+	{
+		return false;
+	}
+
+	*first = settings->firstreachablearea;
+	*count = settings->numreachableareas;
+	return true;
 }
 
+/*
+=============
+AAS_DebugReachabilityFromArea
+
+Resolve a reachability's source from prepared metadata or area-setting spans.
+=============
+*/
+static int AAS_DebugReachabilityFromArea(int reachIndex)
+{
+	if (reachIndex < 0 || reachIndex >= aasworld.numReachability)
+	{
+		return 0;
+	}
+
+	if (aasworld.reachabilityFromArea != NULL)
+	{
+		int fromArea = aasworld.reachabilityFromArea[reachIndex];
+		if (AAS_DebugValidArea(fromArea))
+		{
+			return fromArea;
+		}
+	}
+
+	int maxArea = aasworld.numAreas;
+	if (aasworld.numAreaSettings < maxArea)
+	{
+		maxArea = aasworld.numAreaSettings;
+	}
+	for (int fromArea = 1; fromArea < maxArea; ++fromArea)
+	{
+		int first = 0;
+		int count = 0;
+		if (!AAS_DebugReachabilityRange(fromArea, &first, &count))
+		{
+			continue;
+		}
+		if (reachIndex >= first && reachIndex < first + count)
+		{
+			return fromArea;
+		}
+	}
+
+	return 0;
+}
+
+/*
+=============
+AAS_DebugNextReachabilityFromArea
+
+Iterate one area's outgoing reachabilities using retail area-setting ranges.
+=============
+*/
+static int AAS_DebugNextReachabilityFromArea(int fromArea, int previousIndex)
+{
+	int first = 0;
+	int count = 0;
+	if (!AAS_DebugReachabilityRange(fromArea, &first, &count))
+	{
+		return -1;
+	}
+
+	int nextIndex = previousIndex < first ? first : previousIndex + 1;
+	if (nextIndex >= first && nextIndex < first + count)
+	{
+		return nextIndex;
+	}
+
+	return -1;
+}
+
+/*
+=============
+AAS_DebugListReachabilities
+
+Print every outgoing reachability stored for a source area.
+=============
+*/
 static size_t AAS_DebugListReachabilities(int fromArea)
 {
-    if (aasworld.reachability == NULL || aasworld.numReachability <= 0)
-    {
-        return 0U;
-    }
+	size_t listed = 0U;
+	if (aasworld.reachability != NULL && aasworld.numReachability > 0)
+	{
+		for (int index = AAS_DebugNextReachabilityFromArea(fromArea, -1);
+			 index >= 0;
+			 index = AAS_DebugNextReachabilityFromArea(fromArea, index))
+		{
+			const aas_reachability_t *reach = &aasworld.reachability[index];
+			BotLib_Print(PRT_MESSAGE,
+						 "    reach[%d]: %d -> %d travel=%d time=%u start=(%.2f %.2f %.2f) end=(%.2f %.2f %.2f)\n",
+						 index,
+						 fromArea,
+						 reach->areanum,
+						 reach->traveltype,
+						 (unsigned int)reach->traveltime,
+						 reach->start[0],
+						 reach->start[1],
+						 reach->start[2],
+						 reach->end[0],
+						 reach->end[1],
+						 reach->end[2]);
+			listed += 1U;
+		}
+	}
 
-    size_t count = 0U;
-    for (int index = 0; index < aasworld.numReachability; ++index)
-    {
-        const aas_reachability_t *reach = &aasworld.reachability[index];
-        if (AAS_DebugReachabilityFromArea(reach) != fromArea)
-        {
-            continue;
-        }
+	if (listed == 0U)
+	{
+		BotLib_Print(PRT_MESSAGE,
+					 "    (no reachability links from area %d)\n",
+					 fromArea);
+	}
 
-        BotLib_Print(PRT_MESSAGE,
-                     "    reach[%d]: %d -> %d travel=%d time=%u start=(%.2f %.2f %.2f) end=(%.2f %.2f %.2f)\n",
-                     index,
-                     fromArea,
-                     reach->areanum,
-                     reach->traveltype,
-                     (unsigned int)reach->traveltime,
-                     reach->start[0],
-                     reach->start[1],
-                     reach->start[2],
-                     reach->end[0],
-                     reach->end[1],
-                     reach->end[2]);
-        count += 1U;
-    }
-
-    if (count == 0U)
-    {
-        BotLib_Print(PRT_MESSAGE,
-                     "    (no reachability links from area %d)\n",
-                     fromArea);
-    }
-
-    return count;
+	return listed;
 }
 
+/*
+=============
+AAS_DebugDescribeArea
+
+Print geometry, routing metadata, and content flags for one loaded area.
+=============
+*/
 static void AAS_DebugDescribeArea(const aas_area_t *area)
 {
-    if (area == NULL)
-    {
+	if (area == NULL)
+	{
         return;
     }
 
@@ -127,7 +301,7 @@ static void AAS_DebugDescribeArea(const aas_area_t *area)
 
     if (aasworld.areasettings != NULL &&
         area->areanum > 0 &&
-        area->areanum <= aasworld.numAreaSettings)
+		area->areanum < aasworld.numAreaSettings)
     {
         const aas_areasettings_t *settings = &aasworld.areasettings[area->areanum];
         BotLib_Print(PRT_MESSAGE,
@@ -211,35 +385,30 @@ static void AAS_DebugDescribeArea(const aas_area_t *area)
     }
 }
 
+/*
+=============
+AAS_DebugFindAreaFromPoint
+
+Resolve a debug point through the same AAS node walk used by runtime queries.
+=============
+*/
 static int AAS_DebugFindAreaFromPoint(const vec3_t point)
 {
-    if (aasworld.areas == NULL || aasworld.numAreas <= 0)
+	if (point == NULL)
     {
         return 0;
     }
 
-    for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
-    {
-        const aas_area_t *area = &aasworld.areas[areanum];
-        if (point[0] < area->mins[0] || point[0] > area->maxs[0])
-        {
-            continue;
-        }
-        if (point[1] < area->mins[1] || point[1] > area->maxs[1])
-        {
-            continue;
-        }
-        if (point[2] < area->mins[2] || point[2] > area->maxs[2])
-        {
-            continue;
-        }
-
-        return area->areanum;
-    }
-
-    return 0;
+	return AAS_PointAreaNum(point);
 }
 
+/*
+=============
+AAS_DebugBuildPath
+
+Build a breadth-first debug path over each area's outgoing reachability span.
+=============
+*/
 static bool AAS_DebugBuildPath(int startArea,
                                int goalArea,
                                int **outReachIndices,
@@ -253,17 +422,22 @@ static bool AAS_DebugBuildPath(int startArea,
     *outReachIndices = NULL;
     *outCount = 0U;
 
+	if (!AAS_DebugValidArea(startArea) || !AAS_DebugValidArea(goalArea))
+	{
+		return false;
+	}
+
     if (startArea == goalArea)
     {
         return true;
     }
 
-    if (!AAS_DebugValidArea(startArea) || !AAS_DebugValidArea(goalArea))
+	if (aasworld.reachability == NULL || aasworld.numReachability <= 0)
     {
         return false;
     }
 
-    int maxAreas = aasworld.numAreas + 1;
+	int maxAreas = aasworld.numAreas;
     int *queue = (int *)calloc((size_t)maxAreas, sizeof(int));
     int *previousArea = (int *)calloc((size_t)maxAreas, sizeof(int));
     int *previousReach = (int *)calloc((size_t)maxAreas, sizeof(int));
@@ -299,21 +473,18 @@ static bool AAS_DebugBuildPath(int startArea,
             break;
         }
 
-        for (int reachIndex = 0; reachIndex < aasworld.numReachability; ++reachIndex)
+		for (int reachIndex = AAS_DebugNextReachabilityFromArea(area, -1);
+			 reachIndex >= 0;
+			 reachIndex = AAS_DebugNextReachabilityFromArea(area, reachIndex))
         {
             const aas_reachability_t *reach = &aasworld.reachability[reachIndex];
-            if (AAS_DebugReachabilityFromArea(reach) != area)
-            {
-                continue;
-            }
-
             int nextArea = reach->areanum;
-            if (!AAS_DebugValidArea(nextArea))
+			if (!AAS_DebugValidArea(nextArea) || visited[nextArea])
             {
                 continue;
             }
 
-            if (visited[nextArea])
+			if (tail >= (size_t)maxAreas)
             {
                 continue;
             }
@@ -322,10 +493,6 @@ static bool AAS_DebugBuildPath(int startArea,
             previousArea[nextArea] = area;
             previousReach[nextArea] = reachIndex;
             queue[tail++] = nextArea;
-            if (tail >= (size_t)maxAreas)
-            {
-                tail = (size_t)maxAreas - 1U;
-            }
         }
     }
 
@@ -349,18 +516,13 @@ static bool AAS_DebugBuildPath(int startArea,
         pathSteps += 1U;
     }
 
-    if (pathSteps == 0U)
+	if (pathSteps == 0U || pathSteps > AAS_DEBUG_MAX_PATH_DEPTH)
     {
         free(queue);
         free(previousArea);
         free(previousReach);
         free(visited);
         return false;
-    }
-
-    if (pathSteps > AAS_DEBUG_MAX_PATH_DEPTH)
-    {
-        pathSteps = AAS_DEBUG_MAX_PATH_DEPTH;
     }
 
     int *indices = (int *)calloc(pathSteps, sizeof(int));
@@ -411,6 +573,13 @@ static bool AAS_DebugBuildPath(int startArea,
     return true;
 }
 
+/*
+=============
+AAS_DebugBotTest
+
+Describe the requested area or the area containing the supplied origin.
+=============
+*/
 void AAS_DebugBotTest(int entnum, const char *arguments, const vec3_t origin, const vec3_t angles)
 {
     if (!AAS_DebugWorldLoaded("bot_test"))
@@ -458,6 +627,13 @@ void AAS_DebugBotTest(int entnum, const char *arguments, const vec3_t origin, co
     AAS_DebugListReachabilities(area->areanum);
 }
 
+/*
+=============
+AAS_DebugShowPath
+
+Print a reachability path between two requested or point-resolved areas.
+=============
+*/
 void AAS_DebugShowPath(int startArea, int goalArea, const vec3_t start, const vec3_t goal)
 {
     if (!AAS_DebugWorldLoaded("aas_showpath"))
@@ -520,7 +696,7 @@ void AAS_DebugShowPath(int startArea, int goalArea, const vec3_t start, const ve
 
         const aas_reachability_t *reach = &aasworld.reachability[reachIndex];
         totalTime += (unsigned int)reach->traveltime;
-        int fromArea = AAS_DebugReachabilityFromArea(reach);
+		int fromArea = AAS_DebugReachabilityFromArea(reachIndex);
         BotLib_Print(PRT_MESSAGE,
                      "  step %zu: %d -> %d travel=%d time=%u start=(%.2f %.2f %.2f) end=(%.2f %.2f %.2f)\n",
                      step,
@@ -544,6 +720,13 @@ void AAS_DebugShowPath(int startArea, int goalArea, const vec3_t start, const ve
     free(pathIndices);
 }
 
+/*
+=============
+AAS_DebugShowAreas
+
+Describe selected areas or every real area in the loaded AAS world.
+=============
+*/
 void AAS_DebugShowAreas(const int *areas, size_t areaCount)
 {
     if (!AAS_DebugWorldLoaded("aas_showareas"))
@@ -555,8 +738,8 @@ void AAS_DebugShowAreas(const int *areas, size_t areaCount)
     {
         BotLib_Print(PRT_MESSAGE,
                      "aas_showareas: dumping all %d areas\n",
-                     aasworld.numAreas);
-        for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
+					 aasworld.numAreas - 1);
+		for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
         {
             const aas_area_t *area = AAS_DebugGetArea(areanum);
             AAS_DebugDescribeArea(area);

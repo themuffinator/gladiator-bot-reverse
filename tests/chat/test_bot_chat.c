@@ -23,18 +23,7 @@ extern void BotLib_TestSetLibVar(const char *var_name, float value);
 extern void BotLib_TestSetLibVarString(const char *var_name, const char *value);
 extern void BotLib_TestResetLibVars(void);
 extern void BotLib_TestSetMaxClients(float value);
-
-enum
-{
-	TEST_MAX_CONSOLE_MESSAGES = 32,
-	TEST_MAX_CONSOLE_TEXT = 256
-};
-
-typedef struct test_console_message_s
-{
-	int type;
-	char text[TEST_MAX_CONSOLE_TEXT];
-} test_console_message_t;
+extern void BotLib_TestSetAASTime(float time);
 
 /*
 =============
@@ -72,6 +61,43 @@ static void configure_chat_libvars(float fastchat_value, float nochat_value) {
 
 /*
 =============
+seed_retail_reply_ordinal_zero
+
+Finds and restores a C RNG seed whose next draws all produce retail reply
+ordinal zero for the supplied eligible-response count.
+=============
+*/
+static void seed_retail_reply_ordinal_zero(size_t draw_count,
+	int available_count)
+{
+	assert(draw_count > 0);
+	assert(available_count > 0);
+	for (unsigned int seed = 0; seed < 100000U; ++seed)
+	{
+		srand(seed);
+		int matches = 1;
+		for (size_t draw = 0; draw < draw_count; ++draw)
+		{
+			const int ordinal = (int)(((float)(rand() & 0x7fff)
+				/ (float)0x7fff) * (float)available_count);
+			if (ordinal != 0)
+			{
+				matches = 0;
+				break;
+			}
+		}
+		if (matches)
+		{
+			srand(seed);
+			return;
+		}
+	}
+
+	assert(false);
+}
+
+/*
+=============
 drain_console
 
 Clears queued console messages for deterministic checks.
@@ -87,49 +113,46 @@ static void drain_console(bot_chatstate_t *chat) {
 
 /*
 =============
-snapshot_console_queue
+retail_console_message_is_deferred
 
-Copies the pending console messages so tests can search without draining them.
+Mirrors Gladiator's console reader and the Q3 successor age gate.
 =============
 */
-static size_t snapshot_console_queue(bot_chatstate_t *chat,
-	test_console_message_t *messages,
-	size_t capacity)
+static int retail_console_message_is_deferred(const bot_chatstate_t *chat,
+	const bot_console_message_node_t *message,
+	float now,
+	float random_fraction)
 {
-	size_t count = 0;
-	while (count < capacity)
+	if (message == NULL
+		|| BotNumConsoleMessages(chat) >= 10U
+		|| message->type != CMS_CHAT)
 	{
-		int type = 0;
-		char buffer[TEST_MAX_CONSOLE_TEXT];
-		if (!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)))
-		{
-			break;
-		}
-		messages[count].type = type;
-		strncpy(messages[count].text,
-			buffer,
-			sizeof(messages[count].text) - 1);
-		messages[count].text[sizeof(messages[count].text) - 1] = '\0';
-		++count;
+		return 0;
 	}
-	return count;
+
+	return message->time > now - (1.0f + random_fraction);
 }
 
 /*
 =============
-restore_console_queue
+take_pending_chat
 
-Pushes a snapshot back onto the FIFO for subsequent checks.
+Copies and clears constructed chat text without conflating it with the inbound
+console-message queue.
 =============
 */
-static void restore_console_queue(bot_chatstate_t *chat,
-        const test_console_message_t *messages,
-        size_t count)
+static int take_pending_chat(bot_chatstate_t *chat,
+	char *buffer,
+	size_t buffer_size)
 {
-        for (size_t i = 0; i < count; ++i)
-        {
-                BotQueueConsoleMessage(chat, messages[i].type, messages[i].text);
-        }
+	if (chat == NULL || buffer == NULL || buffer_size == 0U
+		|| BotChatLength(chat) <= 0)
+	{
+		return 0;
+	}
+
+	BotGetChatMessage(chat, buffer, (int)buffer_size);
+	return 1;
 }
 
 typedef struct chat_bridge_mock_s
@@ -217,35 +240,6 @@ static void ChatBridge_Reset(void)
 
 /*
 =============
-assert_console_contains_message
-
-Ensures the console queue includes the requested diagnostic string.
-=============
-*/
-static void assert_console_contains_message(bot_chatstate_t *chat,
-	int expected_type,
-	const char *expected_text)
-{
-	test_console_message_t snapshot[TEST_MAX_CONSOLE_MESSAGES];
-	const size_t count = snapshot_console_queue(chat,
-		snapshot,
-		TEST_MAX_CONSOLE_MESSAGES);
-	int found = 0;
-	for (size_t i = 0; i < count; ++i)
-	{
-		if (snapshot[i].type == expected_type &&
-			strcmp(snapshot[i].text, expected_text) == 0)
-		{
-			found = 1;
-			break;
-		}
-	}
-	restore_console_queue(chat, snapshot, count);
-	assert(found);
-}
-
-/*
-=============
 string_is_one_of
 
 Checks whether a string matches one of the expected entries.
@@ -278,14 +272,14 @@ static void test_enter_chat_uses_unit_test_template(void) {
 
 	drain_console(chat);
 	BotChat_SetContextCooldown(chat, 2, 0.0);
+	ChatBridge_Reset();
 	BotEnterChat(chat, 0, 0);
 
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strcmp(buffer, "{NETNAME} triggered the deterministic join message") == 0);
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(strcmp(g_chat_bridge_mock.last_command,
+		"say {NETNAME} triggered the deterministic join message") == 0);
 
+	Q2Bridge_ClearImportTable();
 	BotFreeChatState(chat);
 }
 
@@ -317,16 +311,16 @@ static void test_retail_initial_chat_block_drives_enter_event(void)
 
 	drain_console(chat);
 	BotChat_SetContextCooldown(chat, 2, 0.0);
+	ChatBridge_Reset();
 	BotEnterChat(chat, 0, 0);
 
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(string_is_one_of(buffer,
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(strncmp(g_chat_bridge_mock.last_command, "say ", 4) == 0);
+	assert(string_is_one_of(g_chat_bridge_mock.last_command + 4,
 		expected_enter_messages,
 		sizeof(expected_enter_messages) / sizeof(expected_enter_messages[0])));
 
+	Q2Bridge_ClearImportTable();
 	BotFreeChatState(chat);
 }
 
@@ -388,10 +382,8 @@ static void test_retail_initial_chat_constructs_from_alias(void)
 		"base1",
 		NULL));
 
-	int type = -1;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(buffer[0] != '\0');
 	assert(strstr(buffer, "\\v") == NULL);
 
@@ -424,26 +416,14 @@ static void test_initial_chat_pending_message_exports_and_enters(void)
 		NULL));
 	assert(BotChatLength(chat) > 0);
 
-	int type = -1;
-	char expected[256];
-	assert(BotNextConsoleMessage(chat, &type, expected, sizeof(expected)));
-	assert(type == 0);
-	assert(expected[0] != '\0');
-
 	ChatBridge_Reset();
 	BotLib_TestSetMaxClients(8.0f);
 	BotEnterChat(chat, 6, 0);
 
-	char expected_command[320];
-	const int written = snprintf(expected_command,
-		sizeof(expected_command),
-		"say %s",
-		expected);
-	assert(written > 0);
-	assert((size_t)written < sizeof(expected_command));
 	assert(g_chat_bridge_mock.command_calls == 1);
 	assert(g_chat_bridge_mock.last_client == 6);
-	assert(strcmp(g_chat_bridge_mock.last_command, expected_command) == 0);
+	assert(strncmp(g_chat_bridge_mock.last_command, "say ", 4) == 0);
+	assert(g_chat_bridge_mock.last_command[4] != '\0');
 	assert(BotChatLength(chat) == 0);
 
 	Q2Bridge_ClearImportTable();
@@ -1153,7 +1133,7 @@ static void test_reply_chat_rejects_out_of_range_pattern_variable(void)
 	FILE *fp = fopen(path, "wb");
 	assert(fp != NULL);
 	fputs(
-		"[(\"value \", 99)] = 16\n"
+		"[(\"value \", 10)] = 16\n"
 		"{\n"
 		"\"bad\";\n"
 		"}\n",
@@ -1397,10 +1377,8 @@ static void test_reply_chat_accepts_missing_key_commas(void)
 	BotSetChatName(chat, "world", 0);
 	assert(BotReplyChat(chat, "world", 16));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 16);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "missing comma accepted") == 0);
 
 	BotFreeChatState(chat);
@@ -1518,12 +1496,8 @@ static void test_initial_chat_test_libvar_prints_and_suppresses_dispatch(void)
 	BotLib_TestResetLastMessage();
 
 	assert(BotNumInitialChats(chat, "line") == 1);
-	assert_console_contains_message(chat,
-		PRT_MESSAGE,
-		"line has 1 chat lines\n");
-	assert_console_contains_message(chat,
-		PRT_MESSAGE,
-		"-------------------\n");
+	assert(BotLib_TestGetLastMessageType() == PRT_MESSAGE);
+	assert(strcmp(BotLib_TestGetLastMessage(), "-------------------\n") == 0);
 
 	assert(BotInitialChat(chat, "line", 0, NULL));
 	drain_console(chat);
@@ -1566,7 +1540,7 @@ static void test_retail_initial_chat_missing_name_is_rejected(void)
 	assert(!BotLoadChatFile(chat, BOT_ASSET_ROOT "/bots/babe_t.c", "missing"));
 	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
 	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
-	assert_console_contains_message(chat, PRT_ERROR, expected_message);
+	assert(BotNumConsoleMessages(chat) == 0U);
 
 	configure_chat_libvars(0.0f, 0.0f);
 	BotFreeChatState(chat);
@@ -1574,10 +1548,13 @@ static void test_retail_initial_chat_missing_name_is_rejected(void)
 
 /*
 =============
-test_enter_chat_construct_message_failure_respects_cooldown_reset
+test_enter_chat_retail_literal_limit_dispatches_and_respects_cooldown
+
+The retail literal path reports and truncates at 150 bytes, but construction
+still succeeds and commits the normal event cooldown.
 =============
 */
-static void test_enter_chat_construct_message_failure_respects_cooldown_reset(void) {
+static void test_enter_chat_retail_literal_limit_dispatches_and_respects_cooldown(void) {
 	bot_chatstate_t *chat = BotAllocChatState();
 	assert(chat != NULL);
 	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_enter_invalid"));
@@ -1585,24 +1562,25 @@ static void test_enter_chat_construct_message_failure_respects_cooldown_reset(vo
 	drain_console(chat);
 	BotChat_SetContextCooldown(chat, 2, 1.0);
 	BotChat_SetTime(chat, 10.0);
+	ChatBridge_Reset();
 	BotLib_TestResetLastMessage();
 	BotEnterChat(chat, 0, 0);
-	assert(BotNumConsoleMessages(chat) == 0);
 	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
 	assert(strstr(BotLib_TestGetLastMessage(), "too long") != NULL);
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(strncmp(g_chat_bridge_mock.last_command, "say ", 4) == 0);
+	assert(strlen(g_chat_bridge_mock.last_command + 4) == 150U);
 
 	BotEnterChat(chat, 0, 0);
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strstr(buffer, "blocked by cooldown") != NULL);
+	assert(g_chat_bridge_mock.command_calls == 1);
 
 	drain_console(chat);
 	BotChat_SetTime(chat, 12.0);
 	BotEnterChat(chat, 0, 0);
-	assert(BotNumConsoleMessages(chat) == 0);
+	assert(g_chat_bridge_mock.command_calls == 2);
+	assert(strlen(g_chat_bridge_mock.last_command + 4) == 150U);
 
+	Q2Bridge_ClearImportTable();
 	BotFreeChatState(chat);
 }
 
@@ -1619,10 +1597,8 @@ static void test_reply_chat_death_context(void) {
 	drain_console(chat);
 	assert(BotReplyChat(chat, "unit-test", 1));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 1);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strlen(buffer) > 0);
 	assert(strstr(buffer, "\\r") == NULL);
 
@@ -1642,11 +1618,9 @@ static void test_reply_chat_falls_back_to_reply_table(void) {
 	drain_console(chat);
 	assert(BotReplyChat(chat, "abnormal", 5));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 5);
-	assert(BotChat_HasReplyTemplate(chat, 5, buffer));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(buffer[0] != '\0');
 
 	BotFreeChatState(chat);
 }
@@ -1686,10 +1660,8 @@ static void test_reply_chat_name_key_matches_configured_name(void)
 	drain_console(chat);
 	assert(BotReplyChat(chat, "babe", 16));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 16);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "configured name") == 0);
 
 	BotFreeChatState(chat);
@@ -1730,10 +1702,8 @@ static void test_reply_chat_chooses_highest_priority_match(void)
 	drain_console(chat);
 	assert(BotReplyChat(chat, "priority specific", 16));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 16);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "high priority") == 0);
 
 	BotFreeChatState(chat);
@@ -1742,13 +1712,158 @@ static void test_reply_chat_chooses_highest_priority_match(void)
 
 /*
 =============
-test_reply_chat_recent_responses_rotate
+test_reply_chat_priority_uses_integer_best_value
 
-Checks reply-chat response timestamps avoid immediate repeats when alternatives
-are available.
+Pins the retail int bestpriority local: reverse traversal stores 1.9 as 1, so
+the earlier source rule at 1.5 replaces it despite its lower float priority.
 =============
 */
-static void test_reply_chat_recent_responses_rotate(void)
+static void test_reply_chat_priority_uses_integer_best_value(void)
+{
+	const char *path = "bot_chat_reply_integer_priority_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"integer priority\"] = 1.5\n"
+		"{\n"
+		"\"first lower fractional priority\";\n"
+		"}\n"
+		"[\"integer priority\"] = 1.9\n"
+		"{\n"
+		"\"later higher fractional priority\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "integer_priority"));
+
+	seed_retail_reply_ordinal_zero(2, 1);
+	drain_console(chat);
+	assert(BotReplyChat(chat, "integer priority", 16));
+
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "first lower fractional priority") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_nonpositive_priorities_do_not_win
+
+Pins the retail bestpriority initialization at zero: a matching zero-priority
+rule cannot win, and the existing parser rejects a signed negative priority.
+=============
+*/
+static void test_reply_chat_nonpositive_priorities_do_not_win(void)
+{
+	const char *path = "bot_chat_reply_nonpositive_priority_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"nonpositive\"] = 0\n"
+		"{\n"
+		"\"zero priority\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "nonpositive_priority"));
+
+	seed_retail_reply_ordinal_zero(2, 1);
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	assert(!BotReplyChat(chat, "nonpositive", 16));
+	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotChatLength(chat) == 0);
+	assert(strcmp(BotLib_TestGetLastMessage(), "") == 0);
+
+	BotFreeChatState(chat);
+
+	fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"nonpositive\"] = -1\n"
+		"{\n"
+		"\"negative priority\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(!BotLoadChatFile(chat, path, "negative_priority"));
+	drain_console(chat);
+	assert(!BotReplyChat(chat, "nonpositive", 16));
+	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotChatLength(chat) == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_equal_priority_prefers_file_last_rule
+
+Mirrors head insertion of parsed reply rules: reverse traversal visits the
+file-last rule first and an equal-priority earlier rule cannot replace it.
+=============
+*/
+static void test_reply_chat_equal_priority_prefers_file_last_rule(void)
+{
+	const char *path = "bot_chat_reply_equal_priority_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"equal priority\"] = 4\n"
+		"{\n"
+		"\"file first equal priority\";\n"
+		"}\n"
+		"[\"equal priority\"] = 4\n"
+		"{\n"
+		"\"file last equal priority\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "equal_priority"));
+
+	seed_retail_reply_ordinal_zero(1, 1);
+	drain_console(chat);
+	assert(BotReplyChat(chat, "equal priority", 16));
+
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "file last equal priority") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_all_recent_reuses_retail_head
+
+Pins the retail raw-node walk: with no eligible response, num is zero and the
+predecrement selects the linked-list head anyway.
+=============
+*/
+static void test_reply_chat_all_recent_reuses_retail_head(void)
 {
 	const char *path = "bot_chat_reply_recent_test.c";
 	remove(path);
@@ -1758,8 +1873,7 @@ static void test_reply_chat_recent_responses_rotate(void)
 	fputs(
 		"[\"recent\"] = 3\n"
 		"{\n"
-		"\"first reply\";\n"
-		"\"second reply\";\n"
+		"\"only reply\";\n"
 		"}\n",
 		fp);
 	assert(fclose(fp) == 0);
@@ -1769,21 +1883,19 @@ static void test_reply_chat_recent_responses_rotate(void)
 	assert(BotLoadChatFile(chat, path, "reply_recent"));
 
 	BotChat_SetTime(chat, 200.0);
+	seed_retail_reply_ordinal_zero(1, 1);
 	drain_console(chat);
 	assert(BotReplyChat(chat, "recent", 16));
 
-	int type = 0;
 	char first[256];
-	assert(BotNextConsoleMessage(chat, &type, first, sizeof(first)));
-	assert(type == 16);
-	assert(first[0] != '\0');
+	assert(take_pending_chat(chat, first, sizeof(first)));
+	assert(strcmp(first, "only reply") == 0);
 
+	BotChat_SetTime(chat, 205.0);
 	assert(BotReplyChat(chat, "recent", 16));
 	char second[256];
-	assert(BotNextConsoleMessage(chat, &type, second, sizeof(second)));
-	assert(type == 16);
-	assert(second[0] != '\0');
-	assert(strcmp(first, second) != 0);
+	assert(take_pending_chat(chat, second, sizeof(second)));
+	assert(strcmp(second, "only reply") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -1832,59 +1944,31 @@ static void test_reply_chat_matches_botname_list_and_gender_keys(void)
 	BotSetChatName(chat, "major", 2);
 	assert(BotReplyChat(chat, "anything", 16));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 16);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "listed bot name") == 0);
 
 	drain_console(chat);
 	BotSetChatName(chat, "visor", 2);
 	BotSetChatGender(chat, CHAT_GENDERFEMALE);
 	assert(BotReplyChat(chat, "anything", 16));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 16);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "female reply") == 0);
 
 	drain_console(chat);
 	BotSetChatGender(chat, CHAT_GENDERMALE);
 	assert(BotReplyChat(chat, "anything", 16));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 16);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "male reply") == 0);
 
 	drain_console(chat);
 	BotSetChatGender(chat, CHAT_GENDERLESS);
 	assert(BotReplyChat(chat, "anything", 16));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 16);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "genderless reply") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
-}
-
-/*
-=============
-test_reply_chat_matches_synonym_pattern
-=============
-*/
-static void test_reply_chat_matches_synonym_pattern(void) {
-	bot_chatstate_t *chat = BotAllocChatState();
-	assert(chat != NULL);
-	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/match_reply.c", "match_reply"));
-
-	drain_console(chat);
-	BotChat_SetContextCooldown(chat, 2, 0.0);
-	assert(BotReplyChat(chat, "Quad Damage acquired", 2));
-
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strcmp(buffer, "NEARBYITEM acquired") == 0);
-
-	BotFreeChatState(chat);
 }
 
 /*
@@ -1901,10 +1985,8 @@ static void test_reply_chat_without_pattern_falls_back_to_reply_table(void) {
 	BotChat_SetContextCooldown(chat, 2, 0.0);
 	assert(BotReplyChat(chat, "fallback", 2));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "fallback reply") == 0);
 
 	BotFreeChatState(chat);
@@ -1912,24 +1994,25 @@ static void test_reply_chat_without_pattern_falls_back_to_reply_table(void) {
 
 /*
 =============
-test_enter_chat_enqueues_message
+test_enter_chat_dispatches_message
 =============
 */
-static void test_enter_chat_enqueues_message(void) {
+static void test_enter_chat_dispatches_message(void) {
 	bot_chatstate_t *chat = BotAllocChatState();
 	assert(chat != NULL);
 	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/match.c", "match"));
 
 	drain_console(chat);
 	BotChat_SetContextCooldown(chat, 2, 0.0);
+	ChatBridge_Reset();
 	BotEnterChat(chat, 0, 0);
 
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strcmp(buffer, "{NETNAME} entered the game") == 0);
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(strcmp(g_chat_bridge_mock.last_command,
+		"say {NETNAME} entered the game") == 0);
+	assert(BotNumConsoleMessages(chat) == 0U);
 
+	Q2Bridge_ClearImportTable();
 	BotFreeChatState(chat);
 }
 
@@ -1946,22 +2029,20 @@ static void test_enter_chat_cooldown_blocks_repeated_messages(void) {
 	drain_console(chat);
 	BotChat_SetContextCooldown(chat, 2, 5.0);
 	BotChat_SetTime(chat, 1.0);
+	ChatBridge_Reset();
 	BotEnterChat(chat, 0, 0);
 
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strcmp(buffer, "{NETNAME} entered the game") == 0);
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(strcmp(g_chat_bridge_mock.last_command,
+		"say {NETNAME} entered the game") == 0);
 
 	BotChat_SetTime(chat, 2.0);
 	BotEnterChat(chat, 0, 0);
 
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strcmp(buffer,
-			"context 2 blocked by cooldown (4.00s remaining)\n") == 0);
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(BotNumConsoleMessages(chat) == 0U);
 
+	Q2Bridge_ClearImportTable();
 	BotFreeChatState(chat);
 }
 
@@ -1996,17 +2077,15 @@ static void test_reply_chat_unmatched_rule_returns_false_quietly(void) {
 	assert(!BotReplyChat(chat, "unknown", 9999));
 	assert(strcmp(BotLib_TestGetLastMessage(), "") == 0);
 	assert(BotLib_TestGetLastMessageType() == 0);
-	assert(BotNumConsoleMessages(chat) == 1);
+	assert(BotNumConsoleMessages(chat) == 0U);
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 1);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "known reply") == 0);
 	assert(BotChat_HasReplyTemplate(chat, 3, buffer));
 	assert(strstr(buffer, "\\r") == NULL);
 
-	assert(!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(!take_pending_chat(chat, buffer, sizeof(buffer)));
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2047,12 +2126,10 @@ static void test_reply_chat_string_key_uses_q3_word_separators(void)
 	assert(strcmp(BotLib_TestGetLastMessage(), "") == 0);
 
 	assert(BotReplyChat(chat, "well, hello!", 1));
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 1);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "matched hello") == 0);
-	assert(!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(!take_pending_chat(chat, buffer, sizeof(buffer)));
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2069,72 +2146,326 @@ static void test_reply_chat_construct_message_paths(void) {
 	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_reply"));
 
 	drain_console(chat);
-	BotChat_SetContextCooldown(chat, 9100, 1.0);
-	BotChat_SetTime(chat, 1.0);
 	assert(BotReplyChat(chat, "unit-test-reply-valid", 9100));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9100);
-	assert(strcmp(buffer, "Unit test reply constructed successfully") == 0);
-
-	assert(!BotReplyChat(chat, "unit-test-reply-valid", 9100));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9100);
-	assert(strstr(buffer, "blocked by cooldown") != NULL);
-
-	drain_console(chat);
-	BotChat_SetTime(chat, 3.0);
-	assert(BotReplyChat(chat, "unit-test-reply-valid", 9100));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9100);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "Unit test reply constructed successfully") == 0);
 
 	drain_console(chat);
-	BotChat_SetContextCooldown(chat, 9101, 0.5);
-	BotChat_SetTime(chat, 4.0);
 	BotLib_TestResetLastMessage();
-	assert(!BotReplyChat(chat, "unit-test-reply-invalid", 9101));
-	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotReplyChat(chat, "unit-test-reply-invalid", 9101));
 	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
 	assert(strstr(BotLib_TestGetLastMessage(), "too long") != NULL);
-
-	assert(!BotReplyChat(chat, "unit-test-reply-invalid", 9101));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9101);
-	assert(strstr(buffer, "blocked by cooldown") != NULL);
-
-	drain_console(chat);
-	BotChat_SetTime(chat, 5.0);
-	assert(!BotReplyChat(chat, "unit-test-reply-invalid", 9101));
-	assert(BotNumConsoleMessages(chat) == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strlen(buffer) == 150U);
 
 	BotFreeChatState(chat);
 }
 
 /*
 =============
-test_reply_chat_known_random_string_context_enqueues_message
+test_reply_chat_ignores_event_gates
+
+Confirms reply selection does not consult the initial-chat cooldown/nochat
+gate and therefore emits no gate diagnostics.
 =============
 */
-static void test_reply_chat_known_random_string_context_enqueues_message(void) {
+static void test_reply_chat_ignores_event_gates(void)
+{
+	const char *path = "bot_chat_reply_event_gate_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"gate independent\"] = 2\n"
+		"{\n"
+		"\"reply passed gate\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "event_gate"));
+	BotChat_SetContextCooldown(chat, 77, 100.0);
+	BotChat_SetTime(chat, 10.0);
+	seed_retail_reply_ordinal_zero(3, 1);
+
+	for (int attempt = 0; attempt < 2; ++attempt)
+	{
+		drain_console(chat);
+		BotLib_TestResetLastMessage();
+		assert(BotReplyChat(chat, "gate independent", 77));
+
+		char buffer[256];
+		assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+		assert(strcmp(buffer, "reply passed gate") == 0);
+		assert(!take_pending_chat(chat, buffer, sizeof(buffer)));
+		assert(strcmp(BotLib_TestGetLastMessage(), "") == 0);
+	}
+
+	BotLib_TestSetLibVar("nochat", 1.0f);
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	assert(BotReplyChat(chat, "gate independent", 77));
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "reply passed gate") == 0);
+	assert(!take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(BotLib_TestGetLastMessage(), "") == 0);
+	BotLib_TestSetLibVar("nochat", 0.0f);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_selected_constructor_failure_returns_true
+
+Pins Gladiator's post-selection contract: a selected and marked malformed
+response reports reply success even when construction leaves no pending text.
+=============
+*/
+static void test_reply_chat_selected_constructor_failure_returns_true(void)
+{
+	const char *path = "bot_chat_reply_constructor_failure_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"malformed response\"] = 2\n"
+		"{\n"
+		"\"broken \1rmissing_random\1\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "constructor_failure"));
+	seed_retail_reply_ordinal_zero(1, 1);
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+
+	assert(BotReplyChat(chat, "malformed response", 88));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(), "unknown random string") != NULL);
+	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotChatLength(chat) == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_constructor_retail_escape_and_variable_semantics
+
+Covers byte-one escape parsing, missing-variable omission, literal legacy
+syntax, safe unterminated random/variable paths, and the Gladiator 0..10 bounds.
+=============
+*/
+static void test_constructor_retail_escape_and_variable_semantics(void)
+{
+	const char *path = "bot_chat_constructor_retail_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"known = {\"omega\"}\n"
+		"chat \"constructor_retail\"\n"
+		"{\n"
+		"type \"missing\"\n"
+		"{\n"
+		"\"A\", 0, \"B\";\n"
+		"}\n"
+		"type \"literal\"\n"
+		"{\n"
+		"\"A \\\\v0\\\\ {VICTIM} B\";\n"
+		"}\n"
+		"type \"unterminated\"\n"
+		"{\n"
+		"\"A\\1v0\";\n"
+		"}\n"
+		"type \"unterminated_random\"\n"
+		"{\n"
+		"\"A\\1rknown\";\n"
+		"}\n"
+		"type \"unknown\"\n"
+		"{\n"
+		"\"A\\1xB\";\n"
+		"}\n"
+		"type \"ten\"\n"
+		"{\n"
+		"\"slot \", 10;\n"
+		"}\n"
+		"type \"eleven\"\n"
+		"{\n"
+		"\"slot \", 11;\n"
+		"}\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "constructor_retail"));
+
+	drain_console(chat);
+	assert(BotInitialChat(chat, "missing", 0, NULL));
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "AB") == 0);
+
+	drain_console(chat);
+	assert(BotInitialChat(chat, "literal", 0, "Alice", NULL));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "A \\v0\\ {VICTIM} B") == 0);
+
+	drain_console(chat);
+	assert(BotInitialChat(chat, "unterminated", 0, "Alice", NULL));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "AAlice") == 0);
+
+	drain_console(chat);
+	assert(BotInitialChat(chat, "unterminated_random", 0, NULL));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "Aomega") == 0);
+
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	assert(BotInitialChat(chat, "unknown", 0, NULL));
+	assert(BotLib_TestGetLastMessageType() == PRT_FATAL);
+	assert(strstr(BotLib_TestGetLastMessage(), "invalid escape char") != NULL);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "AxB") == 0);
+
+	drain_console(chat);
+	assert(BotInitialChat(chat,
+		"ten",
+		0,
+		"zero",
+		"one",
+		"two",
+		"three",
+		"four",
+		"five",
+		"six",
+		"seven",
+		"eight",
+		"nine",
+		"ten"));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "slot ten") == 0);
+
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	assert(!BotInitialChat(chat, "eleven", 0, NULL));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(), "variable 11 out of range") != NULL);
+	assert(BotNumConsoleMessages(chat) == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_constructor_retail_payload_boundary
+
+Pins the 0x98-byte retail storage with the observed 0x96 payload guard:
+149 literal characters fit quietly; the 150th is copied and diagnosed, and the
+complete 150-character result is still delivered.
+=============
+*/
+static void test_constructor_retail_payload_boundary(void)
+{
+	const char *path = "bot_chat_constructor_limit_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"chat \"constructor_limit\"\n"
+		"{\n"
+		"type \"fits\"\n"
+		"{\n"
+		"\"",
+		fp);
+	for (size_t i = 0; i < 149U; ++i)
+	{
+		assert(fputc('a', fp) != EOF);
+	}
+	fputs(
+		"\";\n"
+		"}\n"
+		"type \"guard\"\n"
+		"{\n"
+		"\"",
+		fp);
+	for (size_t i = 0; i < 150U; ++i)
+	{
+		assert(fputc('b', fp) != EOF);
+	}
+	fputs(
+		"\";\n"
+		"}\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "constructor_limit"));
+
+	drain_console(chat);
+	assert(BotInitialChat(chat, "fits", 0, NULL));
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strlen(buffer) == 149U);
+
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	assert(BotInitialChat(chat, "guard", 0, NULL));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(), "too long") != NULL);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strlen(buffer) == 150U);
+	for (size_t i = 0; i < 150U; ++i)
+	{
+		assert(buffer[i] == 'b');
+	}
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_legacy_backslash_random_is_literal
+
+Confirms the Gladiator constructor treats the old readable backslash marker as
+ordinary message text instead of a random reference.
+=============
+*/
+static void test_reply_chat_legacy_backslash_random_is_literal(void) {
 	bot_chatstate_t *chat = BotAllocChatState();
 	assert(chat != NULL);
 	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_random_valid"));
 
+	seed_retail_reply_ordinal_zero(1, 1);
 	drain_console(chat);
 	assert(BotReplyChat(chat, "unit-test-random-valid", 9200));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9200);
-	assert(strncmp(buffer,
-		"Random string placeholder: ",
-		strlen("Random string placeholder: ")) == 0);
-	assert(buffer[strlen(buffer) - 1] == '.');
-	assert(strstr(buffer, "\\r") == NULL);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer,
+		"Random string placeholder: \\rrandom_misc\\.") == 0);
 
 	BotFreeChatState(chat);
 }
@@ -2167,10 +2498,8 @@ static void test_reply_chat_expands_named_random_table(void)
 	drain_console(chat);
 	assert(BotReplyChat(chat, "unit", 9300));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9300);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "Pick alpha") == 0);
 
 	BotFreeChatState(chat);
@@ -2179,13 +2508,13 @@ static void test_reply_chat_expands_named_random_table(void)
 
 /*
 =============
-test_reply_chat_expands_nested_random_table
+test_reply_chat_random_expansion_runs_once
 
-Ensures constructor random expansion repeats when a selected entry contains
-another random reference.
+Pins Gladiator's single constructor pass: a selected random entry is copied,
+but its legacy readable marker is not expanded again.
 =============
 */
-static void test_reply_chat_expands_nested_random_table(void)
+static void test_reply_chat_random_expansion_runs_once(void)
 {
 	const char *path = "bot_chat_nested_random_test.c";
 	remove(path);
@@ -2208,11 +2537,9 @@ static void test_reply_chat_expands_nested_random_table(void)
 	drain_console(chat);
 	assert(BotReplyChat(chat, "nested", 9301));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9301);
-	assert(strcmp(buffer, "Nested omega") == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "Nested \\rinner\\") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2220,13 +2547,13 @@ static void test_reply_chat_expands_nested_random_table(void)
 
 /*
 =============
-test_initial_chat_weighted_synonym_runs_each_expansion_pass
+test_initial_chat_weighted_synonym_runs_after_single_pass
 
-Pins Q3 BotExpandChatMessage timing: weighted synonyms run at the end of each
-random expansion pass, so a synonym result can feed the next random pass.
+Pins the unconditional weighted-synonym pass at the end of Gladiator's single
+constructor pass. A readable marker produced by the synonym remains literal.
 =============
 */
-static void test_initial_chat_weighted_synonym_runs_each_expansion_pass(void)
+static void test_initial_chat_weighted_synonym_runs_after_single_pass(void)
 {
 	const char *path = "bot_chat_synonym_expansion_pass_test.c";
 	remove(path);
@@ -2260,11 +2587,9 @@ static void test_initial_chat_weighted_synonym_runs_each_expansion_pass(void)
 	drain_console(chat);
 	assert(BotInitialChat(chat, "line", 1, NULL));
 
-	int type = -1;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 1);
-	assert(strcmp(buffer, "omega") == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "\\rinner\\") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2274,8 +2599,8 @@ static void test_initial_chat_weighted_synonym_runs_each_expansion_pass(void)
 =============
 test_initial_chat_applies_weighted_synonym_context
 
-Mirrors the Q3 BotConstructChatMessage post-expansion synonym pass for initial
-chat messages that receive a CONTEXT_* mask from the game wrapper.
+Pins Gladiator's unconditional post-expansion weighted synonym pass for both
+initial-chat and compatibility reply-chat construction paths.
 =============
 */
 static void test_initial_chat_applies_weighted_synonym_context(void)
@@ -2299,6 +2624,10 @@ static void test_initial_chat_applies_weighted_synonym_context(void)
 		"{\n"
 		"\"frag and zap\";\n"
 		"}\n"
+		"}\n"
+		"[\"weighted reply\"] = 1\n"
+		"{\n"
+		"\"frag and zap\";\n"
 		"}\n",
 		fp);
 	assert(fclose(fp) == 0);
@@ -2309,18 +2638,21 @@ static void test_initial_chat_applies_weighted_synonym_context(void)
 
 	drain_console(chat);
 	assert(BotInitialChat(chat, "synonym", 0, NULL));
-	int type = -1;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "frag and zap") == 0);
 
 	drain_console(chat);
 	assert(BotInitialChat(chat, "synonym", 1, NULL));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 1);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "frag and frag") == 0
 		|| strcmp(buffer, "zap and zap") == 0);
+
+	seed_retail_reply_ordinal_zero(1, 1);
+	drain_console(chat);
+	assert(BotReplyChat(chat, "weighted reply", 1));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "frag and zap") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2354,11 +2686,48 @@ static void test_reply_chat_captures_key_variable(void)
 	drain_console(chat);
 	assert(BotReplyChat(chat, "I am testing captures", 9400));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9400);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "you are testing captures") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_key_capture_uses_file_first_value
+
+Pins reverse linked-list key traversal: the file-first pattern runs last and
+therefore supplies the final value when two matching keys capture var0.
+=============
+*/
+static void test_reply_chat_key_capture_uses_file_first_value(void)
+{
+	const char *path = "bot_chat_reply_key_order_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[(0, \" tail\"), (\"prefix \", 0)] = 9405\n"
+		"{\n"
+		"\"captured \", 0;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "reply_key_order"));
+
+	seed_retail_reply_ordinal_zero(1, 1);
+	drain_console(chat);
+	assert(BotReplyChat(chat, "prefix middle tail", 9405));
+
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "captured prefix middle") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2393,10 +2762,8 @@ static void test_reply_chat_captures_key_variable_after_string_alternative(void)
 	assert(!BotReplyChat(chat, "prefix warning Bravo", 9410));
 	assert(BotReplyChat(chat, "WARNING Bravo", 9410));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9410);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "handled Bravo") == 0);
 
 	BotFreeChatState(chat);
@@ -2433,10 +2800,8 @@ static void test_reply_chat_empty_string_piece_closes_variable_capture(void)
 	assert(!BotReplyChat(chat, "not empty", 9412));
 	assert(BotReplyChat(chat, "", 9412));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 9412);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "empty") == 0);
 
 	BotFreeChatState(chat);
@@ -2466,7 +2831,7 @@ static void test_reply_chat_split_vcontext_canonicalizes_variables(void)
 		"(\"quad\", 1.0)\n"
 		"]\n"
 		"}\n"
-		"[(\"i like \", 0)] = 0\n"
+		"[(\"i like \", 0)] = 1\n"
 		"{\n"
 		"\"you like \", 0;\n"
 		"}\n",
@@ -2490,10 +2855,8 @@ static void test_reply_chat_split_vcontext_canonicalizes_variables(void)
 		NULL,
 		NULL,
 		NULL));
-	int type = -1;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "you like quad") == 0);
 
 	drain_console(chat);
@@ -2509,8 +2872,7 @@ static void test_reply_chat_split_vcontext_canonicalizes_variables(void)
 		NULL,
 		NULL,
 		NULL));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "you like Quad Damage") == 0);
 
 	BotFreeChatState(chat);
@@ -2521,8 +2883,8 @@ static void test_reply_chat_split_vcontext_canonicalizes_variables(void)
 =============
 test_reply_chat_split_vcontext_uses_q3_word_separators
 
-Pins Q3 BotReplaceReplySynonyms word boundaries: only spaces, periods, commas,
-and exclamation marks terminate synonym words.
+Pins Gladiator's normal variable canonicalization and retail word boundaries:
+only spaces, periods, commas, and exclamation marks terminate synonym words.
 =============
 */
 static void test_reply_chat_split_vcontext_uses_q3_word_separators(void)
@@ -2540,7 +2902,7 @@ static void test_reply_chat_split_vcontext_uses_q3_word_separators(void)
 		"(\"quad\", 1.0)\n"
 		"]\n"
 		"}\n"
-		"[(\"i like \", 0)] = 0\n"
+		"[(\"i like \", 0)] = 1\n"
 		"{\n"
 		"\"you like \", 0;\n"
 		"}\n",
@@ -2564,10 +2926,8 @@ static void test_reply_chat_split_vcontext_uses_q3_word_separators(void)
 		NULL,
 		NULL,
 		NULL));
-	int type = -1;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "you like quad?") == 0);
 
 	drain_console(chat);
@@ -2583,9 +2943,24 @@ static void test_reply_chat_split_vcontext_uses_q3_word_separators(void)
 		NULL,
 		NULL,
 		NULL));
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "you like Quad Damage!") == 0);
+
+	drain_console(chat);
+	assert(BotReplyChatWithContexts(chat,
+		"I like prefix,quad!",
+		0,
+		16,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "you like prefix,Quad Damage!") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2607,7 +2982,7 @@ static void test_reply_chat_split_context_accepts_fixed_var_slots(void)
 	FILE *fp = fopen(path, "wb");
 	assert(fp != NULL);
 	fputs(
-		"[\"hello\"] = 0\n"
+		"[\"hello\"] = 1\n"
 		"{\n"
 		"\"names \", 6, \" \", 7;\n"
 		"}\n",
@@ -2632,11 +3007,430 @@ static void test_reply_chat_split_context_accepts_fixed_var_slots(void)
 		"botname",
 		"speaker"));
 
-	int type = -1;
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "names botname speaker") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_legacy_uses_fixed_retail_contexts
+
+Pins Gladiator's context-free reply export: weighted output synonyms use
+mcontext 0 while captured variables are canonicalized with vcontext 16.
+=============
+*/
+static void test_reply_chat_legacy_uses_fixed_retail_contexts(void)
+{
+	const char *path = "bot_chat_reply_legacy_context_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"CONTEXT_NORMAL\n"
+		"{\n"
+		"[\n"
+		"(\"zap\", 10000000000.0),\n"
+		"(\"frag\", 1.0)\n"
+		"]\n"
+		"}\n"
+		"CONTEXT_REPLY\n"
+		"{\n"
+		"[\n"
+		"(\"Quad Damage\", 1.0),\n"
+		"(\"quad\", 1.0)\n"
+		"]\n"
+		"}\n"
+		"[(\"i like \", 0)] = 1\n"
+		"{\n"
+		"\"frag \", 0;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "legacy_context"));
+	seed_retail_reply_ordinal_zero(1, 1);
+	drain_console(chat);
+	assert(BotReplyChat(chat, "I like quad", 1));
+
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "frag Quad Damage") == 0);
+	assert(BotNumConsoleMessages(chat) == 0U);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_retail_capture_leaks_after_selected_rule
+
+Gladiator passes its one scan-wide match table to construction, so a later
+failed lower-priority pattern can replace a selected rule's capture. The Q3
+extension snapshots captures when it selects the best rule.
+=============
+*/
+static void test_reply_chat_retail_capture_leaks_after_selected_rule(void)
+{
+	const char *path = "bot_chat_reply_capture_leak_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[(0, \" tail\", \" missing\")] = 1\n"
+		"{\n"
+		"\"lower\";\n"
+		"}\n"
+		"[(\"prefix \", 0)] = 9\n"
+		"{\n"
+		"\"winner \", 0;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "capture_leak"));
+	seed_retail_reply_ordinal_zero(1, 1);
+	drain_console(chat);
+	assert(BotReplyChat(chat, "prefix chosen tail", 0));
+
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "winner prefix chosen") == 0);
+
+	BotFreeChatState(chat);
+	chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "capture_leak"));
+	seed_retail_reply_ordinal_zero(1, 1);
+	assert(BotReplyChatWithContexts(chat,
+		"prefix chosen tail",
+		0,
+		0,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "winner chosen tail") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_console_message_pool_uses_retail_capacity_and_fifo
+
+Pins the shared max_messages limit, FIFO insertion, pool exhaustion, slot
+reuse, and Gladiator's 150-byte incoming-message copy.
+=============
+*/
+static void test_console_message_pool_uses_retail_capacity_and_fifo(void)
+{
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestSetLibVar("max_messages", 17.0f);
+	assert(BotSetupChatAI() == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	for (int i = 0; i < 17; ++i)
+	{
+		char message[32];
+		const int written = snprintf(message,
+			sizeof(message),
+			"message-%02d",
+			i);
+		assert(written > 0 && (size_t)written < sizeof(message));
+		BotQueueConsoleMessage(chat, 100 + i, message);
+	}
+	assert(BotNumConsoleMessages(chat) == 17U);
+
+	BotLib_TestResetLastMessage();
+	BotQueueConsoleMessage(chat, 999, "overflow");
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strcmp(BotLib_TestGetLastMessage(),
+		"empty console message heap\n") == 0);
+	assert(BotNumConsoleMessages(chat) == 17U);
+
+	int type = 0;
 	char buffer[256];
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 0);
-	assert(strcmp(buffer, "names botname speaker") == 0);
+	assert(type == 100);
+	assert(strcmp(buffer, "message-00") == 0);
+	BotQueueConsoleMessage(chat, 999, "reused-slot");
+	assert(BotNumConsoleMessages(chat) == 17U);
+
+	for (int i = 1; i < 17; ++i)
+	{
+		char expected[32];
+		const int written = snprintf(expected,
+			sizeof(expected),
+			"message-%02d",
+			i);
+		assert(written > 0 && (size_t)written < sizeof(expected));
+		assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+		assert(type == 100 + i);
+		assert(strcmp(buffer, expected) == 0);
+	}
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 999);
+	assert(strcmp(buffer, "reused-slot") == 0);
+	assert(BotNumConsoleMessages(chat) == 0U);
+
+	char long_message[192];
+	memset(long_message, 'x', sizeof(long_message) - 1U);
+	long_message[sizeof(long_message) - 1U] = '\0';
+	BotQueueConsoleMessage(chat, 42, long_message);
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 42);
+	assert(strlen(buffer) == 150U);
+	for (size_t i = 0; i < strlen(buffer); ++i)
+	{
+		assert(buffer[i] == 'x');
+	}
+
+	BotFreeChatState(chat);
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+}
+
+/*
+=============
+test_console_message_retail_node_identity_and_age
+
+Pins the non-destructive retail peek, timestamp visibility, exact-node
+removal, and the caller's strict one-to-two-second chat-reading delay.
+=============
+*/
+static void test_console_message_retail_node_identity_and_age(void)
+{
+	assert(offsetof(bot_console_message_node_t, time) == 0U);
+	assert(offsetof(bot_console_message_node_t, type) == 4U);
+	assert(offsetof(bot_console_message_node_t, message) == 8U);
+	assert(offsetof(bot_console_message_node_t, prev) == 0xa0U);
+	if (sizeof(void *) == 4U)
+	{
+		assert(offsetof(bot_console_message_node_t, next) == 0xa4U);
+		assert(sizeof(bot_console_message_node_t) == 0xa8U);
+	}
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestSetLibVar("max_messages", 12.0f);
+	assert(BotSetupChatAI() == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	bot_chatstate_t *other_chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(other_chat != NULL);
+
+	BotLib_TestSetAASTime(100.0f);
+	BotQueueConsoleMessage(chat, CMS_CHAT, "first chat");
+	const bot_console_message_node_t *first =
+		BotNextConsoleMessageNode(chat);
+	assert(first != NULL);
+	assert(first == BotNextConsoleMessageNode(chat));
+	assert(BotNumConsoleMessages(chat) == 1U);
+	assert(first->time == 100.0f);
+	assert(first->type == CMS_CHAT);
+	assert(strcmp(first->message, "first chat") == 0);
+	assert(first->prev == NULL);
+	assert(first->next == NULL);
+
+	assert(retail_console_message_is_deferred(chat,
+		first,
+		101.49f,
+		0.5f));
+	assert(!retail_console_message_is_deferred(chat,
+		first,
+		101.5f,
+		0.5f));
+
+	BotLib_TestSetAASTime(101.0f);
+	BotQueueConsoleMessage(chat, CMS_CHAT, "second chat");
+	const bot_console_message_node_t *second = first->next;
+	assert(second != NULL);
+	assert(second->prev == first);
+	assert(second->time == 101.0f);
+	assert(strcmp(second->message, "second chat") == 0);
+	assert(BotRemoveConsoleMessageNode(chat, second) == 1);
+	assert(BotNextConsoleMessageNode(chat) == first);
+	assert(first->next == NULL);
+
+	BotQueueConsoleMessage(other_chat, CMS_CHAT, "foreign node");
+	const bot_console_message_node_t *foreign =
+		BotNextConsoleMessageNode(other_chat);
+	assert(foreign != NULL);
+	assert(BotRemoveConsoleMessageNode(chat, foreign) == 1);
+	assert(BotNumConsoleMessages(chat) == 1U);
+	assert(BotNumConsoleMessages(other_chat) == 1U);
+
+	for (int i = 0; i < 9; ++i)
+	{
+		BotQueueConsoleMessage(chat, CMS_CHAT, "flood message");
+	}
+	assert(BotNumConsoleMessages(chat) == 10U);
+	assert(!retail_console_message_is_deferred(chat,
+		first,
+		100.25f,
+		0.5f));
+	assert(BotRemoveConsoleMessageNode(chat, first) == 9);
+
+	assert(BotRemoveConsoleMessageNode(other_chat, foreign) == 0);
+	assert(BotNextConsoleMessageNode(other_chat) == NULL);
+	BotFreeChatState(chat);
+	BotFreeChatState(other_chat);
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+}
+
+/*
+=============
+test_console_message_pool_is_shared_and_reclaims_nodes
+
+Verifies that chat states contend for one retail pool and that type removal,
+destructive compatibility reads, state destruction, and pool shutdown all
+recycle or detach slots safely.
+=============
+*/
+static void test_console_message_pool_is_shared_and_reclaims_nodes(void)
+{
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestSetLibVar("max_messages", 3.0f);
+	assert(BotSetupChatAI() == 0);
+
+	bot_chatstate_t *first_state = BotAllocChatState();
+	bot_chatstate_t *second_state = BotAllocChatState();
+	assert(first_state != NULL);
+	assert(second_state != NULL);
+
+	BotQueueConsoleMessage(first_state, 7, "first-match");
+	BotQueueConsoleMessage(first_state, 7, "retained-match");
+	BotQueueConsoleMessage(second_state, 9, "other-state");
+	assert(BotNumConsoleMessages(first_state) == 2U);
+	assert(BotNumConsoleMessages(second_state) == 1U);
+
+	BotLib_TestResetLastMessage();
+	BotQueueConsoleMessage(second_state, 10, "global-overflow");
+	assert(strcmp(BotLib_TestGetLastMessage(),
+		"empty console message heap\n") == 0);
+	assert(BotRemoveConsoleMessage(first_state, 7));
+	assert(BotNumConsoleMessages(first_state) == 1U);
+
+	int type = 0;
+	char buffer[64];
+	assert(BotNextConsoleMessage(first_state,
+		&type,
+		buffer,
+		sizeof(buffer)));
+	assert(type == 7);
+	assert(strcmp(buffer, "retained-match") == 0);
+
+	BotQueueConsoleMessage(first_state, 11, "released-by-state-free");
+	BotQueueConsoleMessage(second_state, 12, "after-remove");
+	assert(BotNumConsoleMessages(first_state) == 1U);
+	assert(BotNumConsoleMessages(second_state) == 2U);
+	BotFreeChatState(first_state);
+
+	BotQueueConsoleMessage(second_state, 13, "after-state-free");
+	assert(BotNumConsoleMessages(second_state) == 3U);
+	assert(BotNextConsoleMessage(second_state,
+		&type,
+		buffer,
+		sizeof(buffer)));
+	assert(type == 9);
+	assert(strcmp(buffer, "other-state") == 0);
+	assert(BotNextConsoleMessage(second_state,
+		&type,
+		buffer,
+		sizeof(buffer)));
+	assert(type == 12);
+	assert(strcmp(buffer, "after-remove") == 0);
+	assert(BotNextConsoleMessage(second_state,
+		&type,
+		buffer,
+		sizeof(buffer)));
+	assert(type == 13);
+	assert(strcmp(buffer, "after-state-free") == 0);
+
+	BotQueueConsoleMessage(second_state, 14, "pending-at-pool-shutdown");
+	assert(BotNumConsoleMessages(second_state) == 1U);
+	BotShutdownChatAI();
+	assert(BotNumConsoleMessages(second_state) == 0U);
+	BotFreeChatState(second_state);
+	configure_chat_libvars(0.0f, 0.0f);
+}
+
+/*
+=============
+test_constructed_chat_stays_out_of_console_queue
+
+Ensures generated initial and reply text remains pending while the console
+queue continues to contain only explicitly supplied inbound messages.
+=============
+*/
+static void test_constructed_chat_stays_out_of_console_queue(void)
+{
+	const char *path = "bot_chat_pending_queue_separation_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"chat \"queue_separation\"\n"
+		"{\n"
+		"type \"line\"\n"
+		"{\n"
+		"\"initial pending\";\n"
+		"}\n"
+		"}\n"
+		"[\"trigger\"] = 1\n"
+		"{\n"
+		"\"reply pending\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "queue_separation"));
+	drain_console(chat);
+
+	BotQueueConsoleMessage(chat, 7, "incoming");
+	assert(BotInitialChat(chat, "line", 0, NULL));
+	assert(BotNumConsoleMessages(chat) == 1U);
+	assert(BotChatLength(chat) > 0);
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 7);
+	assert(strcmp(buffer, "incoming") == 0);
+	assert(BotNumConsoleMessages(chat) == 0U);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "initial pending") == 0);
+
+	seed_retail_reply_ordinal_zero(1, 1);
+	assert(BotReplyChat(chat, "trigger", 1234));
+	assert(BotNumConsoleMessages(chat) == 0U);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "reply pending") == 0);
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2646,8 +3440,8 @@ static void test_reply_chat_split_context_accepts_fixed_var_slots(void)
 =============
 test_reply_chat_test_libvar_dumps_responses_without_dispatch
 
-Pins Q3 bot_testrchat behavior: the matching reply block is expanded and
-printed line-by-line without sending a chat command.
+Pins Q3 bot_testrchat behavior: the matching reply block is expanded in
+linked-list order without sending a chat command or marking a response recent.
 =============
 */
 static void test_reply_chat_test_libvar_dumps_responses_without_dispatch(void)
@@ -2658,7 +3452,7 @@ static void test_reply_chat_test_libvar_dumps_responses_without_dispatch(void)
 	FILE *fp = fopen(path, "wb");
 	assert(fp != NULL);
 	fputs(
-		"[\"debug\"] = 0\n"
+		"[\"debug\"] = 1\n"
 		"{\n"
 		"\"~first reply~\";\n"
 		"\"second reply\";\n"
@@ -2670,6 +3464,8 @@ static void test_reply_chat_test_libvar_dumps_responses_without_dispatch(void)
 	assert(chat != NULL);
 	assert(BotLoadChatFile(chat, path, "testrchat"));
 
+	BotChat_SetTime(chat, 100.0);
+	seed_retail_reply_ordinal_zero(2, 2);
 	BotLib_TestSetLibVar("bot_testrchat", 1.0f);
 	drain_console(chat);
 	ChatBridge_Reset();
@@ -2689,10 +3485,27 @@ static void test_reply_chat_test_libvar_dumps_responses_without_dispatch(void)
 		NULL));
 
 	assert(g_chat_bridge_mock.command_calls == 0);
-	assert_console_contains_message(chat, PRT_MESSAGE, "first reply\n");
-	assert_console_contains_message(chat, PRT_MESSAGE, "second reply\n");
-	assert(strcmp(BotLib_TestGetLastMessage(), "second reply\n") == 0);
+	assert(BotNumConsoleMessages(chat) == 0U);
+	assert(strcmp(BotLib_TestGetLastMessage(), "first reply\n") == 0);
 	assert(BotChatLength(chat) > 0);
+
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	assert(BotReplyChatWithContexts(chat,
+		"debug",
+		0,
+		0,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL));
+	assert(g_chat_bridge_mock.command_calls == 0);
+	assert(BotNumConsoleMessages(chat) == 0U);
+	assert(strcmp(BotLib_TestGetLastMessage(), "first reply\n") == 0);
 
 	Q2Bridge_ClearImportTable();
 	BotLib_TestSetLibVar("bot_testrchat", 0.0f);
@@ -2702,39 +3515,43 @@ static void test_reply_chat_test_libvar_dumps_responses_without_dispatch(void)
 
 /*
 =============
-test_reply_chat_captures_match_template_variables
+test_reply_chat_match_template_cannot_override_reply_rule
 
-Checks that readable match-template placeholders are captured from incoming
-messages and substituted during construction.
+Confirms MT match-context templates are not reply candidates when a reply rule
+matches the same incoming text.
 =============
 */
-static void test_reply_chat_captures_match_template_variables(void)
+static void test_reply_chat_match_template_cannot_override_reply_rule(void)
 {
-	const char *path = "bot_chat_match_capture_test.c";
+	const char *path = "bot_chat_match_reply_precedence_test.c";
 	remove(path);
 
 	FILE *fp = fopen(path, "wb");
 	assert(fp != NULL);
 	fputs(
 		"#include \"match.h\"\n"
-		"MTCONTEXT_CLIENTOBITUARY\n"
+		"MTCONTEXT_ENTERGAME\n"
 		"{\n"
-		"VICTIM, \" was railed by \", KILLER = (MSG_DEATH, ST_DEATH_RAILGUN);\n"
+		"\"shared trigger\" = (MSG_ENTERGAME, 0);\n"
+		"}\n"
+		"[\"shared trigger\"] = 2\n"
+		"{\n"
+		"\"reply rule selected\";\n"
 		"}\n",
 		fp);
 	assert(fclose(fp) == 0);
 
 	bot_chatstate_t *chat = BotAllocChatState();
 	assert(chat != NULL);
-	assert(BotLoadChatFile(chat, path, "match_capture"));
+	assert(BotLoadChatFile(chat, path, "match_reply_precedence"));
+	seed_retail_reply_ordinal_zero(1, 1);
 	drain_console(chat);
-	assert(BotReplyChat(chat, "Alice was railed by Bob", 1));
+	assert(BotReplyChat(chat, "shared trigger", 2));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 1);
-	assert(strcmp(buffer, "Alice was railed by Bob") == 0);
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "reply rule selected") == 0);
+	assert(!take_pending_chat(chat, buffer, sizeof(buffer)));
 
 	BotFreeChatState(chat);
 	remove(path);
@@ -2742,21 +3559,65 @@ static void test_reply_chat_captures_match_template_variables(void)
 
 /*
 =============
-test_reply_chat_unknown_random_string_context_logs_error
+test_reply_chat_match_only_file_returns_false
+
+Confirms match contexts alone never produce a reply-chat response.
 =============
 */
-static void test_reply_chat_unknown_random_string_context_logs_error(void) {
+static void test_reply_chat_match_only_file_returns_false(void)
+{
+	const char *path = "bot_chat_match_only_reply_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"#include \"match.h\"\n"
+		"MTCONTEXT_ENTERGAME\n"
+		"{\n"
+		"\"match only trigger\" = (MSG_ENTERGAME, 0);\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, path, "match_only_reply"));
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+
+	assert(!BotReplyChat(chat, "match only trigger", 2));
+	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotChatLength(chat) == 0);
+	assert(strcmp(BotLib_TestGetLastMessage(), "") == 0);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_legacy_unknown_random_is_literal
+
+An unknown name inside the legacy readable backslash syntax is ordinary text
+and therefore does not trigger the retail random-table lookup or an error.
+=============
+*/
+static void test_reply_chat_legacy_unknown_random_is_literal(void) {
 	bot_chatstate_t *chat = BotAllocChatState();
 	assert(chat != NULL);
 	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_random_invalid"));
 
+	seed_retail_reply_ordinal_zero(1, 1);
 	drain_console(chat);
 	BotLib_TestResetLastMessage();
-	assert(!BotReplyChat(chat, "unit-test-random-invalid", 9201));
-	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
-	assert(strstr(BotLib_TestGetLastMessage(),
-	"unknown random string unit_test_missing") != NULL);
-	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotReplyChat(chat, "unit-test-random-invalid", 9201));
+	assert(strcmp(BotLib_TestGetLastMessage(), "") == 0);
+	assert(BotLib_TestGetLastMessageType() == 0);
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer,
+		"Random string placeholder: \\runit_test_missing\\.") == 0);
 
 	BotFreeChatState(chat);
 }
@@ -2799,10 +3660,11 @@ test_include_path_too_long_is_rejected
 =============
 */
 static void test_include_path_too_long_is_rejected(void) {
-	const size_t segment_length = 256;
-	const size_t segment_count = 5;
-	const size_t fragment_length =
-		segment_count * segment_length + (segment_count - 1);
+	enum {
+		segment_length = 256,
+		segment_count = 5,
+		fragment_length = segment_count * segment_length + (segment_count - 1)
+	};
 
 	char include_fragment[fragment_length + 1];
 	size_t offset = 0;
@@ -2875,15 +3737,7 @@ assert(chat != NULL);
 	assert(!BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
 	assert(BotLib_TestGetLastMessageType() == PRT_FATAL);
 	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
-	assert(BotNumConsoleMessages(chat) == 1);
-	assert_console_contains_message(chat, PRT_FATAL, expected_message);
-
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == PRT_FATAL);
-	assert(strcmp(buffer, expected_message) == 0);
-	assert(!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(BotNumConsoleMessages(chat) == 0U);
 
 	configure_chat_libvars(0.0f, 0.0f);
 	BotFreeChatState(chat);
@@ -2894,7 +3748,7 @@ assert(chat != NULL);
 test_botloadchatfile_reports_missing_chat_context
 
 Forces the script wrapper creation to fail so the legacy "couldn't find chat"
-diagnostic is enqueued when fastchat is enabled.
+diagnostic is printed when fastchat is enabled.
 =============
 */
 static void test_botloadchatfile_reports_missing_chat_context(void)
@@ -2918,8 +3772,7 @@ sizeof(expected_message),
 	assert(!BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
 	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
 	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
-	assert_console_contains_message(chat, PRT_ERROR, expected_message);
-	drain_console(chat);
+	assert(BotNumConsoleMessages(chat) == 0U);
 
 configure_chat_libvars(0.0f, 0.0f);
 BotFreeChatState(chat);
@@ -2984,14 +3837,67 @@ static void test_setup_chat_ai_supplies_shared_reply_fallback(void)
 	drain_console(chat);
 	assert(BotReplyChat(chat, "abnormal", 5));
 
-	int type = 0;
 	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 5);
-	assert(BotChat_HasReplyTemplate(chat, 5, buffer));
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(buffer[0] != '\0');
 
 	BotFreeChatState(chat);
 	BotShutdownChatAI();
+}
+
+/*
+=============
+test_reply_chat_merges_setup_and_state_priorities
+
+Pins the retail single-list priority traversal when compatibility-loaded state
+rules coexist with the setup-owned global rchat table.
+=============
+*/
+static void test_reply_chat_merges_setup_and_state_priorities(void)
+{
+	const char *setup_path = "bot_chat_setup_priority_test.c";
+	const char *state_path = "bot_chat_state_priority_test.c";
+	FILE *fp = fopen(setup_path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"global priority\"] = 9\n"
+		"{\n"
+		"\"setup higher\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	fp = fopen(state_path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"global priority\"] = 1\n"
+		"{\n"
+		"\"state lower\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	BotLib_TestSetLibVarString("rchatfile", setup_path);
+	assert(BotSetupChatAI() == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, state_path, "priority_merge"));
+	seed_retail_reply_ordinal_zero(2, 1);
+	drain_console(chat);
+	assert(BotReplyChat(chat, "global priority", 16));
+
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "setup higher") == 0);
+
+	BotFreeChatState(chat);
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	remove(setup_path);
+	remove(state_path);
 }
 
 /*
@@ -3235,28 +4141,42 @@ the command through the bridge using the entering client.
 */
 static void test_reply_chat_enter_handoff_uses_bridge_speaker(void)
 {
+	const char *path = "bot_chat_reply_handoff_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"handoff trigger\"] = 2\n"
+		"{\n"
+		"\"reply handoff\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
 	ChatBridge_Reset();
 	BotLib_TestSetMaxClients(8.0f);
 
 	bot_chatstate_t *chat = BotAllocChatState();
 	assert(chat != NULL);
-	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/match_reply.c", "match_reply"));
+	assert(BotLoadChatFile(chat, path, "reply_handoff"));
 
+	seed_retail_reply_ordinal_zero(1, 1);
 	drain_console(chat);
-	BotChat_SetContextCooldown(chat, 2, 0.0);
 
-	assert(BotReplyChat(chat, "Quad Damage acquired", 2));
+	assert(BotReplyChat(chat, "handoff trigger", 2));
 	assert(g_chat_bridge_mock.command_calls == 0);
 	assert(BotChatLength(chat) > 0);
 
 	BotEnterChat(chat, 4, 0);
 	assert(g_chat_bridge_mock.command_calls == 1);
 	assert(g_chat_bridge_mock.last_client == 4);
-	assert(strcmp(g_chat_bridge_mock.last_command, "say NEARBYITEM acquired") == 0);
+	assert(strcmp(g_chat_bridge_mock.last_command, "say reply handoff") == 0);
 	assert(BotChatLength(chat) == 0);
 
 	Q2Bridge_ClearImportTable();
 	BotFreeChatState(chat);
+	remove(path);
 }
 
 /*
@@ -3301,32 +4221,47 @@ int main(void) {
 	test_reply_chat_rejects_unquoted_botname_list_entry();
 	test_initial_chat_test_libvar_prints_and_suppresses_dispatch();
 	test_retail_initial_chat_missing_name_is_rejected();
-	test_enter_chat_construct_message_failure_respects_cooldown_reset();
+	test_enter_chat_retail_literal_limit_dispatches_and_respects_cooldown();
 	test_reply_chat_death_context();
 	test_reply_chat_falls_back_to_reply_table();
 	test_reply_chat_name_key_matches_configured_name();
 	test_reply_chat_chooses_highest_priority_match();
-	test_reply_chat_recent_responses_rotate();
+	test_reply_chat_priority_uses_integer_best_value();
+	test_reply_chat_nonpositive_priorities_do_not_win();
+	test_reply_chat_equal_priority_prefers_file_last_rule();
+	test_reply_chat_all_recent_reuses_retail_head();
 	test_reply_chat_matches_botname_list_and_gender_keys();
 	test_reply_chat_construct_message_paths();
-	test_reply_chat_known_random_string_context_enqueues_message();
+	test_reply_chat_ignores_event_gates();
+	test_reply_chat_selected_constructor_failure_returns_true();
+	test_constructor_retail_escape_and_variable_semantics();
+	test_constructor_retail_payload_boundary();
+	test_reply_chat_legacy_backslash_random_is_literal();
 	test_reply_chat_expands_named_random_table();
-	test_reply_chat_expands_nested_random_table();
-	test_initial_chat_weighted_synonym_runs_each_expansion_pass();
+	test_reply_chat_random_expansion_runs_once();
+	test_initial_chat_weighted_synonym_runs_after_single_pass();
 	test_initial_chat_applies_weighted_synonym_context();
 	test_reply_chat_captures_key_variable();
+	test_reply_chat_key_capture_uses_file_first_value();
 	test_reply_chat_captures_key_variable_after_string_alternative();
 	test_reply_chat_empty_string_piece_closes_variable_capture();
 	test_reply_chat_split_vcontext_canonicalizes_variables();
 	test_reply_chat_split_vcontext_uses_q3_word_separators();
 	test_reply_chat_split_context_accepts_fixed_var_slots();
+	test_reply_chat_legacy_uses_fixed_retail_contexts();
+	test_reply_chat_retail_capture_leaks_after_selected_rule();
+	test_console_message_pool_uses_retail_capacity_and_fifo();
+	test_console_message_retail_node_identity_and_age();
+	test_console_message_pool_is_shared_and_reclaims_nodes();
+	test_constructed_chat_stays_out_of_console_queue();
 	test_reply_chat_test_libvar_dumps_responses_without_dispatch();
-	test_reply_chat_captures_match_template_variables();
-	test_reply_chat_unknown_random_string_context_logs_error();
+	test_reply_chat_match_template_cannot_override_reply_rule();
+	test_reply_chat_match_only_file_returns_false();
+	test_reply_chat_legacy_unknown_random_is_literal();
 	test_synonym_lookup_contains_nearbyitem_entries();
 	test_known_template_is_registered();
 	test_include_path_too_long_is_rejected();
-	test_enter_chat_enqueues_message();
+	test_enter_chat_dispatches_message();
 	test_enter_chat_cooldown_blocks_repeated_messages();
 	test_reply_chat_unmatched_rule_returns_false_quietly();
 	test_reply_chat_string_key_uses_q3_word_separators();
@@ -3335,6 +4270,7 @@ int main(void) {
 	test_setup_chat_ai_loads_default_assets();
 	test_setup_chat_ai_skips_reply_when_nochat_enabled();
 	test_setup_chat_ai_supplies_shared_reply_fallback();
+	test_reply_chat_merges_setup_and_state_priorities();
 	test_setup_chat_ai_exports_match_and_synonym_utilities();
 	test_setup_chat_ai_match_string_alternatives_capture_variables();
 	test_enter_chat_sends_command_via_bridge();

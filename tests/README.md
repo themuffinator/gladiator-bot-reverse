@@ -103,7 +103,12 @@ The navigation harness under `tests/aas/` boots the botlib memory system and
 loads a miniature BSP/AAS pair to exercise `AAS_LoadMap` and
 `AAS_UpdateEntity`. To keep the tests deterministic:
 
-The executable also contains in-memory reachability geometry,
+The self-contained `aas_debug_line_tests` executable needs no map assets. It
+pins the retail 256-slot shared debug-line pool, zero and failed create
+results, the 257th-line cutoff, NULL/`LINECOLOR_NONE` hides, handle reuse, and
+the clear-before-visualized-prediction test wrapper.
+
+The map-loader executable also contains in-memory reachability geometry,
 area-classification, link-selection, duplicate-link, and jump/fall physics
 tests. Those cases do not require external assets and still exercise the
 generator prerequisite layer when the map fixtures below are unavailable.

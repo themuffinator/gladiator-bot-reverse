@@ -1,0 +1,8 @@
+[
+{
+  "directory": "E:/Repositories/Gladiator-Bot-reverse/build-release-codex",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\clang.exe -IE:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-build/src -IE:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-src/src -IE:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-build -IE:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-src/include -O3 -DNDEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -DHAVE_CONFIG_H -o _deps\\cmocka-build\\src\\CMakeFiles\\cmocka.dir\\cmocka.c.obj -c E:\\Repositories\\Gladiator-Bot-reverse\\build-release-codex\\_deps\\cmocka-src\\src\\cmocka.c",
+  "file": "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-src/src/cmocka.c",
+  "output": "E:/Repositories/Gladiator-Bot-reverse/build-release-codex/_deps/cmocka-build/src/CMakeFiles/cmocka.dir/cmocka.c.obj"
+}
+]

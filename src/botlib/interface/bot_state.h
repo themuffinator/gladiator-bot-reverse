@@ -52,6 +52,14 @@ typedef struct bot_combat_state_s
     bool took_damage;
 } bot_combat_state_t;
 
+typedef struct bot_console_waypoint_s
+{
+	char name[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
+	bot_goal_t goal;
+	struct bot_console_waypoint_s *next;
+	struct bot_console_waypoint_s *prev;
+} bot_console_waypoint_t;
+
 struct bot_client_state_s {
     int client_number;
     int team;
@@ -82,6 +90,32 @@ struct bot_client_state_s {
     float goal_avoid_duration;
     int active_goal_number;
     bot_combat_state_t combat;
+	float power_armor_time;
+	float quad_time;
+	float invulnerability_time;
+	float rebreather_time;
+	float environmentsuit_time;
+	float stand_time;
+	bool chat_standing;
+	int bot_death_type;
+	int enemy_death_type;
+	char team_leader[MAX_NETNAME];
+	char subteam[32];
+	float formation_dist;
+	int ltg_type;
+	int ltg_teammate;
+	int team_goal_number;
+	bot_goal_t team_goal;
+	float team_message_time;
+	float team_goal_time;
+	float teammate_visible_time;
+	float arrive_time;
+	float defend_away_time;
+	float rush_base_away_time;
+	bot_console_waypoint_t *checkpoints;
+	bot_console_waypoint_t *patrol_points;
+	bot_console_waypoint_t *current_patrol_point;
+	int patrol_flags;
 };
 
 bot_client_state_t *BotState_Get(int client);
@@ -96,6 +130,11 @@ int BotState_ClientCapacity(void);
 bool BotState_ClientInRange(int client);
 void BotState_ResetClientSettings(void);
 void BotState_SetActive(bot_client_state_t *state, bool active);
+void BotState_SetLongTermGoal(bot_client_state_t *state,
+	int type,
+	int teammate,
+	int goal_number);
+void BotState_FreeConsoleWaypoints(bot_console_waypoint_t *points);
 int BotState_ActiveClientCount(void);
 int BotState_AttachCharacter(bot_client_state_t *state, int character_handle);
 void BotState_EmitPendingClientCommands(bot_client_state_t *state);

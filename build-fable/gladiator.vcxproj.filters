@@ -1,0 +1,124 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\common\l_assets.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\common\l_crc.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\common\l_libvar.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\common\l_log.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\common\l_memory.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\common\l_struct.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\common\l_utils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp\l_precomp.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\precomp\l_script.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_debug.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_debug_commands.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_cluster.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_main.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_map.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_move.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_optimize.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_sound.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_reach.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\aas\aas_route.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ea\ea_main.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai\ai_character.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai\ai_dm.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai\ai_weapon.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai\goal_move_orchestrator.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_chat\ai_chat.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_character\bot_character.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_goal\ai_goal.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_goal\bot_goal.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_move\ai_move.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_move\bot_move.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_move\mover_catalogue.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_weight\ai_weight.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_weight\bot_weight.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\ai_weapon\bot_weapon.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\interface\bot_interface.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\interface\bot_state.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Repositories\Gladiator-Bot-reverse\src\botlib\interface\botlib_interface.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="E:\Repositories\Gladiator-Bot-reverse\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{431283B7-CACE-311F-9763-D1C3D9D961C6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

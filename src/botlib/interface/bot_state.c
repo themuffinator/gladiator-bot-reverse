@@ -9,8 +9,13 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/ea/ea_local.h"
 
-static bot_client_state_t *g_bot_state_table[MAX_CLIENTS];
-static bot_clientsettings_t g_bot_client_settings[MAX_CLIENTS];
+/*
+ * Retail validates client numbers through maxclients inclusively even though
+ * its tables contain maxclients entries.  Keep one compatibility sentinel so
+ * the observable off-by-one contract does not reproduce the retail OOB.
+ */
+static bot_client_state_t *g_bot_state_table[MAX_CLIENTS + 1];
+static bot_clientsettings_t g_bot_client_settings[MAX_CLIENTS + 1];
 static int g_bot_client_capacity;
 static int g_bot_active_client_count;
 
@@ -23,7 +28,7 @@ Validates an index against the fixed storage backing the reconstructed tables.
 */
 static bool BotState_PhysicalIndexInRange(int client)
 {
-	return client >= 0 && client < MAX_CLIENTS;
+	return client >= 0 && client <= MAX_CLIENTS;
 }
 
 /*
@@ -56,6 +61,23 @@ static void BotState_ResetCombat(bot_combat_state_t *combat)
 	combat->took_damage = false;
 	VectorClear(combat->last_enemy_origin);
 	VectorClear(combat->last_enemy_velocity);
+}
+
+/*
+=============
+BotState_FreeConsoleWaypoints
+
+Releases a retail checkpoint or patrol-point chain owned by a bot state.
+=============
+*/
+void BotState_FreeConsoleWaypoints(bot_console_waypoint_t *points)
+{
+	while (points != NULL)
+	{
+		bot_console_waypoint_t *next = points->next;
+		free(points);
+		points = next;
+	}
 }
 
 /*
@@ -151,6 +173,34 @@ static void BotState_FreeResources(bot_client_state_t *state)
 	state->goal_avoid_duration = 0.0f;
 	state->active_goal_number = 0;
 	BotState_ResetCombat(&state->combat);
+	state->power_armor_time = 0.0f;
+	state->quad_time = 0.0f;
+	state->invulnerability_time = 0.0f;
+	state->rebreather_time = 0.0f;
+	state->environmentsuit_time = 0.0f;
+	state->stand_time = 0.0f;
+	state->chat_standing = false;
+	state->bot_death_type = 0;
+	state->enemy_death_type = 0;
+	memset(state->team_leader, 0, sizeof(state->team_leader));
+	memset(state->subteam, 0, sizeof(state->subteam));
+	state->formation_dist = 0.0f;
+	BotState_FreeConsoleWaypoints(state->checkpoints);
+	BotState_FreeConsoleWaypoints(state->patrol_points);
+	state->checkpoints = NULL;
+	state->patrol_points = NULL;
+	state->current_patrol_point = NULL;
+	state->patrol_flags = 0;
+	state->ltg_type = 0;
+	state->ltg_teammate = -1;
+	state->team_goal_number = 0;
+	memset(&state->team_goal, 0, sizeof(state->team_goal));
+	state->team_message_time = 0.0f;
+	state->team_goal_time = 0.0f;
+	state->teammate_visible_time = 0.0f;
+	state->arrive_time = 0.0f;
+	state->defend_away_time = 0.0f;
+	state->rush_base_away_time = 0.0f;
 	state->team = -1;
 	memset(&state->last_client_update, 0, sizeof(state->last_client_update));
 	state->client_update_valid = false;
@@ -321,6 +371,7 @@ bot_client_state_t *BotState_Create(int client)
 
 	state->client_number = client;
 	state->team = -1;
+	state->ltg_teammate = -1;
 	memcpy(&state->client_settings, &g_bot_client_settings[client], sizeof(state->client_settings));
 	BotState_ResetCombat(&state->combat);
 	g_bot_state_table[client] = state;
@@ -395,7 +446,7 @@ Destroys all bot state entries.
 */
 void BotState_ShutdownAll(void)
 {
-	for (int i = 0; i < MAX_CLIENTS; ++i) {
+	for (int i = 0; i <= MAX_CLIENTS; ++i) {
 		BotState_Destroy(i);
 	}
 
@@ -427,6 +478,34 @@ void BotState_ResetForNewMap(bot_client_state_t *state)
 	state->current_weapon = 0;
 	state->client_commands_pending = false;
 	BotState_ResetCombat(&state->combat);
+	state->power_armor_time = 0.0f;
+	state->quad_time = 0.0f;
+	state->invulnerability_time = 0.0f;
+	state->rebreather_time = 0.0f;
+	state->environmentsuit_time = 0.0f;
+	state->stand_time = 0.0f;
+	state->chat_standing = false;
+	state->bot_death_type = 0;
+	state->enemy_death_type = 0;
+	memset(state->team_leader, 0, sizeof(state->team_leader));
+	memset(state->subteam, 0, sizeof(state->subteam));
+	state->formation_dist = 0.0f;
+	BotState_FreeConsoleWaypoints(state->checkpoints);
+	BotState_FreeConsoleWaypoints(state->patrol_points);
+	state->checkpoints = NULL;
+	state->patrol_points = NULL;
+	state->current_patrol_point = NULL;
+	state->patrol_flags = 0;
+	state->ltg_type = 0;
+	state->ltg_teammate = -1;
+	state->team_goal_number = 0;
+	memset(&state->team_goal, 0, sizeof(state->team_goal));
+	state->team_message_time = 0.0f;
+	state->team_goal_time = 0.0f;
+	state->teammate_visible_time = 0.0f;
+	state->arrive_time = 0.0f;
+	state->defend_away_time = 0.0f;
+	state->rush_base_away_time = 0.0f;
 
 	if (state->goal_handle > 0)
 	{
@@ -494,7 +573,7 @@ void BotState_ConfigureClientCapacity(int max_clients)
 		max_clients = MAX_CLIENTS;
 	}
 
-	for (int client = max_clients; client < MAX_CLIENTS; ++client) {
+	for (int client = max_clients + 1; client <= MAX_CLIENTS; ++client) {
 		BotState_Destroy(client);
 		memset(&g_bot_client_settings[client], 0, sizeof(g_bot_client_settings[client]));
 	}
@@ -518,12 +597,12 @@ int BotState_ClientCapacity(void)
 =============
 BotState_ClientInRange
 
-Checks a client against the runtime range used by bot-state wrappers.
+Checks the inclusive retail range backed by the compatibility sentinel.
 =============
 */
 bool BotState_ClientInRange(int client)
 {
-	return BotState_PhysicalIndexInRange(client) && client < g_bot_client_capacity;
+	return BotState_PhysicalIndexInRange(client) && client <= g_bot_client_capacity;
 }
 
 /*
@@ -536,7 +615,7 @@ Clears the game-provided presentation settings table.
 void BotState_ResetClientSettings(void)
 {
 	memset(g_bot_client_settings, 0, sizeof(g_bot_client_settings));
-	for (int i = 0; i < MAX_CLIENTS; ++i) {
+	for (int i = 0; i <= MAX_CLIENTS; ++i) {
 		bot_client_state_t *state = g_bot_state_table[i];
 		if (state != NULL) {
 			memset(&state->client_settings, 0, sizeof(state->client_settings));
@@ -567,6 +646,30 @@ void BotState_SetActive(bot_client_state_t *state, bool active)
 		--g_bot_active_client_count;
 		state->active_counted = false;
 	}
+}
+
+/*
+=============
+BotState_SetLongTermGoal
+
+Mirrors Gladiator's long-term-goal type and team-goal number. Retail +0x10a8
+stores teammate + 1; this host boundary accepts the zero-based client instead.
+=============
+*/
+void BotState_SetLongTermGoal(bot_client_state_t *state,
+	int type,
+	int teammate,
+	int goal_number)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->ltg_type = type;
+	state->ltg_teammate = teammate;
+	state->team_goal_number = goal_number;
+	state->team_goal.number = goal_number;
 }
 
 /*

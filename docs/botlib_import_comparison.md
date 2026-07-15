@@ -14,7 +14,9 @@ The disassembly of `gladiator.dll` shows that the bot library copies a 0x28-byte
   - `data_10063ff4(ptr)` and `data_10063ff8(ptr)` – sixth and seventh slots, used to allocate and free heap blocks.
   - `data_10063ffc()` – eighth slot, repeatedly used to obtain integer handles.
 
-These uses align with the Quake II `bot_import_t` expectations (BotInput, BotClientCommand, Print, Trace, PointContents, GetMemory, FreeMemory, DebugLineCreate/Draw primitives), though the DLL only appears to populate ten entries rather than the full sixteen defined by the Quake headers.
+These uses align with the original ten-entry `bot_import_t`: `BotInput`,
+`BotClientCommand`, `Print`, `Trace`, `PointContents`, `GetMemory`,
+`FreeMemory`, and the three debug-line callbacks.
 
 ### Expected slot order and signatures inferred from HLIL
 
@@ -28,10 +30,25 @@ These uses align with the Quake II `bot_import_t` expectations (BotInput, BotCli
 | 5 | Allocator | `void *(*GetMemory)(int size);` |
 | 6 | Free | `void (*FreeMemory)(void *ptr);` |
 | 7 | Handle generator | `int (*DebugLineCreate)(void);` |
+| 8 | Delete debug line | `void (*DebugLineDelete)(int line);` |
+| 9 | Draw debug line | `void (*DebugLineShow)(int line, vec3_t start, vec3_t end, int color);` |
 
-## Quake II botlib import surface
+The reconstructed elementary-action layer now exercises both leading slots
+with their recovered call shapes. `EA_EndRegular` passes the live internal
+`bot_input_t` to `BotInput`, samples the jump bit after the callback, and only
+then performs the transient reset/latch restoration. Specialized commands pass
+one token, one argument, and `NULL`; generic `EA_Command` captures nine
+argument slots, emits the retail `EA_Command: too many arguments` error when
+the ninth is non-NULL, still dispatches that slot, and appends a final explicit
+`NULL`. The production `BotAI` path dispatches through `EA_EndRegular`;
+`EA_GetInput` remains a bridge-only snapshot/reset adapter and must not be
+mistaken for the retail slot-0 callback boundary.
 
-The Quake II `bot_import_t` declares sixteen callbacks that the engine should expose to the botlib:
+## Reconstructed compatibility surface
+
+The reconstruction keeps the ten retail callbacks first and appends six
+bridge-only helpers. The retail `GetBotAPI` entry reads only the prefix;
+`GetBotAPIEx(imports, size)` is the explicit opt-in path for this tail:
 
 | Order | Callback | Signature |
 | --- | --- | --- |
@@ -45,12 +62,12 @@ The Quake II `bot_import_t` declares sixteen callbacks that the engine should ex
 | 7 | DebugLineCreate | `int (*DebugLineCreate)(void);` |
 | 8 | DebugLineDelete | `void (*DebugLineDelete)(int line);` |
 | 9 | DebugLineShow | `void (*DebugLineShow)(int line, vec3_t start, vec3_t end, int color);` |
-| 10 | AddCommand | `void (*AddCommand)(const char *name, void (*function)(void));` |
-| 11 | RemoveCommand | `void (*RemoveCommand)(const char *name);` |
-| 12 | CmdArgc | `int (*CmdArgc)(void);` |
-| 13 | CmdArgv | `const char *(*CmdArgv)(int index);` |
-| 14 | CvarGet | `cvar_t *(*CvarGet)(const char *name, const char *default_value, int flags);` |
-| 15 | Error | `void (*Error)(const char *fmt, ...);` |
+| 10 | CvarGet | `cvar_t *(*CvarGet)(const char *name, const char *default_value, int flags);` |
+| 11 | Error | `void (*Error)(const char *fmt, ...);` |
+| 12 | AddCommand | `void (*AddCommand)(const char *name, void (*function)(void));` |
+| 13 | RemoveCommand | `void (*RemoveCommand)(const char *name);` |
+| 14 | CmdArgc | `int (*CmdArgc)(void);` |
+| 15 | CmdArgv | `const char *(*CmdArgv)(int index);` |
 
 ## Current `botlib_import_table_t`
 
@@ -65,12 +82,15 @@ The in-repo mirror only exposes eight callbacks:
 - `CmdArgc(void)`
 - `CmdArgv(int index)`
 
-`DPrint` and the libvar helpers do not appear in the Quake II import contract and therefore represent Gladiator-specific additions, while the majority of the Quake-defined callbacks (input submission, command emission, cvar/error accessors, tracing, memory management, and debug line helpers) are currently missing from the struct.
+This eight-callback table is an internal adapter, not the DLL-facing ABI. It
+routes printing, cached libvars, and console commands while engine-facing
+input, trace, allocator, and debug-line calls continue through the copied
+public `bot_import_t`.
 
 ## Gap summary
 
 | Source | Present callbacks | Missing callbacks | Notes |
 | --- | --- | --- | --- |
-| Quake II `bot_import_t` (16) | AddCommand, RemoveCommand, CmdArgc, CmdArgv, Print | BotInput, BotClientCommand, CvarGet, Error, Trace, PointContents, GetMemory, FreeMemory, DebugLineCreate, DebugLineDelete, DebugLineShow | Full surface exceeds current table size. |
-| Gladiator DLL HLIL (≈10 slots) | Logging (Print), command invocation slot, trace, point-contents probe, memory alloc/free, handle generator; plus an initial slot used for per-client input | No explicit CvarGet/Error/debug line hooks observed; table length suggests only ten imports consumed | Import order matches the early subset of Quake II’s table, reinforcing which entries should be restored. |
-| Repo `botlib_import_table_t` (8) | Print, DPrint, BotLibVarGet/BotLibVarSet, AddCommand, RemoveCommand, CmdArgc, CmdArgv | All Quake II engine-facing hooks (BotInput, BotClientCommand, CvarGet, Error, Trace, PointContents, GetMemory, FreeMemory, DebugLineCreate/Delete/Show) | Structure shape and naming diverge from both the DLL and the Quake header. |
+| Gladiator DLL HLIL (10 slots) | All callbacks from `BotInput` through `DebugLineShow` | None | `GetBotAPI` copies the 0x28-byte 32-bit table. |
+| Repo `bot_import_t` (10 + 6) | Exact retail prefix plus `CvarGet`, `Error`, and console-command helpers | None from retail | Tests enforce prefix offsets, exact bounded `GetBotAPI` copying, copied-callback ownership, and size-aware compatibility-tail opt-in. |
+| Repo `botlib_import_table_t` (8) | Print, DPrint, BotLibVarGet/BotLibVarSet, AddCommand, RemoveCommand, CmdArgc, CmdArgv | Not applicable | Internal adapter rather than a binary ABI replacement. |
