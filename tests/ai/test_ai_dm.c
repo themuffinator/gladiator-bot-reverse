@@ -148,8 +148,10 @@ static int g_dm_trace_mask;
 static bsp_trace_t g_dm_trace_results[DM_MAX_TRACE_CALLS];
 static int g_dm_trace_result_count;
 static dm_trace_call_t g_dm_trace_calls[DM_MAX_TRACE_CALLS];
-static bot_client_state_t *g_dm_bot_states[DM_MAX_TEST_CLIENTS];
 static int g_dm_bot_state_capacity = DM_MAX_TEST_CLIENTS - 1;
+static int g_dm_same_team_result;
+static int g_dm_same_team_entity;
+static const bot_client_state_t *g_dm_same_team_state;
 static aas_entityinfo_t g_dm_entity_info[DM_MAX_TEST_CLIENTS];
 static qboolean g_dm_pvs_results[3];
 static int g_dm_pvs_result_count;
@@ -560,22 +562,6 @@ const bot_weapon_info_t *BotCurrentWeaponInfo(int weaponstate)
 
 /*
 =============
-BotState_Get
-
-Returns an optional live client mirror for firing-sweep teammate tests.
-=============
-*/
-bot_client_state_t *BotState_Get(int client)
-{
-	if (client < 0 || client >= DM_MAX_TEST_CLIENTS)
-	{
-		return NULL;
-	}
-	return g_dm_bot_states[client];
-}
-
-/*
-=============
 BotState_ClientCapacity
 
 Returns the configured inclusive client bound used by the retail sweep guard.
@@ -584,6 +570,20 @@ Returns the configured inclusive client bound used by the retail sweep guard.
 int BotState_ClientCapacity(void)
 {
 	return g_dm_bot_state_capacity;
+}
+
+/*
+=============
+BotAI_SameTeam
+
+Captures the entity-number handoff to retail's shared team predicate.
+=============
+*/
+int BotAI_SameTeam(const bot_client_state_t *state, int entity)
+{
+	g_dm_same_team_state = state;
+	g_dm_same_team_entity = entity;
+	return g_dm_same_team_result;
 }
 
 /*
@@ -920,8 +920,10 @@ static int dm_test_setup(void)
 	memset(g_dm_trace_results, 0, sizeof(g_dm_trace_results));
 	g_dm_trace_result_count = 0;
 	memset(g_dm_trace_calls, 0, sizeof(g_dm_trace_calls));
-	memset(g_dm_bot_states, 0, sizeof(g_dm_bot_states));
 	g_dm_bot_state_capacity = DM_MAX_TEST_CLIENTS - 1;
+	g_dm_same_team_result = 0;
+	g_dm_same_team_entity = -1;
+	g_dm_same_team_state = NULL;
 	memset(g_dm_entity_info, 0, sizeof(g_dm_entity_info));
 	memset(g_dm_pvs_results, 0, sizeof(g_dm_pvs_results));
 	g_dm_pvs_result_count = 0;
@@ -957,6 +959,7 @@ static void dm_prepare_client_state(bot_client_state_t *client_state, int client
 {
 	memset(client_state, 0, sizeof(*client_state));
 	client_state->client_number = client;
+	client_state->entity_number = client + 1;
 	client_state->character_handle = 7;
 	client_state->move_handle = client + 1;
 	client_state->current_weapon = 3;
@@ -1233,6 +1236,68 @@ static void test_dm_low_skill_attack_distance_bands(void)
 
 /*
 =============
+test_dm_attack_move_uses_body_origin_not_eye_position
+
+Pins BotAttackMove's body-origin vector separately from the eye position that
+the aim path uses. A tall view offset must not turn the 140-unit hold band into
+a forward move.
+=============
+*/
+static void test_dm_attack_move_uses_body_origin_not_eye_position(void)
+{
+	const int client = 6;
+	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_ATTACK_SKILL] = 0.2f;
+	ai_dm_state_t *dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+
+	bot_client_state_t client_state;
+	dm_prepare_client_state(&client_state, client);
+	VectorSet(client_state.last_client_update.viewoffset, 0.0f, 0.0f, 200.0f);
+
+	ai_dm_enemy_info_t enemy;
+	vec3_t enemy_origin = {140.0f, 0.0f, 0.0f};
+	dm_prepare_enemy(&enemy, 8, enemy_origin, 140.0f, 4.0f);
+	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 4.0f);
+
+	DM_ASSERT(g_dm_init_move_call_count == 1);
+	DM_ASSERT(g_dm_move_call_count == 0);
+	AI_DMState_Destroy(dm_state);
+}
+
+/*
+=============
+test_dm_attack_skill_four_tenths_enters_strafe
+
+Pins BotAttackMove's strict 0.4 low-skill cutoff. At exactly 0.4 retail enters
+the strafe path instead of holding position in the 100-to-180-unit band.
+=============
+*/
+static void test_dm_attack_skill_four_tenths_enters_strafe(void)
+{
+	const int client = 5;
+	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_ATTACK_SKILL] = 0.4f;
+	ai_dm_state_t *dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+
+	bot_client_state_t client_state;
+	dm_prepare_client_state(&client_state, client);
+
+	ai_dm_enemy_info_t enemy;
+	vec3_t enemy_origin = {140.0f, 0.0f, 0.0f};
+	dm_prepare_enemy(&enemy, 8, enemy_origin, 140.0f, 4.0f);
+	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 4.0f);
+
+	ai_dm_metrics_t metrics;
+	AI_DMState_GetMetrics(dm_state, &metrics);
+	DM_ASSERT_FLOAT_CLOSE(metrics.attackstrafe_timer, 0.1f, 0.0001f);
+	DM_ASSERT(g_dm_move_call_count == 1);
+	AI_DMState_Destroy(dm_state);
+}
+
+/*
+=============
 test_dm_attack_chase_builds_cached_goal_before_characteristic_work
 
 Pins the dormant strict-time branch, cached goal fields, movement setup/order,
@@ -1256,7 +1321,9 @@ static void test_dm_attack_chase_builds_cached_goal_before_characteristic_work(v
 	VectorSet(client_state.last_client_update.origin, 10.0f, 20.0f, 30.0f);
 	VectorSet(client_state.last_client_update.velocity, 1.0f, 2.0f, 3.0f);
 	VectorSet(client_state.last_client_update.viewoffset, 4.0f, 5.0f, 6.0f);
-	VectorSet(client_state.last_client_update.viewangles, 7.0f, 8.0f, 9.0f);
+	VectorSet(client_state.last_client_update.viewangles, 70.0f, 80.0f, 90.0f);
+	vec3_t private_view_delta = {7.0f, 8.0f, 9.0f};
+	AI_DMState_ApplyDeltaAngles(dm_state, private_view_delta);
 	client_state.last_client_update.pm_flags = PMF_ON_GROUND |
 		PMF_TIME_TELEPORT |
 		PMF_TIME_WATERJUMP |
@@ -1298,15 +1365,21 @@ static void test_dm_attack_chase_builds_cached_goal_before_characteristic_work(v
 	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewoffset[0], 4.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewoffset[1], 5.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewoffset[2], 6.0f, 0.0001f);
-	DM_ASSERT(g_dm_init_move_call.initmove.entitynum == client);
+	DM_ASSERT(g_dm_init_move_call.initmove.entitynum == client + 1);
 	DM_ASSERT(g_dm_init_move_call.initmove.client == client);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.thinktime, 0.125f, 0.0001f);
 	DM_ASSERT(g_dm_init_move_call.initmove.presencetype == PRESENCE_CROUCH);
 	DM_ASSERT(g_dm_init_move_call.initmove.or_moveflags ==
 		(MFL_ONGROUND | MFL_TELEPORTED | MFL_WATERJUMP));
-	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewangles[0], 7.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewangles[1], 8.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewangles[2], 9.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewangles[0],
+		dm_retail_angle_mod(7.0f),
+		0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewangles[1],
+		dm_retail_angle_mod(8.0f),
+		0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_init_move_call.initmove.viewangles[2],
+		dm_retail_angle_mod(9.0f),
+		0.0001f);
 
 	DM_ASSERT(g_dm_goal_move_call.move_handle == client_state.move_handle);
 	DM_ASSERT(g_dm_goal_move_call.areanum == 37);
@@ -1334,7 +1407,7 @@ static void test_dm_attack_chase_builds_cached_goal_before_characteristic_work(v
 		&enemy,
 		&last_move_command,
 		now + 6.0f);
-	DM_ASSERT(g_dm_init_move_call_count == 0);
+	DM_ASSERT(g_dm_init_move_call_count == 1);
 	DM_ASSERT(g_dm_goal_move_call_count == 0);
 	DM_ASSERT(g_dm_characteristic_call_count[DM_CHARACTERISTIC_PIZZA_PREFERENCE] == 1);
 	DM_ASSERT(g_dm_characteristic_call_count[DM_CHARACTERISTIC_ATTACK_SKILL] == 1);
@@ -1640,7 +1713,7 @@ static void test_dm_chase_timer_decays(void)
 	AI_DMState_Update(dm_state, &client_state, NULL, NULL, NULL, expiry_time);
 	dm_consume_input(client, 0.05f);
 	AI_DMState_GetMetrics(dm_state, &metrics);
-	DM_ASSERT(metrics.enemy_entity == -1);
+	DM_ASSERT(metrics.enemy_entity == 0);
 
 	float reacquire_time = expiry_time + 0.3f;
 	dm_prepare_enemy(&enemy, 3, origin, 90.5f, reacquire_time);
@@ -1686,7 +1759,7 @@ static void test_dm_revenge_counters_update_on_death(void)
 	AI_DMState_GetMetrics(dm_state, &metrics);
 	DM_ASSERT(metrics.revenge_enemy == 4);
 	DM_ASSERT(metrics.revenge_kills == 1);
-	DM_ASSERT(metrics.enemy_entity == -1);
+	DM_ASSERT(metrics.enemy_entity == 0);
 	DM_ASSERT(!metrics.enemy_visible);
 
 	AI_DMState_Destroy(dm_state);
@@ -1819,6 +1892,42 @@ static void test_dm_view_turn_uses_retail_acceleration_and_deceleration(void)
 	DM_ASSERT_FLOAT_CLOSE(metrics.ideal_viewangles[YAW], 15.0f, 0.02f);
 	DM_ASSERT_FLOAT_CLOSE(metrics.viewanglespeed[YAW], 9.0f, 0.02f);
 	DM_ASSERT_FLOAT_CLOSE(metrics.viewangles[YAW], 15.0f, 0.02f);
+	AI_DMState_Destroy(dm_state);
+}
+
+/*
+=============
+test_dm_view_turn_uses_retail_no_enemy_defaults
+
+Pins sub_10029150's exact zero enemy sentinel: non-combat turns use its
+fixed 100/150 acceleration parameters without querying bot characteristics.
+=============
+*/
+static void test_dm_view_turn_uses_retail_no_enemy_defaults(void)
+{
+	const int client = 0;
+	g_dm_characteristics[DM_CHARACTERISTIC_VIEW_FACTOR] = 1.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_VIEW_MAXCHANGE] = 1.0f;
+	ai_dm_state_t *dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+
+	bot_client_state_t client_state;
+	dm_prepare_client_state(&client_state, client);
+	bot_input_t base = {0};
+	vec3_t ideal_viewangles = {0.0f, 90.0f, 0.0f};
+	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
+	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
+	AI_DMState_SetEnemyContext(dm_state, 0, 0.0f, 0, NULL);
+	AI_DMState_SetIdealViewAngles(dm_state, ideal_viewangles);
+	AI_DMState_ChangeViewAngles(dm_state, &client_state, 0.1f);
+
+	ai_dm_metrics_t metrics;
+	AI_DMState_GetMetrics(dm_state, &metrics);
+	DM_ASSERT_FLOAT_CLOSE(metrics.viewanglespeed[YAW], 10.0f, 0.0001f);
+	DM_ASSERT(g_dm_characteristic_call_count[DM_CHARACTERISTIC_VIEW_FACTOR] == 0);
+	DM_ASSERT(g_dm_characteristic_call_count[DM_CHARACTERISTIC_VIEW_MAXCHANGE] == 0);
+	bot_input_t command = dm_consume_input(client, 0.1f);
+	DM_ASSERT_FLOAT_CLOSE(command.viewangles[YAW], metrics.viewangles[YAW], 0.0001f);
 	AI_DMState_Destroy(dm_state);
 }
 
@@ -1979,7 +2088,7 @@ static void test_dm_aim_uses_retail_muzzle_trace_and_linear_lead(void)
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_end[2], 8.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_mins[0], -4.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_maxs[2], 4.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_passent == client);
+	DM_ASSERT(g_dm_trace_passent == client + 1);
 	DM_ASSERT(g_dm_trace_mask == MASK_SHOT);
 	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[0], 110.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[1], 0.0f, 0.0001f);
@@ -2246,7 +2355,7 @@ static void test_dm_aim_radial_ground_target_uses_retail_trace_order(void)
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].start[2], 12.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[0], 200.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[2], -40.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_calls[2].passent == client);
+	DM_ASSERT(g_dm_trace_calls[2].passent == client + 1);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[3].start[2], -40.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[3].end[2], 0.0f, 0.0001f);
 	DM_ASSERT(g_dm_trace_calls[3].passent == enemy.entity);
@@ -2555,7 +2664,7 @@ static void test_dm_entity_visible_adjusts_fluid_direction_and_mask(void)
 	bot_input_t command = dm_consume_input(client, 0.1f);
 	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
 	DM_ASSERT(g_dm_trace_count == 3);
-	DM_ASSERT(g_dm_trace_calls[1].passent == client);
+	DM_ASSERT(g_dm_trace_calls[1].passent == client + 1);
 	DM_ASSERT(g_dm_trace_calls[1].mask ==
 		(DM_VISIBILITY_CONTENTS | DM_VISIBILITY_FLUIDS));
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].start[0], 0.0f, 0.0001f);
@@ -2575,7 +2684,7 @@ static void test_dm_entity_visible_adjusts_fluid_direction_and_mask(void)
 	trace->ent = 2;
 	trace = dm_trace_result_at(1);
 	trace->fraction = 0.5f;
-	trace->ent = client;
+	trace->ent = client + 1;
 	trace = dm_trace_result_at(2);
 	trace->fraction = 0.5f;
 	trace->ent = 2;
@@ -2624,7 +2733,7 @@ static void test_dm_entity_visible_adjusts_fluid_direction_and_mask(void)
 	command = dm_consume_input(client, 0.1f);
 	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
 	DM_ASSERT(g_dm_trace_count == 3);
-	DM_ASSERT(g_dm_trace_calls[1].passent == client);
+	DM_ASSERT(g_dm_trace_calls[1].passent == client + 1);
 	DM_ASSERT(g_dm_trace_calls[1].mask == DM_VISIBILITY_CONTENTS);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].start[0], 0.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[0], 200.0f, 0.0001f);
@@ -2685,7 +2794,7 @@ static void test_dm_entity_visible_continues_translucent_fluid(void)
 	DM_ASSERT(!g_dm_trace_calls[2].has_mins);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].start[0], 50.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[0], 200.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_calls[2].passent == client);
+	DM_ASSERT(g_dm_trace_calls[2].passent == client + 1);
 	DM_ASSERT(g_dm_trace_calls[2].mask == DM_VISIBILITY_CONTENTS);
 	AI_DMState_Destroy(dm_state);
 }
@@ -2745,7 +2854,7 @@ static void test_dm_check_attack_builds_retail_weapon_sweep(void)
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[2], 26.0f, 0.01f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].mins[0], -8.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].maxs[2], 8.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_calls[2].passent == client);
+	DM_ASSERT(g_dm_trace_calls[2].passent == client + 1);
 	DM_ASSERT(g_dm_trace_calls[2].mask == MASK_SHOT);
 	ai_dm_metrics_t metrics;
 	AI_DMState_GetMetrics(dm_state, &metrics);
@@ -2849,11 +2958,7 @@ static void test_dm_check_attack_suppresses_teammate_and_radial_self_damage(void
 	bot_client_state_t client_state;
 	dm_prepare_client_state(&client_state, client);
 	client_state.weapon_state = 1;
-	client_state.team = 4;
-	bot_client_state_t teammate;
-	memset(&teammate, 0, sizeof(teammate));
-	teammate.team = 4;
-	g_dm_bot_states[3] = &teammate;
+	g_dm_same_team_result = 1;
 	ai_dm_enemy_info_t enemy;
 	vec3_t enemy_origin = {200.0f, 0.0f, 0.0f};
 	dm_prepare_enemy(&enemy, 2, enemy_origin, 200.0f, 14.0f);
@@ -2866,6 +2971,8 @@ static void test_dm_check_attack_suppresses_teammate_and_radial_self_damage(void
 	AI_DMState_GetMetrics(dm_state, &metrics);
 	DM_ASSERT((command.actionflags & ACTION_ATTACK) == 0);
 	DM_ASSERT(!metrics.attack_latched);
+	DM_ASSERT(g_dm_same_team_state == &client_state);
+	DM_ASSERT(g_dm_same_team_entity == 3);
 	AI_DMState_Destroy(dm_state);
 
 	dm_test_setup();
@@ -3009,7 +3116,7 @@ static void test_dm_check_attack_verifies_window_and_release_latch(void)
 	DM_ASSERT(!g_dm_trace_calls[3].has_mins);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[3].start[0], 50.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[3].end[0], 200.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_calls[3].passent == client);
+	DM_ASSERT(g_dm_trace_calls[3].passent == client + 1);
 	AI_DMState_Destroy(dm_state);
 
 	dm_test_setup();
@@ -3077,6 +3184,103 @@ static void test_dm_check_attack_verifies_window_and_release_latch(void)
 
 /*
 =============
+test_dm_private_view_accumulates_client_delta_angles
+
+Pins BotUpdateClient's retail private-view accumulation and 16-bit wrapping.
+=============
+*/
+static void test_dm_private_view_accumulates_client_delta_angles(void)
+{
+	ai_dm_state_t *dm_state = AI_DMState_Create(0);
+	DM_ASSERT(dm_state != NULL);
+
+	vec3_t viewangles;
+	DM_ASSERT(AI_DMState_GetViewAngles(dm_state, viewangles));
+	DM_ASSERT_FLOAT_CLOSE(viewangles[PITCH], 0.0f, 0.0f);
+	DM_ASSERT_FLOAT_CLOSE(viewangles[YAW], 0.0f, 0.0f);
+	DM_ASSERT_FLOAT_CLOSE(viewangles[ROLL], 0.0f, 0.0f);
+
+	vec3_t first_delta = {370.0f, -10.0f, 720.5f};
+	AI_DMState_ApplyDeltaAngles(dm_state, first_delta);
+	DM_ASSERT(AI_DMState_GetViewAngles(dm_state, viewangles));
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		DM_ASSERT_FLOAT_CLOSE(viewangles[axis],
+			dm_retail_angle_mod(first_delta[axis]),
+			0.0001f);
+	}
+
+	vec3_t second_delta = {5.0f, 15.0f, -0.5f};
+	AI_DMState_ApplyDeltaAngles(dm_state, second_delta);
+	DM_ASSERT(AI_DMState_GetViewAngles(dm_state, viewangles));
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		float expected = dm_retail_angle_mod(
+			dm_retail_angle_mod(first_delta[axis]) +
+			second_delta[axis]);
+		DM_ASSERT_FLOAT_CLOSE(viewangles[axis], expected, 0.0001f);
+	}
+
+	AI_DMState_Reset(dm_state);
+	DM_ASSERT(AI_DMState_GetViewAngles(dm_state, viewangles));
+	DM_ASSERT_FLOAT_CLOSE(viewangles[PITCH], 0.0f, 0.0f);
+	DM_ASSERT_FLOAT_CLOSE(viewangles[YAW], 0.0f, 0.0f);
+	DM_ASSERT_FLOAT_CLOSE(viewangles[ROLL], 0.0f, 0.0f);
+	AI_DMState_Destroy(dm_state);
+}
+
+/*
+=============
+test_dm_direct_battle_primitives_preserve_view_aim_attack
+
+Pins the public seams consumed by Battle Chase, Battle NBG, and Battle Retreat:
+direct movement ideal views, weapon-aware enemy aim, and attack eligibility.
+=============
+*/
+static void test_dm_direct_battle_primitives_preserve_view_aim_attack(void)
+{
+	const int client = 0;
+	g_dm_characteristics[DM_CHARACTERISTIC_VIEW_FACTOR] = 1800.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_VIEW_MAXCHANGE] = 1800.0f;
+	ai_dm_state_t *dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+
+	bot_client_state_t client_state;
+	dm_prepare_client_state(&client_state, client);
+	bot_input_t base = {0};
+	vec3_t movement_view = {0.0f, 90.0f, 0.0f};
+	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
+	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
+	AI_DMState_SetEnemyContext(dm_state, 1, 0.0f, 0, NULL);
+	AI_DMState_SetIdealViewAngles(dm_state, movement_view);
+	AI_DMState_ChangeViewAngles(dm_state, &client_state, 0.1f);
+	bot_input_t command = dm_consume_input(client, 0.1f);
+	DM_ASSERT_FLOAT_CLOSE(command.viewangles[YAW], 90.0f, 0.01f);
+
+	AI_DMState_Destroy(dm_state);
+	dm_test_setup();
+	g_dm_trace_result.fraction = 1.0f;
+	g_dm_trace_result.ent = 2;
+	dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+	dm_prepare_client_state(&client_state, client);
+	dm_enable_attack_weapon(&client_state);
+	ai_dm_enemy_info_t enemy;
+	vec3_t enemy_origin = {200.0f, 0.0f, 0.0f};
+	dm_prepare_enemy(&enemy, 2, enemy_origin, 200.0f, 0.0f);
+	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
+	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
+	AI_DMState_SetEnemyContext(dm_state, enemy.entity, 0.0f, 0, enemy.origin);
+	AI_DMState_AimAtEnemy(dm_state, &client_state, &enemy, 0.1f);
+	DM_ASSERT(AI_DMState_CheckAttack(dm_state, &client_state, &enemy, 1.0f));
+	command = dm_consume_input(client, 0.1f);
+	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
+	DM_ASSERT_FLOAT_CLOSE(command.viewangles[YAW], 0.0f, 0.01f);
+	AI_DMState_Destroy(dm_state);
+}
+
+/*
+=============
 main
 =============
 */
@@ -3089,10 +3293,14 @@ int main(void)
 		void (*test)(void);
 		void (*teardown)(void);
 	} tests[] = {
+		{"private_view_delta", dm_test_setup, test_dm_private_view_accumulates_client_delta_angles, dm_test_teardown},
+		{"direct_battle_primitives", dm_test_setup, test_dm_direct_battle_primitives_preserve_view_aim_attack, dm_test_teardown},
 		{"reaction_delay", dm_test_setup, test_dm_reaction_delay_gates_attack, dm_test_teardown},
 		{"damage_reaction_delay", dm_test_setup, test_dm_damage_exposure_keeps_reaction_delay, dm_test_teardown},
 		{"attack_no_cooldown", dm_test_setup, test_dm_ready_attack_has_no_generic_cooldown, dm_test_teardown},
 		{"attack_skill_distance", dm_test_setup, test_dm_low_skill_attack_distance_bands, dm_test_teardown},
+		{"attack_body_origin", dm_test_setup, test_dm_attack_move_uses_body_origin_not_eye_position, dm_test_teardown},
+		{"attack_skill_four_tenths", dm_test_setup, test_dm_attack_skill_four_tenths_enters_strafe, dm_test_teardown},
 		{"attack_chase_goal", dm_test_setup, test_dm_attack_chase_builds_cached_goal_before_characteristic_work, dm_test_teardown},
 		{"pizza_preference", dm_test_setup, test_dm_pizza_preference_skips_attack_move, dm_test_teardown},
 		{"strafe_fixed_step", dm_test_setup, test_dm_strafe_clock_uses_retail_fixed_step, dm_test_teardown},
@@ -3103,6 +3311,7 @@ int main(void)
 		{"revenge_counters", dm_test_setup, test_dm_revenge_counters_update_on_death, dm_test_teardown},
 		{"velocity_tracking", dm_test_setup, test_dm_velocity_tracks_enemy_motion, dm_test_teardown},
 		{"view_turn", dm_test_setup, test_dm_view_turn_uses_retail_acceleration_and_deceleration, dm_test_teardown},
+		{"view_no_enemy_defaults", dm_test_setup, test_dm_view_turn_uses_retail_no_enemy_defaults, dm_test_teardown},
 		{"view_snap", dm_test_setup, test_dm_view_turn_preserves_retail_accuracy_snap_threshold, dm_test_teardown},
 		{"view_fraction", dm_test_setup, test_dm_view_turn_truncates_fractional_angle_difference, dm_test_teardown},
 		{"aim_lead", dm_test_setup, test_dm_aim_uses_retail_muzzle_trace_and_linear_lead, dm_test_teardown},

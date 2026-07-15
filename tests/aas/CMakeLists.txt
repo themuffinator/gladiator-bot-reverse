@@ -22,6 +22,27 @@ endif()
 
 add_test(NAME aas_map COMMAND aas_map_tests)
 
+add_executable(aas_pointlight_tests
+	test_aas_pointlight.c
+)
+
+target_link_libraries(aas_pointlight_tests PRIVATE ${BOTLIB_PARITY_TEST_LIBRARIES})
+target_link_libraries(aas_pointlight_tests PRIVATE botlib_interface)
+
+target_include_directories(aas_pointlight_tests PRIVATE
+	${PROJECT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(aas_pointlight_tests PRIVATE
+	PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+
+if(UNIX AND NOT APPLE)
+	target_link_libraries(aas_pointlight_tests PRIVATE m)
+endif()
+
+add_test(NAME aas_pointlight COMMAND aas_pointlight_tests)
+
 add_executable(aas_debug_line_tests
 	test_aas_debug_lines.c
 )

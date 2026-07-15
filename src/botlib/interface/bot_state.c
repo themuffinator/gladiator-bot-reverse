@@ -46,12 +46,14 @@ static void BotState_ResetCombat(bot_combat_state_t *combat)
 	}
 
 	memset(combat, 0, sizeof(*combat));
-	combat->current_enemy = -1;
+	combat->current_enemy = 0;
+	combat->last_enemy_area = 0;
 	combat->enemy_visible = false;
 	combat->enemy_visible_time = -FLT_MAX;
 	combat->enemy_sight_time = -FLT_MAX;
 	combat->enemy_death_time = -FLT_MAX;
 	combat->enemy_last_seen_time = -FLT_MAX;
+	combat->chase_time = -FLT_MAX;
 	combat->revenge_enemy = -1;
 	combat->revenge_kills = 0;
 	combat->last_known_health = 0;
@@ -172,7 +174,16 @@ static void BotState_FreeResources(bot_client_state_t *state)
 	state->has_move_result = false;
 	state->goal_avoid_duration = 0.0f;
 	state->active_goal_number = 0;
+	state->nearby_goal_time = 0.0f;
+	state->nearby_goal_check_time = 0.0f;
+	state->long_term_goal_time = 0.0f;
+	memset(&state->activation_goal, 0, sizeof(state->activation_goal));
+	state->activation_goal_time = 0.0f;
+	state->blocked_avoid_right = false;
 	BotState_ResetCombat(&state->combat);
+	state->ai_node = BOT_AI_NODE_SEEK_LTG;
+	state->ai_node_switches = 0;
+	state->ai_node_overflow = false;
 	state->power_armor_time = 0.0f;
 	state->quad_time = 0.0f;
 	state->invulnerability_time = 0.0f;
@@ -180,6 +191,13 @@ static void BotState_FreeResources(bot_client_state_t *state)
 	state->environmentsuit_time = 0.0f;
 	state->stand_time = 0.0f;
 	state->chat_standing = false;
+	state->stand_chat_pending = false;
+	state->enter_game_time = 0.0f;
+	state->enter_game_chat_attempted = false;
+	state->respawn_requested = false;
+	state->respawn_action_sent = false;
+	state->respawn_chat_pending = false;
+	state->respawn_time = 0.0f;
 	state->bot_death_type = 0;
 	state->enemy_death_type = 0;
 	memset(state->team_leader, 0, sizeof(state->team_leader));
@@ -370,6 +388,7 @@ bot_client_state_t *BotState_Create(int client)
 	}
 
 	state->client_number = client;
+	state->entity_number = client + 1;
 	state->team = -1;
 	state->ltg_teammate = -1;
 	memcpy(&state->client_settings, &g_bot_client_settings[client], sizeof(state->client_settings));
@@ -425,6 +444,7 @@ void BotState_Move(int old_client, int new_client)
 
 	if (state != NULL) {
 		state->client_number = new_client;
+		state->entity_number = new_client + 1;
 		memcpy(&state->client_settings,
 			&g_bot_client_settings[new_client],
 			sizeof(state->client_settings));
@@ -475,9 +495,18 @@ void BotState_ResetForNewMap(bot_client_state_t *state)
 	memset(&state->last_move_result, 0, sizeof(state->last_move_result));
 	state->has_move_result = false;
 	state->active_goal_number = 0;
+	state->nearby_goal_time = 0.0f;
+	state->nearby_goal_check_time = 0.0f;
+	state->long_term_goal_time = 0.0f;
+	memset(&state->activation_goal, 0, sizeof(state->activation_goal));
+	state->activation_goal_time = 0.0f;
+	state->blocked_avoid_right = false;
 	state->current_weapon = 0;
 	state->client_commands_pending = false;
 	BotState_ResetCombat(&state->combat);
+	state->ai_node = BOT_AI_NODE_SEEK_LTG;
+	state->ai_node_switches = 0;
+	state->ai_node_overflow = false;
 	state->power_armor_time = 0.0f;
 	state->quad_time = 0.0f;
 	state->invulnerability_time = 0.0f;
@@ -485,6 +514,12 @@ void BotState_ResetForNewMap(bot_client_state_t *state)
 	state->environmentsuit_time = 0.0f;
 	state->stand_time = 0.0f;
 	state->chat_standing = false;
+	state->stand_chat_pending = false;
+	state->enter_game_chat_attempted = false;
+	state->respawn_requested = false;
+	state->respawn_action_sent = false;
+	state->respawn_chat_pending = false;
+	state->respawn_time = 0.0f;
 	state->bot_death_type = 0;
 	state->enemy_death_type = 0;
 	memset(state->team_leader, 0, sizeof(state->team_leader));

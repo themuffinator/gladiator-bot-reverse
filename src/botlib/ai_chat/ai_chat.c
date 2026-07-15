@@ -2680,6 +2680,7 @@ static int BotChat_MatchTemplateNeedsSpace(const bot_string_builder_t *builder,
 	}
 
 	return (isalnum(previous) || previous == '}' || previous == '\\'
+			|| previous == BOT_CHAT_ESCAPE_CHAR
 			|| previous == ')' || previous == ']')
 		&& (isalnum(next) || next == '{' || next == '(' || next == '\\');
 }
@@ -3424,6 +3425,12 @@ static const char *BotChat_VariableNameForNumber(unsigned long message_type,
 			return "GENDER";
 		case 5:
 			return "TIME";
+		case 7:
+			return "THE_ENEMY";
+		case 8:
+			return "THE_TEAM";
+		case 9:
+			return "TEAM";
 		default:
 			break;
 	}
@@ -3556,7 +3563,8 @@ static int BotChat_VariableNumberForName(const char *name,
 		*value = 4;
 		return 1;
 	}
-	if (strcmp(name, "TIME") == 0 || strcmp(name, "NAME") == 0)
+	if (strcmp(name, "TIME") == 0 || strcmp(name, "NAME") == 0
+		|| strcmp(name, "MORE") == 0)
 	{
 		*value = 5;
 		return 1;
@@ -3576,12 +3584,6 @@ static int BotChat_VariableNumberForName(const char *name,
 		*value = 9;
 		return 1;
 	}
-	if (strcmp(name, "MORE") == 0)
-	{
-		*value = 10;
-		return 1;
-	}
-
 	return 0;
 }
 
@@ -8802,14 +8804,13 @@ static int BotChat_SelectRetailReplyResponse(const bot_reply_rule_t *rule,
 =============
 BotChat_FindMatchingReplyRule
 
-Searches the compatibility state and setup tables through one continuous
-retail priority traversal. Gladiator construction receives the final mutable
-scan table, while the Q3-shaped extension receives the best-rule snapshot.
+Searches one retail reply table through its priority traversal. Gladiator
+construction receives the final mutable scan table, while the Q3-shaped
+extension receives the best-rule snapshot.
 =============
 */
 static const bot_reply_rule_t *BotChat_FindMatchingReplyRule(
 	bot_chatstate_t *source,
-	bot_chatstate_t *setup_source,
 	const bot_chatstate_t *matcher_state,
 	const char *message,
 	double now_seconds,
@@ -8834,56 +8835,45 @@ static const bot_reply_rule_t *BotChat_FindMatchingReplyRule(
 	bot_reply_match_t best_match = {0};
 	working_match.message = message;
 	working_match.message_length = strlen(message);
-	bot_chatstate_t *sources[2] = {source, setup_source};
-	for (size_t source_index = 0; source_index < 2U; ++source_index)
+
+	for (size_t i = source->replies.rule_count; i > 0; --i)
 	{
-		bot_chatstate_t *current_source = sources[source_index];
-		if (current_source == NULL
-			|| (source_index > 0U && current_source == source))
+		bot_reply_rule_t *candidate_rule = &source->replies.rules[i - 1U];
+		if (candidate_rule->response_count == 0)
 		{
 			continue;
 		}
 
-		for (size_t i = current_source->replies.rule_count; i > 0; --i)
+		if (!BotChat_ReplyRuleMatches(matcher_state,
+				candidate_rule,
+				message,
+				&working_match))
 		{
-			bot_reply_rule_t *candidate_rule =
-				&current_source->replies.rules[i - 1U];
-			if (candidate_rule->response_count == 0)
-			{
-				continue;
-			}
+			continue;
+		}
 
-			if (!BotChat_ReplyRuleMatches(matcher_state,
-					candidate_rule,
-					message,
-					&working_match))
-			{
-				continue;
-			}
+		if (candidate_rule->priority <= (float)best_priority)
+		{
+			continue;
+		}
 
-			if (candidate_rule->priority <= (float)best_priority)
-			{
-				continue;
-			}
+		size_t candidate_response_index = 0;
+		if (!BotChat_SelectRetailReplyResponse(candidate_rule,
+			now_seconds,
+			&candidate_response_index))
+		{
+			continue;
+		}
 
-			size_t candidate_response_index = 0;
-			if (!BotChat_SelectRetailReplyResponse(candidate_rule,
-				now_seconds,
-				&candidate_response_index))
-			{
-				continue;
-			}
-
-			best_rule = candidate_rule;
-			best_priority = (int)candidate_rule->priority;
-			if (response_index != NULL)
-			{
-				*response_index = candidate_response_index;
-			}
-			if (snapshot_best_match)
-			{
-				best_match = working_match;
-			}
+		best_rule = candidate_rule;
+		best_priority = (int)candidate_rule->priority;
+		if (response_index != NULL)
+		{
+			*response_index = candidate_response_index;
+		}
+		if (snapshot_best_match)
+		{
+			best_match = working_match;
 		}
 	}
 	if (best_rule != NULL)
@@ -9010,10 +9000,16 @@ static int BotReplyChatInternal(bot_chatstate_t *state,
 
 	char constructed[BOT_CHAT_MAX_MESSAGE_CHARS];
 
-	const bot_chatstate_t *fallback_state = BotChat_SetupFallbackState(state);
-	const int has_setup_reply_chats =
-		fallback_state != NULL && fallback_state->has_reply_chats;
-	if (!state->has_reply_chats && !has_setup_reply_chats)
+	/*
+	 * Retail BotReplyChat traverses only data_10064380, populated by
+	 * BotSetupChatAI's rchatfile load. Keep state-local reply parsing available
+	 * for direct callers that deliberately bypass setup, but never merge it
+	 * with the setup-owned list.
+	 */
+	bot_chatstate_t *reply_source = bot_chat_setup_state != NULL
+		? bot_chat_setup_state
+		: state;
+	if (!reply_source->has_reply_chats)
 	{
 		return 0;
 	}
@@ -9022,8 +9018,7 @@ static int BotReplyChatInternal(bot_chatstate_t *state,
 	size_t reply_index = 0;
 	BotChat_ClearCapturedVariables(captured_variables);
 	has_captured_variables = 0;
-	reply_rule = BotChat_FindMatchingReplyRule(state,
-		(bot_chatstate_t *)fallback_state,
+	reply_rule = BotChat_FindMatchingReplyRule(reply_source,
 		state,
 		message,
 		now_seconds,

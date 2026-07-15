@@ -94,6 +94,7 @@ int AAS_LoadMap(const char *mapname,
                 int imageindexes, char *imageindex[]);
 
 int AAS_Init(void);
+int AAS_ConfigureEntityLimits(int maxentities, int maxclients);
 void AAS_Shutdown(void);
 
 int AAS_UpdateEntity(int ent, const AASEntityFrame *state);
@@ -110,6 +111,18 @@ bsp_trace_t AAS_Trace(const vec3_t start,
                       int contentmask);
 int AAS_PointContents(const vec3_t point);
 qboolean AAS_InPVS(const vec3_t point1, const vec3_t point2);
+int AAS_EntityVisible(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	float fieldofview,
+	int entnum);
+int AAS_VisibleEntities(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	float fieldofview,
+	int maxentities,
+	int *entitynums);
+int AAS_NextEntity(int entnum);
 void AAS_EntityInfo(int entnum, aas_entityinfo_t *info);
 void AAS_EntityOrigin(int entnum, vec3_t origin);
 int AAS_EntityModelindex(int entnum);

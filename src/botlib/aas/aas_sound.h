@@ -37,14 +37,19 @@ typedef struct aas_sound_event_s
 
 typedef struct aas_pointlight_event_s
 {
-    vec3_t origin;
-    int ent;
-    float radius;
-    float color[3];
-    float timestamp;
-    float time;
-    float decay;
+	vec3_t origin;
+	int ent;
+	float color[3];
+	float radius;
+	float time;
+	float timestamp;
+	float decay;
+	int next_index;
+	int prev_index;
 } aas_pointlight_event_t;
+
+typedef char aas_pointlight_event_size[
+	(sizeof(aas_pointlight_event_t) == 0x34U) ? 1 : -1];
 
 typedef struct aas_sound_event_summary_s
 {
@@ -80,27 +85,30 @@ void AAS_SoundSubsystem_SetFrameTime(float time);
 void AAS_SoundSubsystem_ResetFrameEvents(void);
 
 bool AAS_SoundSubsystem_RecordSound(const vec3_t origin,
-                                    int ent,
-                                    int channel,
-                                    int soundindex,
-                                    float volume,
-                                    float attenuation,
-                                    float timeofs);
+	int ent,
+	int channel,
+	int soundindex,
+	float volume,
+	float attenuation,
+	float timeofs);
 
-bool AAS_SoundSubsystem_RecordPointLight(const vec3_t origin,
-                                         int ent,
-                                         float radius,
-                                         float r,
-                                         float g,
-                                         float b,
-                                         float time,
-                                         float decay);
+/* Empty point-light heaps are handled after emitting retail's raw warning. */
+bool AAS_SoundSubsystem_RecordPointLight(vec3_t origin,
+	int ent,
+	float radius,
+	float r,
+	float g,
+	float b,
+	float time,
+	float decay);
 
 size_t AAS_SoundSubsystem_SoundEventCount(void);
 const aas_sound_event_t *AAS_SoundSubsystem_SoundEvent(size_t index);
 
 size_t AAS_SoundSubsystem_PointLightCount(void);
 const aas_pointlight_event_t *AAS_SoundSubsystem_PointLight(size_t index);
+
+int AAS_PointLight(const vec3_t origin, int *red, int *green, int *blue);
 
 /*
  * Summaries provide a timestamp-sorted view of the current sensory queues. They

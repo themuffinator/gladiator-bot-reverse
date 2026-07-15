@@ -17,12 +17,12 @@ Based on the detailed analysis of the parity matrix:
 | Move      | 12          | 0         | 0       | 12    | 100.0%   |
 | Weapon    | 5           | 0         | 0       | 5     | 100.0%   |
 | Character | 4           | 0         | 0       | 4     | 100.0%   |
-| Chat      | 13          | 2         | 0       | 15    | 86.7%    |
-| **Total** | **65**      | **2**     | **0**   | **67**| **97.0%**|
+| Chat      | 14          | 1         | 0       | 15    | 93.3%    |
+| **Total** | **66**      | **1**     | **0**   | **67**| **98.5%**|
 
 *Note: "Divergent" items are considered not fully implemented for the purpose of strict parity calculation.*
 
-**Tracked AI-row parity: 97.0%**
+**Tracked AI-row parity: 98.5%**
 
 The percentage above covers 67 named AI matrix rows only. It excludes the
 top-level export wrappers, allocator internals, AAS implementation details,
@@ -74,11 +74,20 @@ and patrol-list parsing, including their retail partial-state failure effects.
 Status teammate and goal mirrors retain their zero-based/-1 and zero-unset
 conventions. Reply suppression is tied to `nochat`, rather than the adjacent
 `teamplay` libvar.
-Remaining chat gaps are architectural compatibility choices: a state-local
-reply list can coexist with retail's single setup-owned global list, a stand
-flag proxies the general retail AI-node graph, native pointer widths replace
-x86 node pointers, and the literal-template matcher retries normalized source
-text when CTF synonym canonicalization would otherwise hide `rush base`.
+Reply selection now uses retail's single setup-owned global list whenever chat
+setup exists; state-local reply parsing remains only for direct callers that
+bypass setup. Remaining chat gaps are the safe constructor handling around
+unchecked retail buffer and pointer failures, native pointer widths replacing
+x86 node pointers, and the literal-template matcher retrying normalized source
+text when CTF synonym canonicalization would otherwise hide `rush base`. The
+reconstructed node scheduler now owns the stand-state transition rather than
+using it as a general AI-node proxy.
+
+Battle Chase, Retreat, and Battle NBG now share Seek LTG/NBG's recovered
+nearby-goal deadline and probe clocks (`0xaec` and `0xaf8`). Their movement
+failure branches instead clear the retained 20-second LTG clock at `0xae8`,
+which prevents a failed Battle Chase or Retreat from cancelling the active
+nearby-item lease.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L25197-L25231】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L26472-L26498】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L26632-L26657】【F:src/botlib/interface/bot_interface.c】【F:tests/parity/test_bot_interface.c】
 【F:dev_tools/gladiator.dll.bndb_hlil.txt†L30820-L30952】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L31198-L31758】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32144-L32145】【F:src/botlib/interface/bot_interface.c】【F:tests/parity/test_bot_interface.c】
 
 Whole-DLL auditing has additionally confirmed mismatches outside this matrix,
@@ -114,7 +123,7 @@ the AI-row percentage.
 
 Higher-level deathmatch combat has moved beyond its earlier generic
 approximation. `BotAttackMove` now preserves the retail pizza-preference and
-attack-skill characteristic gates, low-skill distance band, fixed-step strafe
+attack-skill characteristic gates, strict 0.4 low-skill cutoff and distance band, fixed-step strafe
 clock, threshold, and random direction flips. Its normal movement branch now
 also preserves the characteristic-driven crouch/jump choice, crouch timer,
 alternating jump latch, direct low-skill movement calls, and the high-skill
@@ -128,14 +137,158 @@ flags to `BotMoveToGoal`. Raw disassembly has exactly one direct access to the
 retail `0xb08` deadline field, the read at `0x10022e3e`; the successor's only
 prospective writer is commented out, so normal runtime state still cannot enter
 the branch. A narrow test-state injector covers it without adding activation.
-`BotFindEnemy` stamps sight time at acquisition even when health or shooting
-widens the candidate gate, and `BotCheckAttack` uses
+`BotFindEnemy` now follows the retail ascending, at-most-16 visible-client
+scan over one-based entity numbers. It preserves the exact live-player model,
+effects, frame, self, and number gates; characteristic-45 900-unit range cap;
+private 16-bit view-angle FOV widening; team-mode precedence; recent-health,
+300-unit, shooting-frame, candidate-facing, and retreat fallback order; and
+the narrow success/failure state-write boundary. The private deathmatch view
+also accumulates each client update's delta angles on that same 16-bit grid.
+Damage- and shooting-assisted acquisitions stamp sight time exactly like every
+other accepted candidate. `BotAI_Think` now uses the reconstructed node loop:
+Stand/Seek LTG acquire before Fight. Activate remains committed to its
+activation goal until it completes movement, preserves its independent deadline
+after a failed move while clearing only the ordinary nearby-goal clock, then
+performs the same delayed enemy scan as Seek NBG. Reached or expired activation
+goals hand off to Seek-NBG before movement, and Seek NBG likewise hands missing,
+reached, or expired nearby goals to Seek-LTG through the same-frame loop. Reached goals
+also replay the CTF/runes tech handoff: a conflicting held tech issues `drop
+tech`, including retail's anomalous tech-four Haste exception. Only a live
+Seek-NBG goal acquires after its movement step, immediately before its private
+view turn. Stand performs its enemy scan before honoring a pending chat's
+typing wait, advances its private view turn on the no-enemy path, performs the
+chat handoff strictly after its deadline while preserving the pre-handoff turn
+into Seek LTG's same-frame work, and retains
+that pending chat when it enters Fight. Its private non-zero `__squatt` guard
+instead retains Stand and the pending chat while issuing the retail warning
+say and `removebot` command. Fight retains
+its node-owned enemy without scanning, except that a dead
+retained enemy takes the retail kill-chat/Stand handoff; Chase only scans after
+direct visibility fails. That kill path observes characteristic 19, uses
+telefrag before insult/praise, waits for the constructed typing time, then
+resumes Seek LTG. Its 50-transition cap and zero enemy
+sentinel match the retail control boundary. Its active combat path selects a
+weapon, runs Battle item use, then general item use before the attack move.
+Fight does not initialize movement at node entry. Instead, BotAttackMove
+refreshes the mover only after its pizza-preference and minimum attack-skill
+gates, as well as in its dormant future attack-chase branch. Its movement
+vector and distance use the player body origin, while the adjacent aim path
+continues to use eye position. Its rocket-jump setting contributes to the
+attack-chase travel mask only; Fight does not append an autonomous vertical
+jump after aim and attack checking.
+Battle Chase now starts and
+strictly expires its independent ten-second deadline, builds and routes to the
+retained reachable enemy area/origin through its eight-unit goal, zeros that
+deadline on goal contact or post-move arrival in the remembered enemy area,
+and runs the one-second, 500-travel-unit nearby-item
+search with the retail hook/rocket-jump travel flags. Its active path now
+refreshes the retained enemy inventory and runs general item use before direct
+movement setup; active Battle NBG and Retreat run that general item-use pass
+immediately before their own movement setup, while Retreat's no-goal idle
+turn emits no general item use. It then
+clears the ordinary nearby-goal deadline on failure and runs the recovered
+post-result `BotAIBlocked` handoff before using result movement/swim view flags
+or the fixed 300-unit route lookahead,
+but preserves an explicitly mover-set EA view and skips the private accelerated
+turn in that case. Battle NBG now validates its
+retained enemy, refreshes the reachable last-enemy area and origin, moves to
+the stack's nearby goal directly, applies the strict
+timeout/contact pop before returning to Fight or Retreat, clears the shared
+nearby-goal deadline on failure, invokes that same blocked
+handoff, and follows its result-driven aim/check-attack/tail-view sequence.
+Weapon selection is now
+restricted to Fight, active Retreat, and Battle NBG; its latter call follows
+the post-movement weapon-frame sync and enemy-inventory refresh. Retreat now validates the
+enemy, exits to a fresh Chase only through the separate strict chase predicate
+(even while a get-flag LTG asks to retreat), uses its
+distinct no-rocket-jump travel mask, promotes a flag carrier to LTG 5 (Rush
+Base) by clearing its away clock and setting its 120-second team-goal deadline
+before resolving and directly moving to the home flag, and otherwise
+selects/directly moves its retained LTG,
+clears the ordinary nearby-goal deadline on mover failure, runs the same
+blocked handoff, and preserves its movement-view versus
+low-skill-lookahead versus weapon-aware-aim branch before checking attack.
+Seek LTG now also runs the retail autonomous CTF selector before resolving a
+team or ordinary item goal: a carrier receives the Rush Base lease, while an
+unassigned aggressive bot uses the fixed 0.33/0.66 random thresholds to seek
+the enemy flag, defend its own flag for 120 seconds, or defer a new choice for
+60 seconds when no applicable static flag goal exists.
+Seek LTG now probes and transfers a nearby item before running the general
+item-use pass; activation, active Seek NBG, and retained direct LTG movers run
+that pass immediately before their own movement setup, while no-goal and
+successful nearby-goal handoffs do not fabricate it.
+The common pmove preamble enters a reset observer node for spectator snapshots
+and a reset intermission node for freeze snapshots. The latter immediately
+emits a gated `end_level` chat, then, on return to normal play, schedules a
+gated `start_level` chat or the retail two-second silent stand; observer exit
+also re-enters Stand. A setup-time latch permits one valid-position,
+characteristic-gated `enter_game` chat during the first eight seconds. On the
+first dead/gib snapshot it resets the goal/move/weapon mirrors, applies the
+`nochat` / `fastchat` death-chat gates, preserves the killer through the
+computed typing deadline, then emits exactly one respawn action strictly after
+that deadline. Its first normal snapshot re-enters Seek LTG but ends the frame
+without goal movement; ordinary Seek-LTG work resumes on the following frame.
+Before enemy acquisition or goal selection, Seek LTG now executes
+`sub_10022470`'s random-chat handoff: help, accompany, and rush-base orders
+veto it; the trial is bounded by `0.1 * thinktime`; `fastchat` bypasses the
+character and 0.25 gates; and a valid chat position selects either
+`random_misc` or `random_insult` before entering Stand for the message's
+typing time.
+Within five seconds of a recorded enemy death, it also performs the retail
+per-frame probability trial and emits only wave gesture 0 or 2 before its
+enemy scan; the five-second boundary itself does not wave.
+Seek LTG also now routes the retail direct long-term-goal branches for help,
+accompany, defend, CTF get-flag/rush-base, camp, and patrol before ordinary
+item selection. Help and accompany resolve their one-based live teammate into a
+reachable AAS goal, consume their delayed acknowledgements, refresh visibility,
+hold at their distinct near distances, and retain the retail strict
+deadline/stale-visibility clears. Get-flag selects the opposing static flag and
+clears on touch or strict expiry; rush-base selects the home static flag only
+while carrying one, preserves its strict expiry clear, and sets the recovered
+five-to-fifteen-second post-touch away timer. The other direct branches retain
+the LTG hook/rocket-jump travel mask, failed-move avoid reset, the 70-unit
+defend-away timer, 40-unit camp arrival, and patrol's internal forward-bit
+ping-pong transition. Accompany's close formation hold now shares the retail
+crouch timer, performs its arrival acknowledgement and gestures, faces the
+companion during the initial hold, and otherwise uses the recovered ten-try
+safe `BotRoamGoal` idle-view candidate. Ordinary item-goal routing now probes
+NBG items strictly every 0.5 seconds, enters and moves a selected Seek-NBG in
+that same frame while consuming the scheduler's separate node-switch slot, uses a five-second Seek-NBG lifetime,
+and restores the previous LTG on contact, missing visible static item, failure,
+or expiry without an invented probe delay; direct defend orders alone use its 1500-unit travel limit rather
+than the normal 700. After a direct team branch declines, the ordinary top
+stack goal goes directly to `BotMoveToGoal` with the same travel mask; a failed
+move clears the mover's complete avoid-reach record and leaves the BotAI tick
+successful. Its view follows the retail priority of explicit mover view,
+waiting-time roam glance, then 300-unit route look-ahead (with move-direction
+fallback), which feeds the private accelerated turn except for an explicitly
+mover-set view; no-goal and completed direct-team branches take that same
+retained private turn without refreshing the move state. The normal item branch now retains LTGs for twenty seconds, uses
+the complete item reach/absence/vertical-overlap predicate, and empties the
+goal stack before clearing both avoid layers if every replacement remains
+avoided; failed movement immediately expires that item lease. Direct blocked
+movement now follows retail `BotAIBlocked`: it maps a blocked static BSP model
+to `func_door`, `func_door_secret`, `func_button`, `trigger_multiple`, or
+`trigger_once`; doors and shootable buttons use Blaster while aiming at the
+recovered brush face, and reachable activators enter the single ten-second
+Activate goal. Other blocks retry perpendicularly, toggling their direction
+only after the first direct move fails and expiring the active Seek-NBG/LTG
+lease. Camp arrival retains retail's random idle view, crouch-time hold,
+swimming reset, and hazardous-medium cancellation. Battle Chase, NBG, and
+Retreat preserve a mover-set EA view without a subsequent private turn; Battle
+Retreat also retains its private idle view turn when no retreat LTG is
+available. The recovered scheduler now covers the catalogued high-level goal
+bodies; remaining work is in whole-DLL areas that are not yet tracked at this
+matrix granularity.
+`BotCheckAttack` uses
 the per-character reaction time before issuing attack on every eligible frame,
 with no synthetic 0.2-second cooldown. The adjacent view path now quantizes
 angles on the retail 16-bit grid, accelerates and slows with characteristics 9
 and 10 over the explicit think time, and snaps only when aim accuracy is
 strictly greater than 0.8. The turn magnitude also retains the retail
-float-to-integer truncation before its absolute-value comparison. Reaction time
+float-to-integer truncation before its absolute-value comparison. Its exact
+zero-enemy sentinel selects fixed 100/150 turn parameters, while active enemies
+use characteristics 9 and 10. Reaction time
 no longer doubles as an invented projectile lead. The adjacent weapon-aware aim
 path now starts its boxed shot trace at the eye plus weapon Z offset, preserves
 the target `+8` and obstructed `+16` adjustments, applies characteristic-7
@@ -157,9 +310,34 @@ and the three observed enemy effect flags. Tests also pin retail's deliberate
 stale boundaries: timer slots 206/209, enemy slots 242-244/248, and both power-
 armor slots when the armor-image stat is zero remain untouched. Ground and
 water flags stay on the separate move-state initializer; neither inventory
-helper writes an inferred slot for them. Self-preservation, retreat, and exact
-enemy-selection integration remain incomplete.
-【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10934-L11035】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28276-L28509】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28732-L29298】【F:src/botlib/aas/aas_map.c】【F:src/botlib/ai/ai_dm.c】【F:tests/aas/test_aas_map.c】【F:tests/ai/test_ai_dm.c】
+helper writes an inferred slot for them. The adjacent item-use helpers now
+mirror `sub_10021500` and `sub_100215e0`: general use independently submits
+Silencer, eye-liquid-gated Rebreather, Power Shield, and Power Screen in retail
+order, while battle use gives an eligible Quad the exact early-return priority
+over Invulnerability. The adjacent decision helpers mirror `sub_10021650`,
+`sub_100226c0`, `sub_100228c0`, `sub_10022930`, and `sub_10022990`:
+flag carry returns the retail red/blue values 1/2 behind the ordered-nonzero
+CTF gate; aggression retains the exact powerup, height, health, armor, weapon,
+and ammunition boundaries; retreat prioritises flag carry and LTG type 4 before
+the strict `< 50` test; chase uses only the strict `> 50` test; and rocket-jump
+eligibility preserves the positive launcher, three-rocket minimum, no-QUAD,
+invulnerability bypass, health/armor, and inclusive characteristic-26 gates.
+The global `rocketjump` variable remains caller-owned. Direct tests also prove
+these readers do not normalise or mutate stale inventory. Seven fixture-free
+enemy-selection groups pin the candidate predicates, enumeration cap and order,
+all distance/FOV boundaries, complete team precedence, shooting/facing/retreat
+fallbacks, entity-to-client lookup, and exact state writes in Debug and Release.
+
+The surrounding game-side identity paths now preserve retail's split between
+the zero-based client slot at bot-state offset `+4` and the one-based AAS entity
+number at `+8`. World-facing visibility, trace `passent`, attack sweeps,
+movement-state initialization, same-team tests, console-death enemy matching,
+and client-backed help/camp goals use the entity number; EA, chat, settings,
+and input APIs retain the client slot. The host `BotMoveClient` lifecycle still
+rewrites both identities for the destination slot rather than preserving the
+copied embedded values observed in retail, and `ltg_teammate` remains a
+zero-based internal adapter before conversion at AAS boundaries.
+【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10934-L11035】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27133-L27165】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27171-L27189】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28010-L28088】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28100-L28129】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28276-L28509】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28732-L29298】【F:src/botlib/aas/aas_map.c】【F:src/botlib/interface/bot_interface.c】【F:tests/parity/test_bot_interface.c】【F:src/botlib/ai/ai_dm.c】【F:tests/aas/test_aas_map.c】【F:tests/ai/test_ai_dm.c】
 
 The low-level movement predictor now matches several previously observable
 physics details: component-wise acceleration and velocity caps, Gladiator's

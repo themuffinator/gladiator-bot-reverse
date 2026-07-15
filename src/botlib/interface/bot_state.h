@@ -18,6 +18,20 @@ extern "C" {
 
 typedef struct bot_client_state_s bot_client_state_t;
 
+typedef enum bot_ai_node_e
+{
+	BOT_AI_NODE_SEEK_LTG = 0,
+	BOT_AI_NODE_STAND,
+	BOT_AI_NODE_ACTIVATE_ENTITY,
+	BOT_AI_NODE_SEEK_NBG,
+	BOT_AI_NODE_BATTLE_FIGHT,
+	BOT_AI_NODE_BATTLE_CHASE,
+	BOT_AI_NODE_BATTLE_RETREAT,
+	BOT_AI_NODE_BATTLE_NBG,
+	BOT_AI_NODE_OBSERVER,
+	BOT_AI_NODE_INTERMISSION,
+} bot_ai_node_t;
+
 /**
  * Characteristic indices required during client setup. These values mirror the
  * macros defined in the Gladiator assets (chars.h) and describe where the
@@ -35,13 +49,15 @@ enum bot_characteristic_index_e {
 
 typedef struct bot_combat_state_s
 {
-    int current_enemy;
+	int current_enemy;
+	int last_enemy_area;
     bool enemy_visible;
     float enemy_visible_time;
     float enemy_sight_time;
-    float enemy_death_time;
-    float enemy_last_seen_time;
-    vec3_t last_enemy_origin;
+	float enemy_death_time;
+	float enemy_last_seen_time;
+	float chase_time;
+	vec3_t last_enemy_origin;
     vec3_t last_enemy_velocity;
     int revenge_enemy;
     int revenge_kills;
@@ -62,6 +78,7 @@ typedef struct bot_console_waypoint_s
 
 struct bot_client_state_s {
     int client_number;
+	int entity_number;
     int team;
     bool active;
 	bool active_counted;
@@ -89,7 +106,16 @@ struct bot_client_state_s {
     bool has_move_result;
     float goal_avoid_duration;
     int active_goal_number;
-    bot_combat_state_t combat;
+	float nearby_goal_time;
+	float nearby_goal_check_time;
+	float long_term_goal_time;
+	bot_goal_t activation_goal;
+	float activation_goal_time;
+	bool blocked_avoid_right;
+	bot_combat_state_t combat;
+	bot_ai_node_t ai_node;
+	int ai_node_switches;
+	bool ai_node_overflow;
 	float power_armor_time;
 	float quad_time;
 	float invulnerability_time;
@@ -97,6 +123,13 @@ struct bot_client_state_s {
 	float environmentsuit_time;
 	float stand_time;
 	bool chat_standing;
+	bool stand_chat_pending;
+	float enter_game_time;
+	bool enter_game_chat_attempted;
+	bool respawn_requested;
+	bool respawn_action_sent;
+	bool respawn_chat_pending;
+	float respawn_time;
 	int bot_death_type;
 	int enemy_death_type;
 	char team_leader[MAX_NETNAME];
@@ -112,6 +145,7 @@ struct bot_client_state_s {
 	float arrive_time;
 	float defend_away_time;
 	float rush_base_away_time;
+	float get_flag_away_time;
 	bot_console_waypoint_t *checkpoints;
 	bot_console_waypoint_t *patrol_points;
 	bot_console_waypoint_t *current_patrol_point;

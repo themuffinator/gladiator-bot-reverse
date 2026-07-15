@@ -10,16 +10,200 @@ can be checked against the retail module boundaries.
 | Goal Management | `code/botlib/be_ai_goal.c` | `BotAllocGoalState`, `BotFreeGoalState`, `BotResetGoalState`, `BotLoadItemWeights`, `BotFreeItemWeights`, `BotWeightIndex`, `BotPushGoal`, `BotPopGoal`, `BotGetTopGoal`, `BotGetSecondGoal`, `BotChooseLTGItem`, `BotChooseNBGItem`, `BotTouchingGoal`, `BotGetLevelItemGoal`, `BotUpdateEntityItems` | Provides item weight driven long-term and nearby goal selection along with avoid-goal bookkeeping. Avoid goals now use Gladiator's fixed 64-slot number/time table rather than a compact counted list, so inserts only reuse expired slots and full active tables do not evict. The public negative avoid-time path derives respawn/default/minimum time even for dropped items, while selected dropped items use the dropped-item avoid timeout only when the level item has a live timeout. Goal stack peeks preserve the retail slot-zero sentinel, including `BotGetSecondGoal` failure at depth one. `BotLoadItemWeights` now passes the caller's script name straight into `ReadWeightConfig`, preserving Q3's retained filename-keyed cache behavior through the exported goal API. Item scoring follows Q3's `UNDECIDEDFUZZY` path through `FuzzyWeightUndecided`, so registered level items consume the same sampled balance ranges as the retail botlib. LTG/NBG start-area resolution rejects areas with no reachability links unless the last valid area fallback is available. NBG selection preserves the strict retail `travel_time < maxtime` gate, keeps the raw LTG return-route comparison, and depends on avoid timers for LTG/NBG repeat suppression. `BotTouchingGoal` uses the recovered player-bbox overlap test from Gladiator/Q3. `BotItemGoalInVisButNotVisible` preserves the retail `goal.origin + goal.mins` trace target. `BotGetLevelItemGoal` uses the recovered retail lower-bound cursor, rebuilds the public item/dropped flags instead of exposing stored roam flags, and returns `-1` when exhausted. Parsed `target_location` and `info_camp` metadata preserve Q3 head-insertion order for duplicate names and camp cursor iteration. Static BSP items now trace down to the floor before registration. Dynamic entity items are refreshed through the exported helper and through the recovered once-per-second BotAI gate before LTG/NBG selection, including the dropped-item jump-pad-area guard. |
 | Weight Configurations | `code/botlib/be_ai_weight.c` | `BotAllocWeightConfig`, `BotFreeWeightConfig`, `BotLoadWeights`, `BotWriteWeights`, `BotFreeWeightConfig2`, `BotReadWeightsFile`, `BotSetWeight`, `BotFindFuzzyWeight`, `BotFuzzyWeightHandle`, `FuzzyWeightUndecided`, `ScaleWeight`, `ScaleBalanceRange`, `EvolveWeightConfig`, `MergeWeightConfigs`, `InterbreedWeightConfigs` | Parses and caches `*.w` files, including `$evalfloat` / `$evalint` macro-expanded defaults, implicit switch defaults, the 128-weight cap, Q3's retained filename-keyed cache lookup before filesystem resolution, Gladiator's `"couldn't find %s\n"` / `"counldn't load %s\n"` load diagnostics, and the broad `FreeWeightConfig` reload gate that retains even direct loads while `bot_reloadcharacters` is false; exposes indexed fuzzy lookup/evaluation through the handle and q2bridge surfaces; reconstructs Gladiator's two-config merge helper, bounded mutation helper, Q3 genetic helpers, the undecided balance sampler with the retail masked random scale, and the HLIL-mapped scale helpers. Goal item scoring consumes `FuzzyWeightUndecided`, goal fuzzy mutation routes straight to `EvolveWeightConfig`, and goal interbreeding writes into the child state's existing config, matching the Q3 wiring. The low-level weight helpers remain callable by the botlib setup path, while the public interface wrappers enforce setup guards. |
 | Movement | `code/botlib/be_ai_move.c` | `BotAllocMoveState`, `BotFreeMoveState`, `BotInitMoveState`, `BotResetMoveState`, `BotMoveToGoal`, `BotMoveInDirection`, `BotPredictVisiblePosition`, `BotResetAvoidReach`, `BotResetLastAvoidReach`, `BotReachabilityArea`, `BotMovementViewTarget`, `BotAddAvoidSpot` | Handles reachability analysis, path advancement, and avoidance heuristics for navigation. Dispatch preserves Gladiator's unsupported successor travel warnings for type 13 and types 15-17, merges pre-dispatch mover diagnostics back into the copied move result, keeps view/prediction route queries on Q3's synthetic reach-end context, reconstructs the exported reachability-area probe ordering, restores direct-move barrier/gap probing plus `AAS_PredictClientMovement` rejection, active walk/jump/elevator/rocket-jump/jump-pad/func_bobbing steering, and wires the retail avoid-spot export through the bridge/interface table. |
-| Game-side Combat | Gladiator `sub_10022e10`, `sub_10023970`, `sub_10024590` / Q3 `code/game/ai_dmq3.c` | `BotAttackMove`, `BotFindEnemy`, `BotCheckAttack` | The reconstructed combat caller now uses Gladiator's 15-bit random scale, characteristic-48 pizza preference, characteristic-4 attack-skill floor and 100-180-unit low-skill hold band, fixed `+0.1` strafe clock, skill-derived direction threshold, probabilistic strafe flips, characteristic-driven crouch/jump handling, the crouch timer and alternating jump latch, direct low-skill movement calls, and the high-skill two-attempt failed-strafe retry. It does not synthesize the enemy-change strafe reset or attack-chase activation that retail omits. The otherwise dormant entry branch now preserves the strict future-time deadline before random and characteristic work, constructs the cached enemy entity/area/origin goal with retail's -8/+8 bounds, rebuilds movement state, and passes the caller's travel flags to `BotMoveToGoal`; raw DLL inspection finds only the deadline read at `0x10022e3e`, while Q3 leaves its sole prospective writer commented out, so a narrow test injector covers the branch without activating it in production. Enemy acquisition always stamps sight time with the current frame, including damage/shooting-assisted acquisition. Attack eligibility reads characteristic 11 in `[0,1]`, waits for the exact reaction-time boundary, then submits `EA_Attack` every eligible frame without an invented generic cooldown. Aim submission preserves the retail 16-bit angle grid, shortest-angle turn, characteristic-9/10 additive acceleration and asymmetric slowdown, explicit frame think time, and strict aim-accuracy `> 0.8` direct snap. Its weapon-aware stages reproduce the eye-plus-weapon-offset boxed trace, target `+8/+16` quirk, characteristic-7 linear projectile lead, Rocket Launcher square-root accuracy, target jitter, Railgun normalized perturbation, pitch/yaw spread call order, and radial ground targeting with the strict retail `> 150`, `< 50`, and `< 60` gates. `BotCheckAttack` now samples the target bounding-box center, bottom, and top through FOV/PVS, adjusts trace direction and contents masks across dry/fluid media, continues through translucent fluids, and applies the retail weapon sweep, teammate and splash safety, window follow-up, and fire-on-release latch. The retained Quake II dvis data supplies this PVS query. The earlier reaction-time-as-projectile-lead approximation is gone; reaction time only gates firing. Battle inventory now runs before fuzzy weapon scoring: `sub_10021020` resolves the retail image table for four powerup deadlines and the power-shield grace state, while `sub_10021290` projects enemy distance, height, all twelve weapon-byte one-hot slots, and QUAD/PENT/powerscreen effects. Exact stale gaps are preserved, including the armor-icon-zero branch and enemy powershield slot; ground/water flags remain movement inputs rather than invented inventory fields. Self-preservation, retreat, and exact enemy-selection integration remain under reconstruction.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10934-L11035】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L26925-L27034】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27037-L27104】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28276-L28509】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28732-L29298】【F:src/botlib/interface/bot_interface.c】【F:src/botlib/ai/ai_dm.c】【F:tests/parity/test_bot_interface.c】【F:tests/ai/test_ai_dm.c】 |
-| Weapon Selection | Gladiator `ai_weapon` HLIL / Q3 `code/botlib/be_ai_weap.c` | `AI_LoadWeaponLibrary`, `AI_WeaponNumberForModel`, `AI_WeaponNameForModel`, `AI_WeaponWeightsBindConfig`, `AI_WeaponWeightsConfigByteSize`, `AI_WeaponWeightsIndexByteSize`, `BotAllocWeaponState`, `BotFreeWeaponState`, `BotResetWeaponState`, `BotLoadWeaponWeights`, `BotFreeWeaponWeights`, `BotWeaponStateSyncFrame`, `BotWeaponStateSetCurrentModel`, `BotChooseBestFightWeapon`, `BotSelectBestFightWeapon`, `BotGetWeaponInfo`, `BotGetTopRankedWeapon` | Parses Gladiator's compact weapon records, pins the recovered `0x158` weapon / `0xd0` projectile retail rows and key field offsets, links projectile pointers, passes fuzzy weapon-weight filenames directly into `ReadWeightConfig` before binding to the active weaponconfig, proves retained filename-keyed reuse through deleted-fixture `AI_LoadWeaponWeights` and `BotLoadWeaponWeights` paths, builds and refreshes fuzzy-weight index tables, reports the separate weight/index allocations used by character setup diagnostics, resolves weapon models with Gladiator's case-insensitive compare helper, syncs the client, inventory pointer, and current model from the live frame before selection, keeps the public chooser side-effect-free like Q3, tracks selected weapon state through the HLIL-style model-change `use` command gate, preserves the cached weapon on a no-winner scoring pass, clears selector timing only through the explicit reset helper, borrows character-owned weapon weights into the client weapon state as a hard setup gate, preserves borrowed unbound weights until the active weaponconfig can be late-bound, and tears down client weapon-state attachments before the global character/weapon-weight shutdown so setup cycles can rebuild clean wiring. |
+| Game-side Combat | Gladiator `sub_10021500`, `sub_100215e0`, `sub_10021650`, `sub_100226c0`, `sub_100228c0`, `sub_10022930`, `sub_10022990`, `sub_10022e10`, `sub_10023970`, `sub_10024590` / Q3 `code/game/ai_dmq3.c` | `BotAI_UseItems`, `BotAI_BattleUseItems`, `BotAI_CarryingFlag`, `BotAI_Aggression`, `BotAI_WantsToRetreat`, `BotAI_WantsToChase`, `BotAI_CanAndWantsToRocketJump`, `BotAttackMove`, `BotFindEnemy`, `BotCheckAttack` | The reconstructed combat caller now uses Gladiator's 15-bit random scale, characteristic-48 pizza preference, characteristic-4 attack-skill floor and 100-180-unit low-skill hold band, fixed `+0.1` strafe clock, skill-derived direction threshold, probabilistic strafe flips, characteristic-driven crouch/jump handling, the crouch timer and alternating jump latch, direct low-skill movement calls, and the high-skill two-attempt failed-strafe retry. It does not synthesize the enemy-change strafe reset or attack-chase activation that retail omits. The otherwise dormant entry branch now preserves the strict future-time deadline before random and characteristic work, constructs the cached enemy entity/area/origin goal with retail's -8/+8 bounds, rebuilds movement state, and passes the caller's travel flags to `BotMoveToGoal`; raw DLL inspection finds only the deadline read at `0x10022e3e`, while Q3 leaves its sole prospective writer commented out, so a narrow test injector covers the branch without activating it in production. `BotFindEnemy` now scans at most sixteen visible one-based client entities in numeric order and preserves the retail live-player, characteristic-45 range, private-view FOV, team-precedence, damage, 300-unit, shooting-frame, candidate-facing, retreat, and state-write rules. Its high-level callers now retain the recovered node-specific acquisition schedule. Attack eligibility reads characteristic 11 in `[0,1]`, waits for the exact reaction-time boundary, then submits `EA_Attack` every eligible frame without an invented generic cooldown. Aim submission preserves the retail 16-bit angle grid, shortest-angle turn, characteristic-9/10 additive acceleration and asymmetric slowdown, explicit frame think time, and strict aim-accuracy `> 0.8` direct snap. Its weapon-aware stages reproduce the eye-plus-weapon-offset boxed trace, target `+8/+16` quirk, characteristic-7 linear projectile lead, Rocket Launcher square-root accuracy, target jitter, Railgun normalized perturbation, pitch/yaw spread call order, and radial ground targeting with the strict retail `> 150`, `< 50`, and `< 60` gates. `BotCheckAttack` now samples the target bounding-box center, bottom, and top through FOV/PVS, adjusts trace direction and contents masks across dry/fluid media, continues through translucent fluids, and applies the retail weapon sweep, teammate and splash safety, window follow-up, and fire-on-release latch. The retained Quake II dvis data supplies this PVS query. The earlier reaction-time-as-projectile-lead approximation is gone; reaction time only gates firing. Battle inventory now runs before fuzzy weapon scoring: `sub_10021020` resolves the retail image table for four powerup deadlines and the power-shield grace state, while `sub_10021290` projects enemy distance, height, all twelve weapon-byte one-hot slots, and QUAD/PENT/powerscreen effects. Exact stale gaps are preserved, including the armor-icon-zero branch and enemy powershield slot; ground/water flags remain movement inputs rather than invented inventory fields. General and battle item-use ordering, flag carry, aggression, retreat, chase, and the raw rocket-jump eligibility decision now match retail.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10934-L11035】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L26925-L27034】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27037-L27104】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27133-L27165】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28100-L28129】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28276-L28509】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28732-L29298】【F:src/botlib/interface/bot_interface.c】【F:src/botlib/ai/ai_dm.c】【F:tests/parity/test_bot_interface.c】【F:tests/ai/test_ai_dm.c】 |
+| Weapon Selection | Gladiator `ai_weapon` HLIL / Q3 `code/botlib/be_ai_weap.c` | `AI_LoadWeaponLibrary`, `AI_WeaponNumberForModel`, `AI_WeaponNameForModel`, `AI_WeaponWeightsBindConfig`, `AI_WeaponWeightsConfigByteSize`, `AI_WeaponWeightsIndexByteSize`, `BotAllocWeaponState`, `BotFreeWeaponState`, `BotResetWeaponState`, `BotLoadWeaponWeights`, `BotFreeWeaponWeights`, `BotWeaponStateSyncFrame`, `BotWeaponStateSetCurrentModel`, `BotChooseBestFightWeapon`, `BotSelectBestFightWeapon`, `BotGetWeaponInfo`, `BotGetTopRankedWeapon` | Parses Gladiator's compact weapon records, pins the recovered `0x158` weapon / `0xd0` projectile retail rows and key field offsets, links projectile pointers, passes fuzzy weapon-weight filenames directly into `ReadWeightConfig` before binding to the active weaponconfig, proves retained filename-keyed reuse through deleted-fixture `AI_LoadWeaponWeights` and `BotLoadWeaponWeights` paths, builds and refreshes fuzzy-weight index tables, reports the separate weight/index allocations used by character setup diagnostics, resolves weapon models with Gladiator's case-insensitive compare helper, syncs the client, inventory pointer, and current model from the live frame before selection, keeps the public chooser side-effect-free like Q3, tracks selected weapon state through the HLIL model-change gate using the dedicated `EA_UseItem` token/argument/terminator call shape, preserves the cached weapon on a no-winner scoring pass, clears selector timing only through the explicit reset helper, borrows character-owned weapon weights into the client weapon state as a hard setup gate, preserves borrowed unbound weights until the active weaponconfig can be late-bound, and tears down client weapon-state attachments before the global character/weapon-weight shutdown so setup cycles can rebuild clean wiring. Game-side selection is node-local: Fight, active Retreat, and Battle NBG synchronise and select; Battle NBG refreshes enemy inventory after movement before selecting, while Stand, goal nodes, Chase, and idle Retreat do not invoke the selector. |
 | Character Profiles | Gladiator `sub_10029eb0` / Q3 `code/botlib/be_ai_char.c` | `AI_LoadCharacterNamed`, `BotLoadNamedCharacter`, `BotLoadCharacter`, `BotFreeCharacter`, `BotLoadCharacterSkill`, `BotFreeCharacterStrings`, `Characteristic_Float` | Loads named Gladiator `character "name"` definitions through the precompiler, wires item/weapon/chat resources plus their setup indices while preserving the original item/weapon weight script strings for filename-keyed cache hits, proves both character-owned weight configs survive deleted backing files under retained-cache mode, keeps characteristic 13 as the chat persona for reply-name matching, keeps live netname/skin data on the game-to-botlib `BotClientSettings` path, exposes the retail name/skin/lookup helpers over that runtime `maxclients` slot table, mirrors the retail active-bot count helper over setup/shutdown while keeping moves count-neutral, resets that table on library setup/shutdown, preserves character-owned wiring across the reconstructed map-load active-client reset, rebinds moved client-state mirrors to the destination slot, replays the setup-pending `gender` and alternate `name` EA command branch from `sub_10028a70`, and also supports Q3 `skill N` files with included `chars.h` constants, the Q3 index-80 parser/public-access split, default-character preloading/filling from the cached default handle, interpolation, `BotLoadCharacter` skill clamping, unclamped direct `BotLoadCharacterSkill` fallback, missing-file default fallback, fallback cache identity, the retail exact/default/any-skill fallback cache order, and `bot_reloadcharacters` cache/free semantics including the retail fractional cache-hit exception. Characteristic lookups preserve Gladiator diagnostics, and the export table now guards character entry points like the adjacent AI domains. See `docs/ai_character_reverse_mapping.md` for the Gladiator/Q3 index map. |
 | Chat System | `code/botlib/be_ai_chat.c`, `code/game/ai_chat.c` | `BotAllocChatState`, `BotFreeChatState`, `BotLoadChatFile`, `BotFreeChatFile`, `BotQueueConsoleMessage`, `BotRemoveConsoleMessage`, `BotNextConsoleMessage`, `BotEnterChat`, `BotNumInitialChats`, `BotInitialChat`, `BotGetChatMessage`, `BotSetChatGender`, `BotSetChatName`, `BotChatName`, `BotChatClient`, `BotReplyChat`, `BotChatLength`, `BotNumConsoleMessages`, `StringContains`, `BotFindMatch`, `BotMatchVariable`, `UnifyWhiteSpaces`, `BotReplaceSynonyms` | Manages per-bot chat states, script selection, initial-chat buckets, pending message handoff, reply metadata, setup match/synonym utilities, and diagnostic access to the retained reply persona/client metadata. Incoming console text uses the shared retail `max_messages` node heap with AAS timestamps, FIFO state lists, non-destructive node peek, and identity removal; legacy destructive/type wrappers remain separate. The per-client dispatcher now pins the retail side effects for match types 3–21: help/accompany/defend and CTF orders, leadership/status/subteam/formation/dismissal, plus camp/checkpoint/patrol. Remaining differences are architectural adapters around node ownership, native pointers, semantic client IDs, the absent general AI-node graph, and synonym/literal-template interoperation. |
+
+The long table rows above predate the current scheduler pass where they describe a
+monolithic think loop or an absent AI-node graph. The active reconstruction now
+uses the retail 50-switch scheduler, node-owned enemy/sight state, and the
+Stand, Seek LTG, Activate, Seek NBG, Fight, Chase, Retreat, and Battle NBG
+node identities. Its shared pmove preamble enters reset Observer and
+Intermission nodes, sends the gated `end_level` and `start_level` events at
+their distinct handoffs, and retains the two-second no-chat intermission wait.
+Stand always tests for an enemy before its pending-chat typing wait, retaining
+that pending message if the visible-enemy transition interrupts it; on each
+no-enemy tick it advances the retained private view turn before evaluating that
+strict post-deadline handoff; the expiry then preserves that turn into Seek
+LTG's same-frame work. A non-zero private `__squatt` guard instead preserves
+Stand and its pending chat while sending the retail warning say and `removebot`
+command.
+It also latches one valid-position, characteristic-gated `enter_game` event
+during the first eight seconds after setup, while dead/gib clients retain the
+retail reset, death-chat, strict post-typing-time one-shot-respawn, and normal Seek-LTG
+re-entry sequence, including the first-alive-frame gate before regular movement. Seek LTG now executes its random-chat handoff before
+enemy acquisition and goal selection: help/accompany/rush-base orders veto
+it, its first trial is `0.1 * thinktime`, fast chat bypasses the two
+probability gates, and a valid position selects `random_misc` or
+`random_insult` before Stand. For five seconds after a recorded enemy death,
+Seek LTG also performs the retail per-frame trial that sends only wave gesture
+0 or 2 immediately before its enemy scan. Battle Fight now turns a retained dead enemy into
+the gated characteristic-19 kill chat (telefrag before insult/praise), holding
+Stand for the constructed message's typing time before returning to Seek LTG.
+Its active combat body selects a weapon, then applies the Battle
+Quad/Invulnerability pass and the general item-use pass before its attack move.
+Battle Chase receives its own strict ten-second entry deadline and now routes directly
+to a retained eight-unit last-seen goal, zeros that deadline on contact or
+after movement reaches the remembered enemy area, and performs the
+once-per-second nearby-item search before entering Battle NBG.
+Its active mover refreshes the retained enemy battle inventory and runs the
+general item-use pass before move-state setup; active Battle NBG and Retreat
+run that same general item-use pass immediately before their own mover setup.
+Battle NBG now holds its own nearby goal, verifies the retained enemy, refreshes
+the reachable last-enemy area and origin, applies the strict timeout/contact
+pop, and returns to Fight or Retreat before using
+the ordinary LTG routing again. Retreat now validates the enemy, exits to a
+fresh Chase when safe, promotes a carried CTF flag to Rush Base only when that
+LTG changes (clearing its away clock and giving it a 120-second deadline), then
+resolves the home-flag goal directly rather than fabricating a stack entry, and
+shares the nearby-item handoff while preserving its no-rocket-jump travel mask. All three
+direct battle paths now retain mover-provided movement/swim views and preserve
+an explicitly mover-set EA view without a private turn. Immediately after each
+direct `BotMoveToGoal`, they also run the recovered `BotAIBlocked` activation /
+perpendicular-retry handoff; Chase and Retreat clear the ordinary nearby-goal
+deadline on mover failure, while NBG clears its combat-specific deadline.
+Chase's fixed 300-unit route-lookahead fallback feeds the private accelerated
+turn otherwise. Fight deliberately leaves its mover untouched at node entry;
+BotAttackMove initializes it only after the pizza-preference and minimum
+attack-skill gates, plus in its dormant future attack-chase branch. Its move
+vector originates at the player body, whereas weapon-aware aim originates at
+the eye position. The 100-180-unit hold branch is strictly below attack skill
+0.4; the exact boundary uses strafing. The rocket-jump setting is a travel-mask
+permission, not a Fight-tail autonomous jump action.
+Battle NBG invokes weapon-aware aim only when movement does not own the view,
+then checks attack and applies its separate non-view-set turn. Retreat preserves
+its own movement-view, low attack-skill lookahead, and enemy-aim alternatives
+before the same recovered attack gate. Weapon selection is likewise node-local:
+Fight, active Retreat, and Battle NBG select, with Battle NBG moving, syncing
+its weapon frame, then updating enemy inventory before selection; Stand, goal
+nodes, Chase, and idle Retreat do
+not. Before resolving a team or ordinary item goal, Seek LTG also replays the
+retail autonomous CTF selection: a carrier receives Rush Base; otherwise an
+unassigned aggressive bot uses the 0.33/0.66 choice to get the enemy flag,
+defend its home flag for 120 seconds, or wait through the 60-second CTF roam
+lease. Ordinary Seek LTG now probes nearby
+items on the retail strict half-second cadence, immediately re-enters
+Seek-NBG to move a selected item through a separately counted scheduler switch, uses the defend-only 1500
+travel-unit budget (700 otherwise), and pushes a five-second Seek-NBG goal
+that pops back to the underlying LTG on contact, missing-visible-item, failure,
+or expiry through the same-frame node loop without a synthetic probe delay. It refreshes the move state only
+immediately before a direct `BotMoveToGoal`, leaving idle and nearby-goal
+handoff paths untouched. Once a direct team branch declines, Seek LTG passes its top stack
+goal straight to `BotMoveToGoal` with the node's retail travel mask; failed
+moves reset only the mover's last avoid reach rather than the compatibility
+goal-avoid list. The ordinary item branch now retains a chosen LTG for twenty
+seconds, uses the complete item reach/absence/vertical-overlap predicate, and
+clears both avoid layers when no replacement remains selectable. A failed
+direct move also immediately expires that lease, matching the retail retry
+transition. Remaining
+scheduler work is concentrated in other high-level goal bodies. Help, accompany, defend, CTF get-flag/
+rush-base, camp, and patrol now return their retail direct long-term goals
+before ordinary item selection. Help and accompany use the teammate entity's
+reachable current AAS goal with their distinct near-distance holds and strict
+expiry/visibility clears. The accompany hold shares battle's crouch timer,
+reconstructs retail arrival/crouch/gesture input, faces the companion for the
+first two seconds, and otherwise selects a safe ten-try roam target as its idle
+view. Get-flag selects the opposing flag and rush-base selects the home flag
+only while carrying one, retaining its post-touch away timer. The direct
+branches preserve delayed team acknowledgements where retail emits them, strict
+expiry, movement failure avoid reset, defend/camp near-goal behavior, and
+patrol's forward-bit ping-pong traversal.
 
 These names reflect the interfaces invoked by `GetBotLibAPI` when the engine
 binds botlib exports (see `botlib_export_t` in the Quake III Arena source). As
 reconstruction progresses, ensure the same signatures exist under the
 `src/botlib/ai*` directories so downstream modules can link without
 modification.
+
+## Current Combat Decision Reconstruction Notes
+
+- `BotAI_UseItems` maps `sub_10021500` as four independent ordered readers:
+  owned Silencer, then the eye-position `PointContents & 0x38` Rebreather gate,
+  then inactive Power Shield and Power Screen. Every owned/active test uses the
+  raw slots and strict signed comparisons, so one call may submit all four
+  exact item names without normalising stale inventory.
+- `BotAI_BattleUseItems` maps `sub_100215e0`: an inactive owned Quad submits
+  `"Quad Damage"` and returns immediately; only the fallback can submit owned,
+  inactive `"Invulnerability"`.
+- `BotAI_CarryingFlag` maps `sub_10021650` exactly: ordered nonzero CTF values
+  enable the raw flag slots, flag one takes precedence with result 1, and flag
+  two returns 2. Zero and unordered values disable both checks.
+- `BotAI_Aggression` maps `sub_100226c0` over the battle inventory without
+  refreshing or normalising it. Own invulnerability overrides the later gates;
+  enemy powerups, the inclusive height/health/armor boundaries, and all eight
+  strict weapon/ammunition pairs preserve their retail order and raw slots.
+- `BotAI_WantsToRetreat` maps `sub_100228c0` as flag carry, LTG type 4, then
+  aggression `< 50`. `BotAI_WantsToChase` maps `sub_10022930` as aggression
+  `> 50` only, deliberately omitting the extra flag/LTG cases present in Quake
+  III.
+- Seek LTG/NBG and Battle Chase/Retreat/NBG share the retail nearby-goal
+  deadline/probe pair at `0xaec`/`0xaf8`. Failed Chase and Retreat movement
+  clear the separate retained LTG deadline at `0xae8`, while failed Battle NBG
+  movement clears only the shared nearby-goal lease.
+- `BotAI_CanAndWantsToRocketJump` maps `sub_10022990` over raw slots 14, 21,
+  204, and 205 before the health and armor gates. Own invulnerability bypasses
+  survivability and characteristic 26; otherwise health must be at least 60,
+  sub-90 health needs one exact 40/50/60 armor threshold, and bounded weapon
+  jumping accepts at `>= 0.5`. The global `rocketjump` variable remains a
+  caller-side gate, as in retail, and this helper neither refreshes nor mutates
+  stale inventory.
+  These helpers feed the exact `BotFindEnemy` retreat fallback. Enemy selection
+  scans up to sixteen visible one-based client entities in numeric order and
+  preserves the retail live-player, 900/810/300-unit, team-precedence,
+  shooting-frame, candidate-facing, and retreat gates. It updates only the
+  current enemy and sight time on success while always retaining the current
+  health baseline. The reconstructed 50-transition node loop now limits
+  acquisition to the retail node phases, retains Fight/Chase enemy ownership,
+  keeps Activate committed to its standalone activation goal through movement,
+  then scans for an enemy before its private view turn; its reached/expired
+  handoff remains before movement. Seek-NBG likewise exits missing, reached,
+  and expired goals before movement through the same-frame successor loop. Its
+  runes-enabled reached-goal handoff also
+  compares CTF tech models and sends `drop tech` for a conflicting held tech,
+  retaining the raw tech-four Haste exception. Both live Activate and Seek-NBG
+  acquisition passes run after movement and precede their private view turn;
+  Chase retains its entry deadline. The lifecycle now resets and holds Observer and
+  Intermission, dispatches its level-transition events, and gates the one-shot
+  enter-game chat before the dead/gib death-chat and delayed-respawn path.
+  Help, defend, camp, and patrol now run through the direct LTG mover with
+  their retail message/expiry and near-goal state transitions. Help resolves
+  a reachable current teammate goal and clears on the strict stale-visibility
+  boundary. Accompany formation behavior and CTF get-flag/rush-base now run
+through their recovered direct LTG branches. Generic Seek LTG/NBG nearby-item
+selection also retains its strict probe and expiry handoff, and the ordinary
+top-stack LTG now uses the same direct mover/failure-reset path plus its
+twenty-second item lease, retail view selection (explicit mover view, waiting
+roam glance, or 300-unit route look-ahead), and exhausted-candidate recovery
+that empties the goal stack before clearing both avoidance layers. Its direct
+team and ordinary movement exits now preserve their ideal target and take the
+private accelerated view turn unless the mover has explicitly set its view;
+general item use follows the nearby-goal probe and directly precedes only an
+active goal mover, so a no-goal idle turn or successful nearby handoff emits
+no premature item use;
+remaining
+scheduler work is in other high-level goal bodies. Camp arrival now keeps the
+retail random idle look, crouch clock, swimming reset, and water/lava/slime
+cancellation. Battle Retreat now retains its no-goal idle view turn instead of
+redirecting through the Stand node without general item use, and its later Chase handoff uses the
+separate strict chase predicate even while get-flag initially requests retreat.
+Battle Chase, NBG, and Retreat also keep a
+mover-set view intact rather than applying `sub_10029150` afterwards, and each
+calls `sub_10025560` after its direct mover result. Blocked direct movement now
+matches `sub_10025560`: static doors and shootable buttons select Blaster,
+aim, and attack; reachable buttons and trigger brushes store a single
+ten-second activation goal; all other blocks use the retained alternating
+perpendicular retry and expire the active Seek-NBG/LTG lease.
+- The private `sub_10029150` view turn uses its fixed 100/150 acceleration
+  values precisely when the enemy entity is zero; active enemy turns alone
+  query characteristics 9 and 10.
+- Bot state now keeps retail's distinct zero-based client slot and one-based
+  world entity number. AAS visibility, traces, movement initialization,
+  teammate tests, attack checks, console enemy deaths, and client-backed goals
+  use the entity identity, while EA/chat/input calls continue to use the client
+  slot. `BotMoveClient` rewriting both host identities and the zero-based
+  `ltg_teammate` storage remain explicit lifecycle adapters.
+  【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27133-L27165】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27171-L27189】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28010-L28088】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28100-L28129】【F:src/botlib/interface/bot_interface.c】【F:tests/parity/test_bot_interface.c】
 
 ## Current Movement Reconstruction Notes
 
@@ -114,13 +298,13 @@ of the full translation.
 | Parenthesized reply keys such as `("i am ", 0)` | Reply keys capture the span matched by integer numeric variables and response messages substitute that span through retail `ESCAPE_CHAR` variable construction, including Q3 string-piece alternatives such as `"hello " | "hi "`.| `BotChat_ParseReplyKeys`, `BotChat_ReplyRuleMatches`, `BotConstructChatMessage`. | Quake III's `BotLoadMatchPieces` rejects non-integer, out-of-range, adjacent, empty, and comma-less match-piece sequences, reads `|`-separated string alternatives into one match piece, and then `StringsMatch` fills `bot_match_t.variables[]`; Gladiator HLIL passes the match table into `BotConstructChatMessage` before dispatch. The outer reply-key list still mirrors Q3's optional commas between sibling keys.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1139-L1234】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1357-L1490】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36701-L36968】 |
 | Reply `mcontext` / `vcontext` split | Q3 reply construction uses the message context for weighted output synonyms and a separate variable context for captured reply variables, then appends fixed var0-var7 replacements.| `BotReplyChatWithContexts`, `BotConstructChatMessage`, `BotReplaceReplySynonyms`. | Q3 callers pass `context, CONTEXT_REPLY, NULL... botname, netname`; the botlib constructor canonicalizes reply variables with `BotReplaceReplySynonyms(temp, vcontext)` and applies weighted output synonyms with `mcontext`. Both synonym paths now use Q3 `StringContainsWord` boundaries, where only space, period, comma, and exclamation mark terminate a synonym word.【F:dev_tools/Quake-III-Arena-master/code/game/ai_dmq3.c†L4666-L4687】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L495-L563】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2289-L2399】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2614-L2764】 |
 | Match utility exports | Setup-loaded `match.c` templates retain their `MTCONTEXT_*` filter, message subtype, Q3-valid comma-delimited variable pieces, and `|`-separated string alternatives so game code can classify console messages and pull captured variables. | `BotFindMatch`, `BotMatchVariable`, `StringContains`, `UnifyWhiteSpaces`, `BotReplaceSynonyms`. | Q3 exposes these helpers next to the chat exports; Gladiator HLIL carries the same `BotMatchVariable: variable out of range` diagnostic and match-template loader region.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L440-L464】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L761-L761】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1139-L1234】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1434-L1490】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L35081-L35081】 |
-| Match template metadata | Numeric `match.c` context labels and `(message type, subtype)` tuple fields are accepted only as integer tokens after preprocessing. | `BotChat_ParseMatchScript`, `BotChat_ParseMatchTemplate`, `BotFindMatch`. | Q3 `BotLoadMatchTemplates` reads the context, message type, and subtype through integer token expectations before registering the template; the reconstruction keeps identifier support for preserved macro names but rejects float numeric metadata rather than truncating it.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1258-L1332】 |
+| Match template metadata | Numeric `match.c` context labels and `(message type, subtype)` tuple fields are accepted only as integer tokens after preprocessing. | `BotChat_ParseMatchScript`, `BotChat_ParseMatchTemplate`, `BotFindMatch`. | Q3 `BotLoadMatchTemplates` reads the context, message type, and subtype through integer token expectations before registering the template; the reconstruction keeps identifier compatibility for direct, non-preprocessed input but normal script loads consume expanded integer metadata and reject floats rather than truncating them.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1258-L1332】 |
 | `<"bot", ...>` reply keys and tilde stripping | Bot-name list keys are parsed as special reply-key metadata, and constructed chat removes `~` markers when text is fetched or sent.| `BotChat_ParseReplyKeys`, `BotReplyChat`, `BotGetChatMessage`, `BotEnterChat`. | Q3 parses `<...>` into `RCKFL_BOTNAMES` and strips tildes at `BotEnterChat` / `BotGetChatMessage`; Gladiator HLIL exposes the same reply-key flag bits and pending-message handoff offsets.【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1828-L1981】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L421-L433】 |
 | `synfile`, `rndfile`, `matchfile`, `rchatfile` | Setup reads the same libvar-selected asset names as Quake III and skips `rchatfile` when `nochat` is non-zero.| `BotSetupChatAI` / `BotShutdownChatAI`. | HLIL `sub_1002ebb0` loads the three shared assets first and only then gates reply chat loading on `nochat`; `sub_1002ec80` frees the cached lists.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L36922-L36948】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L2960-L3015】 |
 | `j_sub_1002ebb0()` in setup and `j_sub_1002ec80()` in shutdown | Library setup invokes chat setup after weapon/item setup and shutdown tears the shared chat cache down before item/weapon teardown.| `Botlib_SetupAISubsystem`, `Botlib_ShutdownAISubsystem`, `BotSetupChatAI`, `BotShutdownChatAI`. | Gladiator HLIL `sub_10029c90` calls weapon setup, item setup, then chat setup before allocating bot-state storage; `sub_10029da0` invokes the chat shutdown bridge before item and weapon shutdown.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32727-L32748】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32754-L32760】 |
 | `j_sub_100356d0()` in shutdown | Library shutdown reaches the weapon AI teardown after chat/item cleanup, and the reconstructed interface must clear both active client attachments and exported handle-table slots before shared config memory is released.| `Botlib_ShutdownAISubsystem`, `BotState_ShutdownAll`, `BotShutdownWeaponAI`, `BotAllocWeaponState`, `BotFreeWeaponState`. | Gladiator embeds weapon state inside each bot client, but the Q3-style export surface exposes handle-indexed states; the reconstruction now destroys client states first and drains remaining exported handles during `BotShutdownLibrary` so a later setup cycle does not observe stale client or weapon-state slots.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32754-L32760】 |
 | `rnd.c`, `syn.c`, `match.c` sibling loads | Retail reply chat depends on shared random tables, synonym contexts, and obituary match templates that live beside `rchat.c` rather than inside it.| `BotLoadChatFile`, `BotChat_ParseRandomStringTables`, `BotChat_ParseSynonymContextsFromScript`, `BotChat_ParseMatchScript`. | The loader now mirrors the multi-asset setup implied by the HLIL chat-load stages and Quake III's separate initial, reply, and match table construction paths. |
-| Macro-preserved `MSG_*` / match variables | Gladiator chat assets rely on precompiler macros such as `MSG_DEATH`, `VICTIM`, `NETNAME`, and `GENDER_HIM`; preserving those tokens keeps reconstructed templates readable and context-aware.| `PS_CreateScriptFromSource`, `PC_ShouldPreserveChatDefine`, `BotChat_MessageTypeFromToken`, `BotChat_RewriteVariablesForMessageType`. | This supports retail `match.c` registrations such as `{VICTIM} commits suicide` while still allowing numeric macro fallback when the token stream has already expanded a define. |
+| Preprocessed `MSG_*` / match variables | Gladiator chat assets define identifiers such as `MSG_DEATH`, `VICTIM`, `NETNAME`, and `GENDER_HIM`; normal preprocessing expands them before the chat parser interprets message and variable positions.| `PC_ReadToken`, `PS_CreateScriptFromSource`, `BotChat_MessageTypeFromToken`, `BotChat_RewriteVariablesForMessageType`. | Retail `sub_1003d580` and Q3 `PC_ReadToken` perform define lookup for every `TT_NAME`, with no chat-name reservation. The reconstruction follows that contract, preserves the display-space boundary between flattened match pieces, and maps expanded slots 7/8/9 back through `THE_ENEMY`/`THE_TEAM`/`TEAM` so matching and public captures remain faithful.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L48200-L48234】【F:dev_tools/Quake-III-Arena-master/code/botlib/l_precomp.c†L2759-L2773】【F:dev_tools/Quake-III-Arena-master/code/botlib/be_ai_chat.c†L1139-L1234】【F:src/botlib/precomp/l_precomp.c】【F:src/botlib/ai_chat/ai_chat.c】【F:tests/parity/test_precompiler_lexer.c】【F:tests/parity/test_bot_interface.c】 |
 
 These correlations keep `src/botlib/ai_chat` aligned with the actual chat event
 flow (`BotChat_EnterGame`, `BotChat_Kill`, etc.) observed in both the HLIL dump
@@ -132,10 +316,13 @@ and id Software's GPL source.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L35770
   rewindable script snapshot. This matches the multi-pass loader shape used by
   chat parsing: random strings, synonyms, match templates, reply tables, and
   named initial chat blocks can all scan the same precompiled asset view.
-- The precompiler keeps chat symbols such as `MSG_*` and match placeholders
-  (`VICTIM`, `KILLER`, `NETNAME`, etc.) symbolic so the reconstructed chat
-  layer can map them back to readable template text while still accepting
-  numeric-expanded legacy input for context constants.
+- The precompiler applies ordinary define lookup to every `TT_NAME`, including
+  `MSG_*`, context labels, and match placeholders such as `VICTIM`, `KILLER`,
+  and `NETNAME`. The chat layer maps the resulting numeric metadata back to
+  message and variable roles instead of changing public preprocessing rules.
+  Its flattened template form treats numeric variable markers as complete
+  match pieces, retaining separator spaces outside captured names and mapping
+  the special flag/team slots 7-9 before pattern construction.
 - Loading `rchat.c` now pulls sibling retail assets (`rnd.c`, `syn.c`, and
   `match.c`) when present. This reflects the original split between reply
   tables, random-string tables, synonym contexts, and obituary match templates.
@@ -182,11 +369,12 @@ and id Software's GPL source.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L35770
   Character/profile loading seeds the reply persona from characteristic 13 while
   client attachment refreshes the owner client, and reply-chat keys such as
   unquoted `name`, `female`, `male`, and `it` use that metadata during matching.
-- Reply chat now scans all matching reply rules and selects the highest priority
-  response, matching the HLIL/Q3 interpretation of the numeric value after the
-  key list. State-local compatibility rules and the setup-loaded global table
-  share that same best-priority scan, so a lower local rule cannot mask a higher
-  setup rule. The parser also handles Q3 `<"bot", ...>` bot-name lists.
+- Reply chat now scans all matching reply rules in retail's setup-owned global
+  rchat table and selects the highest priority response, matching the HLIL/Q3
+  interpretation of the numeric value after the key list. State-local parsing
+  remains available only to direct callers that bypass setup; it cannot affect
+  a setup-owned reply selection. The parser also handles Q3 `<"bot", ...>`
+  bot-name lists.
 - `BotReplyChatWithContexts` now exposes the Q3 split reply-construction path:
   `mcontext` drives weighted output synonyms, `vcontext` drives reply-variable
   synonym canonicalization, and fixed var0-var7 slots cover the game-side

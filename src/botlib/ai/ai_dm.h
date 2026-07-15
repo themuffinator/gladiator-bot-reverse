@@ -69,6 +69,31 @@ ai_dm_state_t *AI_DMState_Create(int client_number);
 void AI_DMState_Destroy(ai_dm_state_t *state);
 void AI_DMState_Reset(ai_dm_state_t *state);
 void AI_DMState_SetClient(ai_dm_state_t *state, int client_number);
+void AI_DMState_SetEnemyContext(ai_dm_state_t *state,
+	int enemy_entity,
+	float enemy_sight_time,
+	int last_enemy_area,
+	const vec3_t last_enemy_origin);
+void AI_DMState_SetChaseDeadline(ai_dm_state_t *state, float chase_time);
+void AI_DMState_ApplyDeltaAngles(ai_dm_state_t *state,
+	const vec3_t delta_angles);
+int AI_DMState_GetViewAngles(const ai_dm_state_t *state,
+	vec3_t viewangles);
+void AI_DMState_SetIdealViewAngles(ai_dm_state_t *state,
+	const vec3_t ideal_viewangles);
+float AI_DMState_GetAttackCrouchTime(const ai_dm_state_t *state);
+void AI_DMState_SetAttackCrouchTime(ai_dm_state_t *state, float crouch_time);
+void AI_DMState_ChangeViewAngles(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	float think_time);
+void AI_DMState_AimAtEnemy(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	const ai_dm_enemy_info_t *enemy,
+	float think_time);
+int AI_DMState_CheckAttack(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	const ai_dm_enemy_info_t *enemy,
+	float now);
 void AI_DMState_GetMetrics(const ai_dm_state_t *state, ai_dm_metrics_t *out_metrics);
 void AI_DMState_SetAttackChaseTestState(ai_dm_state_t *state,
 	float attackchase_time,

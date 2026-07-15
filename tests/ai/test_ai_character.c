@@ -1209,6 +1209,7 @@ static void test_bot_setup_client_exposes_profile(void **state)
 	state_slot = BotState_Get(1);
 	assert_non_null(state_slot);
 	assert_int_equal(state_slot->client_number, 1);
+	assert_int_equal(state_slot->entity_number, 2);
 	assert_string_equal(state_slot->client_settings.netname, "Moved Babe");
 	assert_string_equal(state_slot->client_settings.skin, "female/phoenix");
 	assert_string_equal(BotState_ClientName(1), "Moved Babe");
@@ -1362,7 +1363,7 @@ static void test_bot_state_map_reset_preserves_character_wiring(void **state)
 	assert_false(state_slot->client_commands_pending);
 	assert_false(state_slot->has_move_result);
 	assert_int_equal(state_slot->last_move_result.type, 0);
-	assert_int_equal(state_slot->combat.current_enemy, -1);
+	assert_int_equal(state_slot->combat.current_enemy, 0);
 	assert_false(state_slot->combat.enemy_visible);
 	assert_false(state_slot->goal_state->active_goal.valid);
 	assert_false(state_slot->move_state->has_last_result);
@@ -1373,7 +1374,7 @@ static void test_bot_state_map_reset_preserves_character_wiring(void **state)
 
 	ai_dm_metrics_t dm_metrics;
 	AI_DMState_GetMetrics(state_slot->dm_state, &dm_metrics);
-	assert_int_equal(dm_metrics.enemy_entity, -1);
+	assert_int_equal(dm_metrics.enemy_entity, 0);
 
 	status = env->exports->BotShutdownClient(0);
 	assert_int_equal(status, BLERR_NOERROR);

@@ -108,6 +108,24 @@ pins the retail 256-slot shared debug-line pool, zero and failed create
 results, the 257th-line cutoff, NULL/`LINECOLOR_NONE` hides, handle reuse, and
 the clear-before-visualized-prediction test wrapper.
 
+The self-contained `aas_pointlight_tests` executable generates its BSP/AAS
+loader fixture at runtime and commits no binary assets. It pins recursive
+static sampling, the shipped s-major/non-square texel address, multistyle
+`0x108` scaling, 4096-unit trace depth, no-data/no-light fallbacks, calculated
+surface extents and invalid light spans. It also covers the retail 0x34-byte
+dynamic-light heap, reversed caller-origin copy, capacity/free-list order,
+strict expiry, persistence across frame resets, static-hit-point attenuation,
+and the deterministic no-static-hit guard. Point-light setup is also exercised
+with sound metadata disabled, including the raw empty-heap warning and retail's
+truncate-before-range-check fractional `max_aaslights` boundaries.
+
+The fixture-free `botlib_parity_aas_debug` cases reconstruct retail entity
+visibility without map assets. They pin setup-time `maxentities` allocation and
+slot numbering, inclusive `1..maxclients` live-entity enumeration, result caps,
+`AAS_NextEntity`, quantized inclusive pitch/yaw FOV checks, center/bottom/top
+PVS sampling order, direct entity hits, wet-eye trace reversal, and translucent
+fluid continuation with the exact masks and endpoints.
+
 The map-loader executable also contains in-memory reachability geometry,
 area-classification, link-selection, duplicate-link, and jump/fall physics
 tests. Those cases do not require external assets and still exercise the
@@ -187,6 +205,17 @@ tests from a build directory that lives outside the repository checkout.
 `GLADIATOR_Q2_BASEDIR`/`GLADIATOR_Q2_DEDICATED_SERVER` are set so headless
 parity checks can be confirmed ahead of time.
 
+### Bot interface fixture-free combat parity
+
+Seven `BotFindEnemy` groups in `tests/parity/test_bot_interface.c` need no map
+assets. They pin the one-based live-player and self gates, ascending numeric
+selection with the 16-result cap, characteristic-45 900-unit range behavior,
+the exact 810- and 300-unit FOV/damage boundaries, private view angles, every
+team-mode precedence branch and entity-to-client lookup, shooting frame bounds,
+candidate-facing quantization, retreat fallback, and exact success/failure
+state writes. The direct Debug and Release executables therefore exercise this
+slice even when the optional mover fixtures below are absent.
+
 ### Bot interface parity mover fixtures
 
 The parity suite (`tests/parity/test_bot_interface.c`) includes
@@ -217,6 +246,11 @@ lexer implementation in place the regression now asserts that
 reproduce the same sequence. The fixture only reports a skip when either asset
 file is missing; otherwise divergences surface as descriptive assertion
 failures so regressions are caught immediately.
+
+The same executable also carries a fixture-free in-memory regression proving
+that `PC_ReadToken` applies ordinary define lookup to chat-looking identifiers:
+`#define VICTIM 7` must yield the exact decimal-integer token `7`, matching the
+retail HLIL and Quake III path without reserving symbolic names globally.
 
 To streamline build-system integration, we anticipate driving these tests via
 `CTest` invoking a lightweight **GoogleTest** harness.  The harness will provide

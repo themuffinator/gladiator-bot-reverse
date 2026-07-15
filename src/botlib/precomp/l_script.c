@@ -1017,15 +1017,8 @@ int PS_ReadString(pc_script_t *script, pc_token_t *token, int quote)
 	token->string[len++] = quote;
 	//end string with a zero
 	token->string[len] = '\0';
-	//the sub type is the length of the string without quotes
-	if (token->type == TT_STRING && len >= 2)
-	{
-		token->subtype = len - 2;
-	}
-	else
-	{
-		token->subtype = len;
-	}
+	//the sub type is the length of the string
+	token->subtype = len;
 	return 1;
 } //end of the function PS_ReadString
 //============================================================================
@@ -2116,7 +2109,6 @@ pc_script_t *LoadScriptMemory(char *ptr, int length, char *name)
         SetScriptPunctuations(script, NULL);
         //
         memcpy(script->buffer, ptr, length);
-        script->length = COM_Compress(script->buffer);
         //
         return script;
 } //end of the function LoadScriptMemory

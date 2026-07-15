@@ -673,6 +673,7 @@ typedef struct aas_world_s
     aas_cluster_t *clusters;
 
     int maxEntities;
+	int maxClients;
     aas_entity_t *entities; /* base pointer from data_100669a0 */
 
     size_t areaEntityListCount;  /* number of heads in areaEntityLists */
@@ -695,6 +696,19 @@ extern aas_world_t aasworld;
 int AAS_Loaded(void);
 int AAS_Initialized(void);
 float AAS_Time(void);
+int AAS_ConfigureEntityLimits(int maxentities, int maxclients);
+int AAS_EntityVisible(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	float fieldofview,
+	int entnum);
+int AAS_VisibleEntities(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	float fieldofview,
+	int maxentities,
+	int *entitynums);
+int AAS_NextEntity(int entnum);
 void AAS_InitTravelFlagFromType(void);
 int AAS_TravelFlagForType(int traveltype);
 int AAS_GetAreaContentsTravelFlags(int areanum);

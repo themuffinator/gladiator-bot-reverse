@@ -14,6 +14,7 @@
 #include "botlib/interface/bot_interface.h"
 #include "botlib/interface/botlib_interface.h"
 #include "botlib/interface/bot_state.h"
+#include "botlib/ai/ai_dm.h"
 #include "botlib/ai_chat/ai_chat.h"
 #include "botlib/ea/ea_local.h"
 #include "botlib/ai_move/bot_move.h"
@@ -46,8 +47,36 @@
 
 enum retail_battle_inventory_slot_e
 {
+	RETAIL_INVENTORY_ARMORBODY = 1,
+	RETAIL_INVENTORY_ARMORCOMBAT = 2,
+	RETAIL_INVENTORY_ARMORJACKET = 3,
+	RETAIL_INVENTORY_POWERSCREEN = 5,
+	RETAIL_INVENTORY_POWERSHIELD = 6,
+	RETAIL_INVENTORY_SUPERSHOTGUN = 9,
+	RETAIL_INVENTORY_MACHINEGUN = 10,
+	RETAIL_INVENTORY_CHAINGUN = 11,
+	RETAIL_INVENTORY_GRENADES = 12,
+	RETAIL_INVENTORY_GRENADELAUNCHER = 13,
+	RETAIL_INVENTORY_ROCKETLAUNCHER = 14,
+	RETAIL_INVENTORY_HYPERBLASTER = 15,
+	RETAIL_INVENTORY_RAILGUN = 16,
+	RETAIL_INVENTORY_BFG10K = 17,
+	RETAIL_INVENTORY_SHELLS = 18,
+	RETAIL_INVENTORY_BULLETS = 19,
 	RETAIL_INVENTORY_CELLS = 20,
+	RETAIL_INVENTORY_ROCKETS = 21,
+	RETAIL_INVENTORY_SLUGS = 22,
+	RETAIL_INVENTORY_QUAD = 23,
+	RETAIL_INVENTORY_INVULNERABILITY = 24,
+	RETAIL_INVENTORY_SILENCER = 25,
+	RETAIL_INVENTORY_REBREATHER = 26,
 	RETAIL_INVENTORY_HEALTH = 41,
+	RETAIL_INVENTORY_FLAG1 = 43,
+	RETAIL_INVENTORY_FLAG2 = 44,
+	RETAIL_INVENTORY_TECH1 = 45,
+	RETAIL_INVENTORY_TECH2 = 46,
+	RETAIL_INVENTORY_TECH3 = 47,
+	RETAIL_INVENTORY_TECH4 = 48,
 	RETAIL_ENEMY_HORIZONTAL_DIST = 200,
 	RETAIL_ENEMY_HEIGHT = 201,
 	RETAIL_USING_QUAD = 204,
@@ -87,6 +116,12 @@ typedef struct mock_bot_import_s
 		char argument[512];
 	} client_commands[64];
 	size_t client_command_count;
+	bool trace_blocked;
+	int trace_entity;
+	int point_contents_result;
+	vec3_t point_contents_points[64];
+	size_t point_contents_command_counts[64];
+	size_t point_contents_count;
 	struct
 	{
 		char name[64];
@@ -394,6 +429,14 @@ static int Mock_ImportBotLibVarSet(const char *var_name, const char *value)
     return g_mock_import_libvar_set_status;
 }
 
+/*
+=============
+Mock_BotClientCommand
+
+Captures imported client commands and the single argument used by chat, retail
+item-use/drop actions, and gestures.
+=============
+*/
 static void Mock_BotClientCommand(int client, char *fmt, ...)
 {
 	if (g_active_mock == NULL || fmt == NULL ||
@@ -406,7 +449,10 @@ static void Mock_BotClientCommand(int client, char *fmt, ...)
 	va_start(args, fmt);
 	size_t index = g_active_mock->client_command_count++;
 	g_active_mock->client_commands[index].client = client;
-	if (strcmp(fmt, "say_team") == 0)
+	if (strcmp(fmt, "say") == 0 || strcmp(fmt, "say_team") == 0 ||
+		strcmp(fmt, "use") == 0 ||
+		strcmp(fmt, "drop") == 0 ||
+		strcmp(fmt, "wave") == 0)
 	{
 		const char *argument = va_arg(args, const char *);
 		snprintf(g_active_mock->client_commands[index].command,
@@ -428,25 +474,61 @@ static void Mock_BotClientCommand(int client, char *fmt, ...)
 	va_end(args);
 }
 
-static bsp_trace_t Mock_Trace(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask)
-{
-    (void)start;
-    (void)mins;
-    (void)maxs;
-    (void)end;
-    (void)passent;
-    (void)contentmask;
+/*
+=============
+Mock_Trace
 
-    bsp_trace_t trace;
-    memset(&trace, 0, sizeof(trace));
-    trace.fraction = 1.0f;
-    return trace;
+Returns an unobstructed trace unless a fixture-free node test requests a
+solid visibility block.
+=============
+*/
+static bsp_trace_t Mock_Trace(vec3_t start,
+	vec3_t mins,
+	vec3_t maxs,
+	vec3_t end,
+	int passent,
+	int contentmask)
+{
+	(void)start;
+	(void)mins;
+	(void)maxs;
+	(void)end;
+	(void)passent;
+	(void)contentmask;
+
+	bsp_trace_t trace;
+	memset(&trace, 0, sizeof(trace));
+	trace.fraction = g_active_mock != NULL && g_active_mock->trace_blocked
+		? 0.0f
+		: 1.0f;
+	trace.ent = g_active_mock != NULL ? g_active_mock->trace_entity : 0;
+	return trace;
 }
 
+/*
+=============
+Mock_PointContents
+
+Records each sampled point and the number of commands already issued so item-
+use tests can pin both eye-position sampling and callback order.
+=============
+*/
 static int Mock_PointContents(vec3_t point)
 {
-    (void)point;
-    return 0;
+	if (g_active_mock == NULL)
+	{
+		return 0;
+	}
+
+	size_t index = g_active_mock->point_contents_count;
+	if (index < ARRAY_LEN(g_active_mock->point_contents_points))
+	{
+		VectorCopy(point, g_active_mock->point_contents_points[index]);
+		g_active_mock->point_contents_command_counts[index] =
+			g_active_mock->client_command_count;
+	}
+	g_active_mock->point_contents_count += 1U;
+	return g_active_mock->point_contents_result;
 }
 
 /*
@@ -703,9 +785,16 @@ static void Mock_Reset(mock_bot_import_t *mock)
     memset(mock->inputs, 0, sizeof(mock->inputs));
     memset(mock->input_clients, 0, sizeof(mock->input_clients));
 	memset(mock->client_commands, 0, sizeof(mock->client_commands));
-    mock->print_count = 0;
-    mock->bot_input_count = 0;
+	memset(mock->point_contents_points, 0, sizeof(mock->point_contents_points));
+	memset(mock->point_contents_command_counts,
+		0,
+		sizeof(mock->point_contents_command_counts));
+	mock->print_count = 0;
+	mock->bot_input_count = 0;
 	mock->client_command_count = 0;
+	mock->trace_blocked = false;
+	mock->point_contents_result = 0;
+	mock->point_contents_count = 0;
     mock->command_count = 0;
     Mock_ClearCommandArgs(mock);
 }
@@ -2322,11 +2411,21 @@ static void test_bot_client_capacity_uses_setup_maxclients(void **state)
 
 	int status = context->api->BotLibVarSet("maxclients", "2");
 	assert_int_equal(status, BLERR_NOERROR);
+	status = context->api->BotLibVarSet("maxentities", "7");
+	assert_int_equal(status, BLERR_NOERROR);
 
 	status = context->api->BotSetupLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_int_equal(BotState_ClientCapacity(), 2);
 	assert_int_equal(BotState_ActiveClientCount(), 0);
+	assert_int_equal(aasworld.maxClients, 2);
+	assert_int_equal(aasworld.maxEntities, 7);
+	assert_non_null(aasworld.entities);
+	for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
+	{
+		assert_int_equal(aasworld.entities[entnum].number, entnum);
+		assert_false(aasworld.entities[entnum].inuse);
+	}
 
 	bot_clientsettings_t live_settings;
 	memset(&live_settings, 0, sizeof(live_settings));
@@ -2589,6 +2688,66 @@ static void test_bot_test_export_is_retail_noop(void **state)
 	assert_int_equal(context->mock.print_count, 0);
 }
 
+/*
+=============
+test_pointlight_heap_is_independent_of_soundinfo
+
+Pin max_aaslights setup when sound metadata is disabled and ensure an empty
+heap emits only retail's raw handled warning, never a wrapper capacity warning.
+=============
+*/
+static void test_pointlight_heap_is_independent_of_soundinfo(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotLibVarSet("max_soundinfo", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("max_aassounds", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("max_aaslights", "1"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+	assert_non_null(Mock_FindPrint(&context->mock,
+		"AAS_Sound: max_soundinfo disabled"));
+
+	Mock_Reset(&context->mock);
+	vec3_t origin = {1.0f, 2.0f, 3.0f};
+	assert_int_equal(context->api->BotAddPointLight(origin,
+		7,
+		64.0f,
+		0.1f,
+		0.2f,
+		0.3f,
+		0.0f,
+		0.5f),
+		BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_PointLightCount(), 1);
+	assert_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
+	assert_null(Mock_FindPrint(&context->mock,
+		"BotAddPointLight: point light queue capacity exceeded"));
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
+
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotLibVarSet("max_aaslights", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotAddPointLight(origin,
+		7,
+		64.0f,
+		0.1f,
+		0.2f,
+		0.3f,
+		0.0f,
+		0.5f),
+		BLERR_NOERROR);
+	assert_non_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
+	assert_null(Mock_FindPrint(&context->mock,
+		"BotAddPointLight: point light queue capacity exceeded"));
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
+}
+
 static void test_bot_load_map_and_sensory_queues(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
@@ -2793,6 +2952,7 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 
     LibVarSet("max_soundinfo", "0");
     LibVarSet("max_aassounds", "0");
+	LibVarSet("max_aaslights", "1");
 
     status = context->api->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
@@ -2809,7 +2969,30 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 
     status = context->api->BotAddPointLight(origin, 7, 64.0f, 0.1f, 0.2f, 0.3f, 0.0f, 0.5f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_non_null(Mock_FindPrint(&context->mock, "BotAddPointLight: point light queue capacity exceeded"));
+	assert_int_equal(AAS_SoundSubsystem_PointLightCount(), 1);
+	assert_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
+	assert_null(Mock_FindPrint(&context->mock,
+		"BotAddPointLight: point light queue capacity exceeded"));
+
+	context->api->BotShutdownLibrary();
+	Mock_Reset(&context->mock);
+	LibVarSet("max_aaslights", "0");
+	status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 2, sounds, 0, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	status = context->api->BotAddPointLight(origin,
+		7,
+		64.0f,
+		0.1f,
+		0.2f,
+		0.3f,
+		0.0f,
+		0.5f);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_non_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
+	assert_null(Mock_FindPrint(&context->mock,
+		"BotAddPointLight: point light queue capacity exceeded"));
 
     context->api->BotShutdownLibrary();
 
@@ -2957,7 +3140,7 @@ static void test_bot_console_message_and_ai_pipeline(void **state)
     assert_int_equal(context->mock.bot_input_count, 1);
     assert_int_equal(context->mock.input_clients[0], 1);
     assert_float_equal(context->mock.inputs[0].thinktime, 0.05f, 0.0001f);
-    assert_float_equal(context->mock.inputs[0].viewangles[1], 45.0f, 0.0001f);
+    assert_float_equal(context->mock.inputs[0].viewangles[1], 0.0f, 0.0001f);
 	assert_int_equal(BotNumConsoleMessages(client_state->chat_state), 1);
 
     status = context->api->BotAI(1, 0.05f);
@@ -3080,7 +3263,7 @@ static void test_bot_console_message_classifies_death_updates(void **state)
 
 	bot_client_state_t *client_state = BotState_Get(1);
 	assert_non_null(client_state);
-	client_state->combat.current_enemy = 2;
+	client_state->combat.current_enemy = 3;
 
 	assert_int_equal(context->api->BotConsoleMessage(1,
 		CMS_NORMAL,
@@ -3301,7 +3484,9 @@ static bot_client_state_t *setup_console_team_command_fixture(
 =============
 process_console_team_command
 
-Queues one aged chat message and advances a complete client AI frame.
+Queues one aged chat message and advances the console dispatcher through a
+stand-node frame, isolating command parsing from the separately tested LTG
+scheduler execution.
 =============
 */
 static void process_console_team_command(bot_interface_test_context_t *context,
@@ -3318,6 +3503,13 @@ static void process_console_team_command(bot_interface_test_context_t *context,
 	update.pm_type = PM_NORMAL;
 	update.pm_flags = PMF_ON_GROUND;
 	assert_int_equal(context->api->BotUpdateClient(1, &update), BLERR_NOERROR);
+	bot_client_state_t *bot = BotState_Get(1);
+	assert_non_null(bot);
+	/* Keep parser tests out of the enter-game and LTG scheduler paths. */
+	bot->enter_game_chat_attempted = true;
+	bot->chat_standing = false;
+	bot->stand_chat_pending = false;
+	bot->ai_node = BOT_AI_NODE_STAND;
 	assert_int_equal(context->api->BotAI(1, 0.05f), BLERR_NOERROR);
 }
 
@@ -3908,6 +4100,12 @@ static void test_bot_console_doformation_and_dismiss_preserve_exact_ltg_effects(
 	bot_client_state_t *teammate = NULL;
 	bot_client_state_t *bot = setup_console_team_command_fixture(context,
 		&teammate);
+	assert_int_equal(context->api->BotLibVarSet("teamplay", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("ctf", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("dmflags", "0"),
+		BLERR_NOERROR);
 	strcpy(bot->subteam, "Keep");
 	bot->formation_dist = 77.0f;
 	bot->ltg_type = 1;
@@ -3918,6 +4116,9 @@ static void test_bot_console_doformation_and_dismiss_preserve_exact_ltg_effects(
 	assert_string_equal(bot->subteam, "Keep");
 	assert_float_equal(bot->formation_dist, 77.0f, 0.0001f);
 	assert_int_equal(bot->ltg_type, 1);
+	assert_float_equal(LibVarGetValue("teamplay"), 0.0f, 0.0001f);
+	assert_float_equal(LibVarGetValue("ctf"), 0.0f, 0.0001f);
+	assert_float_equal(LibVarGetValue("dmflags"), 0.0f, 0.0001f);
 
 	process_console_team_command(context,
 		6.0f,
@@ -4032,7 +4233,7 @@ static void test_bot_console_camp_preserves_retail_goal_branches_and_deadlines(
 	process_console_team_command(context,
 		21.0f,
 		"(Commander): Babe camp there");
-	assert_int_equal(bot->team_goal.entitynum, 1);
+	assert_int_equal(bot->team_goal.entitynum, 2);
 	assert_int_equal(bot->team_goal.areanum, 1);
 	assert_int_equal(bot->team_goal.number, 302);
 	assert_int_equal(bot->team_goal.flags, GFL_ITEM);
@@ -4045,7 +4246,7 @@ static void test_bot_console_camp_preserves_retail_goal_branches_and_deadlines(
 	process_console_team_command(context,
 		24.0f,
 		"(Commander): Babe camp here");
-	assert_int_equal(bot->team_goal.entitynum, 2);
+	assert_int_equal(bot->team_goal.entitynum, 3);
 	assert_int_equal(bot->team_goal.areanum, 1);
 	assert_float_equal(bot->team_goal.origin[0], 32.0f, 0.0001f);
 	assert_float_equal(bot->team_goal.origin[2], 32.0f, 0.0001f);
@@ -4384,7 +4585,7 @@ static void test_bot_console_help_accompany_preserves_retail_target_and_goal_bou
 		"(Commander): Babe help me");
 	assert_int_equal(bot->ltg_type, 1);
 	assert_int_equal(bot->ltg_teammate, 2);
-	assert_int_equal(bot->team_goal.entitynum, 2);
+	assert_int_equal(bot->team_goal.entitynum, 3);
 	assert_int_equal(bot->team_goal.areanum, 1);
 	assert_float_equal(bot->team_goal.origin[0], 24.0f, 0.0001f);
 	assert_float_equal(bot->team_goal.mins[0], -8.0f, 0.0001f);
@@ -4417,6 +4618,7 @@ static void test_bot_console_help_accompany_preserves_retail_target_and_goal_bou
 		"(Commander): Babe follow me");
 	assert_int_equal(bot->ltg_type, 2);
 	assert_int_equal(bot->ltg_teammate, 2);
+	assert_int_equal(bot->team_goal.entitynum, 3);
 	assert_float_equal(bot->team_goal_time, 270.0f, 0.0001f);
 	assert_float_equal(bot->formation_dist, 112.0f, 0.0001f);
 	assert_float_equal(bot->arrive_time, 0.0f, 0.0001f);
@@ -4664,6 +4866,7 @@ static void test_bot_console_reply_enters_and_completes_stand(void **state)
 
 	bot_client_state_t *client_state = BotState_Get(1);
 	assert_non_null(client_state);
+	client_state->enter_game_time = -1000.0f;
 	assert_int_equal(BotNumConsoleMessages(client_state->chat_state), 10);
 
 	bot_updateclient_t update;
@@ -5091,6 +5294,14 @@ static void bot_mover_fixture_shutdown(bot_mover_fixture_t *fixture)
 	BotMove_MoverCatalogueReset();
 }
 
+/*
+=============
+test_bot_interface_mover_parity
+
+Retail AAS_UpdateEntity (sub_1000a920) relinks changed BSP entities without
+emitting a brush-model diagnostic.
+=============
+*/
 static void test_bot_interface_mover_parity(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
@@ -5135,11 +5346,11 @@ static void test_bot_interface_mover_parity(void **state)
     mover_update.solid = SOLID_BSP;
     mover_update.modelindex = mover_entry.modelnum + 1;
 
-    status = context->api->BotUpdateEntity(3, &mover_update);
-    assert_int_equal(status, BLERR_NOERROR);
-
-    Mock_AssertPrintContains(&context->mock, "relinking brush model", PRT_MESSAGE);
-    Mock_Reset(&context->mock);
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotUpdateEntity(3, &mover_update);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(context->mock.print_count, 0);
+	Mock_Reset(&context->mock);
 
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
@@ -5150,6 +5361,7 @@ static void test_bot_interface_mover_parity(void **state)
 
     bot_client_state_t *client_state = BotState_Get(1);
     assert_non_null(client_state);
+	client_state->enter_game_time = -1000.0f;
 
     bot_goal_t mover_goal;
     memset(&mover_goal, 0, sizeof(mover_goal));
@@ -5159,6 +5371,7 @@ static void test_bot_interface_mover_parity(void **state)
 
     status = context->api->BotPushGoal(client_state->goal_handle, &mover_goal);
     assert_true(status != 0);
+	client_state->long_term_goal_time = 20.0f;
 
     status = context->api->BotStartFrame(0.1f);
     assert_int_equal(status, BLERR_NOERROR);
@@ -5188,11 +5401,24 @@ static void test_bot_interface_mover_parity(void **state)
         update.inventory[i] = 1;
     }
 
-    status = context->api->BotUpdateClient(1, &update);
-    assert_int_equal(status, BLERR_NOERROR);
+	status = context->api->BotUpdateClient(1, &update);
+	assert_int_equal(status, BLERR_NOERROR);
 
-    status = context->api->BotAI(1, 0.05f);
-    assert_int_equal(status, BLERR_INVALIDIMPORT);
+	bot_movestate_t *move_state = BotMoveStateFromHandle(
+		client_state->move_handle);
+	assert_non_null(move_state);
+	move_state->avoidreach[0] = 73;
+	move_state->avoidreachtimes[0] = aasworld.time + 10.0f;
+	move_state->avoidreachtries[0] = 5;
+
+	status = context->api->BotAI(1, 0.05f);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(client_state->has_move_result);
+	assert_true(client_state->last_move_result.failure);
+	assert_float_equal(client_state->long_term_goal_time, 0.0f, 0.0001f);
+	assert_int_equal(move_state->avoidreach[0], 0);
+	assert_float_equal(move_state->avoidreachtimes[0], 0.0f, 0.0001f);
+	assert_int_equal(move_state->avoidreachtries[0], 0);
 
     Mock_AssertPrintContains(&context->mock, "without reachability", PRT_MESSAGE);
 
@@ -5201,13 +5427,14 @@ static void test_bot_interface_mover_parity(void **state)
 
     ai_avoid_list_t *avoid = AI_GoalState_GetAvoidList(client_state->goal_state);
     assert_non_null(avoid);
-    assert_true(AI_AvoidList_Contains(avoid, mover_goal.number, 0.1f));
+	assert_false(AI_AvoidList_Contains(avoid, mover_goal.number, 0.1f));
 
     Mock_Reset(&context->mock);
 
     fixture.reachability[1].traveltype = TRAVEL_ELEVATOR;
     fixture.reachability[1].facenum = mover_entry.modelnum;
     AAS_InvalidateRouteCache();
+	client_state->long_term_goal_time = 26.0f;
 
     status = context->api->BotStartFrame(6.0f);
     assert_int_equal(status, BLERR_NOERROR);
@@ -5244,7 +5471,292 @@ static void test_bot_interface_mover_parity(void **state)
     context->api->BotShutdownLibrary();
 
     bot_mover_fixture_shutdown(&fixture);
-    LibVarSet("bot_developer", "0");
+	LibVarSet("bot_developer", "0");
+}
+
+/*
+=============
+test_ai_battle_chase_preserves_mover_set_view
+
+Pins Battle Chase's `MOVERESULT_MOVEMENTVIEWSET` exit: a rocket-jump mover
+sets its own down-facing view and skips the private accelerated view turn.
+=============
+*/
+static void test_ai_battle_chase_preserves_mover_set_view(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+
+	bot_mover_fixture_t fixture;
+	memset(&fixture, 0, sizeof(fixture));
+	bot_mover_fixture_init(&fixture);
+	fixture.reachability[1].traveltype = TRAVEL_ROCKETJUMP;
+	fixture.reachability[1].facenum = 0;
+	AAS_InitTravelFlagFromType();
+	assert_int_equal(AAS_PrepareReachability(), BLERR_NOERROR);
+
+	bot_settings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.characterfile,
+		sizeof(settings.characterfile),
+		"bots/babe_c.c");
+	snprintf(settings.charactername,
+		sizeof(settings.charactername),
+		"babe");
+	assert_true(context->api->BotSetupClient(1, &settings));
+	bot_client_state_t *bot = BotState_Get(1);
+	assert_non_null(bot);
+	bot->enter_game_time = -1000.0f;
+
+	assert_int_equal(context->api->BotLibVarSet("rocketjump", "1"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotStartFrame(1.0f), BLERR_NOERROR);
+	bot_updateclient_t update = {0};
+	update.pm_flags = PMF_ON_GROUND;
+	update.stats[STAT_HEALTH] = 100;
+	update.inventory[RETAIL_INVENTORY_HEALTH] = 100;
+	update.inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = 1;
+	update.inventory[RETAIL_INVENTORY_ROCKETS] = 3;
+	update.inventory[RETAIL_USING_INVULNERABILITY] = 1;
+	assert_int_equal(context->api->BotUpdateClient(1, &update),
+		BLERR_NOERROR);
+
+	bot->ai_node = BOT_AI_NODE_BATTLE_CHASE;
+	bot->combat.current_enemy = 2;
+	bot->combat.last_enemy_area = 3;
+	bot->combat.chase_time = aasworld.time + 10.0f;
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+	bot->nearby_goal_check_time = aasworld.time + 30.0f;
+	VectorSet(bot->combat.last_enemy_origin, 256.0f, 0.0f, 32.0f);
+	vec3_t ninety_degree_delta = {0.0f, 90.0f, 0.0f};
+	AI_DMState_ApplyDeltaAngles(bot->dm_state, ninety_degree_delta);
+
+	assert_int_equal(context->api->BotAI(1, 0.1f), BLERR_NOERROR);
+	assert_true(bot->has_move_result);
+	assert_int_equal(bot->last_move_result.traveltype, TRAVEL_ROCKETJUMP);
+	assert_true((bot->last_move_result.flags &
+		MOVERESULT_MOVEMENTVIEWSET) != 0);
+	assert_true(context->mock.bot_input_count > 0U);
+	const bot_input_t *input = &context->mock.inputs[
+		context->mock.bot_input_count - 1U];
+	assert_float_equal(input->viewangles[PITCH], 90.0f, 0.0001f);
+	assert_float_equal(input->viewangles[YAW], 0.0f, 0.0001f);
+
+	assert_int_equal(context->api->BotShutdownClient(1), BLERR_NOERROR);
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
+	bot_mover_fixture_shutdown(&fixture);
+}
+
+/*
+=============
+test_ai_battle_chase_arrival_area_expires_deadline
+
+Pins Battle Chase's post-move area gate: retail clears the deadline when the
+mover has reached the remembered enemy area, independently of contact with the
+last-seen goal's eight-unit bounds.
+=============
+*/
+static void test_ai_battle_chase_arrival_area_expires_deadline(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+
+	bot_mover_fixture_t fixture;
+	memset(&fixture, 0, sizeof(fixture));
+	bot_mover_fixture_init(&fixture);
+
+	bot_settings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.characterfile,
+		sizeof(settings.characterfile),
+		"bots/babe_c.c");
+	snprintf(settings.charactername,
+		sizeof(settings.charactername),
+		"babe");
+	assert_true(context->api->BotSetupClient(1, &settings));
+	bot_client_state_t *bot = BotState_Get(1);
+	assert_non_null(bot);
+	bot->enter_game_time = -1000.0f;
+
+	assert_int_equal(context->api->BotStartFrame(1.0f), BLERR_NOERROR);
+	bot_updateclient_t update = {0};
+	update.pm_type = PM_NORMAL;
+	update.pm_flags = PMF_ON_GROUND;
+	VectorSet(update.origin, 100.0f, 0.0f, 32.0f);
+	update.stats[STAT_HEALTH] = 100;
+	update.inventory[RETAIL_INVENTORY_HEALTH] = 100;
+	assert_int_equal(context->api->BotUpdateClient(1, &update),
+		BLERR_NOERROR);
+
+	bot->ai_node = BOT_AI_NODE_BATTLE_CHASE;
+	bot->combat.current_enemy = 2;
+	bot->combat.last_enemy_area = 2;
+	bot->combat.chase_time = aasworld.time + 10.0f;
+	VectorSet(bot->combat.last_enemy_origin, 180.0f, 0.0f, 32.0f);
+
+	assert_int_equal(context->api->BotAI(1, 0.1f), BLERR_NOERROR);
+	assert_true(bot->has_move_result);
+	bot_movestate_t *move_state = BotMoveStateFromHandle(bot->move_handle);
+	assert_non_null(move_state);
+	assert_int_equal(move_state->areanum, 2);
+	assert_float_equal(bot->combat.chase_time, 0.0f, 0.0001f);
+
+	assert_int_equal(context->api->BotShutdownClient(1), BLERR_NOERROR);
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
+	bot_mover_fixture_shutdown(&fixture);
+}
+
+/*
+=============
+test_ai_battle_nbg_records_enemy_location
+
+Pins Battle NBG's retained-enemy refresh: it stores the live enemy's reachable
+area and origin before evaluating the retained nearby goal.
+=============
+*/
+static void test_ai_battle_nbg_records_enemy_location(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+
+	bot_mover_fixture_t fixture;
+	memset(&fixture, 0, sizeof(fixture));
+	bot_mover_fixture_init(&fixture);
+	aasworld.maxClients = 4;
+
+	bot_settings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.characterfile,
+		sizeof(settings.characterfile),
+		"bots/babe_c.c");
+	snprintf(settings.charactername,
+		sizeof(settings.charactername),
+		"babe");
+	assert_true(context->api->BotSetupClient(1, &settings));
+	bot_client_state_t *bot = BotState_Get(1);
+	assert_non_null(bot);
+	bot->enter_game_time = -1000.0f;
+
+	assert_int_equal(context->api->BotStartFrame(1.0f), BLERR_NOERROR);
+	bot_updateclient_t update = {0};
+	update.pm_type = PM_NORMAL;
+	update.pm_flags = PMF_ON_GROUND;
+	update.stats[STAT_HEALTH] = 100;
+	update.inventory[RETAIL_INVENTORY_HEALTH] = 100;
+	assert_int_equal(context->api->BotUpdateClient(1, &update),
+		BLERR_NOERROR);
+
+	aas_entity_t *enemy = &aasworld.entities[2];
+	enemy->inuse = qtrue;
+	enemy->number = 2;
+	enemy->modelindex = 255;
+	VectorSet(enemy->origin, 128.0f, 0.0f, 32.0f);
+	VectorCopy(enemy->origin, enemy->old_origin);
+
+	bot_goal_t nearby_goal = {0};
+	nearby_goal.number = 71;
+	nearby_goal.areanum = 2;
+	VectorSet(nearby_goal.origin, 128.0f, 0.0f, 32.0f);
+	VectorSet(nearby_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(nearby_goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &nearby_goal) != 0);
+
+	bot->ai_node = BOT_AI_NODE_BATTLE_NBG;
+	bot->combat.current_enemy = 2;
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+	bot->combat.last_enemy_area = 0;
+	VectorClear(bot->combat.last_enemy_origin);
+
+	assert_int_equal(context->api->BotAI(1, 0.1f), BLERR_NOERROR);
+	assert_int_equal(bot->combat.last_enemy_area, 2);
+	assert_float_equal(bot->combat.last_enemy_origin[0], 128.0f, 0.0001f);
+	assert_float_equal(bot->combat.last_enemy_origin[1], 0.0f, 0.0001f);
+	assert_float_equal(bot->combat.last_enemy_origin[2], 32.0f, 0.0001f);
+
+	assert_int_equal(context->api->BotShutdownClient(1), BLERR_NOERROR);
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
+	bot_mover_fixture_shutdown(&fixture);
+}
+
+/*
+=============
+test_ai_battle_chase_handles_blocked_move
+
+Pins the post-move BotAIBlocked handoff shared by direct Battle Chase, Retreat,
+and NBG movement: an unrecognized blocker retries on the perpendicular axis
+instead of submitting the blocked route direction.
+=============
+*/
+static void test_ai_battle_chase_handles_blocked_move(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+
+	bot_mover_fixture_t fixture;
+	memset(&fixture, 0, sizeof(fixture));
+	bot_mover_fixture_init(&fixture);
+	/* Keep BotAIBlocked's perpendicular retry in the swim dispatcher: this
+	 * fixture models routing data only, not the collision geometry required by
+	 * the walk predictor. */
+	fixture.area_settings[1].contents = AAS_AREACONTENTS_WATER;
+
+	bot_settings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.characterfile,
+		sizeof(settings.characterfile),
+		"bots/babe_c.c");
+	snprintf(settings.charactername,
+		sizeof(settings.charactername),
+		"babe");
+	assert_true(context->api->BotSetupClient(1, &settings));
+	bot_client_state_t *bot = BotState_Get(1);
+	assert_non_null(bot);
+	bot->enter_game_time = -1000.0f;
+
+	assert_int_equal(context->api->BotStartFrame(1.0f), BLERR_NOERROR);
+	bot_updateclient_t update = {0};
+	update.pm_type = PM_NORMAL;
+	update.pm_flags = 0;
+	update.stats[STAT_HEALTH] = 100;
+	update.inventory[RETAIL_INVENTORY_HEALTH] = 100;
+	assert_int_equal(context->api->BotUpdateClient(1, &update),
+		BLERR_NOERROR);
+
+	bot->ai_node = BOT_AI_NODE_BATTLE_CHASE;
+	bot->combat.current_enemy = 2;
+	bot->combat.last_enemy_area = 3;
+	bot->combat.chase_time = aasworld.time + 10.0f;
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+	bot->nearby_goal_check_time = aasworld.time + 30.0f;
+	VectorSet(bot->combat.last_enemy_origin, 256.0f, 0.0f, 32.0f);
+	context->mock.trace_blocked = true;
+	context->mock.trace_entity = 7;
+
+	assert_int_equal(context->api->BotAI(1, 0.1f), BLERR_NOERROR);
+	assert_true(bot->has_move_result);
+	assert_true(bot->last_move_result.blocked != 0);
+	assert_true(context->mock.bot_input_count > 0U);
+	const bot_input_t *input = &context->mock.inputs[
+		context->mock.bot_input_count - 1U];
+	assert_float_equal(input->speed, 400.0f, 0.0001f);
+	assert_float_equal(input->dir[0], 0.0f, 0.0001f);
+	assert_true(fabsf(input->dir[1]) > 0.99f);
+	assert_float_equal(bot->long_term_goal_time, 21.0f, 0.0001f);
+	assert_float_equal(bot->nearby_goal_time, 6.0f, 0.0001f);
+
+	assert_int_equal(context->api->BotShutdownClient(1), BLERR_NOERROR);
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
+	bot_mover_fixture_shutdown(&fixture);
 }
 
 /*
@@ -5443,8 +5955,9 @@ static void test_battle_inventory_powerup_timers_and_power_armor(void **state)
 =============
 test_enemy_battle_inventory_weapon_and_effect_projection
 
-Pins sub_10021290's second skinnum byte, all twelve one-hot destinations,
-effect booleans, displacement truncation, and intentionally untouched gaps.
+Pins sub_10021290's stale cached skinnum byte and effect projections. Retail
+AAS_UpdateEntity (sub_1000a920) deliberately skips the incoming skinnum, so
+changing update.skinnum cannot select a weapon destination.
 =============
 */
 static void test_enemy_battle_inventory_weapon_and_effect_projection(void **state)
@@ -5488,10 +6001,6 @@ static void test_enemy_battle_inventory_weapon_and_effect_projection(void **stat
 	VectorSet(enemy.origin, 3.0f, 4.0f, 27.0f);
 	VectorCopy(enemy.origin, enemy.old_origin);
 
-	const int expected_slots[] = {
-		230, 231, 232, 233, 234, 240,
-		235, 236, 237, 238, 239, 241,
-	};
 	bot_client_state_t *client = BotState_Get(1);
 	assert_non_null(client);
 
@@ -5527,8 +6036,7 @@ static void test_enemy_battle_inventory_weapon_and_effect_projection(void **stat
 			slot <= RETAIL_ENEMY_GRAPPLE;
 			++slot)
 		{
-			assert_int_equal(inventory[slot],
-				slot == expected_slots[weapon - 1] ? 1 : 0);
+			assert_int_equal(inventory[slot], 0);
 		}
 		assert_int_equal(inventory[RETAIL_ENEMY_QUAD], weapon == 1);
 		assert_int_equal(inventory[RETAIL_ENEMY_INVULNERABILITY],
@@ -5567,6 +6075,3995 @@ static void test_enemy_battle_inventory_weapon_and_effect_projection(void **stat
 	assert_int_equal(context->api->BotShutdownClient(1), BLERR_NOERROR);
 	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
 	bot_mover_fixture_shutdown(&fixture);
+}
+
+/*
+=============
+test_general_item_use_retail_order_and_boundaries
+
+Pins sub_10021500's four independent uses, exact callback order, strict raw
+slot gates, liquid mask, eye-position sample, stale-slot reads, and immutability.
+=============
+*/
+static void test_general_item_use_retail_order_and_boundaries(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	Mock_Reset(&context->mock);
+	assert_false(EA_IsInitialised());
+	assert_int_equal(EA_Init(8), BLERR_NOERROR);
+
+	bot_client_state_t bot;
+	memset(&bot, 0, sizeof(bot));
+	bot.client_number = 3;
+	VectorSet(bot.last_client_update.origin, 100.0f, 200.0f, 300.0f);
+	VectorSet(bot.last_client_update.viewoffset, 1.0f, 2.0f, 3.0f);
+	int *inventory = bot.last_client_update.inventory;
+	inventory[RETAIL_INVENTORY_SILENCER] = 1;
+	inventory[RETAIL_INVENTORY_REBREATHER] = 1;
+	inventory[RETAIL_INVENTORY_POWERSHIELD] = 1;
+	inventory[RETAIL_INVENTORY_POWERSCREEN] = 1;
+	inventory[RETAIL_INVENTORY_QUAD] = 723;
+	inventory[RETAIL_INVENTORY_INVULNERABILITY] = 724;
+	inventory[RETAIL_USING_QUAD] = -204;
+	inventory[RETAIL_USING_INVULNERABILITY] = -205;
+	context->mock.point_contents_result = 0x38;
+
+	bot_client_state_t snapshot = bot;
+	BotAI_UseItems(&bot);
+	assert_memory_equal(&bot, &snapshot, sizeof(bot));
+	assert_int_equal(context->mock.client_command_count, 4U);
+	const char *expected_items[] = {
+		"Silencer",
+		"Rebreather",
+		"Power Shield",
+		"Power Screen",
+	};
+	for (size_t index = 0; index < ARRAY_LEN(expected_items); ++index)
+	{
+		assert_int_equal(context->mock.client_commands[index].client, 3);
+		assert_string_equal(context->mock.client_commands[index].command, "use");
+		assert_string_equal(context->mock.client_commands[index].argument,
+			expected_items[index]);
+	}
+	assert_int_equal(context->mock.point_contents_count, 1U);
+	assert_int_equal(context->mock.point_contents_command_counts[0], 1U);
+	vec3_t expected_eye = {101.0f, 202.0f, 303.0f};
+	assert_memory_equal(context->mock.point_contents_points[0],
+		expected_eye,
+		sizeof(expected_eye));
+
+	Mock_Reset(&context->mock);
+	BotAI_UseItems(NULL);
+	assert_int_equal(context->mock.client_command_count, 0U);
+	assert_int_equal(context->mock.point_contents_count, 0U);
+
+	const struct
+	{
+		int inventory_slot;
+		int contents;
+		const char *item;
+	} ownership_cases[] = {
+		{RETAIL_INVENTORY_SILENCER, 0, "Silencer"},
+		{RETAIL_INVENTORY_REBREATHER, 0x08, "Rebreather"},
+		{RETAIL_INVENTORY_POWERSHIELD, 0, "Power Shield"},
+		{RETAIL_INVENTORY_POWERSCREEN, 0, "Power Screen"},
+	};
+	const int ownership_values[] = {-1, 0, 1};
+	for (size_t item_index = 0;
+		item_index < ARRAY_LEN(ownership_cases);
+		++item_index)
+	{
+		for (size_t value_index = 0;
+			value_index < ARRAY_LEN(ownership_values);
+			++value_index)
+		{
+			memset(inventory, 0, sizeof(bot.last_client_update.inventory));
+			inventory[ownership_cases[item_index].inventory_slot] =
+				ownership_values[value_index];
+			Mock_Reset(&context->mock);
+			context->mock.point_contents_result =
+				ownership_cases[item_index].contents;
+			BotAI_UseItems(&bot);
+			assert_int_equal(context->mock.point_contents_count, 1U);
+			if (ownership_values[value_index] > 0)
+			{
+				assert_int_equal(context->mock.client_command_count, 1U);
+				assert_int_equal(context->mock.client_commands[0].client, 3);
+				assert_string_equal(context->mock.client_commands[0].command,
+					"use");
+				assert_string_equal(context->mock.client_commands[0].argument,
+					ownership_cases[item_index].item);
+			}
+			else
+			{
+				assert_int_equal(context->mock.client_command_count, 0U);
+			}
+		}
+	}
+
+	const struct
+	{
+		int inventory_slot;
+		int active_slot;
+		int contents;
+		const char *item;
+	} active_cases[] = {
+		{RETAIL_INVENTORY_REBREATHER,
+			RETAIL_USING_REBREATHER,
+			0x08,
+			"Rebreather"},
+		{RETAIL_INVENTORY_POWERSHIELD,
+			RETAIL_USING_POWERSHIELD,
+			0,
+			"Power Shield"},
+		{RETAIL_INVENTORY_POWERSCREEN,
+			RETAIL_USING_POWERSCREEN,
+			0,
+			"Power Screen"},
+	};
+	const int active_values[] = {-1, 0, 1};
+	for (size_t item_index = 0; item_index < ARRAY_LEN(active_cases); ++item_index)
+	{
+		for (size_t value_index = 0;
+			value_index < ARRAY_LEN(active_values);
+			++value_index)
+		{
+			memset(inventory, 0, sizeof(bot.last_client_update.inventory));
+			inventory[active_cases[item_index].inventory_slot] = 1;
+			inventory[active_cases[item_index].active_slot] =
+				active_values[value_index];
+			Mock_Reset(&context->mock);
+			context->mock.point_contents_result =
+				active_cases[item_index].contents;
+			BotAI_UseItems(&bot);
+			assert_int_equal(context->mock.client_command_count,
+				active_values[value_index] == 0 ? 1U : 0U);
+			if (active_values[value_index] == 0)
+			{
+				assert_string_equal(context->mock.client_commands[0].argument,
+					active_cases[item_index].item);
+			}
+		}
+	}
+
+	const int contents_cases[] = {0, 0x40, 0x08, 0x10, 0x20, 0x38};
+	for (size_t index = 0; index < ARRAY_LEN(contents_cases); ++index)
+	{
+		memset(inventory, 0, sizeof(bot.last_client_update.inventory));
+		inventory[RETAIL_INVENTORY_REBREATHER] = 1;
+		Mock_Reset(&context->mock);
+		context->mock.point_contents_result = contents_cases[index];
+		BotAI_UseItems(&bot);
+		assert_int_equal(context->mock.point_contents_count, 1U);
+		assert_int_equal(context->mock.client_command_count,
+			(contents_cases[index] & 0x38) != 0 ? 1U : 0U);
+	}
+
+	EA_Shutdown();
+	assert_false(EA_IsInitialised());
+}
+
+/*
+=============
+test_battle_item_use_retail_order_and_boundaries
+
+Pins sub_100215e0's Quad-first return, Invulnerability fallback, strict raw
+ownership/active gates, client forwarding, stale slots, and state immutability.
+=============
+*/
+static void test_battle_item_use_retail_order_and_boundaries(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	Mock_Reset(&context->mock);
+	assert_false(EA_IsInitialised());
+	assert_int_equal(EA_Init(8), BLERR_NOERROR);
+
+	bot_client_state_t bot;
+	memset(&bot, 0, sizeof(bot));
+	bot.client_number = 4;
+	int *inventory = bot.last_client_update.inventory;
+	inventory[RETAIL_INVENTORY_QUAD] = 1;
+	inventory[RETAIL_INVENTORY_INVULNERABILITY] = 1;
+	inventory[RETAIL_INVENTORY_SILENCER] = 725;
+	inventory[RETAIL_INVENTORY_REBREATHER] = 726;
+	inventory[RETAIL_USING_REBREATHER] = -207;
+	inventory[RETAIL_USING_POWERSCREEN] = -210;
+	inventory[RETAIL_USING_POWERSHIELD] = -211;
+	context->mock.point_contents_result = 0x38;
+
+	bot_client_state_t snapshot = bot;
+	BotAI_BattleUseItems(&bot);
+	assert_memory_equal(&bot, &snapshot, sizeof(bot));
+	assert_int_equal(context->mock.client_command_count, 1U);
+	assert_int_equal(context->mock.client_commands[0].client, 4);
+	assert_string_equal(context->mock.client_commands[0].command, "use");
+	assert_string_equal(context->mock.client_commands[0].argument,
+		"Quad Damage");
+	assert_int_equal(context->mock.point_contents_count, 0U);
+
+	Mock_Reset(&context->mock);
+	BotAI_BattleUseItems(NULL);
+	assert_int_equal(context->mock.client_command_count, 0U);
+	assert_int_equal(context->mock.point_contents_count, 0U);
+
+	const struct
+	{
+		int owned_quad;
+		int active_quad;
+	} quad_fallback_cases[] = {
+		{-1, 0},
+		{0, 0},
+		{1, -1},
+		{1, 1},
+	};
+	for (size_t index = 0; index < ARRAY_LEN(quad_fallback_cases); ++index)
+	{
+		memset(inventory, 0, sizeof(bot.last_client_update.inventory));
+		inventory[RETAIL_INVENTORY_QUAD] =
+			quad_fallback_cases[index].owned_quad;
+		inventory[RETAIL_USING_QUAD] =
+			quad_fallback_cases[index].active_quad;
+		inventory[RETAIL_INVENTORY_INVULNERABILITY] = 1;
+		Mock_Reset(&context->mock);
+		BotAI_BattleUseItems(&bot);
+		assert_int_equal(context->mock.client_command_count, 1U);
+		assert_int_equal(context->mock.client_commands[0].client, 4);
+		assert_string_equal(context->mock.client_commands[0].argument,
+			"Invulnerability");
+	}
+
+	const struct
+	{
+		int owned_invulnerability;
+		int active_invulnerability;
+		int expected_uses;
+	} invulnerability_cases[] = {
+		{-1, 0, 0},
+		{0, 0, 0},
+		{1, -1, 0},
+		{1, 1, 0},
+		{1, 0, 1},
+	};
+	for (size_t index = 0;
+		index < ARRAY_LEN(invulnerability_cases);
+		++index)
+	{
+		memset(inventory, 0, sizeof(bot.last_client_update.inventory));
+		inventory[RETAIL_INVENTORY_INVULNERABILITY] =
+			invulnerability_cases[index].owned_invulnerability;
+		inventory[RETAIL_USING_INVULNERABILITY] =
+			invulnerability_cases[index].active_invulnerability;
+		Mock_Reset(&context->mock);
+		BotAI_BattleUseItems(&bot);
+		assert_int_equal(context->mock.client_command_count,
+			(size_t)invulnerability_cases[index].expected_uses);
+		if (invulnerability_cases[index].expected_uses != 0)
+		{
+			assert_int_equal(context->mock.client_commands[0].client, 4);
+			assert_string_equal(context->mock.client_commands[0].argument,
+				"Invulnerability");
+		}
+		assert_int_equal(context->mock.point_contents_count, 0U);
+	}
+
+	EA_Shutdown();
+	assert_false(EA_IsInitialised());
+}
+
+/*
+=============
+test_battle_flag_retreat_and_chase_decisions
+
+Pins sub_10021650's CTF and two-flag return contract plus sub_100228c0 and
+sub_10022930's deliberately asymmetric retreat/chase decisions.
+=============
+*/
+static void test_battle_flag_retreat_and_chase_decisions(void **state)
+{
+	(void)state;
+	bot_client_state_t bot;
+	memset(&bot, 0, sizeof(bot));
+	int *inventory = bot.last_client_update.inventory;
+
+	LibVarSet("ctf", "1");
+	libvar_t *ctf = LibVarGet("ctf");
+	assert_non_null(ctf);
+
+	inventory[RETAIL_INVENTORY_FLAG1] = 1;
+	inventory[RETAIL_INVENTORY_FLAG2] = 1;
+	ctf->value = 0.0f;
+	assert_int_equal(BotAI_CarryingFlag(&bot), 0);
+	ctf->value = NAN;
+	assert_int_equal(BotAI_CarryingFlag(&bot), 0);
+	ctf->value = -1.0f;
+	assert_int_equal(BotAI_CarryingFlag(&bot), 1);
+
+	ctf->value = 1.0f;
+	assert_int_equal(BotAI_CarryingFlag(&bot), 1);
+	inventory[RETAIL_INVENTORY_FLAG1] = 0;
+	assert_int_equal(BotAI_CarryingFlag(&bot), 2);
+	inventory[RETAIL_INVENTORY_FLAG1] = -1;
+	inventory[RETAIL_INVENTORY_FLAG2] = 0;
+	assert_int_equal(BotAI_CarryingFlag(&bot), 0);
+	inventory[RETAIL_INVENTORY_FLAG2] = 1;
+	assert_int_equal(BotAI_CarryingFlag(&bot), 2);
+
+	inventory[RETAIL_INVENTORY_HEALTH] = 70;
+	inventory[RETAIL_ENEMY_HEIGHT] = 200;
+	inventory[RETAIL_INVENTORY_SUPERSHOTGUN] = 1;
+	inventory[RETAIL_INVENTORY_SHELLS] = 21;
+	ctf->value = 0.0f;
+	assert_int_equal(BotAI_WantsToRetreat(&bot), qfalse);
+	assert_int_equal(BotAI_WantsToChase(&bot), qtrue);
+
+	ctf->value = 1.0f;
+	assert_int_equal(BotAI_WantsToRetreat(&bot), qtrue);
+	assert_int_equal(BotAI_WantsToChase(&bot), qtrue);
+	inventory[RETAIL_INVENTORY_FLAG2] = 0;
+	bot.ltg_type = 4;
+	assert_int_equal(BotAI_WantsToRetreat(&bot), qtrue);
+	assert_int_equal(BotAI_WantsToChase(&bot), qtrue);
+
+	bot.ltg_type = 0;
+	inventory[RETAIL_INVENTORY_SUPERSHOTGUN] = 0;
+	assert_int_equal(BotAI_WantsToRetreat(&bot), qtrue);
+	assert_int_equal(BotAI_WantsToChase(&bot), qfalse);
+
+	bot_client_state_t snapshot = bot;
+	(void)BotAI_CarryingFlag(&bot);
+	(void)BotAI_Aggression(&bot);
+	(void)BotAI_WantsToRetreat(&bot);
+	(void)BotAI_WantsToChase(&bot);
+	assert_memory_equal(&bot, &snapshot, sizeof(bot));
+}
+
+/*
+=============
+test_battle_aggression_retail_gate_boundaries
+
+Pins sub_100226c0's gate ordering and every strict/non-strict health, armor,
+powerup, weapon, and ammunition threshold at the raw retail slots.
+=============
+*/
+static void test_battle_aggression_retail_gate_boundaries(void **state)
+{
+	(void)state;
+	bot_client_state_t bot;
+	memset(&bot, 0, sizeof(bot));
+	int *inventory = bot.last_client_update.inventory;
+	inventory[RETAIL_INVENTORY_HEALTH] = 70;
+	inventory[RETAIL_ENEMY_HEIGHT] = 200;
+	inventory[RETAIL_INVENTORY_SUPERSHOTGUN] = 1;
+	inventory[RETAIL_INVENTORY_SHELLS] = 21;
+	inventory[RETAIL_ENEMY_POWERSHIELD] = 748;
+	assert_float_equal(BotAI_Aggression(&bot), 100.0f, 0.0001f);
+
+	inventory[RETAIL_USING_INVULNERABILITY] = -1;
+	inventory[RETAIL_ENEMY_INVULNERABILITY] = 1;
+	inventory[RETAIL_ENEMY_QUAD] = 1;
+	inventory[RETAIL_ENEMY_POWERSCREEN] = 1;
+	inventory[RETAIL_ENEMY_HEIGHT] = 201;
+	inventory[RETAIL_INVENTORY_HEALTH] = 0;
+	assert_float_equal(BotAI_Aggression(&bot), 100.0f, 0.0001f);
+
+	inventory[RETAIL_USING_INVULNERABILITY] = 0;
+	inventory[RETAIL_ENEMY_HEIGHT] = 200;
+	inventory[RETAIL_INVENTORY_HEALTH] = 70;
+	assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+	inventory[RETAIL_ENEMY_INVULNERABILITY] = 0;
+	assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+	inventory[RETAIL_USING_QUAD] = -1;
+	inventory[RETAIL_ENEMY_POWERSCREEN] = 0;
+	assert_float_equal(BotAI_Aggression(&bot), 100.0f, 0.0001f);
+	inventory[RETAIL_ENEMY_POWERSCREEN] = 1;
+	assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+
+	inventory[RETAIL_ENEMY_QUAD] = 0;
+	inventory[RETAIL_USING_POWERSHIELD] = 100;
+	inventory[RETAIL_INVENTORY_CELLS] = 50;
+	assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+	inventory[RETAIL_USING_POWERSCREEN] = -1;
+	inventory[RETAIL_INVENTORY_CELLS] = 49;
+	assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+	inventory[RETAIL_INVENTORY_CELLS] = 50;
+	assert_float_equal(BotAI_Aggression(&bot), 100.0f, 0.0001f);
+
+	inventory[RETAIL_ENEMY_POWERSCREEN] = 0;
+	inventory[RETAIL_USING_POWERSCREEN] = 0;
+	inventory[RETAIL_ENEMY_HEIGHT] = 201;
+	assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+	inventory[RETAIL_ENEMY_HEIGHT] = 200;
+	assert_float_equal(BotAI_Aggression(&bot), 100.0f, 0.0001f);
+
+	inventory[RETAIL_INVENTORY_HEALTH] = 39;
+	inventory[RETAIL_INVENTORY_ARMORBODY] = 100;
+	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 100;
+	inventory[RETAIL_INVENTORY_ARMORJACKET] = 100;
+	assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+	inventory[RETAIL_INVENTORY_HEALTH] = 40;
+	inventory[RETAIL_INVENTORY_ARMORBODY] = 0;
+	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 0;
+	inventory[RETAIL_INVENTORY_ARMORJACKET] = 0;
+	assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+
+	const struct
+	{
+		int slot;
+		int threshold;
+	} armor_cases[] = {
+		{RETAIL_INVENTORY_ARMORBODY, 40},
+		{RETAIL_INVENTORY_ARMORCOMBAT, 50},
+		{RETAIL_INVENTORY_ARMORJACKET, 60},
+	};
+	for (size_t index = 0; index < ARRAY_LEN(armor_cases); ++index)
+	{
+		inventory[RETAIL_INVENTORY_HEALTH] = 69;
+		inventory[RETAIL_INVENTORY_ARMORBODY] = 0;
+		inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 0;
+		inventory[RETAIL_INVENTORY_ARMORJACKET] = 0;
+		inventory[armor_cases[index].slot] = armor_cases[index].threshold - 1;
+		assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+		inventory[armor_cases[index].slot] = armor_cases[index].threshold;
+		assert_float_equal(BotAI_Aggression(&bot), 100.0f, 0.0001f);
+	}
+	inventory[RETAIL_INVENTORY_HEALTH] = 70;
+	inventory[RETAIL_INVENTORY_ARMORBODY] = 0;
+	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 0;
+	inventory[RETAIL_INVENTORY_ARMORJACKET] = 0;
+	assert_float_equal(BotAI_Aggression(&bot), 100.0f, 0.0001f);
+
+	const struct
+	{
+		int weapon_slot;
+		int ammunition_slot;
+		int threshold;
+	} weapon_cases[] = {
+		{RETAIL_INVENTORY_BFG10K, RETAIL_INVENTORY_CELLS, 50},
+		{RETAIL_INVENTORY_RAILGUN, RETAIL_INVENTORY_SLUGS, 5},
+		{RETAIL_INVENTORY_HYPERBLASTER, RETAIL_INVENTORY_CELLS, 50},
+		{RETAIL_INVENTORY_ROCKETLAUNCHER, RETAIL_INVENTORY_ROCKETS, 5},
+		{RETAIL_INVENTORY_GRENADELAUNCHER, RETAIL_INVENTORY_GRENADES, 10},
+		{RETAIL_INVENTORY_CHAINGUN, RETAIL_INVENTORY_BULLETS, 100},
+		{RETAIL_INVENTORY_MACHINEGUN, RETAIL_INVENTORY_BULLETS, 75},
+		{RETAIL_INVENTORY_SUPERSHOTGUN, RETAIL_INVENTORY_SHELLS, 20},
+	};
+	for (size_t index = 0; index < ARRAY_LEN(weapon_cases); ++index)
+	{
+		memset(inventory, 0, sizeof(bot.last_client_update.inventory));
+		inventory[RETAIL_INVENTORY_HEALTH] = 70;
+		inventory[RETAIL_ENEMY_HEIGHT] = 200;
+		inventory[weapon_cases[index].weapon_slot] = 1;
+		inventory[weapon_cases[index].ammunition_slot] =
+			weapon_cases[index].threshold;
+		assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+		inventory[weapon_cases[index].ammunition_slot]++;
+		assert_float_equal(BotAI_Aggression(&bot), 100.0f, 0.0001f);
+		inventory[weapon_cases[index].weapon_slot] = -1;
+		assert_float_equal(BotAI_Aggression(&bot), 0.0f, 0.0001f);
+	}
+
+	bot_client_state_t snapshot = bot;
+	(void)BotAI_Aggression(&bot);
+	assert_memory_equal(&bot, &snapshot, sizeof(bot));
+}
+
+/*
+=============
+test_battle_rocket_jump_retail_gate_boundaries
+
+Pins sub_10022990's ordered raw inventory gates, invulnerability bypass,
+health/armor thresholds, and inclusive weapon-jumping characteristic boundary.
+=============
+*/
+static void test_battle_rocket_jump_retail_gate_boundaries(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotLibVarSet("maxclients", "4"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+
+	const struct
+	{
+		const char *file;
+		const char *name;
+	} profiles[] = {
+		{"bots/java_c.c", "java"},
+		{"bots/hunk_c.c", "hunk"},
+		{"bots/zero_c.c", "zero"},
+	};
+	bot_client_state_t *profile_states[ARRAY_LEN(profiles)];
+	for (size_t index = 0; index < ARRAY_LEN(profiles); ++index)
+	{
+		bot_settings_t settings;
+		memset(&settings, 0, sizeof(settings));
+		snprintf(settings.characterfile,
+			sizeof(settings.characterfile),
+			"%s",
+			profiles[index].file);
+		snprintf(settings.charactername,
+			sizeof(settings.charactername),
+			"%s",
+			profiles[index].name);
+		assert_true(context->api->BotSetupClient((int)index + 1, &settings));
+		profile_states[index] = BotState_Get((int)index + 1);
+		assert_non_null(profile_states[index]);
+	}
+
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(NULL), qfalse);
+
+	bot_client_state_t bot;
+	memset(&bot, 0, sizeof(bot));
+	int *inventory = bot.last_client_update.inventory;
+	bot.character_handle = profile_states[1]->character_handle;
+	inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = 1;
+	inventory[RETAIL_INVENTORY_ROCKETS] = 3;
+	inventory[RETAIL_INVENTORY_HEALTH] = 90;
+	inventory[RETAIL_USING_POWERSHIELD] = 712;
+	inventory[RETAIL_ENEMY_INVULNERABILITY] = 746;
+	LibVarSet("rocketjump", "0");
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
+
+	inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = 0;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = -1;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = 1;
+
+	inventory[RETAIL_INVENTORY_ROCKETS] = 2;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_INVENTORY_ROCKETS] = 3;
+	inventory[RETAIL_USING_QUAD] = -1;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_USING_QUAD] = 1;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_USING_QUAD] = 0;
+
+	inventory[RETAIL_USING_INVULNERABILITY] = -1;
+	inventory[RETAIL_INVENTORY_HEALTH] = -100;
+	inventory[RETAIL_INVENTORY_ARMORBODY] = -100;
+	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = -100;
+	inventory[RETAIL_INVENTORY_ARMORJACKET] = -100;
+	bot.character_handle = 0;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
+	inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = 0;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = 1;
+	inventory[RETAIL_INVENTORY_ROCKETS] = 2;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_INVENTORY_ROCKETS] = 3;
+	inventory[RETAIL_USING_QUAD] = 1;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_USING_QUAD] = 0;
+	inventory[RETAIL_USING_INVULNERABILITY] = 0;
+	bot.character_handle = profile_states[1]->character_handle;
+
+	inventory[RETAIL_INVENTORY_HEALTH] = 59;
+	inventory[RETAIL_INVENTORY_ARMORBODY] = 100;
+	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 100;
+	inventory[RETAIL_INVENTORY_ARMORJACKET] = 100;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_INVENTORY_HEALTH] = 60;
+	inventory[RETAIL_INVENTORY_ARMORBODY] = 0;
+	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 0;
+	inventory[RETAIL_INVENTORY_ARMORJACKET] = 0;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	inventory[RETAIL_INVENTORY_ARMORBODY] = 40;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
+	inventory[RETAIL_INVENTORY_ARMORBODY] = 0;
+	inventory[RETAIL_INVENTORY_HEALTH] = 89;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+
+	const struct
+	{
+		int slot;
+		int threshold;
+	} armor_cases[] = {
+		{RETAIL_INVENTORY_ARMORBODY, 40},
+		{RETAIL_INVENTORY_ARMORCOMBAT, 50},
+		{RETAIL_INVENTORY_ARMORJACKET, 60},
+	};
+	for (size_t index = 0; index < ARRAY_LEN(armor_cases); ++index)
+	{
+		inventory[RETAIL_INVENTORY_ARMORBODY] = 0;
+		inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 0;
+		inventory[RETAIL_INVENTORY_ARMORJACKET] = 0;
+		inventory[armor_cases[index].slot] = armor_cases[index].threshold - 1;
+		assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+		inventory[armor_cases[index].slot] = armor_cases[index].threshold;
+		assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
+	}
+
+	inventory[RETAIL_INVENTORY_HEALTH] = 90;
+	inventory[RETAIL_INVENTORY_ARMORBODY] = 0;
+	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 0;
+	inventory[RETAIL_INVENTORY_ARMORJACKET] = 0;
+	bot.character_handle = profile_states[0]->character_handle;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
+	bot.character_handle = profile_states[1]->character_handle;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
+	bot.character_handle = profile_states[2]->character_handle;
+	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
+
+	bot_client_state_t snapshot = bot;
+	(void)BotAI_CanAndWantsToRocketJump(&bot);
+	assert_memory_equal(&bot, &snapshot, sizeof(bot));
+	assert_int_equal(inventory[RETAIL_USING_POWERSHIELD], 712);
+	assert_int_equal(inventory[RETAIL_ENEMY_INVULNERABILITY], 746);
+
+	for (int client = (int)ARRAY_LEN(profiles); client >= 1; --client)
+	{
+		assert_int_equal(context->api->BotShutdownClient(client), BLERR_NOERROR);
+	}
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
+}
+
+/*
+=============
+BotFindEnemy_PrepareEntity
+
+Seeds one host-native AAS client entity without loading a BSP/AAS fixture.
+=============
+*/
+static aas_entity_t *BotFindEnemy_PrepareEntity(int entity_number,
+	float x,
+	float y,
+	float z)
+{
+	assert_non_null(aasworld.entities);
+	assert_true(entity_number >= 0);
+	assert_true(entity_number < aasworld.maxEntities);
+
+	aas_entity_t *entity = &aasworld.entities[entity_number];
+	entity->inuse = qtrue;
+	entity->number = entity_number;
+	VectorSet(entity->origin, x, y, z);
+	VectorCopy(entity->origin, entity->old_origin);
+	VectorCopy(entity->origin, entity->previousOrigin);
+	VectorClear(entity->angles);
+	VectorClear(entity->mins);
+	VectorClear(entity->maxs);
+	entity->solid = 0;
+	entity->isMover = qfalse;
+	entity->modelindex = 255;
+	entity->modelindex2 = 0;
+	entity->modelindex3 = 0;
+	entity->modelindex4 = 0;
+	entity->frame = 0;
+	entity->skinnum = 0;
+	entity->effects = 0;
+	entity->renderfx = 0;
+	entity->sound = 0;
+	entity->eventid = 0;
+	return entity;
+}
+
+/*
+=============
+BotFindEnemy_SetupHarness
+
+Initialises a character-backed client and the fixture-free AAS entity table.
+=============
+*/
+static bot_client_state_t *BotFindEnemy_SetupHarness(
+	bot_interface_test_context_t *context,
+	int max_clients,
+	const char *character_file,
+	const char *character_name)
+{
+	assert_non_null(context);
+	Mock_Reset(&context->mock);
+
+	char value[32];
+	snprintf(value, sizeof(value), "%d", max_clients);
+	assert_int_equal(context->api->BotLibVarSet("maxclients", value),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("maxentities", "64"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+	assert_true(aasworld.initialized);
+	assert_int_equal(aasworld.maxClients, max_clients);
+	assert_non_null(aasworld.entities);
+
+	bot_settings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.characterfile,
+		sizeof(settings.characterfile),
+		"%s",
+		character_file);
+	snprintf(settings.charactername,
+		sizeof(settings.charactername),
+		"%s",
+		character_name);
+	assert_true(context->api->BotSetupClient(0, &settings));
+
+	bot_client_state_t *bot = BotState_Get(0);
+	assert_non_null(bot);
+	assert_non_null(bot->dm_state);
+	VectorClear(bot->last_client_update.origin);
+	VectorClear(bot->last_client_update.viewoffset);
+	VectorClear(bot->last_client_update.viewangles);
+	bot->last_client_update.inventory[RETAIL_INVENTORY_HEALTH] = 100;
+	bot->combat.last_known_health = 100;
+	bot->ltg_type = 0;
+	AI_DMState_Reset(bot->dm_state);
+
+	LibVarSet("teamplay_shell", "0");
+	LibVarSet("ch", "0");
+	LibVarSet("teamplay", "0");
+	LibVarSet("dmflags", "0");
+	LibVarSet("ctf", "0");
+	BotFindEnemy_PrepareEntity(1, 0.0f, 0.0f, 0.0f);
+	return bot;
+}
+
+/*
+=============
+BotFindEnemy_ResetCallState
+
+Restores the raw health comparison and observable enemy-selection sentinels.
+=============
+*/
+static void BotFindEnemy_ResetCallState(bot_client_state_t *bot, int health)
+{
+	assert_non_null(bot);
+	bot->last_client_update.inventory[RETAIL_INVENTORY_HEALTH] = health;
+	bot->combat.last_known_health = health;
+	bot->combat.current_enemy = -77;
+	bot->combat.enemy_sight_time = -88.0f;
+}
+
+/*
+=============
+BotFindEnemy_SetSkin
+
+Stores the presentation skin used by retail's entity-to-client team mapping.
+=============
+*/
+static void BotFindEnemy_SetSkin(bot_interface_test_context_t *context,
+	int client,
+	const char *skin)
+{
+	bot_clientsettings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.skin, sizeof(settings.skin), "%s", skin);
+	assert_int_equal(context->api->BotClientSettings(client, &settings),
+		BLERR_NOERROR);
+}
+
+/*
+=============
+test_find_enemy_live_predicate_boundaries
+
+Pins sub_10021710's effects, client-number, model, and death-frame gates.
+=============
+*/
+static void test_find_enemy_live_predicate_boundaries(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	const struct
+	{
+		int number;
+		int modelindex;
+		int frame;
+		int effects;
+		bool live;
+	} cases[] = {
+		{2, 255, 0, 0, true},
+		{2, 255, 0, 1, true},
+		{2, 255, 0, EF_GIB, false},
+		{2, 255, 0, EF_FLIES, false},
+		{0, 255, 0, 0, false},
+		{5, 255, 0, 0, false},
+		{1, 255, 0, 0, false},
+		{2, 254, 0, 0, false},
+		{2, 255, 172, 0, true},
+		{2, 255, 173, 0, false},
+		{2, 255, 197, 0, false},
+		{2, 255, 198, 0, true},
+	};
+
+	for (size_t index = 0; index < ARRAY_LEN(cases); ++index)
+	{
+		aas_entity_t *candidate = BotFindEnemy_PrepareEntity(2,
+			100.0f,
+			0.0f,
+			0.0f);
+		candidate->number = cases[index].number;
+		candidate->modelindex = cases[index].modelindex;
+		candidate->frame = cases[index].frame;
+		candidate->effects = cases[index].effects;
+		BotFindEnemy_ResetCallState(bot, 100);
+
+		ai_dm_enemy_info_t enemy;
+		memset(&enemy, 0xa5, sizeof(enemy));
+		int found = BotAI_FindEnemy(bot, &enemy);
+		assert_int_equal(found, cases[index].live ? qtrue : qfalse);
+		assert_int_equal(enemy.valid, cases[index].live);
+		if (cases[index].live)
+		{
+			assert_int_equal(enemy.entity, 2);
+			assert_int_equal(bot->combat.current_enemy, 2);
+		}
+		else
+		{
+			assert_int_equal(enemy.entity, -1);
+			assert_int_equal(bot->combat.current_enemy, -77);
+			assert_float_equal(bot->combat.enemy_sight_time,
+				-88.0f,
+				0.0001f);
+		}
+		assert_int_equal(bot->combat.last_known_health, 100);
+	}
+}
+
+/*
+=============
+test_find_enemy_numeric_first_and_visible_cap
+
+Proves ascending entity order wins over distance and the first 16 visible
+records consume the retail result cap even when they are later rejected.
+=============
+*/
+static void test_find_enemy_numeric_first_and_visible_cap(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		17,
+		"bots/babe_c.c",
+		"babe");
+
+	aas_entity_t *first = BotFindEnemy_PrepareEntity(2,
+		800.0f,
+		0.0f,
+		0.0f);
+	first->frame = 46;
+	BotFindEnemy_PrepareEntity(3, 100.0f, 0.0f, 0.0f);
+	BotFindEnemy_ResetCallState(bot, 100);
+	ai_dm_enemy_info_t enemy;
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	assert_int_equal(enemy.entity, 2);
+	assert_float_equal(enemy.distance, 800.0f, 0.0001f);
+
+	for (int entity_number = 2; entity_number <= 16; ++entity_number)
+	{
+		aas_entity_t *rejected = BotFindEnemy_PrepareEntity(entity_number,
+			100.0f + (float)entity_number,
+			0.0f,
+			0.0f);
+		rejected->modelindex = 1;
+	}
+	BotFindEnemy_PrepareEntity(17, 50.0f, 0.0f, 0.0f);
+	BotFindEnemy_ResetCallState(bot, 100);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qfalse);
+	assert_false(enemy.valid);
+	assert_int_equal(enemy.entity, -1);
+	assert_int_equal(bot->combat.current_enemy, -77);
+}
+
+/*
+=============
+test_find_enemy_nonaccelerated_range_fov_and_close_boundaries
+
+Pins the no-3D 900-unit cap, 810-unit FOV saturation, and inclusive 300-unit
+close acceptance before the retreat fallback.
+=============
+*/
+static void test_find_enemy_nonaccelerated_range_fov_and_close_boundaries(
+	void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/hunk_c.c",
+		"hunk");
+	ai_dm_enemy_info_t enemy;
+
+	aas_entity_t *candidate = BotFindEnemy_PrepareEntity(2,
+		900.0f,
+		0.0f,
+		0.0f);
+	candidate->frame = 46;
+	BotFindEnemy_ResetCallState(bot, 100);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	assert_float_equal(enemy.distance, 900.0f, 0.0001f);
+	assert_float_equal(enemy.field_of_view, 360.0f, 0.0001f);
+
+	candidate = BotFindEnemy_PrepareEntity(2, 900.01f, 0.0f, 0.0f);
+	candidate->frame = 46;
+	BotFindEnemy_ResetCallState(bot, 100);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qfalse);
+	assert_int_equal(bot->combat.current_enemy, -77);
+
+	candidate = BotFindEnemy_PrepareEntity(2, 809.0f, 0.0f, 0.0f);
+	candidate->frame = 46;
+	BotFindEnemy_ResetCallState(bot, 100);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	assert_float_equal(enemy.field_of_view,
+		90.0f + 809.0f / 3.0f,
+		0.0001f);
+
+	candidate = BotFindEnemy_PrepareEntity(2, 810.0f, 0.0f, 0.0f);
+	candidate->frame = 46;
+	BotFindEnemy_ResetCallState(bot, 100);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	assert_float_equal(enemy.field_of_view, 360.0f, 0.0001f);
+
+	memset(bot->last_client_update.inventory,
+		0,
+		sizeof(bot->last_client_update.inventory));
+	candidate = BotFindEnemy_PrepareEntity(2, 300.0f, 0.0f, 0.0f);
+	BotFindEnemy_ResetCallState(bot, 70);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	assert_float_equal(enemy.distance, 300.0f, 0.0001f);
+
+	candidate = BotFindEnemy_PrepareEntity(2, 300.01f, 0.0f, 0.0f);
+	BotFindEnemy_ResetCallState(bot, 70);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qfalse);
+	assert_int_equal(bot->combat.current_enemy, -77);
+
+	VectorSet(bot->last_client_update.viewangles, 0.0f, 180.0f, 0.0f);
+	candidate->frame = 46;
+	BotFindEnemy_ResetCallState(bot, 70);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	vec3_t delta_angles = {0.0f, 180.0f, 0.0f};
+	AI_DMState_ApplyDeltaAngles(bot->dm_state, delta_angles);
+	VectorClear(bot->last_client_update.viewangles);
+	BotFindEnemy_ResetCallState(bot, 70);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qfalse);
+}
+
+/*
+=============
+test_find_enemy_accelerated_profile_has_no_900_cap
+
+Confirms characteristic 45 removes the nonaccelerated distance rejection.
+=============
+*/
+static void test_find_enemy_accelerated_profile_has_no_900_cap(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	aas_entity_t *candidate = BotFindEnemy_PrepareEntity(2,
+		901.0f,
+		0.0f,
+		0.0f);
+	candidate->frame = 46;
+	BotFindEnemy_ResetCallState(bot, 100);
+	ai_dm_enemy_info_t enemy;
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	assert_int_equal(enemy.entity, 2);
+	assert_float_equal(enemy.distance, 901.0f, 0.0001f);
+	assert_float_equal(enemy.field_of_view, 360.0f, 0.0001f);
+}
+
+/*
+=============
+test_find_enemy_team_precedence_and_entity_client_mapping
+
+Pins sub_10023550's shell, CH, teamplay, skin, CTF, and model precedence.
+=============
+*/
+static void test_find_enemy_team_precedence_and_entity_client_mapping(
+	void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	aas_entity_t *self = &aasworld.entities[1];
+	aas_entity_t *candidate = BotFindEnemy_PrepareEntity(2,
+		100.0f,
+		0.0f,
+		0.0f);
+	BotFindEnemy_SetSkin(context, 0, "male/grunt");
+	BotFindEnemy_SetSkin(context, 1, "female/athena");
+
+	candidate->number = 0;
+	LibVarSet("teamplay_shell", "1");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qfalse);
+	candidate->number = 2;
+	self->renderfx = 0x0401;
+	candidate->renderfx = 0x0402;
+	LibVarSet("ch", "1");
+	LibVarSet("teamplay", "1");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qtrue);
+	candidate->renderfx = 0x0802;
+	assert_int_equal(BotAI_SameTeam(bot, 2), qfalse);
+
+	LibVarSet("teamplay_shell", "0");
+	self->modelindex3 = 7;
+	candidate->modelindex3 = 8;
+	assert_int_equal(BotAI_SameTeam(bot, 2), qtrue);
+	candidate->modelindex3 = 7;
+	assert_int_equal(BotAI_SameTeam(bot, 2), qfalse);
+
+	LibVarSet("ch", "0");
+	BotFindEnemy_SetSkin(context, 1, "MALE/GRUNT");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qtrue);
+	BotFindEnemy_SetSkin(context, 1, "female/grunt");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qfalse);
+
+	LibVarSet("teamplay", "0");
+	LibVarSet("dmflags", "64");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qtrue);
+	BotFindEnemy_SetSkin(context, 1, "female/athena");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qfalse);
+	LibVarSet("dmflags", "0");
+	LibVarSet("ctf", "1");
+	BotFindEnemy_SetSkin(context, 1, "female/GRUNT");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qtrue);
+
+	LibVarSet("ctf", "0");
+	LibVarSet("dmflags", "192");
+	BotFindEnemy_SetSkin(context, 1, "male/athena");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qfalse);
+	BotFindEnemy_SetSkin(context, 1, "female/grunt");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qtrue);
+
+	LibVarSet("dmflags", "128");
+	BotFindEnemy_SetSkin(context, 1, "male/athena");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qtrue);
+	BotFindEnemy_SetSkin(context, 1, "female/grunt");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qfalse);
+	BotFindEnemy_SetSkin(context, 0, "");
+	BotFindEnemy_SetSkin(context, 1, "");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qtrue);
+
+	LibVarSet("dmflags", "0");
+	assert_int_equal(BotAI_SameTeam(bot, 2), qfalse);
+	BotFindEnemy_SetSkin(context, 0, "model/target");
+	BotFindEnemy_SetSkin(context, 1, "model/wrong");
+	BotFindEnemy_SetSkin(context, 2, "other/target");
+	aas_entity_t *mapped = BotFindEnemy_PrepareEntity(3,
+		100.0f,
+		0.0f,
+		0.0f);
+	mapped->number = 3;
+	LibVarSet("dmflags", "64");
+	assert_int_equal(BotAI_SameTeam(bot, 3), qtrue);
+}
+
+/*
+=============
+test_find_enemy_shooting_facing_and_retreat_fallback
+
+Pins attack-frame bounds, the candidate-facing 160-degree check, and the
+inventory-before-retreat fallback side effect.
+=============
+*/
+static void test_find_enemy_shooting_facing_and_retreat_fallback(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	memset(bot->last_client_update.inventory,
+		0,
+		sizeof(bot->last_client_update.inventory));
+	bot->last_client_update.inventory[RETAIL_INVENTORY_HEALTH] = 70;
+	aas_entity_t *candidate = BotFindEnemy_PrepareEntity(2,
+		500.0f,
+		0.0f,
+		0.0f);
+
+	const struct
+	{
+		int frame;
+		bool accepted;
+	} shooting_cases[] = {
+		{45, false},
+		{46, true},
+		{53, true},
+		{54, false},
+	};
+	for (size_t index = 0; index < ARRAY_LEN(shooting_cases); ++index)
+	{
+		candidate->frame = shooting_cases[index].frame;
+		VectorClear(candidate->angles);
+		BotFindEnemy_ResetCallState(bot, 70);
+		ai_dm_enemy_info_t enemy;
+		assert_int_equal(BotAI_FindEnemy(bot, &enemy),
+			shooting_cases[index].accepted ? qtrue : qfalse);
+		if (shooting_cases[index].accepted)
+		{
+			assert_true(enemy.is_shooting);
+		}
+		else
+		{
+			assert_false(enemy.valid);
+		}
+	}
+
+	candidate->frame = 0;
+	VectorSet(candidate->angles, 0.0f, 100.01f, 0.0f);
+	BotFindEnemy_ResetCallState(bot, 70);
+	ai_dm_enemy_info_t enemy;
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	VectorSet(candidate->angles, 0.0f, 100.0f, 0.0f);
+	BotFindEnemy_ResetCallState(bot, 70);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qfalse);
+
+	VectorClear(candidate->angles);
+	bot->last_client_update.inventory[RETAIL_ENEMY_HORIZONTAL_DIST] = -1;
+	BotFindEnemy_ResetCallState(bot, 70);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qfalse);
+	assert_int_equal(bot->last_client_update.inventory[
+		RETAIL_ENEMY_HORIZONTAL_DIST],
+		500);
+
+	bot->last_client_update.inventory[RETAIL_INVENTORY_BFG10K] = 1;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_CELLS] = 51;
+	BotFindEnemy_ResetCallState(bot, 70);
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	assert_int_equal(enemy.entity, 2);
+	assert_false(enemy.is_shooting);
+}
+
+/*
+=============
+test_find_enemy_health_sight_and_failure_side_effects
+
+Proves raw inventory health comparison, AAS sight time, exact success writes,
+and failure preservation of the previous enemy and sight timestamp.
+=============
+*/
+static void test_find_enemy_health_sight_and_failure_side_effects(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	aas_entity_t *candidate = BotFindEnemy_PrepareEntity(2,
+		500.0f,
+		0.0f,
+		0.0f);
+	candidate->frame = 46;
+	aasworld.time = 42.5f;
+
+	bot->combat.current_enemy = 91;
+	bot->combat.enemy_visible = true;
+	bot->combat.enemy_visible_time = 11.0f;
+	bot->combat.enemy_sight_time = 12.0f;
+	bot->combat.enemy_death_time = 13.0f;
+	bot->combat.enemy_last_seen_time = 14.0f;
+	VectorSet(bot->combat.last_enemy_origin, 1.0f, 2.0f, 3.0f);
+	VectorSet(bot->combat.last_enemy_velocity, 4.0f, 5.0f, 6.0f);
+	bot->combat.revenge_enemy = 92;
+	bot->combat.revenge_kills = 93;
+	bot->combat.last_known_health = 0;
+	bot->combat.last_damage_amount = 94;
+	bot->combat.last_damage_time = 15.0f;
+	bot->combat.last_health_valid = false;
+	bot->combat.took_damage = true;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_HEALTH] = -1;
+	bot_combat_state_t expected = bot->combat;
+	expected.current_enemy = 2;
+	expected.enemy_sight_time = 42.5f;
+	expected.last_known_health = -1;
+
+	ai_dm_enemy_info_t enemy;
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qtrue);
+	assert_memory_equal(&bot->combat, &expected, sizeof(expected));
+	assert_true(enemy.valid);
+	assert_true(enemy.triggered_by_damage);
+	assert_float_equal(enemy.field_of_view, 360.0f, 0.0001f);
+	assert_float_equal(enemy.last_seen_time, 42.5f, 0.0001f);
+
+	candidate->frame = 173;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_HEALTH] = 10;
+	expected = bot->combat;
+	expected.last_known_health = 10;
+	memset(&enemy, 0xa5, sizeof(enemy));
+	assert_int_equal(BotAI_FindEnemy(bot, &enemy), qfalse);
+	assert_memory_equal(&bot->combat, &expected, sizeof(expected));
+	assert_false(enemy.valid);
+	assert_int_equal(enemy.entity, -1);
+}
+
+typedef struct bot_ai_node_loop_probe_s
+{
+	int calls;
+	int complete_call;
+} bot_ai_node_loop_probe_t;
+
+/*
+=============
+BotAINode_LoopProbeStep
+
+Counts scheduler dispatches and optionally completes on an exact call.
+=============
+*/
+static int BotAINode_LoopProbeStep(bot_client_state_t *bot, void *context)
+{
+	bot_ai_node_loop_probe_t *probe =
+		(bot_ai_node_loop_probe_t *)context;
+	assert_non_null(bot);
+	assert_non_null(probe);
+
+	probe->calls++;
+	return probe->complete_call > 0 &&
+		probe->calls >= probe->complete_call;
+}
+
+/*
+=============
+BotAINode_ClearEnemyEntities
+
+Removes fixture-free enemy candidates while preserving AAS allocations.
+=============
+*/
+static void BotAINode_ClearEnemyEntities(void)
+{
+	assert_non_null(aasworld.entities);
+	for (int entity_number = 2;
+		entity_number <= aasworld.maxClients;
+		++entity_number)
+	{
+		aasworld.entities[entity_number].inuse = qfalse;
+		aasworld.entities[entity_number].number = entity_number;
+	}
+	BotFindEnemy_PrepareEntity(1, 0.0f, 0.0f, 0.0f);
+}
+
+/*
+=============
+BotAINode_PrepareFrame
+
+Seeds one fixture-free node frame with deterministic combat ownership.
+=============
+*/
+static void BotAINode_PrepareFrame(bot_interface_test_context_t *context,
+	bot_client_state_t *bot,
+	bot_ai_node_t node,
+	int current_enemy,
+	float sight_time,
+	int health,
+	bool aggressive,
+	bool trace_blocked)
+{
+	assert_non_null(context);
+	assert_non_null(bot);
+
+	memset(&bot->combat, 0, sizeof(bot->combat));
+	bot->combat.current_enemy = current_enemy;
+	bot->combat.last_enemy_area = 1;
+	bot->combat.chase_time = aasworld.time + 10.0f;
+	VectorSet(bot->combat.last_enemy_origin, 100.0f, 0.0f, 0.0f);
+	bot->combat.enemy_sight_time = sight_time;
+	bot->combat.last_known_health = 100;
+	bot->ai_node = node;
+	bot->ai_node_switches = -1;
+	bot->ai_node_overflow = true;
+	bot->chat_standing = false;
+	bot->stand_chat_pending = false;
+	bot->enter_game_time = -1000.0f;
+	bot->ltg_type = 0;
+	bot->nearby_goal_time = 0.0f;
+	bot->nearby_goal_check_time = 0.0f;
+	bot->long_term_goal_time = 0.0f;
+	bot->client_update_valid = true;
+	context->api->BotEmptyGoalStack(bot->goal_handle);
+
+	memset(bot->last_client_update.inventory,
+		0,
+		sizeof(bot->last_client_update.inventory));
+	memset(bot->last_client_update.stats,
+		0,
+		sizeof(bot->last_client_update.stats));
+	bot->last_client_update.stats[STAT_HEALTH] = health;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_HEALTH] = health;
+	if (aggressive)
+	{
+		bot->last_client_update.inventory[RETAIL_INVENTORY_BFG10K] = 1;
+		bot->last_client_update.inventory[RETAIL_INVENTORY_CELLS] = 51;
+	}
+	VectorClear(bot->last_client_update.origin);
+	VectorClear(bot->last_client_update.velocity);
+	VectorClear(bot->last_client_update.viewoffset);
+	VectorClear(bot->last_client_update.viewangles);
+	AI_DMState_Reset(bot->dm_state);
+	context->mock.trace_blocked = trace_blocked;
+}
+
+/*
+=============
+BotAINode_PushNearbyGoal
+
+Builds the live NBG-stack state required by retail's Seek-NBG node.
+=============
+*/
+static void BotAINode_PushNearbyGoal(bot_interface_test_context_t *context,
+	bot_client_state_t *bot,
+	int number)
+{
+	bot_goal_t goal = {0};
+
+	assert_non_null(context);
+	assert_non_null(bot);
+
+	goal.number = number;
+	goal.areanum = 1;
+	VectorSet(goal.origin, 100.0f, 0.0f, 0.0f);
+	VectorSet(goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &goal) != 0);
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+}
+
+/*
+=============
+BotAINode_RunFrame
+
+Runs one export-level AI frame and verifies its bridge status.
+=============
+*/
+static void BotAINode_RunFrame(bot_interface_test_context_t *context)
+{
+	assert_non_null(context);
+	assert_int_equal(context->api->BotAI(0, 0.1f), BLERR_NOERROR);
+}
+
+/*
+=============
+BotAINode_RunFrameWithThinktime
+
+Runs one export-level AI frame with a caller-selected think duration so the
+Seek-LTG random-chat probability boundary can be deterministic.
+=============
+*/
+static void BotAINode_RunFrameWithThinktime(bot_interface_test_context_t *context,
+	float thinktime)
+{
+	assert_non_null(context);
+	assert_int_equal(context->api->BotAI(0, thinktime), BLERR_NOERROR);
+}
+
+/*
+=============
+test_ai_node_scheduler_exact_switch_limit
+
+Pins same-frame completion accounting and retail's exact 50-dispatch cap.
+=============
+*/
+static void test_ai_node_scheduler_exact_switch_limit(void **state)
+{
+	(void)state;
+	bot_client_state_t bot;
+	memset(&bot, 0, sizeof(bot));
+
+	bot_ai_node_loop_probe_t probe = {0, 2};
+	assert_int_equal(BotAI_RunNodeSwitchLoop(&bot,
+		BotAINode_LoopProbeStep,
+		&probe),
+		qtrue);
+	assert_int_equal(probe.calls, 2);
+	assert_int_equal(bot.ai_node_switches, 1);
+	assert_false(bot.ai_node_overflow);
+
+	memset(&probe, 0, sizeof(probe));
+	assert_int_equal(BotAI_RunNodeSwitchLoop(&bot,
+		BotAINode_LoopProbeStep,
+		&probe),
+		qfalse);
+	assert_int_equal(probe.calls, BOT_AI_MAX_NODE_SWITCHES);
+	assert_int_equal(bot.ai_node_switches, BOT_AI_MAX_NODE_SWITCHES);
+	assert_true(bot.ai_node_overflow);
+}
+
+/*
+=============
+test_ai_node_find_enemy_schedule_and_clear_matrix
+
+Pins which retail nodes scan, which clear current enemy first, and which retain
+the authoritative sight timestamp on failed acquisition. Activate's scan occurs
+only after its committed movement step.
+=============
+*/
+static void test_ai_node_find_enemy_schedule_and_clear_matrix(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	const struct
+	{
+		bot_ai_node_t node;
+		int current_enemy;
+		bool live_current;
+		bool trace_blocked;
+		int expected_enemy;
+		int expected_health;
+		bot_ai_node_t expected_node;
+		int expected_switches;
+	} cases[] = {
+		{BOT_AI_NODE_STAND, 3, false, false, 3, 75, BOT_AI_NODE_STAND, 0},
+		{BOT_AI_NODE_ACTIVATE_ENTITY, 3, false, false, 0, 75, BOT_AI_NODE_ACTIVATE_ENTITY, 0},
+		{BOT_AI_NODE_SEEK_NBG, 3, false, false, 0, 75, BOT_AI_NODE_SEEK_NBG, 0},
+		{BOT_AI_NODE_SEEK_LTG, 3, false, false, 0, 75, BOT_AI_NODE_SEEK_LTG, 0},
+		{BOT_AI_NODE_BATTLE_FIGHT, 2, true, false, 2, 100, BOT_AI_NODE_BATTLE_FIGHT, 0},
+		{BOT_AI_NODE_BATTLE_CHASE, 2, true, true, 2, 75, BOT_AI_NODE_BATTLE_CHASE, 0},
+	};
+
+	for (size_t index = 0; index < ARRAY_LEN(cases); ++index)
+	{
+		BotAINode_ClearEnemyEntities();
+		if (cases[index].live_current)
+		{
+			BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+		}
+		BotAINode_PrepareFrame(context,
+			bot,
+			cases[index].node,
+			cases[index].current_enemy,
+			73.25f,
+			75,
+			true,
+			cases[index].trace_blocked);
+		if (cases[index].node == BOT_AI_NODE_SEEK_NBG)
+		{
+			BotAINode_PushNearbyGoal(context, bot, 700 + (int)index);
+		}
+
+		BotAINode_RunFrame(context);
+		assert_int_equal(bot->combat.current_enemy,
+			cases[index].expected_enemy);
+		assert_float_equal(bot->combat.enemy_sight_time,
+			73.25f,
+			0.0001f);
+		assert_int_equal(bot->combat.last_known_health,
+			cases[index].expected_health);
+		assert_int_equal(bot->ai_node, cases[index].expected_node);
+		assert_int_equal(bot->ai_node_switches, cases[index].expected_switches);
+		assert_false(bot->ai_node_overflow);
+	}
+}
+
+/*
+=============
+test_ai_activate_entity_goal_lifetime_contact_failure_and_enemy_scan
+
+Pins Gladiator's standalone activation goal: expiry or contact transition
+through Seek-NBG and Seek-LTG in the same scheduler frame, while a failed
+move preserves the independent activation deadline and clears only NBG time.
+The committed move then precedes the node's delayed enemy scan.
+=============
+*/
+static void test_ai_activate_entity_goal_lifetime_contact_failure_and_enemy_scan(
+	void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 74.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_ACTIVATE_ENTITY,
+		9,
+		-15.0f,
+		75,
+		true,
+		false);
+	memset(&bot->activation_goal, 0, sizeof(bot->activation_goal));
+	bot->activation_goal.areanum = 1;
+	VectorSet(bot->activation_goal.origin, 128.0f, 0.0f, 0.0f);
+	VectorSet(bot->activation_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(bot->activation_goal.maxs, 8.0f, 8.0f, 8.0f);
+	bot->activation_goal_time = aasworld.time - 0.001f;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+	assert_int_equal(bot->ai_node_switches, 3);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	assert_float_equal(bot->activation_goal_time, 73.999f, 0.0001f);
+	assert_int_equal(bot->activation_goal.areanum, 1);
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 75.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_ACTIVATE_ENTITY,
+		9,
+		-15.0f,
+		75,
+		true,
+		false);
+	memset(&bot->activation_goal, 0, sizeof(bot->activation_goal));
+	bot->activation_goal.areanum = 1;
+	VectorClear(bot->activation_goal.origin);
+	VectorSet(bot->activation_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(bot->activation_goal.maxs, 8.0f, 8.0f, 8.0f);
+	bot->activation_goal_time = aasworld.time + 10.0f;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+	assert_int_equal(bot->ai_node_switches, 3);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	assert_float_equal(bot->activation_goal_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->activation_goal.areanum, 1);
+
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 76.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_ACTIVATE_ENTITY,
+		0,
+		-15.0f,
+		75,
+		true,
+		false);
+	memset(&bot->activation_goal, 0, sizeof(bot->activation_goal));
+	bot->activation_goal.areanum = 1;
+	VectorSet(bot->activation_goal.origin, 128.0f, 0.0f, 0.0f);
+	VectorSet(bot->activation_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(bot->activation_goal.maxs, 8.0f, 8.0f, 8.0f);
+	bot->activation_goal_time = aasworld.time + 10.0f;
+	bot->nearby_goal_time = aasworld.time + 2.0f;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_ACTIVATE_ENTITY);
+	assert_true(bot->has_move_result);
+	assert_true(bot->last_move_result.failure);
+	assert_float_equal(bot->activation_goal_time, 86.0f, 0.0001f);
+	assert_float_equal(bot->nearby_goal_time, 0.0f, 0.0001f);
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 77.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_ACTIVATE_ENTITY,
+		0,
+		-15.0f,
+		100,
+		true,
+		false);
+	memset(&bot->activation_goal, 0, sizeof(bot->activation_goal));
+	bot->activation_goal.areanum = 1;
+	VectorSet(bot->activation_goal.origin, 128.0f, 0.0f, 0.0f);
+	VectorSet(bot->activation_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(bot->activation_goal.maxs, 8.0f, 8.0f, 8.0f);
+	bot->activation_goal_time = aasworld.time + 10.0f;
+	BotAINode_RunFrame(context);
+	assert_true(bot->has_move_result);
+	assert_true(bot->last_move_result.failure);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+	assert_int_equal(bot->ai_node_switches, 0);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	assert_float_equal(bot->activation_goal_time, 87.0f, 0.0001f);
+}
+
+/*
+=============
+test_ai_node_immediate_delayed_and_retreat_transitions
+
+Separates Stand/LTG same-frame fights from Seek-NBG's post-movement
+acquisition and pins each acquisition caller's retreat destination.
+=============
+*/
+static void test_ai_node_immediate_delayed_and_retreat_transitions(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	const bot_ai_node_t immediate_nodes[] = {
+		BOT_AI_NODE_STAND,
+		BOT_AI_NODE_SEEK_LTG,
+	};
+	for (size_t index = 0; index < ARRAY_LEN(immediate_nodes); ++index)
+	{
+		BotAINode_ClearEnemyEntities();
+		BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+		aasworld.time = 30.0f + (float)index;
+		BotAINode_PrepareFrame(context,
+			bot,
+			immediate_nodes[index],
+			9,
+			-10.0f,
+			75,
+			true,
+			false);
+		BotAINode_RunFrame(context);
+		assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+		assert_int_equal(bot->ai_node_switches, 1);
+		assert_int_equal(bot->combat.current_enemy, 2);
+		assert_float_equal(bot->combat.enemy_sight_time,
+			aasworld.time,
+			0.0001f);
+		assert_true(bot->combat.enemy_visible);
+	}
+
+	const bot_ai_node_t delayed_nodes[] = {
+		BOT_AI_NODE_SEEK_NBG,
+	};
+	for (size_t index = 0; index < ARRAY_LEN(delayed_nodes); ++index)
+	{
+		BotAINode_ClearEnemyEntities();
+		BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+		aasworld.time = 40.0f + (float)index;
+		BotAINode_PrepareFrame(context,
+			bot,
+			delayed_nodes[index],
+			9,
+			-20.0f,
+			75,
+			true,
+			false);
+		if (delayed_nodes[index] == BOT_AI_NODE_SEEK_NBG)
+		{
+			BotAINode_PushNearbyGoal(context, bot, 710 + (int)index);
+		}
+
+		BotAINode_RunFrame(context);
+		assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+		assert_int_equal(bot->ai_node_switches, 0);
+		assert_int_equal(bot->combat.current_enemy, 2);
+		assert_float_equal(bot->combat.enemy_sight_time,
+			aasworld.time,
+			0.0001f);
+		assert_false(bot->combat.enemy_visible);
+
+		bot->client_update_valid = true;
+		BotAINode_RunFrame(context);
+		assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+		assert_true(bot->combat.enemy_visible);
+	}
+
+	const struct
+	{
+		bot_ai_node_t node;
+		bot_ai_node_t expected_node;
+		int expected_switches;
+	} retreat_cases[] = {
+		{BOT_AI_NODE_SEEK_NBG, BOT_AI_NODE_BATTLE_NBG, 0},
+		{BOT_AI_NODE_SEEK_LTG, BOT_AI_NODE_BATTLE_RETREAT, 1},
+	};
+	for (size_t index = 0; index < ARRAY_LEN(retreat_cases); ++index)
+	{
+		BotAINode_ClearEnemyEntities();
+		BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+		aasworld.time = 50.0f + (float)index;
+		BotAINode_PrepareFrame(context,
+			bot,
+			retreat_cases[index].node,
+			9,
+			-30.0f,
+			30,
+			false,
+			false);
+		if (retreat_cases[index].node == BOT_AI_NODE_SEEK_NBG)
+		{
+			BotAINode_PushNearbyGoal(context, bot, 720 + (int)index);
+		}
+
+		BotAINode_RunFrame(context);
+		assert_int_equal(bot->ai_node,
+			retreat_cases[index].expected_node);
+		assert_int_equal(bot->ai_node_switches,
+			retreat_cases[index].expected_switches);
+		assert_int_equal(bot->combat.current_enemy, 2);
+		assert_float_equal(bot->combat.enemy_sight_time,
+			aasworld.time,
+			0.0001f);
+		assert_false(bot->combat.enemy_visible);
+	}
+}
+
+/*
+=============
+test_ai_seek_nbg_scans_before_private_view_turn
+
+Pins Seek-NBG's late-frame ordering: it tests a post-movement enemy candidate
+using the pre-turn private view, then advances that view after the scan.
+=============
+*/
+static void test_ai_seek_nbg_scans_before_private_view_turn(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/hunk_c.c",
+		"hunk");
+	bot_goal_t nearby_goal = {0};
+	vec3_t viewangles = {0.0f, 0.0f, 0.0f};
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, -200.0f, 346.41016f, 0.0f);
+	aasworld.time = 41.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_NBG,
+		0,
+		-20.0f,
+		75,
+		true,
+		false);
+	nearby_goal.number = 711;
+	nearby_goal.areanum = 1;
+	VectorSet(nearby_goal.origin, 0.0f, 100.0f, 0.0f);
+	VectorSet(nearby_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(nearby_goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &nearby_goal) != 0);
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	AI_DMState_GetViewAngles(bot->dm_state, viewangles);
+	assert_float_equal(viewangles[YAW], 0.0f, 0.0001f);
+}
+
+/*
+=============
+test_ai_weapon_selection_is_combat_node_local
+
+Pins the retail selector schedule: standing and Battle Chase do not select,
+while live Fight, active Retreat, and Battle NBG do.
+The low-attack-skill profile isolates that schedule from Fight's inherited
+direct-movement state.
+=============
+*/
+static void test_ai_weapon_selection_is_combat_node_local(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/zero_c.c",
+		"zero");
+	BotState_EmitPendingClientCommands(bot);
+	Mock_Reset(&context->mock);
+
+	const struct
+	{
+		bot_ai_node_t node;
+		bool live_enemy;
+		bool trace_blocked;
+		bool goal;
+		bool retreat;
+		size_t expected_commands;
+	} cases[] = {
+		{BOT_AI_NODE_STAND, false, false, false, false, 0U},
+		{BOT_AI_NODE_BATTLE_CHASE, true, true, false, false, 0U},
+		{BOT_AI_NODE_BATTLE_FIGHT, true, false, false, false, 1U},
+		{BOT_AI_NODE_BATTLE_RETREAT, true, false, true, true, 1U},
+		{BOT_AI_NODE_BATTLE_NBG, true, false, true, false, 1U},
+	};
+
+	for (size_t index = 0; index < ARRAY_LEN(cases); ++index)
+	{
+		Mock_Reset(&context->mock);
+		assert_int_equal(EA_ResetClient(bot->client_number), BLERR_NOERROR);
+		BotResetWeaponState(bot->weapon_state);
+		bot->current_weapon = 0;
+		BotAINode_ClearEnemyEntities();
+		if (cases[index].live_enemy)
+		{
+			BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+		}
+
+		aasworld.time = 110.0f + (float)index;
+		BotAINode_PrepareFrame(context,
+			bot,
+			cases[index].node,
+			cases[index].live_enemy ? 2 : 0,
+			aasworld.time - 1.0f,
+			100,
+			true,
+			cases[index].trace_blocked);
+		if (cases[index].goal)
+		{
+			BotAINode_PushNearbyGoal(context, bot, 730 + (int)index);
+			bot->nearby_goal_time = aasworld.time + 5.0f;
+		}
+		if (cases[index].retreat)
+		{
+			/* Get-flag is the recovered retail LTG type at interface-local value 4. */
+			bot->ltg_type = 4;
+			assert_true(BotAI_WantsToRetreat(bot));
+		}
+		BotAINode_RunFrame(context);
+		assert_int_equal(context->mock.client_command_count,
+			cases[index].expected_commands);
+		if (cases[index].expected_commands != 0U)
+		{
+			assert_int_equal(context->mock.client_commands[0].client, 0);
+			assert_true(strcmp(context->mock.client_commands[0].command,
+				"use") == 0 ||
+				strncmp(context->mock.client_commands[0].command,
+					"use ",
+					4U) == 0);
+		}
+		if (cases[index].node == BOT_AI_NODE_BATTLE_FIGHT)
+		{
+			assert_true(context->mock.bot_input_count > 0U);
+			assert_int_equal(context->mock.inputs[
+				context->mock.bot_input_count - 1U].weapon,
+				0);
+		}
+	}
+}
+
+/*
+=============
+test_ai_battle_fight_runs_general_item_use
+
+Pins Fight's BattleUseItems-then-UseItems sequence after weapon selection.
+=============
+*/
+static void test_ai_battle_fight_runs_general_item_use(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	BotState_EmitPendingClientCommands(bot);
+	Mock_Reset(&context->mock);
+	BotResetWeaponState(bot->weapon_state);
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 116.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		aasworld.time - 1.0f,
+		100,
+		true,
+		false);
+	bot->last_client_update.inventory[RETAIL_INVENTORY_QUAD] = 1;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_SILENCER] = 1;
+
+	BotAINode_RunFrame(context);
+	int quad_command = -1;
+	int silencer_command = -1;
+	for (size_t index = 0; index < context->mock.client_command_count; ++index)
+	{
+		if (strcmp(context->mock.client_commands[index].command, "use") != 0)
+		{
+			continue;
+		}
+		if (strcmp(context->mock.client_commands[index].argument,
+			"Quad Damage") == 0)
+		{
+			quad_command = (int)index;
+		}
+		else if (strcmp(context->mock.client_commands[index].argument,
+			"Silencer") == 0)
+		{
+			silencer_command = (int)index;
+		}
+	}
+
+	assert_true(quad_command >= 0);
+	assert_true(silencer_command >= 0);
+	assert_true(quad_command < silencer_command);
+}
+
+/*
+=============
+test_ai_active_battle_movers_run_general_item_use
+
+Pins the retail general item pass in active Battle Chase, NBG, and Retreat
+before each node refreshes its move state.
+=============
+*/
+static void test_ai_active_battle_movers_run_general_item_use(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	BotState_EmitPendingClientCommands(bot);
+
+	const struct
+	{
+		bot_ai_node_t node;
+		bool trace_blocked;
+		bool push_goal;
+		bool retreat;
+	} cases[] = {
+		{BOT_AI_NODE_BATTLE_CHASE, true, false, false},
+		{BOT_AI_NODE_BATTLE_NBG, false, true, false},
+		{BOT_AI_NODE_BATTLE_RETREAT, false, true, true},
+	};
+
+	for (size_t case_index = 0; case_index < ARRAY_LEN(cases); ++case_index)
+	{
+		Mock_Reset(&context->mock);
+		assert_int_equal(EA_ResetClient(bot->client_number), BLERR_NOERROR);
+		BotResetWeaponState(bot->weapon_state);
+		bot->current_weapon = 0;
+
+		BotAINode_ClearEnemyEntities();
+		BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+		aasworld.time = 118.0f + (float)case_index;
+		BotAINode_PrepareFrame(context,
+			bot,
+			cases[case_index].node,
+			2,
+			aasworld.time - 1.0f,
+			100,
+			true,
+			cases[case_index].trace_blocked);
+		bot->last_client_update.inventory[RETAIL_INVENTORY_SILENCER] = 1;
+		if (cases[case_index].push_goal)
+		{
+			BotAINode_PushNearbyGoal(context,
+				bot,
+				760 + (int)case_index);
+			bot->nearby_goal_time = aasworld.time + 5.0f;
+		}
+		if (cases[case_index].retreat)
+		{
+			bot->ltg_type = 4;
+			assert_true(BotAI_WantsToRetreat(bot));
+		}
+
+		BotAINode_RunFrame(context);
+		bool used_silencer = false;
+		for (size_t command_index = 0;
+			command_index < context->mock.client_command_count;
+			++command_index)
+		{
+			if (strcmp(context->mock.client_commands[command_index].command,
+				"use") == 0 &&
+				strcmp(context->mock.client_commands[command_index].argument,
+					"Silencer") == 0)
+			{
+				used_silencer = true;
+				break;
+			}
+		}
+		assert_true(used_silencer);
+	}
+}
+
+/*
+=============
+test_ai_battle_fight_leaves_move_state_untouched
+
+Pins Fight's minimum attack-skill gate. Retail leaves the mover untouched when
+BotAttackMove returns before its post-gate move-state setup.
+=============
+*/
+static void test_ai_battle_fight_leaves_move_state_untouched(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/zero_c.c",
+		"zero");
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 117.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		aasworld.time - 1.0f,
+		100,
+		true,
+		false);
+
+	bot_movestate_t *move_state = BotMoveStateFromHandle(bot->move_handle);
+	assert_non_null(move_state);
+	move_state->client = 71;
+	move_state->entitynum = 72;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(move_state->client, 71);
+	assert_int_equal(move_state->entitynum, 72);
+}
+
+/*
+=============
+test_ai_battle_fight_does_not_invent_rocket_jump
+
+Pins Battle Fight's raw tail: enabled rocketjump travel does not append an
+autonomous vertical jump after BotAttackMove, aim, and BotCheckAttack.
+=============
+*/
+static void test_ai_battle_fight_does_not_invent_rocket_jump(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/zero_c.c",
+		"zero");
+
+	assert_int_equal(context->api->BotLibVarSet("rocketjump", "1"),
+		BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 128.0f);
+	aasworld.time = 117.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		aasworld.time - 1.0f,
+		100,
+		true,
+		false);
+
+	BotAINode_RunFrame(context);
+	assert_true(context->mock.bot_input_count > 0U);
+	assert_int_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].actionflags & ACTION_JUMP,
+		0);
+	assert_int_equal(context->api->BotLibVarSet("rocketjump", "0"),
+		BLERR_NOERROR);
+}
+
+/*
+=============
+test_ai_battle_fight_initialises_move_state_after_attack_gates
+
+Pins sub_10022e10's normal-path setup call: it follows the pizza and minimum
+attack-skill returns, rather than running at the Fight node entry.
+=============
+*/
+static void test_ai_battle_fight_initialises_move_state_after_attack_gates(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	BotAINode_ClearEnemyEntities();
+	/* Zero distance keeps this setup-order test out of direct-movement tracing. */
+	BotFindEnemy_PrepareEntity(2, 0.0f, 0.0f, 0.0f);
+	aasworld.time = 117.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		aasworld.time - 1.0f,
+		100,
+		true,
+		false);
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
+
+	bot_movestate_t *move_state = BotMoveStateFromHandle(bot->move_handle);
+	assert_non_null(move_state);
+	move_state->client = 71;
+	move_state->entitynum = 72;
+	move_state->thinktime = 7.0f;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(move_state->client, bot->client_number);
+	assert_int_equal(move_state->entitynum, bot->entity_number);
+	assert_float_equal(move_state->thinktime, 0.1f, 0.0001f);
+	assert_true((move_state->moveflags & MFL_ONGROUND) != 0);
+}
+
+/*
+=============
+test_ai_node_fight_and_chase_enemy_ownership
+
+Proves Fight reuses its retained enemy, an old-visible Chase does not refresh
+sight, and Chase scans only after its retained target is no longer visible.
+=============
+*/
+static void test_ai_node_fight_and_chase_enemy_ownership(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	ai_dm_metrics_t metrics;
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 60.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		12.5f,
+		75,
+		true,
+		false);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	assert_float_equal(bot->combat.enemy_sight_time, 12.5f, 0.0001f);
+	assert_int_equal(bot->combat.last_known_health, 100);
+	assert_true(bot->combat.enemy_visible);
+	AI_DMState_GetMetrics(bot->dm_state, &metrics);
+	assert_int_equal(metrics.enemy_entity, 2);
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 61.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_CHASE,
+		2,
+		22.5f,
+		75,
+		true,
+		false);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+	assert_int_equal(bot->ai_node_switches, 1);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	assert_float_equal(bot->combat.enemy_sight_time, 22.5f, 0.0001f);
+	assert_int_equal(bot->combat.last_known_health, 100);
+	assert_true(bot->combat.enemy_visible);
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 62.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_CHASE,
+		5,
+		32.5f,
+		75,
+		true,
+		false);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+	assert_int_equal(bot->ai_node_switches, 1);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	assert_float_equal(bot->combat.enemy_sight_time, 62.0f, 0.0001f);
+	assert_int_equal(bot->combat.last_known_health, 75);
+	assert_true(bot->combat.enemy_visible);
+}
+
+/*
+=============
+test_ai_battle_fight_dead_enemy_enters_kill_chat_stand
+
+Pins Battle Fight's dead-enemy branch: retail constructs the subtype-selected
+kill chat, waits its typing time in Stand, and only then resumes Seek LTG.
+=============
+*/
+static void test_ai_battle_fight_dead_enemy_enters_kill_chat_stand(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("fastchat", "1"),
+		BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	aas_entity_t *enemy = BotFindEnemy_PrepareEntity(2,
+		100.0f,
+		0.0f,
+		0.0f);
+	enemy->effects = EF_GIB;
+	aasworld.time = 70.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		69.0f,
+		100,
+		true,
+		false);
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
+	bot->enemy_death_type = 13;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+	assert_true(bot->stand_time > aasworld.time);
+	assert_true(BotChatLength(bot->chat_state) > 0);
+
+	aasworld.time = bot->stand_time;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+	assert_true(BotChatLength(bot->chat_state) > 0);
+
+	aasworld.time += 0.001f;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_false(bot->chat_standing);
+	assert_false(bot->stand_chat_pending);
+	assert_int_equal(BotChatLength(bot->chat_state), 0);
+
+	assert_int_equal(context->api->BotLibVarSet("fastchat", "0"),
+		BLERR_NOERROR);
+}
+
+/*
+=============
+test_ai_stand_acquires_enemy_before_pending_chat_wait
+
+Pins Stand's HLIL ordering: a pending chat's typing deadline cannot postpone
+the node's first visible-enemy acquisition trial.
+=============
+*/
+static void test_ai_stand_acquires_enemy_before_pending_chat_wait(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 75.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_STAND,
+		0,
+		0.0f,
+		100,
+		true,
+		false);
+	assert_true(BotInitialChat(bot->chat_state,
+		"kill_telefrag",
+		0UL,
+		"",
+		NULL) != 0);
+	bot->chat_standing = true;
+	bot->stand_chat_pending = true;
+	bot->stand_time = aasworld.time + 30.0f;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+	assert_true(BotChatLength(bot->chat_state) > 0);
+}
+
+/*
+=============
+test_ai_stand_without_enemy_advances_private_view
+
+Pins Stand's no-enemy body: after the acquisition trial fails, retail invokes
+sub_10029150 before it considers the pending-chat deadline.
+=============
+*/
+static void test_ai_stand_without_enemy_advances_private_view(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	vec3_t ideal_viewangles = {0.0f, 90.0f, 0.0f};
+
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 76.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_STAND,
+		0,
+		0.0f,
+		100,
+		true,
+		false);
+	AI_DMState_SetIdealViewAngles(bot->dm_state, ideal_viewangles);
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].speed,
+		0.0f,
+		0.0001f);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].viewangles[YAW],
+		9.99756f,
+		0.01f);
+}
+
+/*
+=============
+test_ai_stand_expiry_advances_view_before_seek_ltg
+
+Pins Stand's strict expiry handoff: retail turns once before entering Seek LTG,
+whose no-goal return advances that retained turn a second time in the frame.
+=============
+*/
+static void test_ai_stand_expiry_advances_view_before_seek_ltg(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	vec3_t ideal_viewangles = {0.0f, 90.0f, 0.0f};
+
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 77.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_STAND,
+		0,
+		0.0f,
+		100,
+		true,
+		false);
+	bot->chat_standing = true;
+	bot->stand_chat_pending = false;
+	bot->stand_time = aasworld.time - 0.001f;
+	AI_DMState_SetIdealViewAngles(bot->dm_state, ideal_viewangles);
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_false(bot->chat_standing);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].viewangles[YAW],
+		29.99268f,
+		0.02f);
+}
+
+/*
+=============
+test_ai_stand_squatt_guard_removes_bot
+
+Pins Stand's private anti-hack guard: an expired chat stand emits the retail
+message and removebot command without consuming the chat or entering Seek-LTG.
+=============
+*/
+static void test_ai_stand_squatt_guard_removes_bot(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	assert_int_equal(context->api->BotLibVarSet("__squatt", "1"),
+		BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 78.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_STAND,
+		0,
+		0.0f,
+		100,
+		true,
+		false);
+	assert_true(BotInitialChat(bot->chat_state,
+		"kill_telefrag",
+		0UL,
+		"",
+		NULL) != 0);
+	bot->chat_standing = true;
+	bot->stand_chat_pending = true;
+	bot->stand_time = aasworld.time - 0.001f;
+	Mock_Reset(&context->mock);
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+	assert_true(BotChatLength(bot->chat_state) > 0);
+
+	bool said_guard_message = false;
+	bool sent_removebot = false;
+	for (size_t index = 0; index < context->mock.client_command_count; ++index)
+	{
+		if (strcmp(context->mock.client_commands[index].command, "say") == 0)
+		{
+			assert_int_equal(context->mock.client_commands[index].client,
+				bot->client_number);
+			assert_string_equal(context->mock.client_commands[index].argument,
+				"I never hacked your brain...\n");
+			said_guard_message = true;
+		}
+		else if (strcmp(context->mock.client_commands[index].command,
+			"removebot") == 0)
+		{
+			assert_int_equal(context->mock.client_commands[index].client,
+				bot->client_number);
+			sent_removebot = true;
+		}
+	}
+	assert_true(said_guard_message);
+	assert_true(sent_removebot);
+	assert_int_equal(context->api->BotLibVarSet("__squatt", "0"),
+		BLERR_NOERROR);
+}
+
+/*
+=============
+test_ai_battle_chase_uses_entry_deadline
+
+Verifies the retail Battle Chase entry starts a fresh ten-second deadline and
+that the node remains eligible exactly at that deadline, expiring only after
+time has advanced beyond it.
+=============
+*/
+static void test_ai_battle_chase_uses_entry_deadline(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	ai_dm_metrics_t metrics;
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 80.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		79.0f,
+		75,
+		true,
+		true);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_CHASE);
+	assert_float_equal(bot->combat.chase_time, 90.0f, 0.0001f);
+	AI_DMState_GetMetrics(bot->dm_state, &metrics);
+	assert_float_equal(metrics.chase_time, 90.0f, 0.0001f);
+
+	aasworld.time = 90.0f;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_CHASE);
+	assert_true(bot->has_move_result);
+
+	aasworld.time = 90.001f;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+}
+
+/*
+=============
+test_ai_battle_chase_reached_last_seen_goal_expires
+
+Pins the distinct last-seen-goal contact gate: reaching its eight-unit box
+zeros Battle Chase's deadline before the strict expiration comparison.
+=============
+*/
+static void test_ai_battle_chase_reached_last_seen_goal_expires(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 100.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_CHASE,
+		2,
+		99.0f,
+		75,
+		true,
+		true);
+	VectorClear(bot->combat.last_enemy_origin);
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->combat.chase_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+}
+
+/*
+=============
+test_ai_battle_nbg_expiry_pops_nearby_goal
+
+Pins Battle NBG's strict five-second expiry: it removes the retained nearby
+goal and resumes Battle Fight when no stacked long-term goal remains.
+=============
+*/
+static void test_ai_battle_nbg_expiry_pops_nearby_goal(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 120.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_NBG,
+		2,
+		119.0f,
+		75,
+		true,
+		false);
+	context->api->BotEmptyGoalStack(bot->goal_handle);
+	bot_goal_t nearby_goal = {0};
+	nearby_goal.number = 71;
+	nearby_goal.areanum = 1;
+	nearby_goal.entitynum = 2;
+	VectorSet(nearby_goal.origin, 100.0f, 0.0f, 0.0f);
+	VectorSet(nearby_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(nearby_goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &nearby_goal) != 0);
+	bot->nearby_goal_time = aasworld.time - 0.001f;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
+	assert_int_equal(context->api->BotGetTopGoal(bot->goal_handle, &nearby_goal),
+		0);
+}
+
+/*
+=============
+test_ai_battle_retreat_exits_to_chase_when_safe
+
+Pins Battle Retreat's early exit: once its strict chase predicate passes, the
+node discards the retained goal stack and starts a fresh Battle Chase.
+=============
+*/
+static void test_ai_battle_retreat_exits_to_chase_when_safe(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 140.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_RETREAT,
+		2,
+		139.0f,
+		100,
+		true,
+		true);
+	context->api->BotEmptyGoalStack(bot->goal_handle);
+	bot_goal_t retreat_goal = {0};
+	retreat_goal.number = 72;
+	retreat_goal.areanum = 1;
+	VectorSet(retreat_goal.origin, 200.0f, 0.0f, 0.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &retreat_goal) != 0);
+	assert_false(BotAI_WantsToRetreat(bot));
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_CHASE);
+	assert_float_equal(bot->combat.chase_time, 150.0f, 0.0001f);
+	assert_int_equal(context->api->BotGetTopGoal(bot->goal_handle, &retreat_goal),
+		0);
+}
+
+/*
+=============
+test_ai_battle_retreat_attempts_chase_despite_get_flag_when_aggressive
+
+Pins the raw Battle Retreat handoff to WantsToChase rather than the logical
+negation of WantsToRetreat: get-flag requests a retreat on acquisition, but
+cannot suppress the later high-aggression Chase attempt.
+=============
+*/
+static void test_ai_battle_retreat_attempts_chase_despite_get_flag_when_aggressive(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 142.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_RETREAT,
+		2,
+		141.0f,
+		100,
+		true,
+		true);
+	bot_goal_t retreat_goal = {0};
+	retreat_goal.number = 73;
+	retreat_goal.areanum = 1;
+	VectorSet(retreat_goal.origin, 200.0f, 0.0f, 0.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &retreat_goal) != 0);
+	/* Get-flag is the recovered retail LTG type at interface-local value 4. */
+	bot->ltg_type = 4;
+	assert_true(BotAI_WantsToRetreat(bot));
+	assert_true(BotAI_WantsToChase(bot));
+	bot->combat.chase_time = 0.0f;
+
+	BotAINode_RunFrame(context);
+	/* The frame tail reselects Retreat because get-flag still requests it. */
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_RETREAT);
+	assert_float_equal(bot->combat.chase_time, 152.0f, 0.0001f);
+	assert_int_equal(context->api->BotGetTopGoal(bot->goal_handle, &retreat_goal),
+		0);
+}
+
+/*
+=============
+test_ai_battle_retreat_without_goal_keeps_idle_view
+
+Pins Battle Retreat's no-LTG return: retail remains in Battle Retreat and runs
+the private view turn without fabricating a chat-stand transition, movement,
+or general-item use.
+=============
+*/
+static void test_ai_battle_retreat_without_goal_keeps_idle_view(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	vec3_t ideal_viewangles = {0.0f, 90.0f, 0.0f};
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 145.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_RETREAT,
+		2,
+		144.0f,
+		30,
+		false,
+		false);
+	assert_true(BotAI_WantsToRetreat(bot));
+	AI_DMState_SetIdealViewAngles(bot->dm_state, ideal_viewangles);
+	bot->last_client_update.inventory[RETAIL_INVENTORY_SILENCER] = 1;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_RETREAT);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].speed,
+		0.0f,
+		0.0001f);
+	assert_true(context->mock.inputs[
+		context->mock.bot_input_count - 1U].viewangles[YAW] > 0.0f);
+	for (size_t command_index = 0;
+		command_index < context->mock.client_command_count;
+		++command_index)
+	{
+		assert_false(strcmp(context->mock.client_commands[command_index].command,
+			"use") == 0 &&
+			strcmp(context->mock.client_commands[command_index].argument,
+				"Silencer") == 0);
+	}
+}
+
+/*
+=============
+test_ai_battle_retreat_failed_move_preserves_nearby_lease
+
+Pins Battle Retreat's direct-move failure against the shared nearby-goal
+lease. Retail clears the retained LTG deadline while retaining that lease,
+matching Battle Chase but differing from Battle NBG.
+=============
+*/
+static void test_ai_battle_retreat_failed_move_preserves_nearby_lease(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	bot_goal_t retreat_goal = {0};
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 147.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_RETREAT,
+		2,
+		146.0f,
+		30,
+		false,
+		false);
+	retreat_goal.number = 74;
+	retreat_goal.areanum = 1;
+	VectorSet(retreat_goal.origin, 200.0f, 0.0f, 0.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &retreat_goal) != 0);
+	assert_true(BotAI_WantsToRetreat(bot));
+	assert_false(BotAI_WantsToChase(bot));
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+	bot->nearby_goal_check_time = aasworld.time + 30.0f;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_RETREAT);
+	assert_true(bot->has_move_result);
+	assert_true(bot->last_move_result.failure);
+	assert_float_equal(bot->long_term_goal_time, 0.0f, 0.0001f);
+	assert_float_equal(bot->nearby_goal_time, 152.0f, 0.0001f);
+}
+
+/*
+=============
+test_ai_lifecycle_nodes_gate_pmove_states
+
+Pins the HLIL pmove lifecycle: observer and intermission reset level-local
+state, intermission sends end/start-level chats at their distinct handoffs, a
+no-chat death respawns strictly after its zero-delay deadline, and a selected death chat retains its
+killer context through typing time before its one respawn action.
+=============
+*/
+static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		4.0f,
+		100,
+		true,
+		false);
+	bot->last_client_update.pm_type = PM_SPECTATOR;
+	BotAINode_RunFrame(context);
+	assert_int_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1].actionflags,
+		0);
+	assert_int_equal(bot->combat.current_enemy, 0);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_OBSERVER);
+	assert_false(bot->client_update_valid);
+
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_DEAD;
+	bot->goal_snapshot_count = 2;
+	bot->active_goal_number = 19;
+	bot->combat.current_enemy = 2;
+	bot->combat.last_enemy_area = 4;
+	BotAINode_RunFrame(context);
+	assert_int_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1].actionflags,
+		0);
+	assert_true(bot->respawn_requested);
+	assert_false(bot->respawn_action_sent);
+	assert_int_equal(bot->goal_snapshot_count, 0);
+	assert_int_equal(bot->active_goal_number, 0);
+	assert_int_equal(bot->combat.current_enemy, 2);
+	assert_int_equal(bot->combat.last_enemy_area, 0);
+
+	aasworld.time += 0.001f;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_GIB;
+	BotAINode_RunFrame(context);
+	assert_int_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1].actionflags,
+		ACTION_RESPAWN);
+	assert_true(bot->respawn_requested);
+	assert_true(bot->respawn_action_sent);
+	assert_int_equal(bot->combat.current_enemy, 0);
+
+	BotAINode_ClearEnemyEntities();
+	BotAINode_PushNearbyGoal(context, bot, 801);
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	BotAINode_RunFrame(context);
+	assert_false(bot->respawn_requested);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_false(bot->has_move_result);
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("fastchat", "1"),
+		BLERR_NOERROR);
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 10.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_FIGHT,
+		2,
+		10.0f,
+		100,
+		true,
+		false);
+	bot->bot_death_type = 12;
+	bot->last_client_update.pm_type = PM_DEAD;
+	BotAINode_RunFrame(context);
+	assert_int_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1].actionflags,
+		0);
+	assert_true(bot->respawn_requested);
+	assert_false(bot->respawn_action_sent);
+	assert_true(bot->respawn_chat_pending);
+	assert_true(bot->respawn_time > aasworld.time);
+	assert_int_equal(bot->combat.current_enemy, 2);
+
+	aasworld.time = bot->respawn_time;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_GIB;
+	BotAINode_RunFrame(context);
+	assert_int_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1].actionflags,
+		0);
+	assert_false(bot->respawn_action_sent);
+	assert_true(bot->respawn_chat_pending);
+	assert_int_equal(bot->combat.current_enemy, 2);
+
+	aasworld.time += 0.001f;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_GIB;
+	BotAINode_RunFrame(context);
+	assert_int_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1].actionflags,
+		ACTION_RESPAWN);
+	assert_true(bot->respawn_action_sent);
+	assert_false(bot->respawn_chat_pending);
+	assert_int_equal(bot->combat.current_enemy, 0);
+
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	BotAINode_RunFrame(context);
+	assert_false(bot->respawn_requested);
+
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 20.0f;
+	bot->enter_game_time = aasworld.time;
+	bot->enter_game_chat_attempted = false;
+	bot->ai_node = BOT_AI_NODE_SEEK_LTG;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
+	context->mock.trace_blocked = false;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
+	assert_true(bot->enter_game_chat_attempted);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+	assert_true(BotChatLength(bot->chat_state) > 0);
+
+	aasworld.time = bot->stand_time;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
+	BotAINode_RunFrame(context);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+
+	aasworld.time += 0.001f;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
+	BotAINode_RunFrame(context);
+	assert_false(bot->chat_standing);
+	assert_false(bot->stand_chat_pending);
+
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_FREEZE;
+	bot->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+	bot->combat.current_enemy = 2;
+	BotAINode_RunFrame(context);
+	assert_int_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1].actionflags,
+		0);
+	assert_int_equal(bot->combat.current_enemy, 0);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_INTERMISSION);
+
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+	assert_true(bot->stand_time > aasworld.time);
+
+	aasworld.time = bot->stand_time;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	BotAINode_RunFrame(context);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+
+	aasworld.time += 0.001f;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	BotAINode_RunFrame(context);
+	assert_false(bot->chat_standing);
+	assert_false(bot->stand_chat_pending);
+
+	assert_int_equal(context->api->BotLibVarSet("fastchat", "0"),
+		BLERR_NOERROR);
+}
+
+/*
+=============
+test_ai_seek_ltg_random_chat_gates
+
+Pins sub_10022470's random-chat handoff before Seek-LTG acquires an enemy or
+selects a goal, including its ordered team-goal exclusions.
+=============
+*/
+static void test_ai_seek_ltg_random_chat_gates(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("fastchat", "1"),
+		BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 160.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
+	BotAINode_RunFrameWithThinktime(context, 10.0f);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
+	assert_true(bot->chat_standing);
+	assert_true(bot->stand_chat_pending);
+	assert_true(bot->stand_time > aasworld.time);
+	assert_true(BotChatLength(bot->chat_state) > 0);
+
+	bot->chat_standing = false;
+	bot->stand_chat_pending = false;
+	bot->ai_node = BOT_AI_NODE_SEEK_LTG;
+	bot->ltg_type = 1;
+	bot->client_update_valid = true;
+	BotAINode_RunFrameWithThinktime(context, 10.0f);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_false(bot->chat_standing);
+
+	assert_int_equal(context->api->BotLibVarSet("fastchat", "0"),
+		BLERR_NOERROR);
+}
+
+/*
+=============
+test_ai_seek_ltg_waves_after_recent_enemy_death
+
+Pins sub_1001f760's strict five-second post-death wave trial before Seek-LTG
+attempts its next enemy acquisition.
+=============
+*/
+static void test_ai_seek_ltg_waves_after_recent_enemy_death(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("ctf", "0"), BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 200.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->combat.enemy_death_time = aasworld.time - 4.999f;
+	Mock_Reset(&context->mock);
+	BotAINode_RunFrameWithThinktime(context, 1.0f);
+	size_t wave_count = 0U;
+	for (size_t index = 0; index < context->mock.client_command_count; ++index)
+	{
+		if (strcmp(context->mock.client_commands[index].command, "wave") != 0)
+		{
+			continue;
+		}
+
+		assert_int_equal(context->mock.client_commands[index].client,
+			bot->client_number);
+		assert_true(strcmp(context->mock.client_commands[index].argument, "0") == 0 ||
+			strcmp(context->mock.client_commands[index].argument, "2") == 0);
+		++wave_count;
+	}
+	assert_int_equal(wave_count, 1U);
+
+	aasworld.time = 205.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->combat.enemy_death_time = aasworld.time - 5.0f;
+	Mock_Reset(&context->mock);
+	BotAINode_RunFrameWithThinktime(context, 1.0f);
+	for (size_t index = 0; index < context->mock.client_command_count; ++index)
+	{
+		assert_string_not_equal(context->mock.client_commands[index].command,
+			"wave");
+	}
+}
+
+/*
+=============
+test_ai_seek_ltg_nearby_goal_schedule
+
+Pins Seek-LTG's strict half-second NBG probe, same-frame Seek-NBG handoff,
+general-item-use ordering, five-second NBG lifetime, and return to its
+underlying long-term goal after expiry.
+=============
+*/
+static void test_ai_seek_ltg_nearby_goal_schedule(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	bot_goal_t long_term_goal = {0};
+	bot_goal_t retained_goal = {0};
+	bot_goal_t top_goal = {0};
+
+	setup_console_command_aas_world();
+	register_console_command_goal(context, "weapon_rocketlauncher", 730, 64.0f);
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 600.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	long_term_goal.number = 731;
+	long_term_goal.areanum = 1;
+	VectorSet(long_term_goal.origin, 112.0f, 0.0f, 32.0f);
+	VectorSet(long_term_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(long_term_goal.maxs, 8.0f, 8.0f, 8.0f);
+	retained_goal.number = 729;
+	retained_goal.areanum = 1;
+	VectorSet(retained_goal.origin, 128.0f, 0.0f, 32.0f);
+	VectorSet(retained_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(retained_goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &retained_goal) != 0);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &long_term_goal) != 0);
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->nearby_goal_check_time = aasworld.time;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_SILENCER] = 1;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_float_equal(bot->nearby_goal_check_time, 600.0f, 0.0001f);
+	bool used_silencer = false;
+	for (size_t command_index = 0;
+		command_index < context->mock.client_command_count;
+		++command_index)
+	{
+		if (strcmp(context->mock.client_commands[command_index].command,
+			"use") == 0 &&
+			strcmp(context->mock.client_commands[command_index].argument,
+				"Silencer") == 0)
+		{
+			used_silencer = true;
+			break;
+		}
+	}
+	assert_true(used_silencer);
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, long_term_goal.number);
+
+	aasworld.time = 600.001f;
+	bot->client_update_valid = true;
+	Mock_Reset(&context->mock);
+	bot->has_move_result = false;
+	memset(&bot->last_move_result, 0, sizeof(bot->last_move_result));
+	bot->last_client_update.inventory[RETAIL_INVENTORY_SILENCER] = 1;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_NBG);
+	assert_float_equal(bot->nearby_goal_check_time, 600.501f, 0.0001f);
+	assert_float_equal(bot->nearby_goal_time, 605.001f, 0.0001f);
+	assert_true(bot->has_move_result);
+	assert_int_equal(bot->active_goal_number, 730);
+	assert_int_equal(bot->ai_node_switches, 1);
+	assert_false(bot->ai_node_overflow);
+	assert_true(context->mock.bot_input_count > 0U);
+	used_silencer = false;
+	for (size_t command_index = 0;
+		command_index < context->mock.client_command_count;
+		++command_index)
+	{
+		if (strcmp(context->mock.client_commands[command_index].command,
+			"use") == 0 &&
+			strcmp(context->mock.client_commands[command_index].argument,
+				"Silencer") == 0)
+		{
+			used_silencer = true;
+			break;
+		}
+	}
+	assert_true(used_silencer);
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, 730);
+
+	aasworld.time = 605.002f;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_float_equal(bot->nearby_goal_check_time, 605.502f, 0.0001f);
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, long_term_goal.number);
+
+	aasworld.time = 620.001f;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
+	assert_false(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+}
+
+/*
+=============
+test_ai_seek_nbg_failed_move_preserves_ltg_deadline
+
+Pins Seek-NBG's failed-move result: it clears only the five-second nearby
+lease, retaining the underlying long-term-item deadline for the fallback.
+=============
+*/
+static void test_ai_seek_nbg_failed_move_preserves_ltg_deadline(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	bot_goal_t long_term_goal = {0};
+	bot_goal_t nearby_goal = {0};
+
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 610.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_NBG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		true);
+
+	long_term_goal.number = 741;
+	long_term_goal.areanum = 1;
+	VectorSet(long_term_goal.origin, 256.0f, 0.0f, 32.0f);
+	VectorSet(long_term_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(long_term_goal.maxs, 8.0f, 8.0f, 8.0f);
+	nearby_goal.number = 742;
+	nearby_goal.areanum = 1;
+	VectorSet(nearby_goal.origin, 64.0f, 0.0f, 32.0f);
+	VectorSet(nearby_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(nearby_goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &long_term_goal) != 0);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &nearby_goal) != 0);
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_NBG);
+	assert_true(bot->has_move_result);
+	assert_true(bot->last_move_result.failure);
+	assert_float_equal(bot->nearby_goal_time, 0.0f, 0.0001f);
+	assert_float_equal(bot->long_term_goal_time, 630.0f, 0.0001f);
+}
+
+/*
+=============
+test_ai_battle_chase_failed_move_preserves_nearby_lease
+
+Pins Battle Chase's distinct failed-move clock reset.  The recovered result
+path clears the retained LTG deadline while leaving a pre-existing nearby-item
+lease intact; it must not reuse Seek-NBG's nearby-lease failure behaviour.
+=============
+*/
+static void test_ai_battle_chase_failed_move_preserves_nearby_lease(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 640.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_CHASE,
+		2,
+		-1000.0f,
+		100,
+		true,
+		true);
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+	bot->nearby_goal_check_time = aasworld.time + 30.0f;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_CHASE);
+	assert_true(bot->has_move_result);
+	assert_true(bot->last_move_result.failure);
+	assert_float_equal(bot->long_term_goal_time, 0.0f, 0.0001f);
+	assert_float_equal(bot->nearby_goal_time, 645.0f, 0.0001f);
+}
+
+/*
+=============
+test_ai_reached_ctf_tech_drops_conflicting_rune
+
+Pins sub_100262c0's goal-contact tech drop: both CTF/runes gates apply, and
+the raw tech-four Haste exception is intentionally retained.
+=============
+*/
+static void test_ai_reached_ctf_tech_drops_conflicting_rune(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	char *models[] = {
+		"maps/tech_test.bsp",
+		"models/ctf/resistance/tris.md2",
+		"models/ctf/strength/tris.md2",
+		"models/ctf/haste/tris.md2",
+		"models/ctf/regeneration/tris.md2",
+	};
+	const struct
+	{
+		const char *ctf;
+		const char *runes;
+		int modelindex;
+		int held_tech;
+		bool expect_drop;
+	} cases[] = {
+		{"1", "1", 2, RETAIL_INVENTORY_TECH1, true},
+		{"1", "1", 3, RETAIL_INVENTORY_TECH4, false},
+		{"1", "1", 4, RETAIL_INVENTORY_TECH4, true},
+		{"1", "0", 2, RETAIL_INVENTORY_TECH1, false},
+		{"0", "1", 2, RETAIL_INVENTORY_TECH1, false},
+	};
+
+	assert_int_equal(context->api->BotLoadMap(NULL,
+		(int)ARRAY_LEN(models),
+		models,
+		0,
+		NULL,
+		0,
+		NULL),
+		BLERR_NOERROR);
+	setup_console_command_aas_world();
+
+	for (size_t index = 0; index < ARRAY_LEN(cases); ++index)
+	{
+		bot_updateentity_t tech_entity = {0};
+		bot_goal_t goal = {0};
+		tech_entity.modelindex = cases[index].modelindex;
+		assert_int_equal(context->api->BotUpdateEntity(12, &tech_entity),
+			BLERR_NOERROR);
+		assert_int_equal(context->api->BotLibVarSet("ctf",
+			(char *)cases[index].ctf),
+			BLERR_NOERROR);
+		assert_int_equal(context->api->BotLibVarSet("runes",
+			(char *)cases[index].runes),
+			BLERR_NOERROR);
+
+		BotAINode_ClearEnemyEntities();
+		aasworld.time = 630.0f + (float)index;
+		BotAINode_PrepareFrame(context,
+			bot,
+			BOT_AI_NODE_SEEK_NBG,
+			0,
+			-1000.0f,
+			100,
+			true,
+			false);
+		goal.entitynum = 12;
+		goal.number = 740 + (int)index;
+		goal.areanum = 1;
+		goal.flags = GFL_ITEM;
+		VectorSet(goal.mins, -8.0f, -8.0f, -8.0f);
+		VectorSet(goal.maxs, 8.0f, 8.0f, 8.0f);
+		assert_true(context->api->BotPushGoal(bot->goal_handle, &goal) != 0);
+		bot->nearby_goal_time = aasworld.time + 5.0f;
+		bot->last_client_update.inventory[cases[index].held_tech] = 1;
+
+		Mock_Reset(&context->mock);
+		BotAINode_RunFrame(context);
+		bool dropped_tech = false;
+		for (size_t command_index = 0;
+			command_index < context->mock.client_command_count;
+			++command_index)
+		{
+			if (strcmp(context->mock.client_commands[command_index].command,
+				"drop") == 0 &&
+				strcmp(context->mock.client_commands[command_index].argument,
+					"tech") == 0)
+			{
+				dropped_tech = true;
+				break;
+			}
+		}
+		assert_int_equal(dropped_tech, cases[index].expect_drop);
+	}
+}
+
+/*
+=============
+test_ai_seek_nbg_clears_missing_item_goal
+
+Pins the item-specific Seek-NBG exit when a static item should be visible but
+its stale entity record proves it has disappeared, including the immediate
+return to Seek-LTG's normal half-second NBG probe.
+=============
+*/
+static void test_ai_seek_nbg_clears_missing_item_goal(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	bot_goal_t long_term_goal = {0};
+	bot_goal_t nearby_goal = {0};
+	bot_goal_t top_goal = {0};
+
+	setup_console_command_aas_world();
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 620.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_NBG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	long_term_goal.number = 732;
+	long_term_goal.areanum = 1;
+	VectorSet(long_term_goal.origin, 112.0f, 0.0f, 32.0f);
+	VectorSet(long_term_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(long_term_goal.maxs, 8.0f, 8.0f, 8.0f);
+	nearby_goal.number = 3;
+	nearby_goal.entitynum = 3;
+	nearby_goal.areanum = 1;
+	nearby_goal.flags = GFL_ITEM;
+	VectorSet(nearby_goal.origin, 64.0f, 0.0f, 32.0f);
+	VectorSet(nearby_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(nearby_goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &long_term_goal) != 0);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &nearby_goal) != 0);
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_float_equal(bot->nearby_goal_check_time, 620.5f, 0.0001f);
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, long_term_goal.number);
+}
+
+/*
+=============
+test_ai_team_goal_scheduler_direct_branches
+
+Pins BotLongTermGoal's direct defend, camp, and patrol branches: their delayed
+acknowledgements, strict expiry, nearby camp arrival/crouch hold, and patrol
+direction bit must run before ordinary item-goal selection. Defend's ordinary
+move result also advances the retained no-enemy private view turn.
+=============
+*/
+static void test_ai_team_goal_scheduler_direct_branches(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 180.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->ltg_type = 3;
+	bot->team_goal_number = 401;
+	bot->team_goal.number = 401;
+	bot->team_goal.areanum = 1;
+	VectorSet(bot->team_goal.origin, 200.0f, 0.0f, 0.0f);
+	VectorSet(bot->team_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(bot->team_goal.maxs, 8.0f, 8.0f, 8.0f);
+	bot->team_message_time = 179.0f;
+	bot->team_goal_time = 190.0f;
+	vec3_t ninety_degree_delta = {0.0f, 90.0f, 0.0f};
+	AI_DMState_ApplyDeltaAngles(bot->dm_state, ninety_degree_delta);
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->active_goal_number, 401);
+	assert_true(bot->has_move_result);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].viewangles[YAW],
+		80.00244f,
+		0.01f);
+
+	aasworld.time = 190.001f;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+
+	aasworld.time = 200.0f;
+	bot->client_update_valid = true;
+	bot->ai_node = BOT_AI_NODE_SEEK_LTG;
+	bot->ltg_type = 6;
+	bot->ltg_teammate = 0;
+	bot->team_goal.number = 402;
+	bot->team_goal.areanum = 1;
+	VectorClear(bot->team_goal.origin);
+	VectorSet(bot->team_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(bot->team_goal.maxs, 8.0f, 8.0f, 8.0f);
+	bot->team_message_time = 199.0f;
+	bot->team_goal_time = 210.0f;
+	bot->arrive_time = 0.0f;
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
+	assert_float_equal(bot->arrive_time, 200.0f, 0.0001f);
+
+	aasworld.time = 203.0f;
+	bot->client_update_valid = true;
+	AI_DMState_SetAttackCrouchTime(bot->dm_state, 210.0f);
+	srand(1);
+	BotAINode_RunFrame(context);
+	assert_true((context->mock.inputs[
+		context->mock.bot_input_count - 1U].actionflags & ACTION_CROUCH) != 0);
+
+	bot_console_waypoint_t *first = calloc(1, sizeof(*first));
+	bot_console_waypoint_t *second = calloc(1, sizeof(*second));
+	assert_non_null(first);
+	assert_non_null(second);
+	snprintf(first->name, sizeof(first->name), "%s", "First");
+	first->goal.number = 403;
+	first->goal.areanum = 1;
+	VectorClear(first->goal.origin);
+	VectorSet(first->goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(first->goal.maxs, 8.0f, 8.0f, 8.0f);
+	snprintf(second->name, sizeof(second->name), "%s", "Second");
+	second->goal.number = 404;
+	second->goal.areanum = 1;
+	VectorSet(second->goal.origin, 200.0f, 0.0f, 0.0f);
+	VectorSet(second->goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(second->goal.maxs, 8.0f, 8.0f, 8.0f);
+	first->next = second;
+	second->prev = first;
+	bot->patrol_points = first;
+	bot->current_patrol_point = first;
+	bot->patrol_flags = 0;
+	bot->ltg_type = 7;
+	bot->team_message_time = 199.0f;
+	bot->team_goal_time = 220.0f;
+	bot->client_update_valid = true;
+	VectorClear(bot->last_client_update.origin);
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
+	assert_ptr_equal(bot->current_patrol_point, second);
+	assert_int_equal(bot->patrol_flags & 0x04, 0x04);
+	assert_int_equal(bot->active_goal_number, 404);
+
+	aasworld.time = 220.001f;
+	bot->client_update_valid = true;
+	VectorCopy(second->goal.origin, bot->last_client_update.origin);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+	assert_ptr_equal(bot->current_patrol_point, first);
+
+	BotState_FreeConsoleWaypoints(bot->patrol_points);
+	bot->patrol_points = NULL;
+	bot->current_patrol_point = NULL;
+}
+
+/*
+=============
+test_ai_team_help_scheduler_tracks_live_teammate
+
+Pins LTG help's delayed acknowledgement, live one-based entity goal refresh,
+and strict ten-second visibility expiry before the generic goal path runs.
+=============
+*/
+static void test_ai_team_help_scheduler_tracks_live_teammate(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	setup_console_command_aas_world();
+	aasworld.areas[1].maxs[0] = 256.0f;
+	bot_client_state_t *teammate = BotState_Create(1);
+	assert_non_null(teammate);
+	BotFindEnemy_PrepareEntity(2, 200.0f, 0.0f, 0.0f);
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("teamplay", "1"),
+		BLERR_NOERROR);
+	aasworld.time = 300.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->ltg_type = 1;
+	bot->ltg_teammate = 1;
+	bot->team_message_time = 299.0f;
+	bot->team_goal_time = 360.0f;
+	bot->teammate_visible_time = 300.0f;
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->ltg_type, 1);
+	assert_int_equal(bot->team_goal.entitynum, 2);
+	assert_int_equal(bot->team_goal.areanum, 1);
+	assert_float_equal(bot->team_goal.origin[0], 200.0f, 0.0001f);
+	assert_int_equal(bot->active_goal_number, bot->team_goal.number);
+
+	aasworld.time = 310.001f;
+	aasworld.entities[2].inuse = qfalse;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+	BotState_Destroy(teammate->client_number);
+}
+
+/*
+=============
+test_ai_team_accompany_scheduler_tracks_formation_and_loss
+
+Pins LTG accompany's live teammate goal, formation-distance arrival look and
+crouch hold, then the strict sixty-second lost-companion clear.
+=============
+*/
+static void test_ai_team_accompany_scheduler_tracks_formation_and_loss(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	setup_console_command_aas_world();
+	aasworld.areas[1].maxs[0] = 256.0f;
+	bot_client_state_t *teammate = BotState_Create(1);
+	assert_non_null(teammate);
+	BotFindEnemy_PrepareEntity(2, 200.0f, 0.0f, 0.0f);
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("teamplay", "1"),
+		BLERR_NOERROR);
+	aasworld.time = 400.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->ltg_type = 2;
+	bot->ltg_teammate = 1;
+	bot->team_message_time = 399.0f;
+	bot->team_goal_time = 500.0f;
+	bot->teammate_visible_time = 400.0f;
+	bot->formation_dist = 112.0f;
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->ltg_type, 2);
+	assert_int_equal(bot->team_goal.entitynum, 2);
+	assert_int_equal(bot->team_goal.areanum, 1);
+	assert_float_equal(bot->team_goal.origin[0], 200.0f, 0.0001f);
+
+	aasworld.time = 401.0f;
+	bot->client_update_valid = true;
+	VectorSet(bot->last_client_update.origin, 160.0f, 0.0f, 0.0f);
+	VectorSet(bot->last_client_update.viewangles, 0.0f, 90.0f, 0.0f);
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->arrive_time, 401.0f, 0.0001f);
+	assert_int_equal(bot->ltg_type, 2);
+	assert_true(context->mock.bot_input_count > 0U);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].speed,
+		0.0f,
+		0.0001f);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].viewangles[YAW],
+		0.0f,
+		0.0001f);
+
+	aasworld.time = 404.0f;
+	bot->client_update_valid = true;
+	AI_DMState_SetAttackCrouchTime(bot->dm_state, 410.0f);
+	srand(1);
+	BotAINode_RunFrame(context);
+	assert_true((context->mock.inputs[
+		context->mock.bot_input_count - 1U].actionflags & ACTION_CROUCH) != 0);
+	ai_dm_metrics_t metrics;
+	AI_DMState_GetMetrics(bot->dm_state, &metrics);
+	assert_float_equal(metrics.ideal_viewangles[YAW], 180.0f, 0.0001f);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].viewangles[YAW],
+		9.99756f,
+		0.01f);
+
+	aasworld.time = 461.001f;
+	bot->client_update_valid = true;
+	VectorClear(bot->last_client_update.origin);
+	bot->teammate_visible_time = 401.0f;
+	context->mock.trace_blocked = true;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+	assert_float_equal(bot->teammate_visible_time, 461.001f, 0.0001f);
+	BotState_Destroy(teammate->client_number);
+}
+
+/*
+=============
+test_ai_seek_ltg_no_goal_advances_private_view
+
+Pins sub_1001f760's no-goal exit: after BotLongTermGoal returns null, Seek LTG
+submits no movement without refreshing the move state and advances the retained
+no-enemy private view turn.
+=============
+*/
+static void test_ai_seek_ltg_no_goal_advances_private_view(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	vec3_t ideal_viewangles = {0.0f, 90.0f, 0.0f};
+
+	aasworld.time = 475.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot_movestate_t *move_state = BotMoveStateFromHandle(bot->move_handle);
+	assert_non_null(move_state);
+	VectorSet(move_state->origin, 731.0f, 732.0f, 733.0f);
+	move_state->areanum = 71;
+	AI_DMState_SetIdealViewAngles(bot->dm_state, ideal_viewangles);
+	BotAINode_RunFrame(context);
+
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].speed,
+		0.0f,
+		0.0001f);
+	assert_float_equal(context->mock.inputs[
+		context->mock.bot_input_count - 1U].viewangles[YAW],
+		9.99756f,
+		0.01f);
+	assert_float_equal(move_state->origin[0], 731.0f, 0.0001f);
+	assert_float_equal(move_state->origin[1], 732.0f, 0.0001f);
+	assert_float_equal(move_state->origin[2], 733.0f, 0.0001f);
+	assert_int_equal(move_state->areanum, 71);
+}
+
+/*
+=============
+test_ai_team_ctf_scheduler_routes_team_flags
+
+Pins CTF get-flag's opposing-flag target, delayed start message, and strict
+deadline, then rush-base's carried-flag home target and post-touch away timer.
+=============
+*/
+static void test_ai_team_ctf_scheduler_routes_team_flags(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	setup_console_command_aas_world();
+	register_console_command_goal(context, "Red Flag", 501, -96.0f);
+	register_console_command_goal(context, "Blue Flag", 502, 96.0f);
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("ctf", "1"),
+		BLERR_NOERROR);
+	aasworld.time = 500.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->team = 1;
+	bot->ltg_type = 4;
+	bot->team_message_time = 499.0f;
+	bot->team_goal_time = 600.0f;
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->ltg_type, 4);
+	assert_int_equal(bot->active_goal_number, 502);
+
+	aasworld.time = 600.001f;
+	bot->client_update_valid = true;
+	VectorClear(bot->last_client_update.origin);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+
+	aasworld.time = 610.0f;
+	bot->client_update_valid = true;
+	bot->ltg_type = 5;
+	bot->team_goal_time = 620.0f;
+	bot->rush_base_away_time = 0.0f;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_FLAG1] = 1;
+	VectorClear(bot->last_client_update.origin);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 5);
+	assert_int_equal(bot->active_goal_number, 501);
+
+	aasworld.time = 611.0f;
+	bot->client_update_valid = true;
+	VectorSet(bot->last_client_update.origin, -96.0f, 0.0f, 32.0f);
+	srand(7);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 5);
+	assert_true(bot->rush_base_away_time > 616.0f);
+	assert_true(bot->rush_base_away_time <= 626.0f);
+
+	aasworld.time = 612.0f;
+	bot->client_update_valid = true;
+	bot->rush_base_away_time = 0.0f;
+	bot->team_goal_time = 611.5f;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+}
+
+/*
+=============
+test_ai_seek_ltg_automatic_ctf_goal_scheduler
+
+Pins sub_10026440's own CTF selection: missing static flags start the fixed
+roam lease, which suppresses reassignment until an aggressive bot later picks
+its home flag for a defend LTG.
+=============
+*/
+static void test_ai_seek_ltg_automatic_ctf_goal_scheduler(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	setup_console_command_aas_world();
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("ctf", "1"),
+		BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 630.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->team = 1;
+	srand(1);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+	assert_float_equal(bot->get_flag_away_time, 690.0f, 0.0001f);
+
+	register_console_command_goal(context, "Red Flag", 611, -96.0f);
+	register_console_command_goal(context, "Blue Flag", 612, 96.0f);
+	aasworld.time = 650.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->team = 1;
+	srand(1);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+	assert_float_equal(bot->get_flag_away_time, 690.0f, 0.0001f);
+
+	aasworld.time = 691.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	bot->team = 1;
+	srand(1);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 3);
+	assert_int_equal(bot->team_goal_number, 611);
+	assert_float_equal(bot->team_goal_time, 811.0f, 0.0001f);
+	assert_int_equal(bot->active_goal_number, 611);
+}
+
+/*
+=============
+test_ai_battle_retreat_carried_flag_promotes_home_goal
+
+Pins Battle Retreat's CTF carrier handoff to the home-base LTG before its
+nearby-goal probe and direct movement work.
+=============
+*/
+static void test_ai_battle_retreat_carried_flag_promotes_home_goal(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	setup_console_command_aas_world();
+	register_console_command_goal(context, "Red Flag", 601, -96.0f);
+	register_console_command_goal(context, "Blue Flag", 602, 96.0f);
+
+	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("ctf", "1"),
+		BLERR_NOERROR);
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 620.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_RETREAT,
+		2,
+		619.0f,
+		30,
+		true,
+		false);
+	bot->team = 1;
+	bot->ltg_type = 0;
+	bot->rush_base_away_time = 999.0f;
+	bot->team_goal_time = 0.0f;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_FLAG1] = 1;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 5);
+	assert_float_equal(bot->rush_base_away_time, 0.0f, 0.0001f);
+	assert_float_equal(bot->team_goal_time, 740.0f, 0.0001f);
+	assert_int_equal(bot->active_goal_number, 601);
+
+	/* Retail only starts the Rush Base lease as the LTG changes. */
+	aasworld.time = 621.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_RETREAT,
+		2,
+		620.0f,
+		30,
+		true,
+		false);
+	bot->ltg_type = 5;
+	bot->rush_base_away_time = 0.0f;
+	bot->team_goal_time = 740.0f;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_FLAG1] = 1;
+	BotAINode_RunFrame(context);
+	assert_float_equal(bot->team_goal_time, 740.0f, 0.0001f);
 }
 
 static bool ensure_map_fixture(const asset_env_t *assets, const char *stem)
@@ -6092,6 +10589,10 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_bot_test_export_is_retail_noop,
 							setup_bot_interface,
 							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_pointlight_heap_is_independent_of_soundinfo,
+			setup_bot_interface,
+			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
 							setup_bot_interface,
 							teardown_bot_interface),
@@ -6173,9 +10674,218 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_enemy_battle_inventory_weapon_and_effect_projection,
 							setup_bot_interface,
 							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_general_item_use_retail_order_and_boundaries,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_battle_item_use_retail_order_and_boundaries,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_battle_flag_retreat_and_chase_decisions,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_battle_aggression_retail_gate_boundaries,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_battle_rocket_jump_retail_gate_boundaries,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_find_enemy_live_predicate_boundaries,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_find_enemy_numeric_first_and_visible_cap,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_find_enemy_nonaccelerated_range_fov_and_close_boundaries,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_find_enemy_accelerated_profile_has_no_900_cap,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_find_enemy_team_precedence_and_entity_client_mapping,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_find_enemy_shooting_facing_and_retreat_fallback,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_find_enemy_health_sight_and_failure_side_effects,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test(test_ai_node_scheduler_exact_switch_limit),
+		cmocka_unit_test_setup_teardown(
+			test_ai_node_find_enemy_schedule_and_clear_matrix,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_activate_entity_goal_lifetime_contact_failure_and_enemy_scan,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_node_immediate_delayed_and_retreat_transitions,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_nbg_scans_before_private_view_turn,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_weapon_selection_is_combat_node_local,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_fight_runs_general_item_use,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_active_battle_movers_run_general_item_use,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_fight_leaves_move_state_untouched,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_fight_does_not_invent_rocket_jump,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_fight_initialises_move_state_after_attack_gates,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_node_fight_and_chase_enemy_ownership,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_fight_dead_enemy_enters_kill_chat_stand,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_stand_acquires_enemy_before_pending_chat_wait,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_stand_without_enemy_advances_private_view,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_stand_expiry_advances_view_before_seek_ltg,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_stand_squatt_guard_removes_bot,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_chase_uses_entry_deadline,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_chase_reached_last_seen_goal_expires,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_nbg_records_enemy_location,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_nbg_expiry_pops_nearby_goal,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_retreat_exits_to_chase_when_safe,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_retreat_attempts_chase_despite_get_flag_when_aggressive,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_retreat_without_goal_keeps_idle_view,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_retreat_failed_move_preserves_nearby_lease,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_lifecycle_nodes_gate_pmove_states,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_ltg_random_chat_gates,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_ltg_waves_after_recent_enemy_death,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_ltg_nearby_goal_schedule,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_nbg_failed_move_preserves_ltg_deadline,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_chase_failed_move_preserves_nearby_lease,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_reached_ctf_tech_drops_conflicting_rune,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_nbg_clears_missing_item_goal,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_team_goal_scheduler_direct_branches,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_team_help_scheduler_tracks_live_teammate,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_team_accompany_scheduler_tracks_formation_and_loss,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_ltg_no_goal_advances_private_view,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_team_ctf_scheduler_routes_team_flags,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_ltg_automatic_ctf_goal_scheduler,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_retreat_carried_flag_promotes_home_goal,
+			setup_bot_interface,
+			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_interface_mover_parity,
 							setup_bot_interface,
 							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_chase_preserves_mover_set_view,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_battle_chase_arrival_area_expires_deadline,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_ai_battle_chase_handles_blocked_move,
+			setup_bot_interface,
+			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_start_frame_entity_lifecycle,
 							setup_bot_interface,
 							teardown_bot_interface),

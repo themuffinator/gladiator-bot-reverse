@@ -25,6 +25,7 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/common/l_utils.h"
 #include "botlib/aas/aas_map.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib/aas/aas_sound.h"
@@ -72,15 +73,52 @@ static float g_botInterfaceFrameTime = 0.0f;
 static unsigned int g_botInterfaceFrameNumber = 0;
 static bool g_botInterfaceDebugDrawEnabled = false;
 
-#define CHARACTERISTIC_EASY_FRAGGER 42
-#define CHARACTERISTIC_ALERTNESS 43
 #define CHARACTERISTIC_CHAT_CPM 14
+#define CHARACTERISTIC_CHAT_INSULT 15
+#define CHARACTERISTIC_CHAT_MISC 16
+#define CHARACTERISTIC_CHAT_STARTENDLEVEL 17
+#define CHARACTERISTIC_CHAT_ENTEREXITGAME 18
+#define CHARACTERISTIC_CHAT_KILL 19
+#define CHARACTERISTIC_CHAT_DEATH 20
+#define CHARACTERISTIC_CHAT_RANDOM 21
 #define CHARACTERISTIC_CHAT_REPLY 22
+#define CHARACTERISTIC_ATTACK_SKILL 4
+#define CHARACTERISTIC_CROUCHER 24
+#define CHARACTERISTIC_WEAPONJUMPING 26
+#define CHARACTERISTIC_3D_ACCELERATOR 45
 
 enum bot_battle_inventory_slot_e
 {
+	BOT_BATTLE_INVENTORY_ARMORBODY = 1,
+	BOT_BATTLE_INVENTORY_ARMORCOMBAT = 2,
+	BOT_BATTLE_INVENTORY_ARMORJACKET = 3,
+	BOT_BATTLE_INVENTORY_POWERSCREEN = 5,
+	BOT_BATTLE_INVENTORY_POWERSHIELD = 6,
+	BOT_BATTLE_INVENTORY_SUPERSHOTGUN = 9,
+	BOT_BATTLE_INVENTORY_MACHINEGUN = 10,
+	BOT_BATTLE_INVENTORY_CHAINGUN = 11,
+	BOT_BATTLE_INVENTORY_GRENADES = 12,
+	BOT_BATTLE_INVENTORY_GRENADELAUNCHER = 13,
+	BOT_BATTLE_INVENTORY_ROCKETLAUNCHER = 14,
+	BOT_BATTLE_INVENTORY_HYPERBLASTER = 15,
+	BOT_BATTLE_INVENTORY_RAILGUN = 16,
+	BOT_BATTLE_INVENTORY_BFG10K = 17,
+	BOT_BATTLE_INVENTORY_SHELLS = 18,
+	BOT_BATTLE_INVENTORY_BULLETS = 19,
 	BOT_BATTLE_INVENTORY_CELLS = 20,
+	BOT_BATTLE_INVENTORY_ROCKETS = 21,
+	BOT_BATTLE_INVENTORY_SLUGS = 22,
+	BOT_BATTLE_INVENTORY_QUAD = 23,
+	BOT_BATTLE_INVENTORY_INVULNERABILITY = 24,
+	BOT_BATTLE_INVENTORY_SILENCER = 25,
+	BOT_BATTLE_INVENTORY_REBREATHER = 26,
 	BOT_BATTLE_INVENTORY_HEALTH = 41,
+	BOT_BATTLE_INVENTORY_FLAG1 = 43,
+	BOT_BATTLE_INVENTORY_FLAG2 = 44,
+	BOT_BATTLE_INVENTORY_TECH1 = 45,
+	BOT_BATTLE_INVENTORY_TECH2 = 46,
+	BOT_BATTLE_INVENTORY_TECH3 = 47,
+	BOT_BATTLE_INVENTORY_TECH4 = 48,
 	BOT_BATTLE_ENEMY_HORIZONTAL_DIST = 200,
 	BOT_BATTLE_ENEMY_HEIGHT = 201,
 	BOT_BATTLE_USING_QUAD = 204,
@@ -107,6 +145,8 @@ enum bot_battle_inventory_slot_e
 };
 
 #define BOT_BATTLE_POWER_ARMOR_GRACE 0.9
+#define BOT_LTG_GET_FLAG 4
+#define BOT_LTG_RUSH_BASE 5
 
 #define BOT_CONSOLE_MATCH_CONTEXT 7UL
 #define BOT_CONSOLE_MATCH_DEATH 1
@@ -160,6 +200,7 @@ enum bot_battle_inventory_slot_e
 #define BOT_CONSOLE_MATCH_SECONDS 106
 #define BOT_CONSOLE_PATROL_LOOP 0x01
 #define BOT_CONSOLE_PATROL_REVERSE 0x02
+#define BOT_CONSOLE_PATROL_FORWARD 0x04
 #define BOT_CONSOLE_DEFAULT_TEAM_GOAL_DURATION 300.0f
 #define BOT_CONSOLE_HELP_DURATION 60.0f
 #define BOT_CONSOLE_ACCOMPANY_DURATION 240.0f
@@ -205,434 +246,418 @@ static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
     info->has_line_of_sight = false;
 }
 
-static int BotAI_MaxTrackedClients(void)
-{
-    libvar_t *maxclients = Bridge_MaxClients();
-    if (maxclients == NULL)
-    {
-        return MAX_CLIENTS;
-    }
+/*
+=============
+BotInterface_InFieldOfVision
 
-    int value = (int)maxclients->value;
-    if (value < 0)
-    {
-        value = 0;
-    }
-    if (value > BOT_INTERFACE_MAX_ENTITIES)
-    {
-        value = BOT_INTERFACE_MAX_ENTITIES;
-    }
-    return value;
+Applies retail's 16-bit angle quantization and inclusive pitch/yaw half-FOV.
+=============
+*/
+static bool BotInterface_InFieldOfVision(const vec3_t viewangles,
+	float field_of_view,
+	const vec3_t target_angles)
+{
+	for (int axis = 0; axis < 2; ++axis)
+	{
+		float view_angle = AngleMod(viewangles[axis]);
+		float target_angle = AngleMod(target_angles[axis]);
+		float difference = target_angle - view_angle;
+		if (target_angle < view_angle)
+		{
+			if (difference < -180.0f)
+			{
+				difference += 360.0f;
+			}
+		}
+		else if (difference > 180.0f)
+		{
+			difference -= 360.0f;
+		}
+
+		if (difference < -field_of_view * 0.5f ||
+			difference > field_of_view * 0.5f)
+		{
+			return false;
+		}
+	}
+
+	return true;
 }
 
-static float BotInterface_NormaliseAngle180(float angle)
+/*
+=============
+BotInterface_ClientEyePosition
+
+Builds the eye position retained at bot-state offset 0x6b0 in retail.
+=============
+*/
+static void BotInterface_ClientEyePosition(const bot_client_state_t *state,
+	vec3_t out)
 {
-    while (angle > 180.0f)
-    {
-        angle -= 360.0f;
-    }
-    while (angle < -180.0f)
-    {
-        angle += 360.0f;
-    }
-    return angle;
+	if (state == NULL || out == NULL)
+	{
+		return;
+	}
+
+	VectorCopy(state->last_client_update.origin, out);
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		out[axis] += state->last_client_update.viewoffset[axis];
+	}
 }
 
-static void BotInterface_VectorToAngles(const vec3_t vector, vec3_t angles)
-{
-    if (angles == NULL || vector == NULL)
-    {
-        return;
-    }
+/*
+=============
+BotInterface_HasLineOfSight
 
-    float yaw;
-    float pitch;
-
-    if (vector[0] == 0.0f && vector[1] == 0.0f)
-    {
-        yaw = 0.0f;
-        pitch = (vector[2] > 0.0f) ? 90.0f : 270.0f;
-    }
-    else
-    {
-        yaw = atan2f(vector[1], vector[0]) * (180.0f / (float)M_PI);
-        if (yaw < 0.0f)
-        {
-            yaw += 360.0f;
-        }
-
-        float forward = sqrtf(vector[0] * vector[0] + vector[1] * vector[1]);
-        pitch = atan2f(vector[2], forward) * (180.0f / (float)M_PI);
-    }
-
-    angles[PITCH] = pitch;
-    angles[YAW] = yaw;
-    angles[ROLL] = 0.0f;
-}
-
-static bool BotInterface_InFieldOfVision(const vec3_t viewangles, float fov, const vec3_t target_angles)
-{
-    if (viewangles == NULL || target_angles == NULL)
-    {
-        return false;
-    }
-
-    if (fov >= 360.0f)
-    {
-        return true;
-    }
-
-    float yaw_delta = BotInterface_NormaliseAngle180(viewangles[YAW] - target_angles[YAW]);
-    float pitch_delta = BotInterface_NormaliseAngle180(viewangles[PITCH] - target_angles[PITCH]);
-    float half_fov = fov * 0.5f;
-    return fabsf(yaw_delta) <= half_fov && fabsf(pitch_delta) <= half_fov;
-}
-
-static void BotInterface_ClientEyePosition(const bot_client_state_t *state, vec3_t out)
-{
-    if (state == NULL || out == NULL)
-    {
-        return;
-    }
-
-    VectorCopy(state->last_client_update.origin, out);
-    out[0] += state->last_client_update.viewoffset[0];
-    out[1] += state->last_client_update.viewoffset[1];
-    out[2] += state->last_client_update.viewoffset[2];
-}
-
+Runs the shared point trace used by reconstructed console-goal visibility.
+=============
+*/
 static bool BotInterface_HasLineOfSight(const vec3_t from,
-                                        const vec3_t to,
-                                        int viewer,
-                                        int target)
+	const vec3_t to,
+	int viewer,
+	int target)
 {
-    if (from == NULL || to == NULL)
-    {
-        return false;
-    }
+	if (from == NULL || to == NULL)
+	{
+		return false;
+	}
 
-    vec3_t start;
-    vec3_t end;
-    VectorCopy(from, start);
-    VectorCopy(to, end);
+	vec3_t start;
+	vec3_t end;
+	VectorCopy(from, start);
+	VectorCopy(to, end);
 
-    vec3_t mins = {0.0f, 0.0f, 0.0f};
-    vec3_t maxs = {0.0f, 0.0f, 0.0f};
-    bsp_trace_t trace = Q2_Trace(start, mins, maxs, end, viewer, MASK_SHOT);
-    return trace.fraction >= 1.0f || trace.ent == target;
+	vec3_t mins = {0.0f, 0.0f, 0.0f};
+	vec3_t maxs = {0.0f, 0.0f, 0.0f};
+	bsp_trace_t trace = Q2_Trace(start, mins, maxs, end, viewer, MASK_SHOT);
+	return trace.fraction >= 1.0f || trace.ent == target;
 }
 
-static bool BotInterface_SameTeam(const bot_client_state_t *lhs, const bot_client_state_t *rhs)
+/*
+=============
+BotInterface_SameTeam
+
+Compares the semantic team fields used by the reconstructed console layer.
+=============
+*/
+static bool BotInterface_SameTeam(const bot_client_state_t *lhs,
+	const bot_client_state_t *rhs)
 {
-    if (lhs == NULL || rhs == NULL)
-    {
-        return false;
-    }
+	if (lhs == NULL || rhs == NULL || lhs->team < 0 || rhs->team < 0)
+	{
+		return false;
+	}
 
-    if (lhs->team < 0 || rhs->team < 0)
-    {
-        return false;
-    }
-
-    return lhs->team == rhs->team;
+	return lhs->team == rhs->team;
 }
 
-static bool BotInterface_IsChatting(const bot_client_state_t *state)
-{
-    if (state == NULL)
-    {
-        return false;
-    }
+/*
+=============
+BotAI_EntityIsDead
 
-    return (state->last_client_update.stats[STAT_LAYOUTS] & 1) != 0;
+Reconstructs retail sub_10021710's Quake II client/live-frame predicate.
+=============
+*/
+static int BotAI_EntityIsDead(const aas_entityinfo_t *entity_info)
+{
+	if ((entity_info->effects & (EF_GIB | EF_FLIES)) != 0 ||
+		entity_info->number < 1 ||
+		entity_info->number > aasworld.maxClients ||
+		entity_info->modelindex != 255)
+	{
+		return qtrue;
+	}
+
+	return entity_info->frame >= 173 && entity_info->frame <= 197;
 }
 
-static bool BotInterface_IsInvisible(const bot_updateentity_t *snapshot)
-{
-    if (snapshot == NULL)
-    {
-        return false;
-    }
+/*
+=============
+BotAI_EntityIsShooting
 
-    return (snapshot->renderfx & RF_TRANSLUCENT) != 0;
+Reconstructs retail sub_10021780's player attack-animation predicate.
+=============
+*/
+static int BotAI_EntityIsShooting(const aas_entityinfo_t *entity_info)
+{
+	return entity_info->modelindex == 255 &&
+		entity_info->frame >= 46 && entity_info->frame <= 53;
 }
 
-static bool BotInterface_IsShooting(const bot_updateentity_t *snapshot)
-{
-    if (snapshot == NULL)
-    {
-        return false;
-    }
+/*
+=============
+BotAI_ModelTeamMatches
 
-    const int weapon_fx = EF_BLASTER | EF_ROCKET | EF_GRENADE | EF_HYPERBLASTER | EF_BFG | EF_IONRIPPER |
-                          EF_BLUEHYPERBLASTER | EF_TRACKER | EF_PLASMA;
-    return (snapshot->effects & weapon_fx) != 0;
+Compares the model prefix before the Quake II model/skin separator.
+=============
+*/
+static int BotAI_ModelTeamMatches(const char *left, const char *right)
+{
+	const char *left_separator = strchr(left, '/');
+	const char *right_separator = strchr(right, '/');
+	size_t left_length = left_separator != NULL
+		? (size_t)(left_separator - left)
+		: strlen(left);
+	size_t right_length = right_separator != NULL
+		? (size_t)(right_separator - right)
+		: strlen(right);
+	return left_length == right_length &&
+		Q_strnicmp(left, right, left_length) == 0;
 }
 
-static float BotInterface_VectorLengthSquared(const vec3_t v)
-{
-    if (v == NULL)
-    {
-        return 0.0f;
-    }
+/*
+=============
+BotAI_SkinTeamMatches
 
-    return v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+Compares the suffix beginning at the Quake II model/skin separator.
+=============
+*/
+static int BotAI_SkinTeamMatches(const char *left, const char *right)
+{
+	const char *left_separator = strchr(left, '/');
+	const char *right_separator = strchr(right, '/');
+	return Q_stricmp(left_separator != NULL ? left_separator : left,
+		right_separator != NULL ? right_separator : right) == 0;
 }
 
-static void BotAI_FindEnemy(bot_client_state_t *state, ai_dm_enemy_info_t *enemy)
+/*
+=============
+BotAI_LibVarOrderedNonZero
+
+Mirrors retail's ordered x87 comparison so an unordered NaN is treated as off.
+=============
+*/
+static int BotAI_LibVarOrderedNonZero(const char *name)
 {
-    if (enemy == NULL)
-    {
-        return;
-    }
+	float value = LibVarGetValue(name);
+	return value < 0.0f || value > 0.0f;
+}
 
-    BotAI_InitEnemyInfo(enemy);
+/*
+=============
+BotAI_SameTeam
 
-    if (state == NULL)
-    {
-        return;
-    }
+Reconstructs retail sub_10023550's shell, CH, teamplay, CTF, skin-team, and
+model-team precedence for a candidate entity number.
+=============
+*/
+int BotAI_SameTeam(const bot_client_state_t *state, int entity)
+{
+	if (state == NULL)
+	{
+		return qfalse;
+	}
 
-    if (!state->client_update_valid)
-    {
-        return;
-    }
+	aas_entityinfo_t candidate_info;
+	AAS_EntityInfo(entity, &candidate_info);
+	if (candidate_info.number == 0)
+	{
+		return qfalse;
+	}
 
-    bot_combat_state_t *combat = &state->combat;
+	aas_entityinfo_t self_info;
+	if (BotAI_LibVarOrderedNonZero("teamplay_shell"))
+	{
+		AAS_EntityInfo(state->entity_number, &self_info);
+		return ((candidate_info.renderfx ^ self_info.renderfx) & 0x1c00) == 0;
+	}
 
-    int current_health = state->last_client_update.stats[STAT_HEALTH];
-    bool health_drop = false;
-    if (combat->last_health_valid && current_health < combat->last_known_health)
-    {
-        combat->took_damage = true;
-        combat->last_damage_amount = combat->last_known_health - current_health;
-        combat->last_damage_time = g_botInterfaceFrameTime;
-        health_drop = true;
-    }
-    else
-    {
-        combat->took_damage = false;
-    }
-    combat->last_known_health = current_health;
-    combat->last_health_valid = true;
+	if (BotAI_LibVarOrderedNonZero("ch"))
+	{
+		AAS_EntityInfo(state->entity_number, &self_info);
+		return self_info.modelindex3 != candidate_info.modelindex3;
+	}
 
-    float alertness = 0.5f;
-    float easyfragger = 1.0f;
-    if (state->character_handle > 0)
-    {
-        alertness = Characteristic_BFloat(state->character_handle, CHARACTERISTIC_ALERTNESS, 0.0f, 1.0f);
-        easyfragger = Characteristic_BFloat(state->character_handle, CHARACTERISTIC_EASY_FRAGGER, 0.0f, 1.0f);
-    }
+	const char *self_skin = BotState_ClientSkin(state->client_number);
+	const char *candidate_skin = BotState_ClientSkin(candidate_info.number - 1);
+	if (BotAI_LibVarOrderedNonZero("teamplay"))
+	{
+		return Q_stricmp(self_skin, candidate_skin) == 0;
+	}
 
-    vec3_t self_origin;
-    VectorCopy(state->last_client_update.origin, self_origin);
-    vec3_t eye_position;
-    BotInterface_ClientEyePosition(state, eye_position);
+	int dmflags = (int)LibVarGetValue("dmflags");
+	if ((dmflags & BOT_CONSOLE_SKIN_TEAMS) != 0 ||
+		BotAI_LibVarOrderedNonZero("ctf"))
+	{
+		return BotAI_SkinTeamMatches(self_skin, candidate_skin);
+	}
+	if ((dmflags & BOT_CONSOLE_MODEL_TEAMS) != 0)
+	{
+		return BotAI_ModelTeamMatches(self_skin, candidate_skin);
+	}
 
-    int curenemy = combat->current_enemy;
-    const bot_updateentity_t *current_snapshot = NULL;
-    float current_enemy_dist_sq = FLT_MAX;
-    if (curenemy >= 0 && curenemy < BOT_INTERFACE_MAX_ENTITIES &&
-        g_botInterfaceEntityCache[curenemy].valid)
-    {
-        current_snapshot = &g_botInterfaceEntityCache[curenemy].state;
-        vec3_t delta;
-        VectorSubtract(current_snapshot->origin, self_origin, delta);
-        current_enemy_dist_sq = BotInterface_VectorLengthSquared(delta);
-    }
-    else
-    {
-        curenemy = -1;
-        combat->current_enemy = -1;
-    }
+	return qfalse;
+}
 
-    if (curenemy >= 0 && current_snapshot != NULL)
-    {
-        bool invisible = BotInterface_IsInvisible(current_snapshot);
-        bool shooting = BotInterface_IsShooting(current_snapshot);
-        bot_client_state_t *current_state = BotState_Get(curenemy);
-        bool chatting = BotInterface_IsChatting(current_state);
+/*
+=============
+BotAI_AcceptEnemy
 
-        if (!(invisible && !shooting))
-        {
-            vec3_t to_enemy;
-            VectorSubtract(current_snapshot->origin, eye_position, to_enemy);
-            vec3_t target_angles;
-            BotInterface_VectorToAngles(to_enemy, target_angles);
+Copies the accepted AAS record into the local DM handoff and performs the two
+state writes made by retail BotFindEnemy.
+=============
+*/
+static int BotAI_AcceptEnemy(bot_client_state_t *state,
+	const aas_entityinfo_t *entity_info,
+	float distance,
+	float field_of_view,
+	int health_decrease,
+	ai_dm_enemy_info_t *enemy)
+{
+	float now = AAS_Time();
+	if (enemy != NULL)
+	{
+		enemy->valid = true;
+		enemy->visible = true;
+		enemy->entity = entity_info->number;
+		VectorCopy(entity_info->origin, enemy->origin);
+		VectorSubtract(entity_info->origin,
+			entity_info->old_origin,
+			enemy->velocity);
+		enemy->distance = distance;
+		enemy->last_seen_time = now;
+		enemy->field_of_view = field_of_view;
+		enemy->is_invisible = false;
+		enemy->is_chatting = false;
+		enemy->is_shooting = BotAI_EntityIsShooting(entity_info) != 0;
+		enemy->triggered_by_damage = health_decrease != 0;
+		enemy->in_field_of_view = true;
+		enemy->has_line_of_sight = true;
+	}
 
-            float limited = (current_enemy_dist_sq > 810.0f * 810.0f)
-                                ? 810.0f * 810.0f
-                                : current_enemy_dist_sq;
-            float fov = 90.0f + (limited / (810.0f * 9.0f));
-            bool in_fov = BotInterface_InFieldOfVision(state->last_client_update.viewangles, fov, target_angles);
-            bool has_los = BotInterface_HasLineOfSight(eye_position, current_snapshot->origin, state->client_number, curenemy);
+	state->combat.current_enemy = entity_info->number;
+	state->combat.enemy_sight_time = now;
+	return qtrue;
+}
 
-            if (in_fov && has_los)
-            {
-                enemy->valid = true;
-                enemy->visible = true;
-                enemy->entity = curenemy;
-                VectorCopy(current_snapshot->origin, enemy->origin);
-                vec3_t displacement;
-                VectorSubtract(current_snapshot->origin, current_snapshot->old_origin, displacement);
-                VectorCopy(displacement, enemy->velocity);
-                enemy->distance = sqrtf(current_enemy_dist_sq);
-                enemy->last_seen_time = g_botInterfaceFrameTime;
-                enemy->field_of_view = fov;
-                enemy->is_invisible = invisible;
-                enemy->is_chatting = chatting;
-                enemy->is_shooting = shooting;
-                enemy->triggered_by_damage = health_drop;
-                enemy->in_field_of_view = in_fov;
-                enemy->has_line_of_sight = has_los;
+/*
+=============
+BotAI_FindEnemy
 
-                combat->current_enemy = curenemy;
-                combat->enemy_visible = true;
-                combat->enemy_visible_time = g_botInterfaceFrameTime;
-                combat->enemy_last_seen_time = g_botInterfaceFrameTime;
-                VectorCopy(current_snapshot->origin, combat->last_enemy_origin);
-                VectorCopy(displacement, combat->last_enemy_velocity);
-                combat->enemy_death_time = -FLT_MAX;
-                return;
-            }
-        }
-    }
+Reconstructs retail sub_10023970's ascending visible-client scan, exact
+distance/FOV/team/light gates, and retreat fallback.
+=============
+*/
+int BotAI_FindEnemy(bot_client_state_t *state, ai_dm_enemy_info_t *enemy)
+{
+	BotAI_InitEnemyInfo(enemy);
+	if (state == NULL)
+	{
+		return qfalse;
+	}
 
-    bool had_visible_enemy = combat->enemy_visible;
-    combat->enemy_visible = false;
-    if (had_visible_enemy)
-    {
-        combat->enemy_death_time = g_botInterfaceFrameTime;
-    }
+	int accelerator_3d = Characteristic_BInteger(state->character_handle,
+		CHARACTERISTIC_3D_ACCELERATOR,
+		0,
+		1);
+	int current_health = state->last_client_update.inventory[
+		BOT_BATTLE_INVENTORY_HEALTH];
+	int health_decrease = state->combat.last_known_health > current_health;
+	state->combat.last_known_health = current_health;
+	vec3_t eye;
+	BotInterface_ClientEyePosition(state, eye);
+	vec3_t viewangles;
+	if (!AI_DMState_GetViewAngles(state->dm_state, viewangles))
+	{
+		VectorClear(viewangles);
+	}
 
-    int max_clients = BotAI_MaxTrackedClients();
-    float max_range = 900.0f + alertness * 4000.0f;
-    float max_range_sq = max_range * max_range;
+	int visible_entities[16];
+	int visible_count = AAS_VisibleEntities(state->entity_number,
+		eye,
+		viewangles,
+		360.0f,
+		16,
+		visible_entities);
+	for (int index = 0; index < visible_count; ++index)
+	{
+		aas_entityinfo_t entity_info;
+		AAS_EntityInfo(visible_entities[index], &entity_info);
+		if (BotAI_EntityIsDead(&entity_info) ||
+			entity_info.number == state->entity_number)
+		{
+			continue;
+		}
 
-    for (int ent = 0; ent < max_clients; ++ent)
-    {
-        if (ent == state->client_number || ent == curenemy)
-        {
-            continue;
-        }
+		vec3_t direction;
+		VectorSubtract(entity_info.origin,
+			state->last_client_update.origin,
+			direction);
+		float distance = sqrtf(DotProduct(direction, direction));
+		if (!accelerator_3d && distance > 900.0f)
+		{
+			continue;
+		}
 
-        if (ent < 0 || ent >= BOT_INTERFACE_MAX_ENTITIES)
-        {
-            continue;
-        }
+		float field_of_view = health_decrease
+			? 360.0f
+			: 90.0f + (distance > 810.0f ? 810.0f : distance) / 3.0f;
+		vec3_t target_angles;
+		Vector2Angles(direction, target_angles);
+		if (!BotInterface_InFieldOfVision(viewangles,
+			field_of_view,
+			target_angles) ||
+			BotAI_SameTeam(state, entity_info.number))
+		{
+			continue;
+		}
 
-        if (!g_botInterfaceEntityCache[ent].valid)
-        {
-            continue;
-        }
+		if (health_decrease && !(distance > 300.0f))
+		{
+			return BotAI_AcceptEnemy(state,
+				&entity_info,
+				distance,
+				field_of_view,
+				health_decrease,
+				enemy);
+		}
 
-        const bot_updateentity_t *snapshot = &g_botInterfaceEntityCache[ent].state;
-        vec3_t delta;
-        VectorSubtract(snapshot->origin, self_origin, delta);
-        float distance_sq = BotInterface_VectorLengthSquared(delta);
-        if (distance_sq > max_range_sq)
-        {
-            continue;
-        }
+		if (AAS_PointLight(entity_info.origin, NULL, NULL, NULL) < 5)
+		{
+			continue;
+		}
+		if (!(distance > 300.0f) || BotAI_EntityIsShooting(&entity_info))
+		{
+			return BotAI_AcceptEnemy(state,
+				&entity_info,
+				distance,
+				field_of_view,
+				health_decrease,
+				enemy);
+		}
 
-        if (curenemy >= 0 && distance_sq > current_enemy_dist_sq)
-        {
-            continue;
-        }
+		vec3_t candidate_to_bot;
+		VectorSubtract(state->last_client_update.origin,
+			entity_info.origin,
+			candidate_to_bot);
+		vec3_t bot_angles;
+		Vector2Angles(candidate_to_bot, bot_angles);
+		if (BotInterface_InFieldOfVision(entity_info.angles,
+			160.0f,
+			bot_angles))
+		{
+			return BotAI_AcceptEnemy(state,
+				&entity_info,
+				distance,
+				field_of_view,
+				health_decrease,
+				enemy);
+		}
 
-        bot_client_state_t *other = BotState_Get(ent);
-        if (BotInterface_SameTeam(state, other))
-        {
-            continue;
-        }
+		BotAI_UpdateEnemyBattleInventory(state, entity_info.number);
+		if (!BotAI_WantsToRetreat(state))
+		{
+			return BotAI_AcceptEnemy(state,
+				&entity_info,
+				distance,
+				field_of_view,
+				health_decrease,
+				enemy);
+		}
+	}
 
-        bool invisible = BotInterface_IsInvisible(snapshot);
-        bool shooting = BotInterface_IsShooting(snapshot);
-
-        if (invisible && !shooting)
-        {
-            continue;
-        }
-
-        bool chatting = BotInterface_IsChatting(other);
-        if (easyfragger < 0.5f && chatting)
-        {
-            continue;
-        }
-
-        float limited = (distance_sq > 810.0f * 810.0f) ? 810.0f * 810.0f : distance_sq;
-        float fov = (curenemy < 0 && (health_drop || shooting)) ? 360.0f : 90.0f + (limited / (810.0f * 9.0f));
-
-        vec3_t to_enemy;
-        VectorSubtract(snapshot->origin, eye_position, to_enemy);
-        vec3_t target_angles;
-        BotInterface_VectorToAngles(to_enemy, target_angles);
-        bool in_fov = BotInterface_InFieldOfVision(state->last_client_update.viewangles, fov, target_angles);
-        if (!in_fov)
-        {
-            continue;
-        }
-
-        bool has_los = BotInterface_HasLineOfSight(eye_position, snapshot->origin, state->client_number, ent);
-        if (!has_los)
-        {
-            continue;
-        }
-
-        if (curenemy < 0 && distance_sq > (100.0f * 100.0f) && !health_drop && !shooting)
-        {
-            bool bot_in_enemy_fov = true;
-            if (other != NULL)
-            {
-                vec3_t to_bot;
-                VectorSubtract(self_origin, snapshot->origin, to_bot);
-                vec3_t enemy_angles;
-                BotInterface_VectorToAngles(to_bot, enemy_angles);
-                bot_in_enemy_fov = BotInterface_InFieldOfVision(other->last_client_update.viewangles, 90.0f, enemy_angles);
-            }
-
-            if (!bot_in_enemy_fov)
-            {
-                continue;
-            }
-        }
-
-        enemy->valid = true;
-        enemy->visible = true;
-        enemy->entity = ent;
-        VectorCopy(snapshot->origin, enemy->origin);
-        vec3_t displacement;
-        VectorSubtract(snapshot->origin, snapshot->old_origin, displacement);
-        VectorCopy(displacement, enemy->velocity);
-        enemy->distance = sqrtf(distance_sq);
-        enemy->last_seen_time = g_botInterfaceFrameTime;
-        enemy->field_of_view = fov;
-        enemy->is_invisible = invisible;
-        enemy->is_chatting = chatting;
-        enemy->is_shooting = shooting;
-        enemy->triggered_by_damage = health_drop;
-        enemy->in_field_of_view = in_fov;
-        enemy->has_line_of_sight = has_los;
-
-        bool enemy_changed = (combat->current_enemy != ent);
-        combat->current_enemy = ent;
-        combat->enemy_visible = true;
-        combat->enemy_visible_time = g_botInterfaceFrameTime;
-        combat->enemy_last_seen_time = g_botInterfaceFrameTime;
-        combat->enemy_death_time = -FLT_MAX;
-        VectorCopy(snapshot->origin, combat->last_enemy_origin);
-        VectorCopy(displacement, combat->last_enemy_velocity);
-        if (enemy_changed && curenemy >= 0)
-        {
-            combat->enemy_sight_time = g_botInterfaceFrameTime - 2.0f;
-        }
-        else
-        {
-            combat->enemy_sight_time = g_botInterfaceFrameTime;
-        }
-
-        return;
-    }
+	return qfalse;
 }
 
 static void BotInterface_SynchroniseCombatState(bot_client_state_t *state)
@@ -646,12 +671,10 @@ static void BotInterface_SynchroniseCombatState(bot_client_state_t *state)
     AI_DMState_GetMetrics(state->dm_state, &metrics);
 
     bot_combat_state_t *combat = &state->combat;
-    combat->current_enemy = metrics.enemy_entity;
     combat->revenge_enemy = metrics.revenge_enemy;
     combat->revenge_kills = metrics.revenge_kills;
     combat->enemy_visible = metrics.enemy_visible;
     combat->enemy_visible_time = metrics.enemyvisible_time;
-    combat->enemy_sight_time = metrics.enemysight_time;
     combat->enemy_death_time = metrics.enemydeath_time;
     combat->enemy_last_seen_time = metrics.enemyposition_time;
     VectorCopy(metrics.last_enemy_origin, combat->last_enemy_origin);
@@ -1021,6 +1044,311 @@ int BotAI_UpdateEnemyBattleInventory(bot_client_state_t *state,
 	return qtrue;
 }
 
+/*
+=============
+BotAI_UseItems
+
+Reconstructs retail sub_10021500's four independent item-use branches and
+their exact Silencer, liquid/Rebreather, Power Shield, Power Screen order.
+=============
+*/
+void BotAI_UseItems(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	const int *inventory = state->last_client_update.inventory;
+	if (inventory[BOT_BATTLE_INVENTORY_SILENCER] > 0)
+	{
+		EA_UseItem(state->client_number, "Silencer");
+	}
+
+	vec3_t eye;
+	BotInterface_ClientEyePosition(state, eye);
+	if ((Q2_PointContents(eye) & 0x38) != 0 &&
+		inventory[BOT_BATTLE_USING_REBREATHER] == 0 &&
+		inventory[BOT_BATTLE_INVENTORY_REBREATHER] > 0)
+	{
+		EA_UseItem(state->client_number, "Rebreather");
+	}
+
+	if (inventory[BOT_BATTLE_USING_POWERSHIELD] == 0 &&
+		inventory[BOT_BATTLE_INVENTORY_POWERSHIELD] > 0)
+	{
+		EA_UseItem(state->client_number, "Power Shield");
+	}
+
+	if (inventory[BOT_BATTLE_USING_POWERSCREEN] == 0 &&
+		inventory[BOT_BATTLE_INVENTORY_POWERSCREEN] > 0)
+	{
+		EA_UseItem(state->client_number, "Power Screen");
+	}
+}
+
+/*
+=============
+BotAI_BattleUseItems
+
+Reconstructs retail sub_100215e0's Quad-first early return and subsequent
+Invulnerability fallback over raw battle-inventory slots.
+=============
+*/
+void BotAI_BattleUseItems(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	const int *inventory = state->last_client_update.inventory;
+	if (inventory[BOT_BATTLE_USING_QUAD] == 0 &&
+		inventory[BOT_BATTLE_INVENTORY_QUAD] > 0)
+	{
+		EA_UseItem(state->client_number, "Quad Damage");
+		return;
+	}
+
+	if (inventory[BOT_BATTLE_USING_INVULNERABILITY] == 0 &&
+		inventory[BOT_BATTLE_INVENTORY_INVULNERABILITY] > 0)
+	{
+		EA_UseItem(state->client_number, "Invulnerability");
+	}
+}
+
+/*
+=============
+BotAI_CarryingFlag
+
+Reconstructs retail sub_10021650, including the ordered-nonzero CTF gate and
+the distinct flag-one/flag-two return values.
+=============
+*/
+int BotAI_CarryingFlag(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return 0;
+	}
+
+	float ctf = LibVarGetValue("ctf");
+	if (ctf == 0.0f || isnan(ctf))
+	{
+		return 0;
+	}
+
+	const int *inventory = state->last_client_update.inventory;
+	if (inventory[BOT_BATTLE_INVENTORY_FLAG1] > 0)
+	{
+		return 1;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_FLAG2] > 0)
+	{
+		return 2;
+	}
+
+	return 0;
+}
+
+/*
+=============
+BotAI_Aggression
+
+Reconstructs retail sub_100226c0's ordered powerup, height, health, armor,
+weapon, and ammunition gates over the battle inventory.
+=============
+*/
+float BotAI_Aggression(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return 0.0f;
+	}
+
+	const int *inventory = state->last_client_update.inventory;
+	if (inventory[BOT_BATTLE_USING_INVULNERABILITY] != 0)
+	{
+		return 100.0f;
+	}
+
+	if (inventory[BOT_BATTLE_ENEMY_INVULNERABILITY] != 0)
+	{
+		return 0.0f;
+	}
+	if (inventory[BOT_BATTLE_ENEMY_QUAD] != 0 &&
+		inventory[BOT_BATTLE_USING_QUAD] == 0)
+	{
+		return 0.0f;
+	}
+	if (inventory[BOT_BATTLE_ENEMY_POWERSCREEN] != 0 &&
+		(inventory[BOT_BATTLE_USING_POWERSCREEN] == 0 ||
+		inventory[BOT_BATTLE_INVENTORY_CELLS] < 50))
+	{
+		return 0.0f;
+	}
+
+	if (inventory[BOT_BATTLE_ENEMY_HEIGHT] > 200)
+	{
+		return 0.0f;
+	}
+
+	int health = inventory[BOT_BATTLE_INVENTORY_HEALTH];
+	if (health < 40)
+	{
+		return 0.0f;
+	}
+	if (health < 70 &&
+		inventory[BOT_BATTLE_INVENTORY_ARMORBODY] < 40 &&
+		inventory[BOT_BATTLE_INVENTORY_ARMORCOMBAT] < 50 &&
+		inventory[BOT_BATTLE_INVENTORY_ARMORJACKET] < 60)
+	{
+		return 0.0f;
+	}
+
+	if (inventory[BOT_BATTLE_INVENTORY_BFG10K] > 0 &&
+		inventory[BOT_BATTLE_INVENTORY_CELLS] > 50)
+	{
+		return 100.0f;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_RAILGUN] > 0 &&
+		inventory[BOT_BATTLE_INVENTORY_SLUGS] > 5)
+	{
+		return 100.0f;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_HYPERBLASTER] > 0 &&
+		inventory[BOT_BATTLE_INVENTORY_CELLS] > 50)
+	{
+		return 100.0f;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_ROCKETLAUNCHER] > 0 &&
+		inventory[BOT_BATTLE_INVENTORY_ROCKETS] > 5)
+	{
+		return 100.0f;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_GRENADELAUNCHER] > 0 &&
+		inventory[BOT_BATTLE_INVENTORY_GRENADES] > 10)
+	{
+		return 100.0f;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_CHAINGUN] > 0 &&
+		inventory[BOT_BATTLE_INVENTORY_BULLETS] > 100)
+	{
+		return 100.0f;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_MACHINEGUN] > 0 &&
+		inventory[BOT_BATTLE_INVENTORY_BULLETS] > 75)
+	{
+		return 100.0f;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_SUPERSHOTGUN] > 0 &&
+		inventory[BOT_BATTLE_INVENTORY_SHELLS] > 20)
+	{
+		return 100.0f;
+	}
+
+	return 0.0f;
+}
+
+/*
+=============
+BotAI_WantsToRetreat
+
+Reconstructs retail sub_100228c0's flag, get-flag LTG, and strict aggression
+threshold gates.
+=============
+*/
+int BotAI_WantsToRetreat(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return qfalse;
+	}
+
+	if (BotAI_CarryingFlag(state) != 0)
+	{
+		return qtrue;
+	}
+	if (state->ltg_type == BOT_LTG_GET_FLAG)
+	{
+		return qtrue;
+	}
+
+	return BotAI_Aggression(state) < 50.0f;
+}
+
+/*
+=============
+BotAI_WantsToChase
+
+Reconstructs retail sub_10022930's strict aggression threshold without the
+additional flag and LTG special cases introduced by the Quake III successor.
+=============
+*/
+int BotAI_WantsToChase(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return qfalse;
+	}
+
+	return BotAI_Aggression(state) > 50.0f;
+}
+
+/*
+=============
+BotAI_CanAndWantsToRocketJump
+
+Reconstructs retail sub_10022990's ordered rocket, powerup, survivability,
+and weapon-jumping characteristic gates over the raw battle inventory.
+=============
+*/
+int BotAI_CanAndWantsToRocketJump(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return qfalse;
+	}
+
+	const int *inventory = state->last_client_update.inventory;
+	if (inventory[BOT_BATTLE_INVENTORY_ROCKETLAUNCHER] <= 0)
+	{
+		return qfalse;
+	}
+	if (inventory[BOT_BATTLE_INVENTORY_ROCKETS] < 3)
+	{
+		return qfalse;
+	}
+	if (inventory[BOT_BATTLE_USING_QUAD] != 0)
+	{
+		return qfalse;
+	}
+
+	if (inventory[BOT_BATTLE_USING_INVULNERABILITY] != 0)
+	{
+		return qtrue;
+	}
+
+	int health = inventory[BOT_BATTLE_INVENTORY_HEALTH];
+	if (health < 60)
+	{
+		return qfalse;
+	}
+	if (health < 90 &&
+		inventory[BOT_BATTLE_INVENTORY_ARMORBODY] < 40 &&
+		inventory[BOT_BATTLE_INVENTORY_ARMORCOMBAT] < 50 &&
+		inventory[BOT_BATTLE_INVENTORY_ARMORJACKET] < 60)
+	{
+		return qfalse;
+	}
+
+	float weapon_jumping = Characteristic_BFloat(state->character_handle,
+		CHARACTERISTIC_WEAPONJUMPING,
+		0.0f,
+		1.0f);
+	return weapon_jumping >= 0.5f;
+}
+
 static void BotInterface_ResetFrameQueues(void)
 {
     AAS_SoundSubsystem_ResetFrameEvents();
@@ -1253,7 +1581,7 @@ static int BotInterface_PrepareMoveState(bot_client_state_t *state, float thinkt
     VectorCopy(state->last_client_update.origin, init.origin);
     VectorCopy(state->last_client_update.velocity, init.velocity);
     VectorCopy(state->last_client_update.viewoffset, init.viewoffset);
-    init.entitynum = state->client_number;
+    init.entitynum = state->entity_number;
     init.client = state->client_number;
     init.thinktime = thinktime;
     init.presencetype = (state->last_client_update.pm_flags & PMF_DUCKED) ? PRESENCE_CROUCH : PRESENCE_NORMAL;
@@ -1451,7 +1779,7 @@ static void BotInterface_EnqueueSound(const vec3_t origin,
     }
 }
 
-static void BotInterface_EnqueuePointLight(const vec3_t origin,
+static void BotInterface_EnqueuePointLight(vec3_t origin,
                                            int ent,
                                            float radius,
                                            float r,
@@ -2584,6 +2912,8 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 	Bridge_ClearClientSlot(client);
 	Bridge_SetClientActive(client, qtrue);
 	BotState_SetActive(state, true);
+	state->enter_game_time = AAS_Time();
+	state->enter_game_chat_attempted = false;
 	return qtrue;
 }
 
@@ -2828,6 +3158,7 @@ static int BotUpdateClient(int client, bot_updateclient_t *buc)
     state->last_client_update = quantised;
     state->client_update_valid = true;
     state->last_update_time = translated.last_update_time;
+	AI_DMState_ApplyDeltaAngles(state->dm_state, quantised.delta_angles);
 
     if (state->goal_state != NULL)
     {
@@ -3001,6 +3332,117 @@ reply selection.
 static float BotAI_ConsoleRandom(void)
 {
 	return (float)(rand() & 0x7fff) / 32767.0f;
+}
+
+/*
+=============
+BotAI_LongTermGoalRandom
+
+Returns the exact low-15-bit fraction emitted by the retail long-term-goal
+branches, whose `1 / 32768` scale is distinct from console reply selection.
+=============
+*/
+static float BotAI_LongTermGoalRandom(void)
+{
+	return (float)(rand() & 0x7fff) * 3.05185094e-05f;
+}
+
+/*
+=============
+BotAI_TryRecentEnemyDeathWave
+
+Replays Seek-LTG's short post-death gesture trial before it scans for a new
+enemy.
+=============
+*/
+static void BotAI_TryRecentEnemyDeathWave(bot_client_state_t *state,
+	float thinktime)
+{
+	if (state == NULL ||
+		AAS_Time() - 5.0f >= state->combat.enemy_death_time ||
+		BotAI_LongTermGoalRandom() >= thinktime)
+	{
+		return;
+	}
+
+	EA_Gesture(state->client_number,
+		BotAI_LongTermGoalRandom() < 0.5f ? 0 : 2);
+}
+
+/*
+=============
+BotAI_RoamGoal
+
+Reconstructs Gladiator's short-lived safe roam point used only for the
+accompany formation idle-view branch. The candidate gates and distances are
+the retail values rather than Quake III's later defaults.
+=============
+*/
+static void BotAI_RoamGoal(const bot_client_state_t *state, vec3_t goal)
+{
+	if (state == NULL || goal == NULL)
+	{
+		return;
+	}
+
+	vec3_t best_origin;
+	VectorCopy(state->last_client_update.origin, best_origin);
+	for (int attempt = 0; attempt < 10; ++attempt)
+	{
+		VectorCopy(state->last_client_update.origin, best_origin);
+		float random_value = BotAI_LongTermGoalRandom();
+		if (random_value < 0.8f)
+		{
+			float direction = BotAI_LongTermGoalRandom() < 0.5f ? -1.0f : 1.0f;
+			best_origin[0] +=
+				BotAI_LongTermGoalRandom() * direction * 700.0f + 50.0f;
+		}
+		if (random_value > 0.2f)
+		{
+			float direction = BotAI_LongTermGoalRandom() < 0.5f ? -1.0f : 1.0f;
+			best_origin[1] +=
+				BotAI_LongTermGoalRandom() * direction * 700.0f + 50.0f;
+		}
+		best_origin[2] += BotAI_LongTermGoalRandom() * 144.0f - 97.0f;
+
+		bsp_trace_t trace = AAS_Trace(state->last_client_update.origin,
+			NULL,
+			NULL,
+			best_origin,
+			state->entity_number,
+			MASK_SOLID);
+		vec3_t direction;
+		VectorSubtract(trace.endpos, state->last_client_update.origin, direction);
+		float length = sqrtf(DotProduct(direction, direction));
+		if (length <= 100.0f)
+		{
+			continue;
+		}
+
+		VectorScale(direction, 1.0f / length, direction);
+		VectorScale(direction, length * trace.fraction - 40.0f, direction);
+		VectorAdd(state->last_client_update.origin, direction, best_origin);
+
+		vec3_t below_best_origin;
+		VectorCopy(best_origin, below_best_origin);
+		below_best_origin[2] -= 800.0f;
+		trace = AAS_Trace(best_origin,
+			NULL,
+			NULL,
+			below_best_origin,
+			state->entity_number,
+			MASK_SOLID);
+		if (!trace.startsolid)
+		{
+			trace.endpos[2] += 1.0f;
+			if ((AAS_PointContents(trace.endpos) &
+				(CONTENTS_LAVA | CONTENTS_SLIME)) == 0)
+			{
+				break;
+			}
+		}
+	}
+	VectorCopy(best_origin, goal);
 }
 
 /*
@@ -3778,13 +4220,14 @@ snapshot fallback for reconstructed semantic peers.
 */
 static bool BotAI_ConsoleClientOrigin(int client, vec3_t origin)
 {
-	if (origin == NULL || client < 0 || client >= BOT_INTERFACE_MAX_ENTITIES)
+	int entity = client + 1;
+	if (origin == NULL || client < 0 || entity >= BOT_INTERFACE_MAX_ENTITIES)
 	{
 		return false;
 	}
-	if (g_botInterfaceEntityCache[client].valid)
+	if (g_botInterfaceEntityCache[entity].valid)
 	{
-		VectorCopy(g_botInterfaceEntityCache[client].state.origin, origin);
+		VectorCopy(g_botInterfaceEntityCache[entity].state.origin, origin);
 		return true;
 	}
 
@@ -3859,7 +4302,7 @@ static void BotAI_ConsoleHandleHelpAccompany(bot_client_state_t *state,
 			BotAI_ConsoleSetPointGoal(&state->team_goal,
 				target_origin,
 				areanum,
-				target_client);
+				target_client + 1);
 		}
 	}
 
@@ -3950,6 +4393,31 @@ static void BotAI_ConsoleHandleDefendKeyArea(bot_client_state_t *state,
 
 /*
 =============
+BotAI_ConsoleCTFFlagGoals
+
+Loads the static Red and Blue Flag goals that the CTF command gate and direct
+long-term-goal branches share.
+=============
+*/
+static bool BotAI_ConsoleCTFFlagGoals(bot_goal_t *red_flag, bot_goal_t *blue_flag)
+{
+	if (red_flag == NULL || blue_flag == NULL)
+	{
+		return false;
+	}
+
+	char red_name[] = "Red Flag";
+	char blue_name[] = "Blue Flag";
+	memset(red_flag, 0, sizeof(*red_flag));
+	memset(blue_flag, 0, sizeof(*blue_flag));
+	return BotGetLevelItemGoal(-1, red_name, red_flag) >= 0 &&
+		red_flag->areanum != 0 &&
+		BotGetLevelItemGoal(-1, blue_name, blue_flag) >= 0 &&
+		blue_flag->areanum != 0;
+}
+
+/*
+=============
 BotAI_ConsoleCTFFlagsAvailable
 
 Mirrors the case 6/7 gate on ctf plus non-zero cached Red and Blue Flag goal
@@ -3964,16 +4432,76 @@ static bool BotAI_ConsoleCTFFlagsAvailable(void)
 		return false;
 	}
 
-	char red_name[] = "Red Flag";
-	char blue_name[] = "Blue Flag";
 	bot_goal_t red_flag;
 	bot_goal_t blue_flag;
-	memset(&red_flag, 0, sizeof(red_flag));
-	memset(&blue_flag, 0, sizeof(blue_flag));
-	return BotGetLevelItemGoal(-1, red_name, &red_flag) >= 0 &&
-		red_flag.areanum != 0 &&
-		BotGetLevelItemGoal(-1, blue_name, &blue_flag) >= 0 &&
-		blue_flag.areanum != 0;
+	return BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag);
+}
+
+/*
+=============
+BotAI_SelectAutomaticCTFGoal
+
+Reconstructs sub_10026440's Seek-LTG CTF choice: a carrier rushes home;
+otherwise an unassigned aggressive bot selects the enemy flag, defends its
+home flag, or waits through the fixed get-flag-away interval.
+=============
+*/
+static void BotAI_SelectAutomaticCTFGoal(bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	float ctf = LibVarGetValue("ctf");
+	if (ctf == 0.0f || isnan(ctf))
+	{
+		return;
+	}
+
+	float now = AAS_Time();
+	if (BotAI_CarryingFlag(state) != 0)
+	{
+		if (state->ltg_type != BOT_LTG_RUSH_BASE)
+		{
+			state->ltg_type = BOT_LTG_RUSH_BASE;
+			state->rush_base_away_time = 0.0f;
+			state->team_goal_time = now + 120.0f;
+		}
+		return;
+	}
+
+	if (now < state->get_flag_away_time ||
+		(state->ltg_type >= 1 && state->ltg_type <= 7) ||
+		BotAI_Aggression(state) < 50.0f)
+	{
+		return;
+	}
+
+	state->team_message_time = now + 2.0f * BotAI_LongTermGoalRandom();
+	float selection = BotAI_LongTermGoalRandom();
+	bot_goal_t red_flag;
+	bot_goal_t blue_flag;
+	bool flags_available = BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag);
+	if (selection < 0.33f && flags_available)
+	{
+		state->ltg_type = BOT_LTG_GET_FLAG;
+		state->team_goal_time = now + 180.0f;
+		return;
+	}
+
+	if (selection < 0.66f && flags_available)
+	{
+		state->team_goal = state->team == 1 ? red_flag : blue_flag;
+		state->team_goal_number = state->team_goal.number;
+		state->ltg_type = 3;
+		state->defend_away_time = 0.0f;
+		state->team_goal_time = now + 120.0f;
+		return;
+	}
+
+	state->ltg_type = 0;
+	state->get_flag_away_time = now + 60.0f;
 }
 
 /*
@@ -4063,7 +4591,7 @@ static void BotAI_ConsoleHandleCamp(bot_client_state_t *state,
 		BotAI_ConsoleSetPointGoal(&goal,
 			state->last_client_update.origin,
 			AAS_PointAreaNum(state->last_client_update.origin),
-			state->client_number);
+			state->entity_number);
 	}
 	else if ((match->subtype & BOT_CONSOLE_MATCH_SUBTYPE_HERE) != 0)
 	{
@@ -4086,8 +4614,8 @@ static void BotAI_ConsoleHandleCamp(bot_client_state_t *state,
 				AAS_AreaReachability(areanum) != 0 &&
 				BotInterface_HasLineOfSight(eye,
 					source_origin,
-					state->client_number,
-					source_client);
+					state->entity_number,
+					source_client + 1);
 		}
 		if (!visible)
 		{
@@ -4100,7 +4628,7 @@ static void BotAI_ConsoleHandleCamp(bot_client_state_t *state,
 		BotAI_ConsoleSetPointGoal(&goal,
 			source_origin,
 			areanum,
-			source_client);
+			source_client + 1);
 	}
 	else if (!BotAI_ConsoleResolveTeamGoal(state, keyarea, &goal))
 	{
@@ -4700,7 +5228,7 @@ static bool BotAI_MatchConsoleMessage(bot_client_state_t *state, const char *mes
 		{
 			state->bot_death_type = match.subtype;
 		}
-		else if (victim_client == state->combat.current_enemy)
+		else if (victim_client + 1 == state->combat.current_enemy)
 		{
 			state->enemy_death_type = match.subtype;
 			state->combat.enemy_death_time = AAS_Time();
@@ -4834,6 +5362,245 @@ static float BotAI_ChatTime(const bot_client_state_t *state)
 
 /*
 =============
+BotAI_ConstructRandomChat
+
+Reconstructs sub_10022470's Seek-LTG random-chat gate.  It retains the
+ordered team-goal exclusions, think-time trial, fast-chat bypass, valid
+position predicate, and misc-versus-insult selection before leaving a
+pending initial chat for the Stand node.
+=============
+*/
+static bool BotAI_ConstructRandomChat(bot_client_state_t *state,
+	float thinktime,
+	bool *constructed)
+{
+	if (constructed != NULL)
+	{
+		*constructed = false;
+	}
+	if (state == NULL || state->chat_state == NULL ||
+		state->character_handle <= 0 || LibVarGetValue("nochat") != 0.0f)
+	{
+		return false;
+	}
+	if (state->ltg_type == 1 || state->ltg_type == 2 ||
+		state->ltg_type == 5)
+	{
+		return false;
+	}
+
+	float random_chat = Characteristic_BFloat(state->character_handle,
+		CHARACTERISTIC_CHAT_RANDOM,
+		0.0f,
+		1.0f);
+	if (BotAI_ConsoleRandom() > thinktime * 0.1f)
+	{
+		return false;
+	}
+	if (LibVarGetValue("fastchat") == 0.0f &&
+		(BotAI_ConsoleRandom() > random_chat ||
+			BotAI_ConsoleRandom() > 0.25f))
+	{
+		return false;
+	}
+	if (!BotAI_ValidChatPosition(state))
+	{
+		return false;
+	}
+
+	float miscellaneous = Characteristic_BFloat(state->character_handle,
+		CHARACTERISTIC_CHAT_MISC,
+		0.0f,
+		1.0f);
+	const char *type = BotAI_ConsoleRandom() < miscellaneous
+		? "random_misc"
+		: "random_insult";
+	if (constructed != NULL)
+	{
+		*constructed = BotInitialChat(state->chat_state,
+			type,
+			0UL,
+			NULL) != 0;
+	}
+	return true;
+}
+
+/*
+=============
+BotAI_ConstructLifecycleChat
+
+Applies the Gladiator initial-chat gates shared by enter-game and level
+transition events, retaining whether construction actually produced a pending
+message for the caller's stand or immediate-dispatch path.
+=============
+*/
+static bool BotAI_ConstructLifecycleChat(bot_client_state_t *state,
+	const char *type,
+	int characteristic,
+	bool require_valid_position,
+	bool *constructed)
+{
+	if (constructed != NULL)
+	{
+		*constructed = false;
+	}
+	if (state == NULL || type == NULL || state->chat_state == NULL ||
+		state->character_handle <= 0 || LibVarGetValue("nochat") != 0.0f ||
+		(require_valid_position && !BotAI_ValidChatPosition(state)))
+	{
+		return false;
+	}
+
+	float chance = Characteristic_BFloat(state->character_handle,
+		characteristic,
+		0.0f,
+		1.0f);
+	if (LibVarGetValue("fastchat") == 0.0f &&
+		BotAI_ConsoleRandom() > chance)
+	{
+		return false;
+	}
+
+	const char *name = BotState_ClientName(state->client_number);
+	if (name == NULL || *name == '\0')
+	{
+		name = BotChatName(state->chat_state);
+	}
+	if (constructed != NULL)
+	{
+		*constructed = BotInitialChat(state->chat_state,
+			type,
+			0UL,
+			name != NULL ? name : "",
+			NULL) != 0;
+	}
+	return true;
+}
+
+/*
+=============
+BotAI_ConstructDeathChat
+
+Reconstructs the compact retail death-chat selector.  A disabled nochat
+libvar vetoes the event; otherwise fastchat bypasses the character death-chat
+probability.  The chosen pending message is not emitted until Respawn reaches
+past its typing deadline.
+=============
+*/
+static bool BotAI_ConstructDeathChat(bot_client_state_t *state)
+{
+	if (state == NULL || state->chat_state == NULL ||
+		state->character_handle <= 0 || LibVarGetValue("nochat") != 0.0f)
+	{
+		return false;
+	}
+
+	float death_chat = Characteristic_BFloat(state->character_handle,
+		CHARACTERISTIC_CHAT_DEATH,
+		0.0f,
+		1.0f);
+	if (LibVarGetValue("fastchat") == 0.0f &&
+		BotAI_ConsoleRandom() > death_chat)
+	{
+		return false;
+	}
+
+	const char *killer_name = "";
+	int killer_client = state->combat.current_enemy - 1;
+	if (killer_client >= 0 && killer_client < BotState_ClientCapacity())
+	{
+		killer_name = BotState_ClientName(killer_client);
+	}
+
+	const char *chat_type = "death_bfg";
+	if (state->bot_death_type != 12)
+	{
+		float insult = Characteristic_BFloat(state->character_handle,
+			CHARACTERISTIC_CHAT_INSULT,
+			0.0f,
+			1.0f);
+		chat_type = BotAI_ConsoleRandom() < insult
+			? "death_insult"
+			: "death_praise";
+	}
+
+	state->respawn_chat_pending = BotInitialChat(state->chat_state,
+		chat_type,
+		0UL,
+		killer_name,
+		NULL) != 0;
+	return true;
+}
+
+/*
+=============
+BotAI_ConstructKillChat
+
+Reconstructs `sub_100222e0` for Battle Fight's dead-enemy exit.  It leaves a
+pending kill chat for Stand only after the retail nochat, fastchat,
+characteristic-19, and valid-position gates; the obituary subtype selects the
+telefrag form before the normal insult/praise trial.
+=============
+*/
+static bool BotAI_ConstructKillChat(bot_client_state_t *state,
+	bool *constructed)
+{
+	if (constructed != NULL)
+	{
+		*constructed = false;
+	}
+	if (state == NULL || state->chat_state == NULL ||
+		state->character_handle <= 0 || LibVarGetValue("nochat") != 0.0f)
+	{
+		return false;
+	}
+
+	float kill_chat = Characteristic_BFloat(state->character_handle,
+		CHARACTERISTIC_CHAT_KILL,
+		0.0f,
+		1.0f);
+	if (LibVarGetValue("fastchat") == 0.0f &&
+		BotAI_ConsoleRandom() > kill_chat)
+	{
+		return false;
+	}
+	if (!BotAI_ValidChatPosition(state))
+	{
+		return false;
+	}
+
+	const char *victim_name = "";
+	int victim_client = state->combat.current_enemy - 1;
+	if (victim_client >= 0 && victim_client < BotState_ClientCapacity())
+	{
+		victim_name = BotState_ClientName(victim_client);
+	}
+
+	const char *chat_type = "kill_telefrag";
+	if (state->enemy_death_type != 13)
+	{
+		float insult = Characteristic_BFloat(state->character_handle,
+			CHARACTERISTIC_CHAT_INSULT,
+			0.0f,
+			1.0f);
+		chat_type = BotAI_ConsoleRandom() < insult
+			? "kill_insult"
+			: "kill_praise";
+	}
+
+	if (constructed != NULL)
+	{
+		*constructed = BotInitialChat(state->chat_state,
+			chat_type,
+			0UL,
+			victim_name != NULL ? victim_name : "",
+			NULL) != 0;
+	}
+	return true;
+}
+
+/*
+=============
 BotAI_SelectConsoleReply
 
 Applies Gladiator's nochat, stand-node, position, population, and character
@@ -4943,6 +5710,8 @@ static void BotCheckConsoleMessages(bot_client_state_t *state)
 			BotRemoveConsoleMessageNode(state->chat_state, node);
 			state->stand_time = AAS_Time() + BotAI_ChatTime(state);
 			state->chat_standing = true;
+			state->stand_chat_pending = true;
+			state->ai_node = BOT_AI_NODE_STAND;
 			return;
 		}
 
@@ -4951,43 +5720,2744 @@ static void BotCheckConsoleMessages(bot_client_state_t *state)
 	}
 }
 
+static void BotAI_ConfigureBattleCombat(bot_client_state_t *state);
+
 /*
 =============
 BotAI_ReplyStandActive
 
-Dispatches a completed pending reply at the retail stand deadline and reports
-whether the bot must remain stationary for this frame.
+Dispatches a completed pending reply strictly after the retail stand deadline
+after first advancing Stand's private view turn. The private retail guard
+keeps the bot standing while it emits its removebot command.
 =============
 */
-static bool BotAI_ReplyStandActive(bot_client_state_t *state)
+static bool BotAI_ReplyStandActive(bot_client_state_t *state, float thinktime)
 {
 	if (state == NULL || !state->chat_standing)
 	{
 		return false;
 	}
 
-	if (AAS_Time() < state->stand_time)
+	if (AAS_Time() <= state->stand_time)
 	{
 		return true;
 	}
 
+	BotAI_ConfigureBattleCombat(state);
+	AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
+	if (LibVarGetValue("__squatt") != 0.0f)
+	{
+		EA_Say(state->client_number, "I never hacked your brain...\n");
+		EA_Command(state->client_number, "removebot", (char *)NULL);
+		return true;
+	}
 	if (state->chat_state != NULL)
 	{
-		BotEnterChat(state->chat_state, state->client_number, 0);
+		if (state->stand_chat_pending)
+		{
+			BotEnterChat(state->chat_state, state->client_number, 0);
+		}
 	}
 	state->chat_standing = false;
+	state->stand_chat_pending = false;
+	return false;
+}
+
+typedef enum bot_ai_frame_work_e
+{
+	BOT_AI_FRAME_WORK_NONE = 0,
+	BOT_AI_FRAME_WORK_STAND,
+	BOT_AI_FRAME_WORK_GOAL,
+	BOT_AI_FRAME_WORK_FIGHT,
+	BOT_AI_FRAME_WORK_CHASE,
+	BOT_AI_FRAME_WORK_BATTLE_NBG,
+	BOT_AI_FRAME_WORK_BATTLE_RETREAT,
+	BOT_AI_FRAME_WORK_BATTLE_RETREAT_IDLE,
+} bot_ai_frame_work_t;
+
+typedef struct bot_ai_node_frame_s
+{
+	bot_ai_frame_work_t work;
+	bool post_acquire_enemy;
+	float thinktime;
+	ai_dm_enemy_info_t enemy;
+	bot_goal_t movement_goal;
+	bool has_movement_goal;
+} bot_ai_node_frame_t;
+
+/*
+=============
+BotAI_ResetFightNavigation
+
+Clears the retained movement avoid and goal stack before a non-retreat fight.
+=============
+*/
+static void BotAI_ResetFightNavigation(bot_client_state_t *state,
+	bool empty_goal_stack)
+{
+	if (state->move_handle > 0)
+	{
+		BotResetLastAvoidReach(state->move_handle);
+	}
+	if (empty_goal_stack && state->goal_handle > 0)
+	{
+		AI_GoalBotlib_EmptyGoalStack(state->goal_handle);
+	}
+}
+
+/*
+=============
+BotAI_EntityVisible
+
+Tests a client entity through retail's direct 360-degree long-term-goal
+visibility path.
+=============
+*/
+static int BotAI_EntityVisible(const bot_client_state_t *state, int entity)
+{
+	if (state == NULL || entity <= 0 || entity > aasworld.maxClients ||
+		aasworld.entities == NULL)
+	{
+		return qfalse;
+	}
+
+	vec3_t eye;
+	BotInterface_ClientEyePosition(state, eye);
+	vec3_t viewangles;
+	if (!AI_DMState_GetViewAngles(state->dm_state, viewangles))
+	{
+		VectorClear(viewangles);
+	}
+
+	return AAS_EntityVisible(state->entity_number,
+		eye,
+		viewangles,
+		360.0f,
+		entity);
+}
+
+/*
+=============
+BotAI_CurrentEnemyVisible
+
+Tests the retained enemy through retail's direct 360-degree chase visibility.
+=============
+*/
+static int BotAI_CurrentEnemyVisible(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return qfalse;
+	}
+
+	return BotAI_EntityVisible(state, state->combat.current_enemy);
+}
+
+/*
+=============
+BotAI_ResolveCurrentEnemy
+
+Builds the DM handoff for the persistent enemy without running BotFindEnemy.
+=============
+*/
+static int BotAI_ResolveCurrentEnemy(const bot_client_state_t *state,
+	ai_dm_enemy_info_t *enemy)
+{
+	BotAI_InitEnemyInfo(enemy);
+	if (state == NULL || enemy == NULL ||
+		state->combat.current_enemy <= 0 ||
+		state->combat.current_enemy > aasworld.maxClients ||
+		aasworld.entities == NULL ||
+		!aasworld.entities[state->combat.current_enemy].inuse)
+	{
+		return qfalse;
+	}
+
+	aas_entityinfo_t entity_info;
+	AAS_EntityInfo(state->combat.current_enemy, &entity_info);
+	if (BotAI_EntityIsDead(&entity_info))
+	{
+		return qfalse;
+	}
+
+	enemy->valid = true;
+	enemy->visible = BotAI_CurrentEnemyVisible(state) != 0;
+	enemy->entity = entity_info.number;
+	VectorCopy(entity_info.origin, enemy->origin);
+	VectorSubtract(entity_info.origin, entity_info.old_origin, enemy->velocity);
+	vec3_t direction;
+	VectorSubtract(entity_info.origin,
+		state->last_client_update.origin,
+		direction);
+	enemy->distance = sqrtf(DotProduct(direction, direction));
+	enemy->last_seen_time = enemy->visible
+		? AAS_Time()
+		: state->combat.enemy_last_seen_time;
+	enemy->field_of_view = 360.0f;
+	enemy->is_shooting = BotAI_EntityIsShooting(&entity_info) != 0;
+	enemy->in_field_of_view = enemy->visible;
+	enemy->has_line_of_sight = enemy->visible;
+	return qtrue;
+}
+
+/*
+=============
+BotAI_RecordLastEnemyLocation
+
+Stores the reachable enemy area and origin consumed by Battle Chase.
+=============
+*/
+static void BotAI_RecordLastEnemyLocation(bot_client_state_t *state,
+	const ai_dm_enemy_info_t *enemy)
+{
+	if (state == NULL || enemy == NULL || !enemy->valid)
+	{
+		return;
+	}
+
+	if (aasworld.loaded)
+	{
+		int area = AAS_PointAreaNum(enemy->origin);
+		if (area != 0 && AAS_AreaReachability(area) != 0)
+		{
+			state->combat.last_enemy_area = area;
+			VectorCopy(enemy->origin, state->combat.last_enemy_origin);
+		}
+	}
+}
+
+/*
+=============
+BotAI_EnterFoundEnemy
+
+Applies the caller-specific retreat and fight transition used after a scan.
+=============
+*/
+static void BotAI_EnterFoundEnemy(bot_client_state_t *state,
+	bool nearby_goal)
+{
+	if (BotAI_WantsToRetreat(state))
+	{
+		state->ai_node = nearby_goal
+			? BOT_AI_NODE_BATTLE_NBG
+			: BOT_AI_NODE_BATTLE_RETREAT;
+		return;
+	}
+
+	BotAI_ResetFightNavigation(state, true);
+	state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+}
+
+/*
+=============
+BotAI_EnterBattleChase
+
+Mirrors Battle Chase entry's independent ten-second deadline.  The deadline
+begins when Fight loses visual contact, not when the enemy was last visible.
+=============
+*/
+static void BotAI_EnterBattleChase(bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->combat.chase_time = AAS_Time() + 10.0f;
+	if (state->dm_state != NULL)
+	{
+		AI_DMState_SetChaseDeadline(state->dm_state,
+			state->combat.chase_time);
+	}
+	state->ai_node = BOT_AI_NODE_BATTLE_CHASE;
+}
+
+/*
+=============
+BotAI_BuildBattleChaseGoal
+
+Builds retail Battle Chase's transient eight-unit box at the last reachable
+enemy location.  This goal is intentionally independent of the goal stack.
+=============
+*/
+static void BotAI_BuildBattleChaseGoal(const bot_client_state_t *state,
+	bot_goal_t *goal)
+{
+	if (state == NULL || goal == NULL)
+	{
+		return;
+	}
+
+	memset(goal, 0, sizeof(*goal));
+	goal->entitynum = state->combat.current_enemy;
+	goal->areanum = state->combat.last_enemy_area;
+	VectorCopy(state->combat.last_enemy_origin, goal->origin);
+	VectorSet(goal->mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(goal->maxs, 8.0f, 8.0f, 8.0f);
+}
+
+/*
+=============
+BotAI_BattleChaseTravelFlags
+
+Matches Battle Chase's default travel mask with its independent usehook and
+rocketjump gates.
+=============
+*/
+static int BotAI_BattleChaseTravelFlags(const bot_client_state_t *state)
+{
+	int travel_flags = TFL_DEFAULT;
+	if (BotAI_LibVarOrderedNonZero("usehook"))
+	{
+		travel_flags |= TFL_GRAPPLEHOOK;
+	}
+	if (BotAI_LibVarOrderedNonZero("rocketjump") &&
+		BotAI_CanAndWantsToRocketJump(state))
+	{
+		travel_flags |= TFL_ROCKETJUMP;
+	}
+	return travel_flags;
+}
+
+/*
+=============
+BotAI_LongTermGoalTravelFlags
+
+Builds Seek LTG/NBG's retail travel mask, including the escape permissions for
+lava and slime that are intentionally separate from the battle-only masks.
+=============
+*/
+static int BotAI_LongTermGoalTravelFlags(const bot_client_state_t *state)
+{
+	int travel_flags = TFL_DEFAULT;
+	if (BotAI_LibVarOrderedNonZero("usehook"))
+	{
+		travel_flags |= TFL_GRAPPLEHOOK;
+	}
+	if (state != NULL &&
+		(AAS_PointContents(state->last_client_update.origin) &
+			(CONTENTS_LAVA | CONTENTS_SLIME)) != 0)
+	{
+		travel_flags |= TFL_LAVA | TFL_SLIME;
+	}
+	if (BotAI_LibVarOrderedNonZero("rocketjump") &&
+		BotAI_CanAndWantsToRocketJump(state))
+	{
+		travel_flags |= TFL_ROCKETJUMP;
+	}
+	return travel_flags;
+}
+
+/*
+=============
+BotAI_BattleRetreatTravelFlags
+
+Matches Battle Retreat's shorter travel mask: unlike Chase and Battle NBG it
+does not append the rocket-jump gate.
+=============
+*/
+static int BotAI_BattleRetreatTravelFlags(void)
+{
+	int travel_flags = TFL_DEFAULT;
+	if (BotAI_LibVarOrderedNonZero("usehook"))
+	{
+		travel_flags |= TFL_GRAPPLEHOOK;
+	}
+	return travel_flags;
+}
+
+/*
+=============
+BotAI_DropUnwantedCTFTech
+
+Replays sub_100262c0 after a runes-enabled goal contact. When a touched CTF
+tech differs from the held tech, retail drops the held one. Its tech-four
+comparison deliberately keeps the raw Haste-model exception rather than the
+otherwise expected Regeneration-model exception.
+=============
+*/
+static void BotAI_DropUnwantedCTFTech(const bot_client_state_t *state,
+	const bot_goal_t *goal)
+{
+	if (state == NULL || goal == NULL ||
+		!BotAI_LibVarOrderedNonZero("ctf") ||
+		goal->entitynum <= 0 ||
+		goal->entitynum >= BOT_INTERFACE_MAX_ENTITIES ||
+		!g_botInterfaceEntityCache[goal->entitynum].valid)
+	{
+		return;
+	}
+
+	const char *model_name = BotInterface_ModelNameForIndex(
+		g_botInterfaceEntityCache[goal->entitynum].state.modelindex);
+	if (model_name == NULL)
+	{
+		return;
+	}
+
+	bool resistance = strcmp(model_name,
+		"models/ctf/resistance/tris.md2") == 0;
+	bool strength = strcmp(model_name,
+		"models/ctf/strength/tris.md2") == 0;
+	bool haste = strcmp(model_name, "models/ctf/haste/tris.md2") == 0;
+	bool regeneration = strcmp(model_name,
+		"models/ctf/regeneration/tris.md2") == 0;
+	if (!resistance && !strength && !haste && !regeneration)
+	{
+		return;
+	}
+
+	const int *inventory = state->last_client_update.inventory;
+	if ((inventory[BOT_BATTLE_INVENTORY_TECH1] > 0 && !resistance) ||
+		(inventory[BOT_BATTLE_INVENTORY_TECH2] > 0 && !strength) ||
+		(inventory[BOT_BATTLE_INVENTORY_TECH3] > 0 && !haste) ||
+		(inventory[BOT_BATTLE_INVENTORY_TECH4] > 0 && !haste))
+	{
+		EA_DropItem(state->client_number, "tech");
+	}
+}
+
+/*
+=============
+BotAI_NearbyGoalReached
+
+Applies BotReachedGoal's item-specific contact/absence/vertical-overlap test
+before an LTG or NBG goal is replaced. Static item contact resets its respawn
+avoid time, while a missing visible item expires immediately.
+=============
+*/
+static bool BotAI_NearbyGoalReached(bot_client_state_t *state,
+	bot_goal_t *goal)
+{
+	if (state == NULL || goal == NULL)
+	{
+		return false;
+	}
+
+	if ((goal->flags & GFL_ITEM) == 0)
+	{
+		return BotTouchingGoal(state->last_client_update.origin, goal) != 0;
+	}
+
+	if (BotTouchingGoal(state->last_client_update.origin, goal))
+	{
+		if (BotAI_LibVarOrderedNonZero("runes"))
+		{
+			BotAI_DropUnwantedCTFTech(state, goal);
+		}
+		if ((goal->flags & GFL_DROPPED) == 0 && state->goal_handle > 0)
+		{
+			AI_GoalBotlib_SetAvoidGoalTime(state->goal_handle,
+				goal->number,
+				-1.0f);
+		}
+		return true;
+	}
+
+	vec3_t eye;
+	BotInterface_ClientEyePosition(state, eye);
+	if (BotItemGoalInVisButNotVisible(state->entity_number,
+		eye,
+		state->last_client_update.viewangles,
+		goal) != 0)
+	{
+		return true;
+	}
+
+	int area = AAS_PointAreaNum(state->last_client_update.origin);
+	if (area != goal->areanum || AAS_Swimming(state->last_client_update.origin))
+	{
+		return false;
+	}
+
+	return state->last_client_update.origin[0] > goal->origin[0] + goal->mins[0] &&
+		state->last_client_update.origin[0] < goal->origin[0] + goal->maxs[0] &&
+		state->last_client_update.origin[1] > goal->origin[1] + goal->mins[1] &&
+		state->last_client_update.origin[1] < goal->origin[1] + goal->maxs[1];
+}
+
+/*
+=============
+BotAI_GetItemLongTermGoal
+
+Reconstructs the ordinary-item tail of BotLongTermGoal: retain a selected
+item for twenty seconds, replace it on contact/expiry, and recover from a
+fully avoided item set by clearing both avoid layers.
+=============
+*/
+static bool BotAI_GetItemLongTermGoal(bot_client_state_t *state,
+	bot_goal_t *goal)
+{
+	if (state == NULL || goal == NULL || state->goal_handle <= 0)
+	{
+		return false;
+	}
+
+	if (AI_GoalBotlib_GetTopGoal(state->goal_handle, goal) == 0)
+	{
+		state->long_term_goal_time = 0.0f;
+	}
+	else if (BotAI_NearbyGoalReached(state, goal))
+	{
+		state->long_term_goal_time = 0.0f;
+	}
+
+	if (state->long_term_goal_time < AAS_Time())
+	{
+		AI_GoalBotlib_PopGoal(state->goal_handle);
+		if (AI_GoalBotlib_ChooseLTG(state->goal_handle,
+			state->last_client_update.origin,
+			state->last_client_update.inventory,
+			BotAI_LongTermGoalTravelFlags(state)) != 0)
+		{
+			state->long_term_goal_time = AAS_Time() + 20.0f;
+		}
+		else
+		{
+			AI_GoalBotlib_EmptyGoalStack(state->goal_handle);
+			AI_GoalBotlib_ResetAvoidGoals(state->goal_handle);
+			BotMove_ResetAvoidReach(state->move_handle);
+		}
+	}
+
+	return AI_GoalBotlib_GetTopGoal(state->goal_handle, goal) != 0;
+}
+
+/*
+=============
+BotAI_TryLongTermNearbyGoal
+
+Reconstructs Seek LTG's half-second nearby-item trial. Gladiator uses the
+larger 1500 travel-time budget only while directly defending a key area and
+gives a selected nearby goal exactly five seconds before returning to LTG.
+=============
+*/
+static bool BotAI_TryLongTermNearbyGoal(bot_client_state_t *state,
+	const bot_goal_t *long_term_goal,
+	int travel_flags)
+{
+	if (state == NULL || long_term_goal == NULL || state->goal_handle <= 0 ||
+		AAS_Time() <= state->nearby_goal_check_time)
+	{
+		return false;
+	}
+
+	state->nearby_goal_check_time = AAS_Time() + 0.5f;
+	float max_travel_time = state->ltg_type == 3 ? 1500.0f : 700.0f;
+	bot_goal_t goal = *long_term_goal;
+	if (!AI_GoalBotlib_ChooseNBG(state->goal_handle,
+		state->last_client_update.origin,
+		state->last_client_update.inventory,
+		travel_flags,
+		&goal,
+		max_travel_time))
+	{
+		return false;
+	}
+
+	state->nearby_goal_time = AAS_Time() + 5.0f;
+	state->ai_node = BOT_AI_NODE_SEEK_NBG;
+	BotResetLastAvoidReach(state->move_handle);
+	return true;
+}
+
+/*
+=============
+BotAI_TryBattleChaseNearbyGoal
+
+Performs the retail once-per-second nearby-item search against the retained
+last-enemy goal and transfers a selected item to Battle NBG for five seconds.
+The 0xaec/0xaf8 lease and probe clocks are shared with Seek LTG/NBG rather
+than belonging to combat state.
+=============
+*/
+static int BotAI_TryBattleChaseNearbyGoal(bot_client_state_t *state,
+	const bot_goal_t *chase_goal,
+	int travel_flags)
+{
+	if (state == NULL || chase_goal == NULL ||
+		AAS_Time() <= state->nearby_goal_check_time)
+	{
+		return qfalse;
+	}
+
+	state->nearby_goal_check_time = AAS_Time() + 1.0f;
+	bot_goal_t goal = *chase_goal;
+	if (state->goal_handle <= 0 || !AI_GoalBotlib_ChooseNBG(state->goal_handle,
+		state->last_client_update.origin,
+		state->last_client_update.inventory,
+		travel_flags,
+		&goal,
+		500.0f))
+	{
+		return qfalse;
+	}
+
+	state->nearby_goal_time = AAS_Time() + 5.0f;
+	BotAI_ResetFightNavigation(state, false);
+	state->ai_node = BOT_AI_NODE_BATTLE_NBG;
+	return qtrue;
+}
+
+/*
+=============
+BotAI_CommitCarriedFlagRetreatGoal
+
+Replays Battle Retreat's CTF flag branch: promote a carrier to the home-base
+LTG once, clear the away timer, and resolve the matching team flag goal.
+=============
+*/
+static bool BotAI_CommitCarriedFlagRetreatGoal(bot_client_state_t *state,
+	bot_goal_t *goal)
+{
+	if (state == NULL || goal == NULL || BotAI_CarryingFlag(state) == 0)
+	{
+		return false;
+	}
+
+	if (state->ltg_type != BOT_LTG_RUSH_BASE)
+	{
+		state->ltg_type = BOT_LTG_RUSH_BASE;
+		state->rush_base_away_time = 0.0f;
+		state->team_goal_time = AAS_Time() + 120.0f;
+	}
+
+	bot_goal_t red_flag;
+	bot_goal_t blue_flag;
+	if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag) ||
+		(state->team != 1 && state->team != 2))
+	{
+		return false;
+	}
+
+	*goal = state->team == 1 ? red_flag : blue_flag;
+	return true;
+}
+
+/*
+=============
+BotAI_NodeStep
+
+Executes one retail AI-node decision and reports whether the frame is done.
+=============
+*/
+static int BotAI_NodeStep(bot_client_state_t *state, void *context)
+{
+	bot_ai_node_frame_t *frame = (bot_ai_node_frame_t *)context;
+	if (state == NULL || frame == NULL)
+	{
+		return qtrue;
+	}
+
+	frame->work = BOT_AI_FRAME_WORK_NONE;
+	frame->post_acquire_enemy = false;
+	BotAI_InitEnemyInfo(&frame->enemy);
+
+	switch (state->ai_node)
+	{
+	case BOT_AI_NODE_OBSERVER:
+	case BOT_AI_NODE_INTERMISSION:
+		frame->work = BOT_AI_FRAME_WORK_STAND;
+		return qtrue;
+
+	case BOT_AI_NODE_STAND:
+		if (BotAI_FindEnemy(state, &frame->enemy))
+		{
+			state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+			return qfalse;
+		}
+		if (state->chat_standing)
+		{
+			if (!BotAI_ReplyStandActive(state, frame->thinktime))
+			{
+				state->ai_node = BOT_AI_NODE_SEEK_LTG;
+				return qfalse;
+			}
+			frame->work = BOT_AI_FRAME_WORK_STAND;
+			return qtrue;
+		}
+		frame->work = BOT_AI_FRAME_WORK_STAND;
+		return qtrue;
+
+	case BOT_AI_NODE_ACTIVATE_ENTITY:
+		/* Activation commits movement before its delayed enemy-acquisition pass. */
+		state->combat.current_enemy = 0;
+		if (BotTouchingGoal(state->last_client_update.origin,
+			&state->activation_goal))
+		{
+			state->activation_goal_time = 0.0f;
+		}
+		if (AAS_Time() > state->activation_goal_time)
+		{
+			state->ai_node = BOT_AI_NODE_SEEK_NBG;
+			return qfalse;
+		}
+		frame->post_acquire_enemy = true;
+		frame->work = BOT_AI_FRAME_WORK_GOAL;
+		return qtrue;
+
+	case BOT_AI_NODE_SEEK_NBG:
+		state->combat.current_enemy = 0;
+	{
+		bot_goal_t nearby_goal;
+		bool has_nearby_goal = state->goal_handle > 0 &&
+			AI_GoalBotlib_GetTopGoal(state->goal_handle, &nearby_goal) != 0;
+		if (!has_nearby_goal ||
+			BotAI_NearbyGoalReached(state, &nearby_goal))
+		{
+			state->nearby_goal_time = 0.0f;
+		}
+		if (!has_nearby_goal || AAS_Time() > state->nearby_goal_time)
+		{
+			if (state->goal_handle > 0)
+			{
+				AI_GoalBotlib_PopGoal(state->goal_handle);
+			}
+			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			return qfalse;
+		}
+	}
+		frame->post_acquire_enemy = true;
+		frame->work = BOT_AI_FRAME_WORK_GOAL;
+		return qtrue;
+
+	case BOT_AI_NODE_SEEK_LTG:
+	{
+		bool chat_constructed = false;
+		if (BotAI_ConstructRandomChat(state,
+			frame->thinktime,
+			&chat_constructed))
+		{
+			state->stand_time = AAS_Time() + BotAI_ChatTime(state);
+			state->chat_standing = true;
+			state->stand_chat_pending = chat_constructed;
+			state->ai_node = BOT_AI_NODE_STAND;
+			return qfalse;
+		}
+		state->combat.current_enemy = 0;
+		BotAI_TryRecentEnemyDeathWave(state, frame->thinktime);
+		if (BotAI_FindEnemy(state, &frame->enemy))
+		{
+			BotAI_EnterFoundEnemy(state, false);
+			return qfalse;
+		}
+		frame->work = BOT_AI_FRAME_WORK_GOAL;
+		return qtrue;
+	}
+
+	case BOT_AI_NODE_BATTLE_FIGHT:
+		if (state->combat.current_enemy > 0 &&
+			state->combat.current_enemy <= aasworld.maxClients &&
+			aasworld.entities != NULL &&
+			aasworld.entities[state->combat.current_enemy].inuse)
+		{
+			aas_entityinfo_t entity_info;
+			AAS_EntityInfo(state->combat.current_enemy, &entity_info);
+			if (BotAI_EntityIsDead(&entity_info))
+			{
+				bool chat_constructed = false;
+				if (BotAI_ConstructKillChat(state, &chat_constructed))
+				{
+					state->stand_time = AAS_Time() + BotAI_ChatTime(state);
+					state->chat_standing = true;
+					state->stand_chat_pending = chat_constructed;
+					state->ai_node = BOT_AI_NODE_STAND;
+					return qfalse;
+				}
+			}
+		}
+		if (!BotAI_ResolveCurrentEnemy(state, &frame->enemy))
+		{
+			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			return qfalse;
+		}
+		BotAI_UpdateEnemyBattleInventory(state, frame->enemy.entity);
+		BotAI_RecordLastEnemyLocation(state, &frame->enemy);
+		if (!frame->enemy.visible)
+		{
+			if (BotAI_WantsToChase(state))
+			{
+				BotAI_EnterBattleChase(state);
+			}
+			else
+			{
+				state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			}
+			return qfalse;
+		}
+		frame->work = BOT_AI_FRAME_WORK_FIGHT;
+		return qtrue;
+
+	case BOT_AI_NODE_BATTLE_CHASE:
+		if (state->combat.current_enemy == 0)
+		{
+			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			return qfalse;
+		}
+		if (BotAI_CurrentEnemyVisible(state))
+		{
+			BotAI_ResetFightNavigation(state, false);
+			state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+			return qfalse;
+		}
+		if (BotAI_FindEnemy(state, &frame->enemy))
+		{
+			state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+			return qfalse;
+		}
+		if (state->combat.last_enemy_area == 0)
+		{
+			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			return qfalse;
+		}
+		bot_goal_t chase_goal;
+		BotAI_BuildBattleChaseGoal(state, &chase_goal);
+		if (BotTouchingGoal(state->last_client_update.origin, &chase_goal))
+		{
+			state->combat.chase_time = 0.0f;
+		}
+		if (AAS_Time() > state->combat.chase_time)
+		{
+			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			return qfalse;
+		}
+		if (BotAI_TryBattleChaseNearbyGoal(state,
+			&chase_goal,
+			BotAI_BattleChaseTravelFlags(state)))
+		{
+			return qfalse;
+		}
+		frame->work = BOT_AI_FRAME_WORK_CHASE;
+		return qtrue;
+
+	case BOT_AI_NODE_BATTLE_RETREAT:
+	{
+		if (state->combat.current_enemy == 0 ||
+			!BotAI_ResolveCurrentEnemy(state, &frame->enemy))
+		{
+			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			return qfalse;
+		}
+		BotAI_UpdateEnemyBattleInventory(state,
+			state->combat.current_enemy);
+		if (BotAI_WantsToChase(state))
+		{
+			if (state->goal_handle > 0)
+			{
+				AI_GoalBotlib_EmptyGoalStack(state->goal_handle);
+			}
+			BotAI_EnterBattleChase(state);
+			return qfalse;
+		}
+		if (!frame->enemy.visible)
+		{
+			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			return qfalse;
+		}
+
+		bot_goal_t retreat_goal;
+		bool carrying_flag = BotAI_CarryingFlag(state) != 0;
+		bool has_retreat_goal = carrying_flag
+			? BotAI_CommitCarriedFlagRetreatGoal(state, &retreat_goal)
+			: state->goal_handle > 0 &&
+				AI_GoalBotlib_GetTopGoal(state->goal_handle, &retreat_goal) != 0;
+		int travel_flags = BotAI_BattleRetreatTravelFlags();
+		if (!carrying_flag && !has_retreat_goal && state->goal_handle > 0)
+		{
+			AI_GoalBotlib_ChooseLTG(state->goal_handle,
+				state->last_client_update.origin,
+				state->last_client_update.inventory,
+				travel_flags);
+			has_retreat_goal = AI_GoalBotlib_GetTopGoal(state->goal_handle,
+				&retreat_goal) != 0;
+		}
+		if (!has_retreat_goal)
+		{
+			/* Retail keeps Battle Retreat active and only advances its view turn. */
+			frame->work = BOT_AI_FRAME_WORK_BATTLE_RETREAT_IDLE;
+			return qtrue;
+		}
+		if (BotAI_TryBattleChaseNearbyGoal(state,
+			&retreat_goal,
+			travel_flags))
+		{
+			return qfalse;
+		}
+		frame->movement_goal = retreat_goal;
+		frame->has_movement_goal = true;
+		frame->work = BOT_AI_FRAME_WORK_BATTLE_RETREAT;
+		return qtrue;
+	}
+
+	case BOT_AI_NODE_BATTLE_NBG:
+	{
+		if (state->combat.current_enemy == 0 ||
+			!BotAI_ResolveCurrentEnemy(state, &frame->enemy))
+		{
+			state->ai_node = BOT_AI_NODE_SEEK_NBG;
+			return qfalse;
+		}
+		BotAI_RecordLastEnemyLocation(state, &frame->enemy);
+		bot_goal_t nearby_goal;
+		bool has_nearby_goal = state->goal_handle > 0 &&
+			AI_GoalBotlib_GetTopGoal(state->goal_handle, &nearby_goal) != 0;
+		if (!has_nearby_goal ||
+			BotAI_NearbyGoalReached(state, &nearby_goal))
+		{
+			state->nearby_goal_time = 0.0f;
+		}
+		if (AAS_Time() > state->nearby_goal_time)
+		{
+			if (state->goal_handle > 0)
+			{
+				AI_GoalBotlib_PopGoal(state->goal_handle);
+			}
+			if (state->goal_handle <= 0 ||
+				!AI_GoalBotlib_GetTopGoal(state->goal_handle, &nearby_goal))
+			{
+				state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+			}
+			else
+			{
+				state->ai_node = BOT_AI_NODE_BATTLE_RETREAT;
+			}
+			return qfalse;
+		}
+		frame->work = BOT_AI_FRAME_WORK_BATTLE_NBG;
+		return qtrue;
+	}
+	}
+
+	state->ai_node = BOT_AI_NODE_SEEK_LTG;
+	return qfalse;
+}
+
+/*
+=============
+BotAI_RunNodeSwitchLoop
+
+Runs immediate retail node transitions until work completes or 50 switches.
+=============
+*/
+int BotAI_RunNodeSwitchLoop(bot_client_state_t *state,
+	bot_ai_node_step_fn step,
+	void *context)
+{
+	if (state == NULL || step == NULL)
+	{
+		return qfalse;
+	}
+
+	state->ai_node_switches = 0;
+	state->ai_node_overflow = false;
+	while (state->ai_node_switches < BOT_AI_MAX_NODE_SWITCHES)
+	{
+		if (step(state, context) != 0)
+		{
+			return qtrue;
+		}
+		state->ai_node_switches++;
+	}
+
+	state->ai_node_overflow = true;
+	return qfalse;
+}
+
+/*
+=============
+BotAI_TeamGoalDistance
+
+Returns the direct Euclidean goal distance used by the retail defend and camp
+long-term-goal branches.
+=============
+*/
+static float BotAI_TeamGoalDistance(const bot_client_state_t *state,
+	const bot_goal_t *goal)
+{
+	if (state == NULL || goal == NULL)
+	{
+		return 0.0f;
+	}
+
+	vec3_t direction;
+	VectorSubtract(goal->origin, state->last_client_update.origin, direction);
+	return sqrtf(DotProduct(direction, direction));
+}
+
+/*
+=============
+BotAI_TeamPatrolName
+
+Builds the ordered waypoint list supplied to the delayed patrol-start chat.
+=============
+*/
+static void BotAI_TeamPatrolName(const bot_client_state_t *state,
+	char *name,
+	size_t name_size)
+{
+	if (name == NULL || name_size == 0U)
+	{
+		return;
+	}
+
+	name[0] = '\0';
+	if (state == NULL)
+	{
+		return;
+	}
+
+	for (const bot_console_waypoint_t *waypoint = state->patrol_points;
+		waypoint != NULL;
+		waypoint = waypoint->next)
+	{
+		size_t length = strlen(name);
+		if (length + 1U >= name_size)
+		{
+			return;
+		}
+
+		int written = snprintf(name + length,
+			name_size - length,
+			"%s%s",
+			length != 0U ? " to " : "",
+			waypoint->name);
+		if (written < 0 || (size_t)written >= name_size - length)
+		{
+			name[name_size - 1U] = '\0';
+			return;
+		}
+	}
+}
+
+typedef enum bot_team_goal_result_e
+{
+	BOT_TEAM_GOAL_NONE = 0,
+	BOT_TEAM_GOAL_READY,
+	BOT_TEAM_GOAL_HANDLED,
+} bot_team_goal_result_t;
+
+/*
+=============
+BotAI_ResolveTeamLongTermGoal
+
+Reconstructs BotLongTermGoal's direct help, accompany, defend, CTF, camp, and
+patrol branches before the ordinary item-goal stack is consulted. Remaining
+LTG variants fall through to the ordinary item-goal stack.
+=============
+*/
+static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *state,
+	float thinktime,
+	bot_goal_t *goal,
+	vec3_t held_viewangles,
+	bool *held_view_set,
+	int *held_actionflags)
+{
+	if (held_view_set != NULL)
+	{
+		*held_view_set = false;
+	}
+	if (held_actionflags != NULL)
+	{
+		*held_actionflags = 0;
+	}
+	if (state == NULL || goal == NULL)
+	{
+		return BOT_TEAM_GOAL_NONE;
+	}
+
+	float now = AAS_Time();
+	char name[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
+	switch (state->ltg_type)
+	{
+	case 1:
+	{
+		int teammate_entity = state->ltg_teammate + 1;
+		if (state->team_message_time != 0.0f &&
+			now > state->team_message_time)
+		{
+			BotAI_ConsoleEasyClientName(state->ltg_teammate,
+				name,
+				sizeof(name));
+			BotAI_ConsoleEnterInitialTeamChat(state, "help_start", name);
+			state->team_message_time = 0.0f;
+		}
+		if (now > state->team_goal_time)
+		{
+			state->ltg_type = 0;
+		}
+		if (now - 10.0f > state->teammate_visible_time)
+		{
+			state->ltg_type = 0;
+		}
+
+		aas_entityinfo_t teammate_info;
+		memset(&teammate_info, 0, sizeof(teammate_info));
+		if (teammate_entity > 0 && teammate_entity <= aasworld.maxClients &&
+			aasworld.entities != NULL)
+		{
+			AAS_EntityInfo(teammate_entity, &teammate_info);
+		}
+		if (BotAI_EntityVisible(state, teammate_entity))
+		{
+			vec3_t direction;
+			VectorSubtract(teammate_info.origin,
+				state->last_client_update.origin,
+				direction);
+			if (sqrtf(DotProduct(direction, direction)) < 100.0f)
+			{
+				BotMove_ResetAvoidReach(state->move_handle);
+				return BOT_TEAM_GOAL_HANDLED;
+			}
+		}
+		else
+		{
+			state->teammate_visible_time = now;
+		}
+
+		if (teammate_info.valid)
+		{
+			int area = AAS_PointAreaNum(teammate_info.origin);
+			if (area != 0 && AAS_AreaReachability(area) != 0)
+			{
+				BotAI_ConsoleSetPointGoal(&state->team_goal,
+					teammate_info.origin,
+					area,
+					teammate_entity);
+			}
+		}
+
+		*goal = state->team_goal;
+		return BOT_TEAM_GOAL_READY;
+	}
+
+	case 2:
+	{
+		int teammate_entity = state->ltg_teammate + 1;
+		if (state->team_message_time != 0.0f &&
+			now > state->team_message_time)
+		{
+			BotAI_ConsoleEasyClientName(state->ltg_teammate,
+				name,
+				sizeof(name));
+			BotAI_ConsoleEnterInitialTeamChat(state, "accompany_start", name);
+			state->team_message_time = 0.0f;
+		}
+		if (now > state->team_goal_time)
+		{
+			BotAI_ConsoleEasyClientName(state->ltg_teammate,
+				name,
+				sizeof(name));
+			BotAI_ConsoleEnterInitialTeamChat(state, "accompany_stop", name);
+			state->ltg_type = 0;
+		}
+
+		aas_entityinfo_t teammate_info;
+		memset(&teammate_info, 0, sizeof(teammate_info));
+		if (teammate_entity > 0 && teammate_entity <= aasworld.maxClients &&
+			aasworld.entities != NULL)
+		{
+			AAS_EntityInfo(teammate_entity, &teammate_info);
+		}
+		if (BotAI_EntityVisible(state, teammate_entity))
+		{
+			state->teammate_visible_time = now;
+			vec3_t direction;
+			VectorSubtract(teammate_info.origin,
+				state->last_client_update.origin,
+				direction);
+			if (sqrtf(DotProduct(direction, direction)) < state->formation_dist)
+			{
+				float crouch_time = AI_DMState_GetAttackCrouchTime(state->dm_state);
+				if (crouch_time < now - 5.0f && state->character_handle > 0)
+				{
+					float croucher = Characteristic_BFloat(state->character_handle,
+						CHARACTERISTIC_CROUCHER,
+						0.0f,
+						1.0f);
+					if (BotAI_LongTermGoalRandom() < thinktime * croucher)
+					{
+						crouch_time = now + 5.0f + croucher * 15.0f;
+						AI_DMState_SetAttackCrouchTime(state->dm_state, crouch_time);
+					}
+				}
+				if (AAS_Swimming(state->last_client_update.origin))
+				{
+					crouch_time = now - 1.0f;
+					AI_DMState_SetAttackCrouchTime(state->dm_state, crouch_time);
+				}
+
+				if (state->arrive_time < now - 2.0f &&
+					state->arrive_time == 0.0f)
+				{
+					BotAI_ConsoleEasyClientName(state->ltg_teammate,
+						name,
+						sizeof(name));
+					EA_Gesture(state->client_number, 1);
+					BotAI_ConsoleEnterInitialTeamChat(state,
+						"accompany_arrive",
+						name);
+					state->arrive_time = now;
+				}
+				else if (state->arrive_time < now - 2.0f && crouch_time > now)
+				{
+					if (held_actionflags != NULL)
+					{
+						*held_actionflags |= ACTION_CROUCH;
+					}
+				}
+				else if (state->arrive_time < now - 2.0f &&
+					BotAI_LongTermGoalRandom() < thinktime * 0.3f)
+				{
+					int gesture = (int)(BotAI_LongTermGoalRandom() * 2.9f);
+					EA_Gesture(state->client_number,
+						gesture == 0 ? 0 : gesture == 1 ? 2 : 3);
+				}
+				if (state->arrive_time > now - 2.0f &&
+					held_viewangles != NULL && held_view_set != NULL)
+				{
+					Vector2Angles(direction, held_viewangles);
+					held_viewangles[ROLL] *= 0.5f;
+					*held_view_set = true;
+				}
+				else if (held_viewangles != NULL && held_view_set != NULL &&
+					BotAI_LongTermGoalRandom() < thinktime * 0.8f)
+				{
+					vec3_t roam_goal;
+					BotAI_RoamGoal(state, roam_goal);
+					VectorSubtract(roam_goal,
+						state->last_client_update.origin,
+						direction);
+					Vector2Angles(direction, held_viewangles);
+					held_viewangles[ROLL] *= 0.5f;
+					*held_view_set = true;
+				}
+				BotMove_ResetAvoidReach(state->move_handle);
+				return BOT_TEAM_GOAL_HANDLED;
+			}
+		}
+
+		if (teammate_info.valid)
+		{
+			int area = AAS_PointAreaNum(teammate_info.origin);
+			if (area != 0 && AAS_AreaReachability(area) != 0)
+			{
+				BotAI_ConsoleSetPointGoal(&state->team_goal,
+					teammate_info.origin,
+					area,
+					teammate_entity);
+			}
+		}
+
+		*goal = state->team_goal;
+		if (now - 60.0f > state->teammate_visible_time)
+		{
+			BotAI_ConsoleEasyClientName(state->ltg_teammate,
+				name,
+				sizeof(name));
+			BotAI_ConsoleEnterInitialTeamChat(state,
+				"accompany_cannotfind",
+				name);
+			state->ltg_type = 0;
+			state->teammate_visible_time = now;
+		}
+		return BOT_TEAM_GOAL_READY;
+	}
+
+	case 3:
+		if (now <= state->defend_away_time)
+		{
+			return BOT_TEAM_GOAL_NONE;
+		}
+		if (state->team_message_time != 0.0f &&
+			now > state->team_message_time)
+		{
+			BotGoalName(state->team_goal_number, name, (int)sizeof(name));
+			BotAI_ConsoleEnterInitialTeamChat(state, "defend_start", name);
+			state->team_message_time = 0.0f;
+		}
+
+		*goal = state->team_goal;
+		if (now > state->team_goal_time)
+		{
+			BotGoalName(state->team_goal_number, name, (int)sizeof(name));
+			BotAI_ConsoleEnterInitialTeamChat(state, "defend_stop", name);
+			state->ltg_type = 0;
+		}
+		if (BotAI_TeamGoalDistance(state, goal) < 70.0f)
+		{
+			BotResetLastAvoidReach(state->move_handle);
+			state->defend_away_time = now + 5.0f +
+				10.0f * BotAI_ConsoleRandom();
+		}
+		return BOT_TEAM_GOAL_READY;
+
+	case 4:
+	{
+		bot_goal_t red_flag;
+		bot_goal_t blue_flag;
+		if (state->team_message_time != 0.0f &&
+			now > state->team_message_time)
+		{
+			BotAI_ConsoleEnterInitialTeamChat(state, "captureflag_start", NULL);
+			state->team_message_time = 0.0f;
+		}
+		if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag) ||
+			(state->team != 1 && state->team != 2))
+		{
+			state->ltg_type = 0;
+			return BOT_TEAM_GOAL_HANDLED;
+		}
+
+		*goal = state->team == 1 ? blue_flag : red_flag;
+		if (BotTouchingGoal(state->last_client_update.origin, goal) ||
+			now > state->team_goal_time)
+		{
+			state->ltg_type = 0;
+		}
+		return BOT_TEAM_GOAL_READY;
+	}
+
+	case 5:
+	{
+		bot_goal_t red_flag;
+		bot_goal_t blue_flag;
+		if (now <= state->rush_base_away_time)
+		{
+			return BOT_TEAM_GOAL_NONE;
+		}
+		if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag) ||
+			(state->team != 1 && state->team != 2))
+		{
+			state->ltg_type = 0;
+			return BOT_TEAM_GOAL_HANDLED;
+		}
+
+		*goal = state->team == 1 ? red_flag : blue_flag;
+		if (BotAI_CarryingFlag(state) == 0 || now > state->team_goal_time)
+		{
+			state->ltg_type = 0;
+		}
+		if (BotTouchingGoal(state->last_client_update.origin, goal))
+		{
+			if (BotAI_CarryingFlag(state) == 0)
+			{
+				state->ltg_type = 0;
+			}
+			else
+			{
+				BotMove_ResetAvoidReach(state->move_handle);
+				state->rush_base_away_time = now + 5.0f +
+					10.0f * BotAI_ConsoleRandom();
+			}
+		}
+		return BOT_TEAM_GOAL_READY;
+	}
+
+	case 6:
+		if (state->team_message_time != 0.0f &&
+			now > state->team_message_time)
+		{
+			BotAI_ConsoleEasyClientName(state->ltg_teammate,
+				name,
+				sizeof(name));
+			BotAI_ConsoleEnterInitialTeamChat(state, "camp_start", name);
+			state->team_message_time = 0.0f;
+		}
+
+		*goal = state->team_goal;
+		if (now > state->team_goal_time)
+		{
+			BotAI_ConsoleEnterInitialTeamChat(state, "camp_stop", NULL);
+			state->ltg_type = 0;
+		}
+		if (BotAI_TeamGoalDistance(state, goal) < 40.0f)
+		{
+			if (state->arrive_time == 0.0f)
+			{
+				BotAI_ConsoleEasyClientName(state->ltg_teammate,
+					name,
+					sizeof(name));
+				BotAI_ConsoleEnterInitialTeamChat(state, "camp_arrive", name);
+				state->arrive_time = now;
+			}
+			if (held_viewangles != NULL && held_view_set != NULL &&
+				BotAI_LongTermGoalRandom() < thinktime * 0.8f)
+			{
+				vec3_t roam_goal;
+				vec3_t direction;
+				BotAI_RoamGoal(state, roam_goal);
+				VectorSubtract(roam_goal,
+					state->last_client_update.origin,
+					direction);
+				Vector2Angles(direction, held_viewangles);
+				held_viewangles[ROLL] *= 0.5f;
+				*held_view_set = true;
+			}
+
+			float crouch_time = AI_DMState_GetAttackCrouchTime(state->dm_state);
+			if (crouch_time < now - 5.0f && state->character_handle > 0)
+			{
+				float croucher = Characteristic_BFloat(state->character_handle,
+					CHARACTERISTIC_CROUCHER,
+					0.0f,
+					1.0f);
+				if (BotAI_LongTermGoalRandom() < thinktime * croucher)
+				{
+					crouch_time = now + 5.0f + croucher * 15.0f;
+					AI_DMState_SetAttackCrouchTime(state->dm_state, crouch_time);
+				}
+			}
+			if (crouch_time > now && held_actionflags != NULL)
+			{
+				*held_actionflags |= ACTION_CROUCH;
+			}
+			if (AAS_Swimming(state->last_client_update.origin))
+			{
+				AI_DMState_SetAttackCrouchTime(state->dm_state, now - 1.0f);
+			}
+			if ((AAS_PointContents(state->last_client_update.origin) &
+				(CONTENTS_WATER | CONTENTS_LAVA | CONTENTS_SLIME)) != 0)
+			{
+				BotAI_ConsoleEnterInitialTeamChat(state, "camp_stop", NULL);
+				state->ltg_type = 0;
+			}
+			BotResetLastAvoidReach(state->move_handle);
+			return BOT_TEAM_GOAL_HANDLED;
+		}
+		return BOT_TEAM_GOAL_READY;
+
+	case 7:
+		if (state->team_message_time != 0.0f &&
+			now > state->team_message_time)
+		{
+			BotAI_TeamPatrolName(state, name, sizeof(name));
+			BotAI_ConsoleEnterInitialTeamChat(state, "patrol_start", name);
+			state->team_message_time = 0.0f;
+		}
+		if (state->current_patrol_point == NULL)
+		{
+			state->ltg_type = 0;
+			return BOT_TEAM_GOAL_HANDLED;
+		}
+
+		if (BotTouchingGoal(state->last_client_update.origin,
+			&state->current_patrol_point->goal))
+		{
+			bot_console_waypoint_t *current = state->current_patrol_point;
+			if ((state->patrol_flags & BOT_CONSOLE_PATROL_FORWARD) == 0)
+			{
+				if (current->prev == NULL)
+				{
+					state->patrol_flags |= BOT_CONSOLE_PATROL_FORWARD;
+					state->current_patrol_point = current->next;
+				}
+				else
+				{
+					state->current_patrol_point = current->prev;
+				}
+			}
+			else if (current->next == NULL)
+			{
+				state->patrol_flags &= ~BOT_CONSOLE_PATROL_FORWARD;
+				state->current_patrol_point = current->prev;
+			}
+			else
+			{
+				state->current_patrol_point = current->next;
+			}
+		}
+
+		if (now > state->team_goal_time)
+		{
+			BotAI_ConsoleEnterInitialTeamChat(state, "patrol_stop", NULL);
+			state->ltg_type = 0;
+		}
+		if (state->current_patrol_point == NULL)
+		{
+			state->ltg_type = 0;
+			return BOT_TEAM_GOAL_HANDLED;
+		}
+
+		*goal = state->current_patrol_point->goal;
+		return BOT_TEAM_GOAL_READY;
+
+	default:
+		return BOT_TEAM_GOAL_NONE;
+	}
+}
+
+/*
+=============
+BotAI_ApplyLongTermMoveResultView
+
+Reconstructs Activate, Seek LTG, and Seek NBG's post-move ideal-view policy.
+Explicit mover-set views bypass the private turn; all other results retain or
+update the private ideal then advance sub_10029150 after movement input is
+submitted.
+=============
+*/
+static bool BotAI_ApplyLongTermMoveResultView(bot_client_state_t *state,
+	const bot_goal_t *goal,
+	int travel_flags,
+	float thinktime,
+	const bot_moveresult_t *result,
+	bot_input_t *input)
+{
+	if (state == NULL || goal == NULL || result == NULL || input == NULL)
+	{
+		return false;
+	}
+
+	if ((result->flags & MOVERESULT_MOVEMENTVIEWSET) != 0)
+	{
+		VectorCopy(result->ideal_viewangles, input->viewangles);
+		return false;
+	}
+
+	if ((result->flags & (MOVERESULT_MOVEMENTVIEW |
+		MOVERESULT_SWIMVIEW)) != 0)
+	{
+		AI_DMState_SetIdealViewAngles(state->dm_state,
+			result->ideal_viewangles);
+		return true;
+	}
+
+	vec3_t viewangles;
+	if ((result->flags & MOVERESULT_WAITING) != 0)
+	{
+		if (BotAI_LongTermGoalRandom() >= thinktime * 0.8f)
+		{
+			return true;
+		}
+
+		vec3_t roam_goal;
+		vec3_t direction;
+		BotAI_RoamGoal(state, roam_goal);
+		VectorSubtract(roam_goal, state->last_client_update.origin, direction);
+		Vector2Angles(direction, viewangles);
+		viewangles[ROLL] *= 0.5f;
+		AI_DMState_SetIdealViewAngles(state->dm_state, viewangles);
+		return true;
+	}
+
+	bot_goal_t view_goal = *goal;
+	if (state->ai_node == BOT_AI_NODE_SEEK_NBG && state->goal_handle > 0)
+	{
+		bot_goal_t second_goal;
+		if (AI_GoalBotlib_GetSecondGoal(state->goal_handle, &second_goal) != 0)
+		{
+			view_goal = second_goal;
+		}
+	}
+
+	vec3_t target;
+	vec3_t direction;
+	if (BotMovementViewTarget(state->move_handle,
+		&view_goal,
+		travel_flags,
+		300.0f,
+		target) != 0)
+	{
+		VectorSubtract(target, state->last_client_update.origin, direction);
+	}
+	else
+	{
+		VectorCopy(result->movedir, direction);
+	}
+	Vector2Angles(direction, viewangles);
+	viewangles[ROLL] *= 0.5f;
+	AI_DMState_SetIdealViewAngles(state->dm_state, viewangles);
+	return true;
+}
+
+/*
+=============
+BotAI_BlockedBspModelBounds
+
+Maps the game-facing inline model number on a blocked BSP entity back to the
+zero-based AAS model bounds used by Gladiator's static-entity logic.
+=============
+*/
+static bool BotAI_BlockedBspModelBounds(int modelindex,
+	vec3_t mins,
+	vec3_t maxs)
+{
+	if (modelindex <= 0 || mins == NULL || maxs == NULL ||
+		aasworld.bspModels == NULL || modelindex > aasworld.numBspModels)
+	{
+		return false;
+	}
+
+	vec3_t zero_angles = {0.0f, 0.0f, 0.0f};
+	AAS_BSPModelMinsMaxsOrigin(modelindex - 1,
+		zero_angles,
+		mins,
+		maxs,
+		NULL);
+	return true;
+}
+
+/*
+=============
+BotAI_SetBlockedAttack
+
+Carries the retail blocked-door and shoot-button Blaster action through the
+frame-input bridge while preserving the immediate game command selection.
+=============
+*/
+static void BotAI_SetBlockedAttack(bot_client_state_t *state,
+	bot_moveresult_t *result,
+	const vec3_t target)
+{
+	if (state == NULL || result == NULL || target == NULL)
+	{
+		return;
+	}
+
+	vec3_t direction;
+	VectorSubtract(target, state->last_client_update.origin, direction);
+	Vector2Angles(direction, result->ideal_viewangles);
+	result->ideal_viewangles[ROLL] *= 0.5f;
+	result->flags |= MOVERESULT_MOVEMENTVIEW | MOVERESULT_MOVEMENTWEAPON;
+	result->weapon = 0;
+	EA_Command(state->client_number, "use Blaster");
+}
+
+/*
+=============
+BotAI_StoreBlockedActivationGoal
+
+Stores Gladiator's single ten-second activation goal after finding a reachable
+ground point beside the blocking static BSP entity.
+=============
+*/
+static bool BotAI_StoreBlockedActivationGoal(bot_client_state_t *state,
+	const bot_moveresult_t *result,
+	const vec3_t origin,
+	const vec3_t mins,
+	const vec3_t maxs,
+	const vec3_t trace_start,
+	const vec3_t trace_end)
+{
+	if (state == NULL || result == NULL || origin == NULL || mins == NULL ||
+		maxs == NULL || trace_start == NULL || trace_end == NULL)
+	{
+		return false;
+	}
+
+	aas_trace_t trace = AAS_TraceClientBBox(trace_start,
+		trace_end,
+		PRESENCE_CROUCH,
+		-1);
+	if (trace.startsolid)
+	{
+		return false;
+	}
+
+	int areanum = AAS_PointAreaNum(trace.endpos);
+	if (areanum == 0 || AAS_AreaReachability(areanum) == 0)
+	{
+		return false;
+	}
+
+	memset(&state->activation_goal, 0, sizeof(state->activation_goal));
+	VectorCopy(origin, state->activation_goal.origin);
+	state->activation_goal.areanum = areanum;
+	VectorCopy(mins, state->activation_goal.mins);
+	VectorCopy(maxs, state->activation_goal.maxs);
+	state->activation_goal.entitynum = result->blockentity;
+	state->activation_goal_time = AAS_Time() + 10.0f;
+	state->ai_node = BOT_AI_NODE_ACTIVATE_ENTITY;
+	return true;
+}
+
+/*
+=============
+BotAI_ButtonMoveDirection
+
+Recreates Quake II brush-button angle decoding for the face point used by the
+retail blocked-entity response.
+=============
+*/
+static void BotAI_ButtonMoveDirection(const aas_bspentity_t *entity,
+	vec3_t direction)
+{
+	if (direction == NULL)
+	{
+		return;
+	}
+
+	float angle = AAS_FloatForBSPEpairKey(entity, "angle");
+	if (angle == -1.0f)
+	{
+		VectorSet(direction, 0.0f, 0.0f, 1.0f);
+		return;
+	}
+	if (angle == -2.0f)
+	{
+		VectorSet(direction, 0.0f, 0.0f, -1.0f);
+		return;
+	}
+
+	float radians = angle * ((float)M_PI / 180.0f);
+	VectorSet(direction, cosf(radians), sinf(radians), 0.0f);
+}
+
+/*
+=============
+BotAI_HandleBlockedStaticEntity
+
+Handles the static brush classes recognized by retail BotAIBlocked: doors are
+shot immediately, shootable buttons are aimed at their exposed face, and
+buttons/triggers with a reachable contact point enter the dedicated activation
+node.
+=============
+*/
+static void BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
+	bot_moveresult_t *result,
+	const aas_bspentity_t *entity,
+	int modelindex)
+{
+	if (state == NULL || result == NULL || entity == NULL)
+	{
+		return;
+	}
+
+	vec3_t model_mins;
+	vec3_t model_maxs;
+	if (!BotAI_BlockedBspModelBounds(modelindex, model_mins, model_maxs))
+	{
+		return;
+	}
+
+	vec3_t center;
+	VectorAdd(model_mins, model_maxs, center);
+	VectorScale(center, 0.5f, center);
+	const char *classname = AAS_ValueForBSPEpairKey(entity, "classname");
+	if (classname == NULL)
+	{
+		return;
+	}
+
+	if (strcmp(classname, "func_door") == 0 ||
+		strcmp(classname, "func_door_secret") == 0)
+	{
+		BotAI_SetBlockedAttack(state, result, center);
+		return;
+	}
+
+	vec3_t goal_mins;
+	vec3_t goal_maxs;
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		goal_mins[axis] = model_mins[axis] - center[axis];
+		goal_maxs[axis] = model_maxs[axis] - center[axis];
+	}
+
+	if (strcmp(classname, "func_button") == 0)
+	{
+		vec3_t move_direction;
+		BotAI_ButtonMoveDirection(entity, move_direction);
+		float half_extent = 0.5f *
+			(fabsf(move_direction[0]) * (model_maxs[0] - model_mins[0]) +
+			fabsf(move_direction[1]) * (model_maxs[1] - model_mins[1]) +
+			fabsf(move_direction[2]) * (model_maxs[2] - model_mins[2]));
+		if (AAS_FloatForBSPEpairKey(entity, "health") != 0.0f)
+		{
+			vec3_t face;
+			VectorMA(center, -half_extent, move_direction, face);
+			BotAI_SetBlockedAttack(state, result, face);
+			return;
+		}
+
+		vec3_t trace_start;
+		vec3_t trace_end;
+		float client_extent = fabsf(move_direction[0]) * 15.0f +
+			fabsf(move_direction[1]) * 15.0f +
+			(move_direction[2] > 0.0f ? 24.0f : 8.0f);
+		VectorMA(center,
+			-(half_extent + client_extent),
+			move_direction,
+			trace_start);
+		VectorCopy(trace_start, trace_end);
+		trace_end[2] -= 100.0f;
+		for (int axis = 0; axis < 3; ++axis)
+		{
+			goal_mins[axis] -= 5.0f;
+			goal_maxs[axis] += 5.0f;
+		}
+		(void)BotAI_StoreBlockedActivationGoal(state,
+			result,
+			center,
+			goal_mins,
+			goal_maxs,
+			trace_start,
+			trace_end);
+		return;
+	}
+
+	if (strcmp(classname, "trigger_multiple") == 0 ||
+		strcmp(classname, "trigger_once") == 0)
+	{
+		vec3_t trace_start;
+		vec3_t trace_end;
+		VectorCopy(center, trace_start);
+		VectorCopy(center, trace_end);
+		trace_end[2] = model_maxs[2] + 24.0f - 100.0f;
+		(void)BotAI_StoreBlockedActivationGoal(state,
+			result,
+			center,
+			goal_mins,
+			goal_maxs,
+			trace_start,
+			trace_end);
+	}
+}
+
+/*
+=============
+BotAI_HandleBlockedMovement
+
+Implements retail BotAIBlocked's direct static-activator handling and its
+perpendicular alternate movement when no recognized activator applies. The
+outgoing direction is returned separately because the frame-input bridge
+supersedes BotMoveInDirection's immediate EA movement record.
+=============
+*/
+static bool BotAI_HandleBlockedMovement(bot_client_state_t *state,
+	bot_moveresult_t *result,
+	bool allow_activation,
+	vec3_t alternate_direction)
+{
+	if (alternate_direction != NULL)
+	{
+		VectorClear(alternate_direction);
+	}
+	if (state == NULL || result == NULL || result->blocked == 0)
+	{
+		return false;
+	}
+
+	if (allow_activation && result->blockentity > 0)
+	{
+		aas_entityinfo_t entity_info;
+		memset(&entity_info, 0, sizeof(entity_info));
+		AAS_EntityInfo(result->blockentity, &entity_info);
+		if (entity_info.valid && entity_info.solid == SOLID_BSP &&
+			entity_info.modelindex > 0)
+		{
+			aas_bspentity_t *entities = AAS_LoadBSPEntities();
+			for (const aas_bspentity_t *entity = entities;
+				entity != NULL;
+				entity = entity->next)
+			{
+				const char *model = AAS_ValueForBSPEpairKey(entity, "model");
+				if (model == NULL)
+				{
+					continue;
+				}
+				int static_model = (int)strtol(model + (model[0] == '*'), NULL, 10);
+				if (static_model != entity_info.modelindex)
+				{
+					continue;
+				}
+
+				const char *classname = AAS_ValueForBSPEpairKey(entity, "classname");
+				if (classname != NULL &&
+					(strcmp(classname, "func_door") == 0 ||
+						strcmp(classname, "func_door_secret") == 0 ||
+						strcmp(classname, "func_button") == 0 ||
+						strcmp(classname, "trigger_multiple") == 0 ||
+						strcmp(classname, "trigger_once") == 0))
+				{
+					BotAI_HandleBlockedStaticEntity(state,
+						result,
+						entity,
+						entity_info.modelindex);
+					AAS_FreeBSPEntities(entities);
+					return false;
+				}
+			}
+			AAS_FreeBSPEntities(entities);
+		}
+	}
+
+	if (alternate_direction == NULL)
+	{
+		return false;
+	}
+
+	vec3_t forward;
+	VectorCopy(result->movedir, forward);
+	forward[2] = 0.0f;
+	float forward_length = sqrtf(DotProduct(forward, forward));
+	if (forward_length == 0.0f)
+	{
+		return false;
+	}
+	VectorScale(forward, 1.0f / forward_length, forward);
+
+	VectorSet(alternate_direction, forward[1], -forward[0], 0.0f);
+	if (state->blocked_avoid_right)
+	{
+		VectorScale(alternate_direction, -1.0f, alternate_direction);
+	}
+	if (BotMoveInDirection(state->move_handle,
+		alternate_direction,
+		400.0f,
+		MOVE_WALK) == 0)
+	{
+		VectorScale(alternate_direction, -1.0f, alternate_direction);
+		state->blocked_avoid_right = !state->blocked_avoid_right;
+		if (BotMoveInDirection(state->move_handle,
+			alternate_direction,
+			400.0f,
+			MOVE_WALK) == 0)
+		{
+			return false;
+		}
+	}
+
+	if (state->ai_node == BOT_AI_NODE_SEEK_NBG)
+	{
+		state->nearby_goal_time = 0.0f;
+	}
+	else if (state->ai_node == BOT_AI_NODE_SEEK_LTG)
+	{
+		state->long_term_goal_time = 0.0f;
+	}
+	return true;
+}
+
+/*
+=============
+BotAI_RunTeamGoalMovement
+
+Runs direct goal movement through the shared retail result bridge, including
+the node-specific failed-move avoidance and goal-clock resets.
+=============
+*/
+static int BotAI_RunTeamGoalMovement(bot_client_state_t *state,
+	float thinktime,
+	const bot_goal_t *goal,
+	bot_input_t *input,
+	bool defer_view_turn,
+	bool *view_turn_pending)
+{
+	if (view_turn_pending != NULL)
+	{
+		*view_turn_pending = false;
+	}
+	if (state == NULL || goal == NULL || input == NULL)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	int status = BotInterface_PrepareMoveState(state, thinktime);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	bot_moveresult_t result;
+	BotClearMoveResult(&result);
+	BotMoveToGoal(&result,
+		state->move_handle,
+		goal,
+		BotAI_LongTermGoalTravelFlags(state));
+	if (result.failure)
+	{
+		BotMove_ResetAvoidReach(state->move_handle);
+		if (state->ai_node == BOT_AI_NODE_ACTIVATE_ENTITY ||
+			state->ai_node == BOT_AI_NODE_SEEK_NBG)
+		{
+			state->nearby_goal_time = 0.0f;
+		}
+		else
+		{
+			state->long_term_goal_time = 0.0f;
+		}
+	}
+	vec3_t alternate_direction;
+	bool has_alternate_direction = BotAI_HandleBlockedMovement(state,
+		&result,
+		true,
+		alternate_direction);
+
+	memset(input, 0, sizeof(*input));
+	BotInterface_ApplyMoveResult(state, &result, input);
+	if (has_alternate_direction)
+	{
+		VectorCopy(alternate_direction, input->dir);
+		input->speed = 400.0f;
+	}
+	input->thinktime = thinktime;
+	VectorCopy(state->last_client_update.viewangles, input->viewangles);
+	bool advance_view = BotAI_ApplyLongTermMoveResultView(state,
+		goal,
+		BotAI_LongTermGoalTravelFlags(state),
+		thinktime,
+		&result,
+		input);
+	if (state->move_state != NULL)
+	{
+		state->move_state->last_result = result;
+		state->move_state->has_last_result = true;
+	}
+	state->last_move_result = result;
+	state->has_move_result = true;
+	state->active_goal_number = goal->number;
+	status = EA_SubmitInput(state->client_number, input);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+	if (advance_view)
+	{
+		if (defer_view_turn)
+		{
+			if (view_turn_pending != NULL)
+			{
+				*view_turn_pending = true;
+			}
+		}
+		else
+		{
+			AI_DMState_SetEnemyContext(state->dm_state,
+				state->combat.current_enemy,
+				state->combat.enemy_sight_time,
+				state->combat.last_enemy_area,
+				state->combat.last_enemy_origin);
+			AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
+		}
+	}
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotAI_RunLongTermIdleView
+
+Handles Seek LTG's no-goal and completed direct-team branches. Retail submits
+their stationary actions, preserves a direct branch's ideal look target, then
+advances sub_10029150's private view turn.
+=============
+*/
+static int BotAI_RunLongTermIdleView(bot_client_state_t *state,
+	float thinktime,
+	const vec3_t held_viewangles,
+	bool held_view_set,
+	int held_actionflags,
+	bot_input_t *input)
+{
+	if (state == NULL || input == NULL)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	memset(input, 0, sizeof(*input));
+	input->thinktime = thinktime;
+	VectorCopy(state->last_client_update.viewangles, input->viewangles);
+	input->actionflags = held_actionflags;
+	int status = EA_SubmitInput(state->client_number, input);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	if (held_view_set && held_viewangles != NULL)
+	{
+		AI_DMState_SetIdealViewAngles(state->dm_state, held_viewangles);
+	}
+	AI_DMState_SetEnemyContext(state->dm_state,
+		state->combat.current_enemy,
+		state->combat.enemy_sight_time,
+		state->combat.last_enemy_area,
+		state->combat.last_enemy_origin);
+	AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotAI_ConsumeDeferredNodeSwitch
+
+Accounts for the retail scheduler dispatch consumed when Seek LTG hands a
+selected nearby goal to Seek NBG after the reconstructed terminal-work split.
+=============
+*/
+static bool BotAI_ConsumeDeferredNodeSwitch(bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return false;
+	}
+
+	state->ai_node_switches++;
+	if (state->ai_node_switches < BOT_AI_MAX_NODE_SWITCHES)
+	{
+		return true;
+	}
+
+	state->ai_node_overflow = true;
+	BotInterface_Printf(PRT_ERROR,
+		"client %d at %1.1f switched more than %d AI nodes\n",
+		state->client_number,
+		AAS_Time(),
+		BOT_AI_MAX_NODE_SWITCHES);
 	return false;
 }
 
 /*
 =============
-BotAI_RunReplyStand
+BotAI_RunGoalMovement
 
-Submits the stationary input produced while Gladiator's stand node waits for a
-pending reply's typing time to elapse.
+Runs the retail terminal goal-node movement path for one bot AI frame.
 =============
 */
-static int BotAI_RunReplyStand(bot_client_state_t *state, float thinktime)
+static int BotAI_RunGoalMovement(bot_client_state_t *state,
+	float thinktime,
+	ai_goal_selection_t *selection,
+	bot_input_t *input,
+	bool *view_turn_pending,
+	bool *post_acquire_enemy)
+{
+	(void)selection;
+	if (view_turn_pending != NULL)
+	{
+		*view_turn_pending = false;
+	}
+
+	if (state->ai_node == BOT_AI_NODE_ACTIVATE_ENTITY)
+	{
+		if (post_acquire_enemy != NULL)
+		{
+			*post_acquire_enemy = true;
+		}
+		BotAI_UseItems(state);
+		return BotAI_RunTeamGoalMovement(state,
+			thinktime,
+			&state->activation_goal,
+			input,
+			true,
+			view_turn_pending);
+	}
+	if (state->ai_node == BOT_AI_NODE_SEEK_NBG)
+	{
+		if (post_acquire_enemy != NULL)
+		{
+			*post_acquire_enemy = true;
+		}
+		bot_goal_t nearby_goal;
+		if (state->goal_handle <= 0 ||
+			AI_GoalBotlib_GetTopGoal(state->goal_handle, &nearby_goal) == 0)
+		{
+			return BLERR_INVALIDIMPORT;
+		}
+
+		BotAI_UseItems(state);
+		int status = BotAI_RunTeamGoalMovement(state,
+			thinktime,
+			&nearby_goal,
+			input,
+			true,
+			view_turn_pending);
+		if (state->has_move_result && state->last_move_result.failure)
+		{
+			state->nearby_goal_time = 0.0f;
+		}
+		return status;
+	}
+
+	if (state->goal_handle > 0)
+	{
+		AI_GoalBotlib_SynchroniseAvoid(state->goal_handle,
+			state->goal_state,
+			g_botInterfaceFrameTime);
+		BotUpdateEntityItemsThrottled(g_botInterfaceFrameTime);
+	}
+	BotAI_SelectAutomaticCTFGoal(state);
+
+	bot_goal_t team_goal;
+	vec3_t held_viewangles;
+	bool held_view_set = false;
+	int held_actionflags = 0;
+	bot_team_goal_result_t team_result = BotAI_ResolveTeamLongTermGoal(state,
+		thinktime,
+		&team_goal,
+		held_viewangles,
+		&held_view_set,
+		&held_actionflags);
+	if (team_result == BOT_TEAM_GOAL_READY)
+	{
+		if (BotAI_TryLongTermNearbyGoal(state,
+			&team_goal,
+			BotAI_LongTermGoalTravelFlags(state)))
+		{
+			/* Retail re-enters Seek NBG and moves the selected item this frame. */
+			if (!BotAI_ConsumeDeferredNodeSwitch(state))
+			{
+				return BLERR_NOERROR;
+			}
+			return BotAI_RunGoalMovement(state,
+				thinktime,
+				selection,
+				input,
+				view_turn_pending,
+				post_acquire_enemy);
+		}
+		BotAI_UseItems(state);
+		return BotAI_RunTeamGoalMovement(state,
+			thinktime,
+			&team_goal,
+			input,
+			false,
+			NULL);
+	}
+	if (team_result == BOT_TEAM_GOAL_HANDLED)
+	{
+		return BotAI_RunLongTermIdleView(state,
+			thinktime,
+			held_viewangles,
+			held_view_set,
+			held_actionflags,
+			input);
+	}
+
+	bot_goal_t long_term_goal;
+	if (BotAI_GetItemLongTermGoal(state, &long_term_goal))
+	{
+		if (BotAI_TryLongTermNearbyGoal(state,
+			&long_term_goal,
+			BotAI_LongTermGoalTravelFlags(state)))
+		{
+			/* Retail re-enters Seek NBG and moves the selected item this frame. */
+			if (!BotAI_ConsumeDeferredNodeSwitch(state))
+			{
+				return BLERR_NOERROR;
+			}
+			return BotAI_RunGoalMovement(state,
+				thinktime,
+				selection,
+				input,
+				view_turn_pending,
+				post_acquire_enemy);
+		}
+		BotAI_UseItems(state);
+		return BotAI_RunTeamGoalMovement(state,
+			thinktime,
+			&long_term_goal,
+			input,
+			false,
+			NULL);
+	}
+
+	return BotAI_RunLongTermIdleView(state,
+		thinktime,
+		NULL,
+		false,
+		0,
+		input);
+}
+
+/*
+=============
+BotAI_ApplyBattleMoveResultView
+
+Preserves BotMoveToGoal's explicit movement view in the input record before a
+battle node optionally applies its private accelerated view turn. A mover-set
+view is already a direct EA view and must survive the input bridge unchanged.
+=============
+*/
+static void BotAI_ApplyBattleMoveResultView(const bot_client_state_t *state,
+	const bot_moveresult_t *result,
+	bot_input_t *input)
+{
+	if (state == NULL || result == NULL || input == NULL)
+	{
+		return;
+	}
+
+	VectorCopy(state->last_client_update.viewangles, input->viewangles);
+	if ((result->flags & (MOVERESULT_MOVEMENTVIEWSET |
+		MOVERESULT_MOVEMENTVIEW | MOVERESULT_SWIMVIEW)) != 0)
+	{
+		VectorCopy(result->ideal_viewangles, input->viewangles);
+	}
+}
+
+/*
+=============
+BotAI_SetBattleResultIdealView
+
+Transfers a movement result's view target to the private Battle AI state.
+=============
+*/
+static void BotAI_SetBattleResultIdealView(bot_client_state_t *state,
+	const bot_moveresult_t *result)
+{
+	if (state == NULL || state->dm_state == NULL || result == NULL)
+	{
+		return;
+	}
+
+	AI_DMState_SetIdealViewAngles(state->dm_state, result->ideal_viewangles);
+}
+
+/*
+=============
+BotAI_SetBattleMovementGoalView
+
+Uses Gladiator's fixed 300-unit movement lookahead when the mover did not
+provide its own movement or swim view.
+=============
+*/
+static int BotAI_SetBattleMovementGoalView(bot_client_state_t *state,
+	const bot_goal_t *goal,
+	int travel_flags)
+{
+	if (state == NULL || state->dm_state == NULL || goal == NULL)
+	{
+		return qfalse;
+	}
+
+	vec3_t target;
+	if (!BotMovementViewTarget(state->move_handle,
+		goal,
+		travel_flags,
+		300.0f,
+		target))
+	{
+		return qfalse;
+	}
+
+	vec3_t direction;
+	vec3_t viewangles;
+	VectorSubtract(target, state->last_client_update.origin, direction);
+	Vector2Angles(direction, viewangles);
+	AI_DMState_SetIdealViewAngles(state->dm_state, viewangles);
+	return qtrue;
+}
+
+/*
+=============
+BotAI_ConfigureBattleCombat
+
+Supplies retained enemy ownership to the combat helpers used after a direct
+battle-node movement result.
+=============
+*/
+static void BotAI_ConfigureBattleCombat(bot_client_state_t *state)
+{
+	if (state == NULL || state->dm_state == NULL)
+	{
+		return;
+	}
+
+	AI_DMState_SetEnemyContext(state->dm_state,
+		state->combat.current_enemy,
+		state->combat.enemy_sight_time,
+		state->combat.last_enemy_area,
+		state->combat.last_enemy_origin);
+}
+
+/*
+=============
+BotAI_SynchroniseBattleWeaponState
+
+Builds retail's per-frame weapon-selection input from the current client state.
+=============
+*/
+static int BotAI_SynchroniseBattleWeaponState(bot_client_state_t *state)
+{
+	if (state == NULL || state->weapon_state <= 0)
+	{
+		return qfalse;
+	}
+
+	BotWeaponStateSyncFrame(state->weapon_state,
+		state->client_number,
+		state->last_client_update.inventory,
+		BotInterface_ModelNameForIndex(state->last_client_update.gunindex));
+	return qtrue;
+}
+
+/*
+=============
+BotAI_ChooseBattleWeapon
+
+Runs retail's weapon score/select operation after its frame input is current.
+=============
+*/
+static void BotAI_ChooseBattleWeapon(bot_client_state_t *state)
+{
+	if (state == NULL || state->weapon_state <= 0)
+	{
+		return;
+	}
+
+	state->current_weapon = BotSelectBestFightWeapon(state->client_number,
+		state->weapon_state,
+		state->last_client_update.inventory,
+		g_botInterfaceFrameTime);
+}
+
+/*
+=============
+BotAI_SelectBattleWeapon
+
+Synchronises and selects a weapon only at the retail active-combat call sites.
+=============
+*/
+static void BotAI_SelectBattleWeapon(bot_client_state_t *state)
+{
+	if (!BotAI_SynchroniseBattleWeaponState(state))
+	{
+		return;
+	}
+
+	BotAI_ChooseBattleWeapon(state);
+}
+
+/*
+=============
+BotAI_BattleAttackSkill
+
+Reads Battle Retreat's bounded attack-skill branch with the same no-character
+fallback used by the shared combat implementation.
+=============
+*/
+static float BotAI_BattleAttackSkill(const bot_client_state_t *state)
+{
+	if (state == NULL || state->character_handle <= 0)
+	{
+		return 1.0f;
+	}
+
+	return Characteristic_BFloat(state->character_handle,
+		CHARACTERISTIC_ATTACK_SKILL,
+		0.0f,
+		1.0f);
+}
+
+/*
+=============
+BotAI_RunBattleChaseMovement
+
+Executes Battle Chase's direct BotMoveToGoal path, preserving its move result
+for the input bridge instead of using the predictive visible-enemy fallback.
+=============
+*/
+static int BotAI_RunBattleChaseMovement(bot_client_state_t *state,
+	float thinktime,
+	bot_input_t *input)
+{
+	if (state == NULL || input == NULL)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	int status = BotInterface_PrepareMoveState(state, thinktime);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	bot_goal_t chase_goal;
+	BotAI_BuildBattleChaseGoal(state, &chase_goal);
+	bot_moveresult_t result;
+	BotClearMoveResult(&result);
+	BotMoveToGoal(&result,
+		state->move_handle,
+		&chase_goal,
+		BotAI_BattleChaseTravelFlags(state));
+	if (result.failure)
+	{
+		BotMove_ResetAvoidReach(state->move_handle);
+		state->long_term_goal_time = 0.0f;
+	}
+	vec3_t alternate_direction;
+	bool has_alternate_direction = BotAI_HandleBlockedMovement(state,
+		&result,
+		true,
+		alternate_direction);
+
+	memset(input, 0, sizeof(*input));
+	BotInterface_ApplyMoveResult(state, &result, input);
+	if (has_alternate_direction)
+	{
+		VectorCopy(alternate_direction, input->dir);
+		input->speed = 400.0f;
+	}
+	input->thinktime = thinktime;
+	BotAI_ApplyBattleMoveResultView(state, &result, input);
+	if (state->move_state != NULL)
+	{
+		state->move_state->last_result = result;
+		state->move_state->has_last_result = true;
+	}
+	state->last_move_result = result;
+	state->has_move_result = true;
+	status = EA_SubmitInput(state->client_number, input);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	bot_movestate_t *move_state = BotMoveStateFromHandle(state->move_handle);
+	if (move_state != NULL &&
+		move_state->areanum == state->combat.last_enemy_area)
+	{
+		state->combat.chase_time = 0.0f;
+	}
+
+	if ((result.flags & MOVERESULT_MOVEMENTVIEWSET) == 0)
+	{
+		if ((result.flags & (MOVERESULT_MOVEMENTVIEW |
+			MOVERESULT_SWIMVIEW)) != 0)
+		{
+			BotAI_SetBattleResultIdealView(state, &result);
+		}
+		else
+		{
+			BotAI_SetBattleMovementGoalView(state,
+				&chase_goal,
+				BotAI_BattleChaseTravelFlags(state));
+		}
+		AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
+	}
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotAI_RunBattleNBGMovement
+
+Runs the retained nearby-item goal directly until Battle NBG's five-second
+deadline removes it, avoiding the ordinary LTG/NBG stack refresh path.
+=============
+*/
+static int BotAI_RunBattleNBGMovement(bot_client_state_t *state,
+	float thinktime,
+	bot_input_t *input,
+	const ai_dm_enemy_info_t *enemy)
+{
+	if (state == NULL || input == NULL || enemy == NULL || state->goal_handle <= 0)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	bot_goal_t nearby_goal;
+	if (!AI_GoalBotlib_GetTopGoal(state->goal_handle, &nearby_goal))
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	int status = BotInterface_PrepareMoveState(state, thinktime);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	bot_moveresult_t result;
+	BotClearMoveResult(&result);
+	BotMoveToGoal(&result,
+		state->move_handle,
+		&nearby_goal,
+		BotAI_BattleChaseTravelFlags(state));
+	if (result.failure)
+	{
+		BotMove_ResetAvoidReach(state->move_handle);
+		state->nearby_goal_time = 0.0f;
+	}
+	vec3_t alternate_direction;
+	bool has_alternate_direction = BotAI_HandleBlockedMovement(state,
+		&result,
+		true,
+		alternate_direction);
+
+	memset(input, 0, sizeof(*input));
+	BotInterface_ApplyMoveResult(state, &result, input);
+	if (has_alternate_direction)
+	{
+		VectorCopy(alternate_direction, input->dir);
+		input->speed = 400.0f;
+	}
+	input->thinktime = thinktime;
+	BotAI_ApplyBattleMoveResultView(state, &result, input);
+	if (state->move_state != NULL)
+	{
+		state->move_state->last_result = result;
+		state->move_state->has_last_result = true;
+	}
+	state->last_move_result = result;
+	state->has_move_result = true;
+
+	BotAI_SynchroniseBattleWeaponState(state);
+	BotAI_UpdateEnemyBattleInventory(state, state->combat.current_enemy);
+	BotAI_ChooseBattleWeapon(state);
+	status = EA_SubmitInput(state->client_number, input);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	BotAI_ConfigureBattleCombat(state);
+	if ((result.flags & MOVERESULT_MOVEMENTVIEW) != 0)
+	{
+		BotAI_SetBattleResultIdealView(state, &result);
+	}
+	else
+	{
+		AI_DMState_AimAtEnemy(state->dm_state, state, enemy, thinktime);
+	}
+	AI_DMState_CheckAttack(state->dm_state,
+		state,
+		enemy,
+		g_botInterfaceFrameTime);
+	if ((result.flags & MOVERESULT_MOVEMENTVIEWSET) == 0)
+	{
+		AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
+	}
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotAI_RunBattleRetreatMovement
+
+Moves directly to Battle Retreat's retained long-term goal after the node has
+applied its enemy-visibility and nearby-goal checks.
+=============
+*/
+static int BotAI_RunBattleRetreatMovement(bot_client_state_t *state,
+	float thinktime,
+	bot_input_t *input,
+	const ai_dm_enemy_info_t *enemy,
+	const bot_goal_t *retreat_goal)
+{
+	if (state == NULL || input == NULL || enemy == NULL || retreat_goal == NULL)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	BotAI_UseItems(state);
+	int status = BotInterface_PrepareMoveState(state, thinktime);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	bot_moveresult_t result;
+	BotClearMoveResult(&result);
+	BotMoveToGoal(&result,
+		state->move_handle,
+		retreat_goal,
+		BotAI_BattleRetreatTravelFlags());
+	if (result.failure)
+	{
+		BotMove_ResetAvoidReach(state->move_handle);
+		state->long_term_goal_time = 0.0f;
+	}
+	vec3_t alternate_direction;
+	bool has_alternate_direction = BotAI_HandleBlockedMovement(state,
+		&result,
+		true,
+		alternate_direction);
+
+	memset(input, 0, sizeof(*input));
+	BotInterface_ApplyMoveResult(state, &result, input);
+	if (has_alternate_direction)
+	{
+		VectorCopy(alternate_direction, input->dir);
+		input->speed = 400.0f;
+	}
+	input->thinktime = thinktime;
+	BotAI_ApplyBattleMoveResultView(state, &result, input);
+	if (state->move_state != NULL)
+	{
+		state->move_state->last_result = result;
+		state->move_state->has_last_result = true;
+	}
+	state->last_move_result = result;
+	state->has_move_result = true;
+	state->active_goal_number = retreat_goal->number;
+
+	BotAI_SelectBattleWeapon(state);
+	status = EA_SubmitInput(state->client_number, input);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	BotAI_ConfigureBattleCombat(state);
+	if ((result.flags & MOVERESULT_MOVEMENTVIEW) != 0)
+	{
+		BotAI_SetBattleResultIdealView(state, &result);
+	}
+	else if ((result.flags & MOVERESULT_MOVEMENTVIEWSET) == 0)
+	{
+		if (BotAI_BattleAttackSkill(state) < 0.3f)
+		{
+			if (BotAI_SetBattleMovementGoalView(state,
+				retreat_goal,
+				BotAI_BattleRetreatTravelFlags()))
+			{
+				AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
+			}
+		}
+		else
+		{
+			AI_DMState_AimAtEnemy(state->dm_state, state, enemy, thinktime);
+		}
+	}
+	AI_DMState_CheckAttack(state->dm_state,
+		state,
+		enemy,
+		g_botInterfaceFrameTime);
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotAI_RunBattleRetreatIdle
+
+Handles Battle Retreat's no-long-term-goal return: retail leaves the node
+active, submits no movement, and advances the retained private view turn.
+=============
+*/
+static int BotAI_RunBattleRetreatIdle(bot_client_state_t *state,
+	float thinktime,
+	bot_input_t *input)
+{
+	if (state == NULL || input == NULL)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	memset(input, 0, sizeof(*input));
+	input->thinktime = thinktime;
+	VectorCopy(state->last_client_update.viewangles, input->viewangles);
+	int status = EA_SubmitInput(state->client_number, input);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	BotAI_ConfigureBattleCombat(state);
+	AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotAI_RunStand
+
+Submits Stand's stationary input and advances the retained private view turn
+before its pending-chat deadline is handled by the node scheduler.
+=============
+*/
+static int BotAI_RunStand(bot_client_state_t *state, float thinktime)
 {
 	bot_input_t input;
 	memset(&input, 0, sizeof(input));
@@ -5000,8 +8470,209 @@ static int BotAI_RunReplyStand(bot_client_state_t *state, float thinktime)
 		return status;
 	}
 
+	BotAI_ConfigureBattleCombat(state);
+	AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
 	BotState_EmitPendingClientCommands(state);
 	status = EA_EndRegular(state->client_number, thinktime);
+	if (status == BLERR_NOERROR)
+	{
+		state->client_update_valid = false;
+	}
+	return status;
+}
+
+/*
+=============
+BotAI_ResetRespawnState
+
+Mirrors the reset sequence at the retail respawn-node entry before the engine
+accepts the respawn action.
+=============
+*/
+static void BotAI_ResetRespawnState(bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	if (state->goal_handle > 0)
+	{
+		BotResetGoalState(state->goal_handle);
+	}
+	if (state->goal_state != NULL)
+	{
+		AI_GoalState_Reset(state->goal_state);
+	}
+	if (state->move_handle > 0)
+	{
+		BotResetMoveState(state->move_handle);
+	}
+	if (state->move_state != NULL)
+	{
+		AI_MoveState_Reset(state->move_state);
+		if (state->goal_state != NULL)
+		{
+			AI_MoveState_LinkAvoidList(state->move_state,
+				AI_GoalState_GetAvoidList(state->goal_state));
+		}
+	}
+	if (state->weapon_state > 0)
+	{
+		BotResetWeaponState(state->weapon_state);
+	}
+	if (state->dm_state != NULL)
+	{
+		AI_DMState_Reset(state->dm_state);
+	}
+
+	state->goal_snapshot_count = 0;
+	memset(state->goal_snapshot, 0, sizeof(state->goal_snapshot));
+	memset(&state->last_move_result, 0, sizeof(state->last_move_result));
+	state->has_move_result = false;
+	state->active_goal_number = 0;
+	state->current_weapon = 0;
+	state->combat.last_enemy_area = 0;
+	state->combat.enemy_visible = false;
+	state->combat.enemy_visible_time = -FLT_MAX;
+	state->combat.enemy_sight_time = -FLT_MAX;
+	state->combat.enemy_death_time = -FLT_MAX;
+	state->combat.enemy_last_seen_time = -FLT_MAX;
+	state->combat.chase_time = -FLT_MAX;
+	state->combat.revenge_enemy = -1;
+	state->combat.revenge_kills = 0;
+	state->combat.last_known_health = 0;
+	state->combat.last_damage_amount = 0;
+	state->combat.last_damage_time = -FLT_MAX;
+	state->combat.last_health_valid = false;
+	state->combat.took_damage = false;
+	VectorClear(state->combat.last_enemy_origin);
+	VectorClear(state->combat.last_enemy_velocity);
+}
+
+/*
+=============
+BotAI_CompleteRespawnAction
+
+Applies the side effects immediately after retail's EA Respawn call: mark the
+one-shot action, send any death chat to the retained killer context, then
+release that retained enemy.
+=============
+*/
+static void BotAI_CompleteRespawnAction(bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->respawn_action_sent = true;
+	if (state->combat.current_enemy != 0)
+	{
+		if (state->respawn_chat_pending && state->chat_state != NULL)
+		{
+			BotEnterChat(state->chat_state, state->client_number, 0);
+		}
+		state->combat.current_enemy = 0;
+	}
+	state->respawn_chat_pending = false;
+}
+
+/*
+=============
+BotAI_SetLifecycleStand
+
+Adapts Gladiator's generic stand node to the reconstructed reply-stand state,
+including a no-message wait used when an intermission transition has no chat.
+=============
+*/
+static void BotAI_SetLifecycleStand(bot_client_state_t *state,
+	float duration,
+	bool chat_pending)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->stand_time = AAS_Time() + duration;
+	state->chat_standing = true;
+	state->stand_chat_pending = chat_pending;
+	state->ai_node = BOT_AI_NODE_STAND;
+}
+
+/*
+=============
+BotAI_EnterObserver
+
+Mirrors AIEnter_Observer: discard the level-local bot state once, then leave
+the dedicated observer node passive until the pmove state changes.
+=============
+*/
+static void BotAI_EnterObserver(bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	BotState_ResetForNewMap(state);
+	state->ai_node = BOT_AI_NODE_OBSERVER;
+}
+
+/*
+=============
+BotAI_EnterIntermission
+
+Mirrors AIEnter_Intermission's reset and immediate end-level initial chat.
+=============
+*/
+static void BotAI_EnterIntermission(bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	BotState_ResetForNewMap(state);
+	bool chat_constructed = false;
+	if (BotAI_ConstructLifecycleChat(state,
+		"end_level",
+		CHARACTERISTIC_CHAT_STARTENDLEVEL,
+		false,
+		&chat_constructed) && chat_constructed)
+	{
+		BotEnterChat(state->chat_state, state->client_number, 0);
+	}
+	state->ai_node = BOT_AI_NODE_INTERMISSION;
+}
+
+/*
+=============
+BotAI_RunLifecycleFrame
+
+Submits the retail passive/respawn action frame while excluding ordinary
+combat, item, and movement work for spectator, intermission, dead, and gib
+pmove states.
+=============
+*/
+static int BotAI_RunLifecycleFrame(bot_client_state_t *state,
+	float thinktime,
+	bool request_respawn)
+{
+	if (state == NULL)
+	{
+		return BLERR_AIUPDATEINACTIVECLIENT;
+	}
+
+	EA_ResetInput(state->client_number);
+	if (request_respawn)
+	{
+		EA_Respawn(state->client_number);
+		BotAI_CompleteRespawnAction(state);
+	}
+
+	int status = EA_EndRegular(state->client_number, thinktime);
 	if (status == BLERR_NOERROR)
 	{
 		state->client_update_valid = false;
@@ -5024,112 +8695,237 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 		return BLERR_AIUPDATEINACTIVECLIENT;
 	}
 
-    if (!state->client_update_valid)
-    {
-        BotInterface_Printf(PRT_WARNING,
-                             "[bot_interface] BotAI: no snapshot for client %d\n",
-                             state->client_number);
-        return BLERR_AIUPDATEINACTIVECLIENT;
-    }
+	if (!state->client_update_valid)
+	{
+		BotInterface_Printf(PRT_WARNING,
+			"[bot_interface] BotAI: no snapshot for client %d\n",
+			state->client_number);
+		return BLERR_AIUPDATEINACTIVECLIENT;
+	}
 
-    if (state->goal_state == NULL || state->move_state == NULL)
-    {
-        return BLERR_INVALIDIMPORT;
-    }
+	if (state->goal_state == NULL || state->move_state == NULL)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+
+	pmtype_t pm_type = state->last_client_update.pm_type;
+	if (pm_type == PM_SPECTATOR)
+	{
+		if (state->ai_node != BOT_AI_NODE_OBSERVER)
+		{
+			BotAI_EnterObserver(state);
+		}
+		return BotAI_RunLifecycleFrame(state, thinktime, false);
+	}
+	if (pm_type == PM_FREEZE)
+	{
+		if (state->ai_node != BOT_AI_NODE_INTERMISSION)
+		{
+			BotAI_EnterIntermission(state);
+		}
+		return BotAI_RunLifecycleFrame(state, thinktime, false);
+	}
+	if (pm_type == PM_DEAD || pm_type == PM_GIB)
+	{
+		if (!state->respawn_requested)
+		{
+			BotAI_ResetRespawnState(state);
+			state->respawn_requested = true;
+			state->respawn_action_sent = false;
+			state->respawn_chat_pending = false;
+			state->respawn_time = AAS_Time();
+			if (BotAI_ConstructDeathChat(state))
+			{
+				state->respawn_time += BotAI_ChatTime(state);
+			}
+		}
+
+		bool request_respawn = !state->respawn_action_sent &&
+			AAS_Time() > state->respawn_time;
+		return BotAI_RunLifecycleFrame(state, thinktime, request_respawn);
+	}
+	if (state->respawn_requested)
+	{
+		state->respawn_requested = false;
+		state->respawn_action_sent = false;
+		state->respawn_chat_pending = false;
+		state->respawn_time = 0.0f;
+		state->ai_node = BOT_AI_NODE_SEEK_LTG;
+		/* Retail's respawn node changes state, then ends this first alive frame. */
+		return BotAI_RunLifecycleFrame(state, thinktime, false);
+	}
+	if (state->ai_node == BOT_AI_NODE_OBSERVER)
+	{
+		BotAI_SetLifecycleStand(state, 0.0f, false);
+		return BotAI_RunLifecycleFrame(state, thinktime, false);
+	}
+	if (state->ai_node == BOT_AI_NODE_INTERMISSION)
+	{
+		bool chat_constructed = false;
+		bool started_chat = BotAI_ConstructLifecycleChat(state,
+			"start_level",
+			CHARACTERISTIC_CHAT_STARTENDLEVEL,
+			false,
+			&chat_constructed);
+		BotAI_SetLifecycleStand(state,
+			started_chat ? BotAI_ChatTime(state) : 2.0f,
+			chat_constructed);
+		return BotAI_RunLifecycleFrame(state, thinktime, false);
+	}
 
 	BotAI_UpdateBattleInventory(state);
 	BotCheckConsoleMessages(state);
-	if (BotAI_ReplyStandActive(state))
+	if (!state->enter_game_chat_attempted &&
+		state->enter_game_time > AAS_Time() - 8.0f)
 	{
-		return BotAI_RunReplyStand(state, thinktime);
-	}
-
-	ai_dm_enemy_info_t enemy_info;
-	BotAI_InitEnemyInfo(&enemy_info);
-	if (state->dm_state != NULL)
-	{
-		BotAI_FindEnemy(state, &enemy_info);
-
-		int enemy_entity = enemy_info.valid
-			? enemy_info.entity
-			: state->combat.current_enemy;
-		if (enemy_entity >= 0 &&
-			enemy_entity < BOT_INTERFACE_MAX_ENTITIES &&
-			g_botInterfaceEntityCache[enemy_entity].valid)
+		bool chat_constructed = false;
+		if (BotAI_ConstructLifecycleChat(state,
+			"enter_game",
+			CHARACTERISTIC_CHAT_ENTEREXITGAME,
+			true,
+			&chat_constructed))
 		{
-			(void)BotAI_UpdateEnemyBattleInventory(state, enemy_entity);
+			BotAI_SetLifecycleStand(state,
+				BotAI_ChatTime(state),
+				chat_constructed);
 		}
+		state->enter_game_chat_attempted = true;
 	}
 
-	if (state->weapon_state > 0)
+	bot_ai_node_frame_t frame;
+	memset(&frame, 0, sizeof(frame));
+	frame.thinktime = thinktime;
+	BotAI_InitEnemyInfo(&frame.enemy);
+	if (!BotAI_RunNodeSwitchLoop(state, BotAI_NodeStep, &frame))
 	{
-		BotWeaponStateSyncFrame(state->weapon_state,
+		BotInterface_Printf(PRT_ERROR,
+			"client %d at %1.1f switched more than %d AI nodes\n",
 			state->client_number,
-			state->last_client_update.inventory,
-			BotInterface_ModelNameForIndex(state->last_client_update.gunindex));
-		state->current_weapon = BotSelectBestFightWeapon(state->client_number,
-			state->weapon_state,
-			state->last_client_update.inventory,
-			g_botInterfaceFrameTime);
+			AAS_Time(),
+			BOT_AI_MAX_NODE_SWITCHES);
 	}
 
-	int status = BotInterface_PrepareMoveState(state, thinktime);
-	if (status != BLERR_NOERROR)
+	if (frame.work == BOT_AI_FRAME_WORK_STAND)
 	{
-		return status;
-	}
-
-	if (state->goal_handle > 0)
-	{
-		AI_GoalBotlib_SynchroniseAvoid(state->goal_handle, state->goal_state, g_botInterfaceFrameTime);
-		AI_GoalBotlib_Update(state->goal_handle,
-							 state->last_client_update.origin,
-                             state->last_client_update.inventory,
-                             0,
-                             g_botInterfaceFrameTime,
-                             3.0f);
-	}
-
-	BotInterface_UpdateGoalSnapshot(state);
-	status = BotInterface_RebuildGoalCandidates(state);
-	if (status != BLERR_NOERROR)
-	{
-		return status;
+		return BotAI_RunStand(state, thinktime);
 	}
 
 	ai_goal_selection_t selection = {0};
-	status = AI_GoalOrchestrator_Refresh(state->goal_state, g_botInterfaceFrameTime, &selection);
-	if (status != BLERR_NOERROR)
-	{
-		return status;
-	}
-
 	bot_input_t input = {0};
-	status = AI_MoveOrchestrator_Dispatch(state->move_state, &selection, &input);
-	if (status != BLERR_NOERROR)
+	bool view_turn_pending = false;
+	bool post_acquire_enemy = frame.post_acquire_enemy;
+	int status = BLERR_NOERROR;
+	if (frame.work == BOT_AI_FRAME_WORK_GOAL)
 	{
-        return status;
-    }
+		status = BotAI_RunGoalMovement(state,
+			thinktime,
+			&selection,
+			&input,
+			&view_turn_pending,
+			&post_acquire_enemy);
+		if (status != BLERR_NOERROR)
+		{
+			return status;
+		}
 
-	input.thinktime = thinktime;
-	VectorCopy(state->last_client_update.viewangles, input.viewangles);
+		if (post_acquire_enemy)
+		{
+			ai_dm_enemy_info_t delayed_enemy;
+			if (BotAI_FindEnemy(state, &delayed_enemy))
+			{
+				BotAI_EnterFoundEnemy(state, true);
+			}
+		}
+		if (view_turn_pending)
+		{
+			AI_DMState_SetEnemyContext(state->dm_state,
+				state->combat.current_enemy,
+				state->combat.enemy_sight_time,
+				state->combat.last_enemy_area,
+				state->combat.last_enemy_origin);
+			AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
+		}
+	}
+	else if (frame.work == BOT_AI_FRAME_WORK_FIGHT ||
+		frame.work == BOT_AI_FRAME_WORK_CHASE)
+	{
+		if (frame.work == BOT_AI_FRAME_WORK_CHASE)
+		{
+			BotAI_UpdateEnemyBattleInventory(state,
+				state->combat.current_enemy);
+			BotAI_UseItems(state);
+			status = BotAI_RunBattleChaseMovement(state,
+				thinktime,
+				&input);
+			if (status != BLERR_NOERROR)
+			{
+				return status;
+			}
+		}
+		else
+		{
+			input.thinktime = thinktime;
+			VectorCopy(state->last_client_update.viewangles, input.viewangles);
+			selection.valid = true;
+			selection.candidate.travel_flags = BotAI_BattleChaseTravelFlags(state);
+			BotAI_SelectBattleWeapon(state);
 
-	status = AI_MoveOrchestrator_Submit(state->move_state, state->client_number, &input);
-	if (status != BLERR_NOERROR)
-    {
-        return status;
-    }
+			if (state->dm_state != NULL)
+			{
+				AI_DMState_SetEnemyContext(state->dm_state,
+					state->combat.current_enemy,
+					state->combat.enemy_sight_time,
+					state->combat.last_enemy_area,
+					state->combat.last_enemy_origin);
+				BotAI_BattleUseItems(state);
+				BotAI_UseItems(state);
+				AI_DMState_Update(state->dm_state,
+					state,
+					&selection,
+					&frame.enemy,
+					&input,
+					g_botInterfaceFrameTime);
+				BotInterface_SynchroniseCombatState(state);
+			}
+		}
 
-    if (state->dm_state != NULL)
-    {
-        AI_DMState_Update(state->dm_state,
-                          state,
-                          &selection,
-                          &enemy_info,
-                          &input,
-                          g_botInterfaceFrameTime);
-        BotInterface_SynchroniseCombatState(state);
-    }
+		if (BotAI_WantsToRetreat(state))
+		{
+			state->ai_node = BOT_AI_NODE_BATTLE_RETREAT;
+		}
+	}
+	else if (frame.work == BOT_AI_FRAME_WORK_BATTLE_NBG)
+	{
+		BotAI_UseItems(state);
+		status = BotAI_RunBattleNBGMovement(state,
+			thinktime,
+			&input,
+			&frame.enemy);
+		if (status != BLERR_NOERROR)
+		{
+			return status;
+		}
+	}
+	else if (frame.work == BOT_AI_FRAME_WORK_BATTLE_RETREAT)
+	{
+		status = BotAI_RunBattleRetreatMovement(state,
+			thinktime,
+			&input,
+			&frame.enemy,
+			frame.has_movement_goal ? &frame.movement_goal : NULL);
+		if (status != BLERR_NOERROR)
+		{
+			return status;
+		}
+	}
+	else if (frame.work == BOT_AI_FRAME_WORK_BATTLE_RETREAT_IDLE)
+	{
+		status = BotAI_RunBattleRetreatIdle(state, thinktime, &input);
+		if (status != BLERR_NOERROR)
+		{
+			return status;
+		}
+	}
 
 	BotState_EmitPendingClientCommands(state);
 
@@ -5139,8 +8935,8 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 		return status;
 	}
 
-    state->client_update_valid = false;
-    return BLERR_NOERROR;
+	state->client_update_valid = false;
+	return BLERR_NOERROR;
 }
 
 static int BotAI(int client, float thinktime)

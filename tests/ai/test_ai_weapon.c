@@ -42,6 +42,8 @@ typedef struct test_log_message_s {
 typedef struct test_client_command_s {
 	int client;
 	char text[256];
+	char argument[256];
+	bool terminated;
 } test_client_command_t;
 
 static struct {
@@ -69,6 +71,8 @@ static void test_reset_client_commands(void)
 	for (int i = 0; i < TEST_MAX_CLIENT_COMMANDS; ++i) {
 		g_test_client_commands.entries[i].client = -1;
 		g_test_client_commands.entries[i].text[0] = '\0';
+		g_test_client_commands.entries[i].argument[0] = '\0';
+		g_test_client_commands.entries[i].terminated = false;
 	}
 }
 
@@ -86,6 +90,13 @@ static void test_capture_print(int priority, const char *fmt, ...)
     va_end(args);
 }
 
+/*
+=============
+test_capture_client_command
+
+Captures the retail command token, its optional first argument, and terminator.
+=============
+*/
 static void test_capture_client_command(int client, char *fmt, ...)
 {
 	if (fmt == NULL || g_test_client_commands.count >= TEST_MAX_CLIENT_COMMANDS) {
@@ -97,8 +108,15 @@ static void test_capture_client_command(int client, char *fmt, ...)
 
 	test_client_command_t *slot = &g_test_client_commands.entries[g_test_client_commands.count++];
 	slot->client = client;
-	vsnprintf(slot->text, sizeof(slot->text), fmt, args);
+	snprintf(slot->text, sizeof(slot->text), "%s", fmt);
 	slot->text[sizeof(slot->text) - 1] = '\0';
+
+	char *argument = va_arg(args, char *);
+	if (argument != NULL) {
+		snprintf(slot->argument, sizeof(slot->argument), "%s", argument);
+		slot->argument[sizeof(slot->argument) - 1] = '\0';
+	}
+	slot->terminated = va_arg(args, char *) == NULL;
 
 	va_end(args);
 }
@@ -668,7 +686,9 @@ static void test_weapon_selector_queues_use_command_like_hlil(void **state)
 	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
 	assert_int_equal(g_test_client_commands.count, 1);
 	assert_int_equal(g_test_client_commands.entries[0].client, 2);
-	assert_string_equal(g_test_client_commands.entries[0].text, "use Machinegun");
+	assert_string_equal(g_test_client_commands.entries[0].text, "use");
+	assert_string_equal(g_test_client_commands.entries[0].argument, "Machinegun");
+	assert_true(g_test_client_commands.entries[0].terminated);
 
 	test_reset_client_commands();
 	best_weapon = BotSelectBestFightWeapon(2, weapon_handle, inventory, 2.0f);
@@ -684,7 +704,9 @@ static void test_weapon_selector_queues_use_command_like_hlil(void **state)
 	assert_int_equal(best_weapon, 6);
 	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
 	assert_int_equal(g_test_client_commands.count, 1);
-	assert_string_equal(g_test_client_commands.entries[0].text, "use Rocket Launcher");
+	assert_string_equal(g_test_client_commands.entries[0].text, "use");
+	assert_string_equal(g_test_client_commands.entries[0].argument, "Rocket Launcher");
+	assert_true(g_test_client_commands.entries[0].terminated);
 
 	test_reset_client_commands();
 	for (int index = 0; index < selector_weights->index_count; ++index)
@@ -767,7 +789,9 @@ static void test_weapon_selector_honors_live_model_sync(void **state)
 	assert_int_equal(best_weapon, 6);
 	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
 	assert_int_equal(g_test_client_commands.count, 1);
-	assert_string_equal(g_test_client_commands.entries[0].text, "use Rocket Launcher");
+	assert_string_equal(g_test_client_commands.entries[0].text, "use");
+	assert_string_equal(g_test_client_commands.entries[0].argument, "Rocket Launcher");
+	assert_true(g_test_client_commands.entries[0].terminated);
 
 	BotFreeWeaponState(weapon_handle);
 	AI_UnloadWeaponLibrary(library);
@@ -837,7 +861,9 @@ static void test_weapon_frame_sync_supplies_cached_client_and_inventory(void **s
 	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
 	assert_int_equal(g_test_client_commands.count, 1);
 	assert_int_equal(g_test_client_commands.entries[0].client, 2);
-	assert_string_equal(g_test_client_commands.entries[0].text, "use Machinegun");
+	assert_string_equal(g_test_client_commands.entries[0].text, "use");
+	assert_string_equal(g_test_client_commands.entries[0].argument, "Machinegun");
+	assert_true(g_test_client_commands.entries[0].terminated);
 
 	BotResetWeaponState(weapon_handle);
 	assert_int_equal(BotChooseBestFightWeapon(weapon_handle, NULL), 0);
@@ -896,7 +922,9 @@ static void test_weapon_reset_preserves_weights_and_clears_activation_gate(void 
 	bot_input_t input = {0};
 	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
 	assert_int_equal(g_test_client_commands.count, 1);
-	assert_string_equal(g_test_client_commands.entries[0].text, "use Machinegun");
+	assert_string_equal(g_test_client_commands.entries[0].text, "use");
+	assert_string_equal(g_test_client_commands.entries[0].argument, "Machinegun");
+	assert_true(g_test_client_commands.entries[0].terminated);
 
 	BotResetWeaponState(weapon_handle);
 	assert_int_equal(BotGetTopRankedWeapon(weapon_handle), 0);
@@ -912,7 +940,9 @@ static void test_weapon_reset_preserves_weights_and_clears_activation_gate(void 
 	assert_int_equal(BotGetTopRankedWeapon(weapon_handle), 6);
 	assert_int_equal(EA_GetInput(2, 0.1f, &input), BLERR_NOERROR);
 	assert_int_equal(g_test_client_commands.count, 1);
-	assert_string_equal(g_test_client_commands.entries[0].text, "use Rocket Launcher");
+	assert_string_equal(g_test_client_commands.entries[0].text, "use");
+	assert_string_equal(g_test_client_commands.entries[0].argument, "Rocket Launcher");
+	assert_true(g_test_client_commands.entries[0].terminated);
 
 	BotFreeWeaponState(weapon_handle);
 	AI_UnloadWeaponLibrary(library);

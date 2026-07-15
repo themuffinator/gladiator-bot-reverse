@@ -2,6 +2,8 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,7 +11,9 @@
 #include "shared/q_platform.h"
 
 #include "aas_local.h"
+#include "aas_map.h"
 #include "botlib/common/l_assets.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 
@@ -31,6 +35,8 @@ typedef struct aas_sound_state_s
     aas_pointlight_event_t *pointlight_events;
     size_t pointlight_event_count;
     size_t pointlight_event_capacity;
+	int pointlight_active_head;
+	int pointlight_free_head;
 
     aas_sound_event_summary_t *sound_summaries;
     size_t sound_summary_count;
@@ -47,6 +53,8 @@ typedef struct aas_sound_state_s
     bool frame_time_initialised;
     bool initialised;
 } aas_sound_state_t;
+
+#define AAS_POINTLIGHT_NULL_INDEX (-1)
 
 static aas_sound_state_t g_aas_sound_state;
 
@@ -642,6 +650,13 @@ static void AAS_Sound_FreeAssets(void)
     g_aas_sound_state.asset_count = 0U;
 }
 
+/*
+=============
+AAS_Sound_FreeEvents
+
+Release transient sounds and the persistent point-light heap.
+=============
+*/
 static void AAS_Sound_FreeEvents(void)
 {
     free(g_aas_sound_state.sound_events);
@@ -653,6 +668,8 @@ static void AAS_Sound_FreeEvents(void)
     g_aas_sound_state.pointlight_event_count = 0U;
     g_aas_sound_state.sound_event_capacity = 0U;
     g_aas_sound_state.pointlight_event_capacity = 0U;
+	g_aas_sound_state.pointlight_active_head = AAS_POINTLIGHT_NULL_INDEX;
+	g_aas_sound_state.pointlight_free_head = AAS_POINTLIGHT_NULL_INDEX;
 }
 
 static void AAS_Sound_FreeSummaries(void)
@@ -670,6 +687,46 @@ static void AAS_Sound_FreeSummaries(void)
     g_aas_sound_state.pointlight_summaries_dirty = false;
 }
 
+/*
+=============
+AAS_Sound_InitPointLightHeap
+
+Build the retail doubly-linked free list in ascending slot order.
+=============
+*/
+static void AAS_Sound_InitPointLightHeap(void)
+{
+	g_aas_sound_state.pointlight_active_head = AAS_POINTLIGHT_NULL_INDEX;
+	g_aas_sound_state.pointlight_free_head = AAS_POINTLIGHT_NULL_INDEX;
+
+	if (g_aas_sound_state.pointlight_events == NULL ||
+		g_aas_sound_state.pointlight_event_capacity == 0U)
+	{
+		return;
+	}
+
+	g_aas_sound_state.pointlight_free_head = 0;
+	for (size_t index = 0U;
+		index < g_aas_sound_state.pointlight_event_capacity;
+		++index)
+	{
+		aas_pointlight_event_t *event =
+			&g_aas_sound_state.pointlight_events[index];
+		event->prev_index = (index == 0U) ?
+			AAS_POINTLIGHT_NULL_INDEX : (int)(index - 1U);
+		event->next_index =
+			(index + 1U < g_aas_sound_state.pointlight_event_capacity) ?
+				(int)(index + 1U) : AAS_POINTLIGHT_NULL_INDEX;
+	}
+}
+
+/*
+=============
+AAS_SoundSubsystem_Init
+
+Initialise sound metadata and the retail point-light heap.
+=============
+*/
 int AAS_SoundSubsystem_Init(const botlib_library_variables_t *vars)
 {
     if (vars == NULL)
@@ -679,31 +736,61 @@ int AAS_SoundSubsystem_Init(const botlib_library_variables_t *vars)
 
     AAS_SoundSubsystem_Shutdown();
 
+	float max_pointlights = LibVarValue("max_aaslights", "128");
+	int max_pointlight_count;
+	if (!isfinite(max_pointlights) ||
+		(double)max_pointlights < (double)INT_MIN ||
+		(double)max_pointlights >= (double)INT_MAX + 1.0)
+	{
+		max_pointlight_count = INT_MIN;
+	}
+	else
+	{
+		max_pointlight_count = (int)max_pointlights;
+	}
+	if (max_pointlight_count < 0 || max_pointlight_count > 65536)
+	{
+		BotLib_Print(PRT_ERROR, "max_aaslights out of range [0, 65536]\n");
+		max_pointlight_count = 128;
+	}
+	g_aas_sound_state.pointlight_event_capacity =
+		(size_t)max_pointlight_count;
+	if (g_aas_sound_state.pointlight_event_capacity > 0U)
+	{
+		g_aas_sound_state.pointlight_events =
+			(aas_pointlight_event_t *)calloc(
+				g_aas_sound_state.pointlight_event_capacity,
+				sizeof(aas_pointlight_event_t));
+		if (g_aas_sound_state.pointlight_events == NULL)
+		{
+			AAS_SoundSubsystem_Shutdown();
+			return BLERR_INVALIDIMPORT;
+		}
+	}
+	AAS_Sound_InitPointLightHeap();
+
     if (vars->max_soundinfo <= 0)
     {
         BotLib_Print(PRT_WARNING, "AAS_Sound: max_soundinfo disabled\n");
+		g_aas_sound_state.initialised = true;
         return BLERR_NOERROR;
     }
 
     g_aas_sound_state.info_capacity = (size_t)vars->max_soundinfo;
     g_aas_sound_state.sound_event_capacity =
         (vars->max_aassounds > 0) ? (size_t)vars->max_aassounds : (size_t)vars->max_soundinfo;
-    g_aas_sound_state.pointlight_event_capacity = g_aas_sound_state.sound_event_capacity;
 
     if (g_aas_sound_state.sound_event_capacity > 0U)
     {
         g_aas_sound_state.sound_events =
             (aas_sound_event_t *)calloc(g_aas_sound_state.sound_event_capacity,
                                         sizeof(aas_sound_event_t));
-        g_aas_sound_state.pointlight_events =
-            (aas_pointlight_event_t *)calloc(g_aas_sound_state.pointlight_event_capacity,
-                                             sizeof(aas_pointlight_event_t));
-        if (g_aas_sound_state.sound_events == NULL || g_aas_sound_state.pointlight_events == NULL)
+		if (g_aas_sound_state.sound_events == NULL)
         {
             AAS_SoundSubsystem_Shutdown();
             return BLERR_INVALIDIMPORT;
         }
-    }
+	}
 
     char resolved_path[BOTLIB_ASSET_MAX_PATH];
     const char *requested = (vars->soundconfig[0] != '\0') ? vars->soundconfig : "sounds.c";
@@ -870,6 +957,96 @@ bool AAS_SoundSubsystem_RegisterMapAssets(int count, char *assets[])
     return true;
 }
 
+/*
+=============
+AAS_Sound_PointLightIndexValid
+
+Validate a host-side index before following a reconstructed retail link.
+=============
+*/
+static bool AAS_Sound_PointLightIndexValid(int index)
+{
+	return index >= 0 &&
+		(size_t)index < g_aas_sound_state.pointlight_event_capacity;
+}
+
+/*
+=============
+AAS_Sound_FreeActivePointLight
+
+Unlink one live light and push its unchanged record onto the free-list head.
+=============
+*/
+static void AAS_Sound_FreeActivePointLight(int index)
+{
+	if (!AAS_Sound_PointLightIndexValid(index))
+	{
+		return;
+	}
+
+	aas_pointlight_event_t *event =
+		&g_aas_sound_state.pointlight_events[index];
+	int previous = event->prev_index;
+	int next = event->next_index;
+
+	if (AAS_Sound_PointLightIndexValid(previous))
+	{
+		g_aas_sound_state.pointlight_events[previous].next_index = next;
+	}
+	else
+	{
+		g_aas_sound_state.pointlight_active_head = next;
+	}
+	if (AAS_Sound_PointLightIndexValid(next))
+	{
+		g_aas_sound_state.pointlight_events[next].prev_index = previous;
+	}
+
+	event->prev_index = AAS_POINTLIGHT_NULL_INDEX;
+	event->next_index = g_aas_sound_state.pointlight_free_head;
+	if (AAS_Sound_PointLightIndexValid(g_aas_sound_state.pointlight_free_head))
+	{
+		g_aas_sound_state.pointlight_events[
+			g_aas_sound_state.pointlight_free_head].prev_index = index;
+	}
+	g_aas_sound_state.pointlight_free_head = index;
+	if (g_aas_sound_state.pointlight_event_count > 0U)
+	{
+		g_aas_sound_state.pointlight_event_count -= 1U;
+	}
+}
+
+/*
+=============
+AAS_Sound_ExpirePointLights
+
+Expire retail point lights only when their absolute expiry precedes the frame.
+=============
+*/
+static void AAS_Sound_ExpirePointLights(float frame_time)
+{
+	int index = g_aas_sound_state.pointlight_active_head;
+	while (AAS_Sound_PointLightIndexValid(index))
+	{
+		aas_pointlight_event_t *event =
+			&g_aas_sound_state.pointlight_events[index];
+		int next = event->next_index;
+		if (event->time < frame_time)
+		{
+			AAS_Sound_FreeActivePointLight(index);
+			g_aas_sound_state.pointlight_summaries_dirty = true;
+		}
+		index = next;
+	}
+}
+
+/*
+=============
+AAS_SoundSubsystem_SetFrameTime
+
+Advance sensory time and run the retail persistent-light expiry pass.
+=============
+*/
 void AAS_SoundSubsystem_SetFrameTime(float time)
 {
     if (!g_aas_sound_state.frame_time_initialised)
@@ -883,14 +1060,21 @@ void AAS_SoundSubsystem_SetFrameTime(float time)
     }
 
     g_aas_sound_state.frame_time = time;
+	AAS_Sound_ExpirePointLights(time);
     g_aas_sound_state.sound_summaries_dirty = true;
     g_aas_sound_state.pointlight_summaries_dirty = true;
 }
 
+/*
+=============
+AAS_SoundSubsystem_ResetFrameEvents
+
+Clear transient sounds while retaining retail point lights across frames.
+=============
+*/
 void AAS_SoundSubsystem_ResetFrameEvents(void)
 {
     g_aas_sound_state.sound_event_count = 0U;
-    g_aas_sound_state.pointlight_event_count = 0U;
     g_aas_sound_state.sound_summary_count = 0U;
     g_aas_sound_state.pointlight_summary_count = 0U;
     g_aas_sound_state.sound_summaries_dirty = true;
@@ -963,52 +1147,71 @@ bool AAS_SoundSubsystem_RecordSound(const vec3_t origin,
     return true;
 }
 
-bool AAS_SoundSubsystem_RecordPointLight(const vec3_t origin,
-                                         int ent,
-                                         float radius,
-                                         float r,
-                                         float g,
-                                         float b,
-                                         float time,
-                                         float decay)
+/*
+=============
+AAS_SoundSubsystem_RecordPointLight
+
+Allocate and link one retail point-light record. The reversed origin copy is
+intentional and matches gladiator.dll at 0x1000d55c-0x1000d571. An empty heap
+is a handled retail diagnostic; false only reports an uninitialised subsystem.
+=============
+*/
+bool AAS_SoundSubsystem_RecordPointLight(vec3_t origin,
+	int ent,
+	float radius,
+	float r,
+	float g,
+	float b,
+	float time,
+	float decay)
 {
-    if (!g_aas_sound_state.initialised || g_aas_sound_state.pointlight_events == NULL
-        || g_aas_sound_state.pointlight_event_capacity == 0U)
-    {
-        return false;
-    }
+	if (!g_aas_sound_state.initialised)
+	{
+		return false;
+	}
 
-    if (g_aas_sound_state.pointlight_event_count == g_aas_sound_state.pointlight_event_capacity)
-    {
-        memmove(&g_aas_sound_state.pointlight_events[0],
-                &g_aas_sound_state.pointlight_events[1],
-                (g_aas_sound_state.pointlight_event_capacity - 1U)
-                    * sizeof(aas_pointlight_event_t));
-        g_aas_sound_state.pointlight_event_count -= 1U;
-    }
+	int index = g_aas_sound_state.pointlight_free_head;
+	if (!AAS_Sound_PointLightIndexValid(index))
+	{
+		BotLib_Print(PRT_MESSAGE, "WARNING: empty light heap\n");
+		return true;
+	}
 
-    aas_pointlight_event_t *event =
-        &g_aas_sound_state.pointlight_events[g_aas_sound_state.pointlight_event_count++];
+	aas_pointlight_event_t *event =
+		&g_aas_sound_state.pointlight_events[index];
+	g_aas_sound_state.pointlight_free_head = event->next_index;
+	if (AAS_Sound_PointLightIndexValid(g_aas_sound_state.pointlight_free_head))
+	{
+		g_aas_sound_state.pointlight_events[
+			g_aas_sound_state.pointlight_free_head].prev_index =
+			AAS_POINTLIGHT_NULL_INDEX;
+	}
 
-    if (origin != NULL)
-    {
-        VectorCopy(origin, event->origin);
-    }
-    else
-    {
-        VectorClear(event->origin);
-    }
+	/* Retail writes the stale slot origin back through the caller pointer. */
+	if (origin != NULL)
+	{
+		VectorCopy(event->origin, origin);
+	}
+	event->ent = ent;
+	event->color[0] = r;
+	event->color[1] = g;
+	event->color[2] = b;
+	event->radius = radius;
+	event->time = time;
+	event->timestamp = g_aas_sound_state.frame_time;
+	event->decay = decay;
 
-    event->ent = ent;
-    event->radius = radius;
-    event->color[0] = r;
-    event->color[1] = g;
-    event->color[2] = b;
-    event->timestamp = g_aas_sound_state.frame_time;
-    event->time = time;
-    event->decay = decay;
-    g_aas_sound_state.pointlight_summaries_dirty = true;
-    return true;
+	event->prev_index = AAS_POINTLIGHT_NULL_INDEX;
+	event->next_index = g_aas_sound_state.pointlight_active_head;
+	if (AAS_Sound_PointLightIndexValid(g_aas_sound_state.pointlight_active_head))
+	{
+		g_aas_sound_state.pointlight_events[
+			g_aas_sound_state.pointlight_active_head].prev_index = index;
+	}
+	g_aas_sound_state.pointlight_active_head = index;
+	g_aas_sound_state.pointlight_event_count += 1U;
+	g_aas_sound_state.pointlight_summaries_dirty = true;
+	return true;
 }
 
 size_t AAS_SoundSubsystem_SoundEventCount(void)
@@ -1025,18 +1228,127 @@ const aas_sound_event_t *AAS_SoundSubsystem_SoundEvent(size_t index)
     return &g_aas_sound_state.sound_events[index];
 }
 
+/*
+=============
+AAS_SoundSubsystem_PointLightCount
+
+Return the number of currently linked persistent lights.
+=============
+*/
 size_t AAS_SoundSubsystem_PointLightCount(void)
 {
     return g_aas_sound_state.pointlight_event_count;
 }
 
+/*
+=============
+AAS_SoundSubsystem_PointLight
+
+Return a live light by newest-first active-list position.
+=============
+*/
 const aas_pointlight_event_t *AAS_SoundSubsystem_PointLight(size_t index)
 {
     if (index >= g_aas_sound_state.pointlight_event_count)
     {
         return NULL;
     }
-    return &g_aas_sound_state.pointlight_events[index];
+
+	int event_index = g_aas_sound_state.pointlight_active_head;
+	for (size_t position = 0U; position < index; ++position)
+	{
+		if (!AAS_Sound_PointLightIndexValid(event_index))
+		{
+			return NULL;
+		}
+		event_index =
+			g_aas_sound_state.pointlight_events[event_index].next_index;
+	}
+	if (!AAS_Sound_PointLightIndexValid(event_index))
+	{
+		return NULL;
+	}
+	return &g_aas_sound_state.pointlight_events[event_index];
+}
+
+/*
+=============
+AAS_PointLight
+
+Sample the BSP lightmap 4096 units downward, then accumulate live dynamic
+lights in newest-first order exactly as the retail scalar routine does.
+=============
+*/
+int AAS_PointLight(const vec3_t origin, int *red, int *green, int *blue)
+{
+	vec3_t start;
+	vec3_t end;
+	vec3_t sample_point;
+	int sample_red = 0;
+	int sample_green = 0;
+	int sample_blue = 0;
+	int light = 255;
+
+	if (origin != NULL)
+	{
+		VectorCopy(origin, start);
+		VectorCopy(origin, sample_point);
+	}
+	else
+	{
+		VectorClear(start);
+		VectorClear(sample_point);
+	}
+	VectorCopy(start, end);
+	end[2] -= 4096.0f;
+
+	if (origin != NULL &&
+		AAS_BSPTracePointLight(start,
+			end,
+			sample_point,
+			&sample_red,
+			&sample_green,
+			&sample_blue))
+	{
+		light = (sample_red + sample_green + sample_blue) / 3;
+	}
+	/*
+	 * Retail leaves sample_point/RGB uninitialised on a static miss. Keeping
+	 * the request point and zero RGB is the sole deterministic UB guard here.
+	 */
+
+	int event_index = g_aas_sound_state.pointlight_active_head;
+	while (AAS_Sound_PointLightIndexValid(event_index))
+	{
+		const aas_pointlight_event_t *event =
+			&g_aas_sound_state.pointlight_events[event_index];
+		float dx = sample_point[0] - event->origin[0];
+		float dy = sample_point[1] - event->origin[1];
+		float dz = sample_point[2] - event->origin[2];
+		float addition = event->radius - sqrtf(dx * dx + dy * dy + dz * dz);
+		if (addition > 0.0f)
+		{
+			light = (int)((float)light + addition);
+			sample_red = (int)((float)sample_red + event->color[0]);
+			sample_green = (int)((float)sample_green + event->color[1]);
+			sample_blue = (int)((float)sample_blue + event->color[2]);
+		}
+		event_index = event->next_index;
+	}
+
+	if (red != NULL)
+	{
+		*red = sample_red;
+	}
+	if (green != NULL)
+	{
+		*green = sample_green;
+	}
+	if (blue != NULL)
+	{
+		*blue = sample_blue;
+	}
+	return light;
 }
 
 static int AAS_SoundSubsystem_SortSoundSummaries(const void *lhs, const void *rhs)
@@ -1203,6 +1515,13 @@ static bool AAS_SoundSubsystem_RebuildSoundSummaries(void)
     return true;
 }
 
+/*
+=============
+AAS_SoundSubsystem_RebuildPointLightSummaries
+
+Project the newest-first active light list into the compatibility summary view.
+=============
+*/
 static bool AAS_SoundSubsystem_RebuildPointLightSummaries(void)
 {
     size_t event_count = g_aas_sound_state.pointlight_event_count;
@@ -1219,10 +1538,16 @@ static bool AAS_SoundSubsystem_RebuildPointLightSummaries(void)
         return false;
     }
 
+	int event_index = g_aas_sound_state.pointlight_active_head;
     for (size_t index = 0; index < event_count; ++index)
     {
-        const aas_pointlight_event_t *event =
-            &g_aas_sound_state.pointlight_events[index];
+		if (!AAS_Sound_PointLightIndexValid(event_index))
+		{
+			g_aas_sound_state.pointlight_summary_count = index;
+			return false;
+		}
+		const aas_pointlight_event_t *event =
+			&g_aas_sound_state.pointlight_events[event_index];
         aas_pointlight_event_summary_t *summary =
             &g_aas_sound_state.pointlight_summaries[index];
 
@@ -1252,6 +1577,7 @@ static bool AAS_SoundSubsystem_RebuildPointLightSummaries(void)
                 }
             }
         }
+		event_index = event->next_index;
     }
 
     qsort(g_aas_sound_state.pointlight_summaries,

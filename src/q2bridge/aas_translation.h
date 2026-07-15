@@ -14,9 +14,9 @@ extern "C" {
  *
  * The legacy DLL stores each client in a 0x11d0-byte record that begins with
  * an "active" flag and the owning slot index. Immediately after those words it
- * memcpy's the full bot_updateclient_t payload and then normalises the angle
- * fields before AI runs for the frame.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32615-L32623】【F:dev_tools/gladiator.dll.bndb
-_hlil.txt†L32598-L32613】
+ * memcpy's the full bot_updateclient_t payload unchanged. It then adds the
+ * copied delta angles to a separate private view vector and normalises only
+ * that private vector.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32598-L32623】
  *
  * The helper functions declared in this header provide a typed representation
  * for the reconstructed data and describe the conversions that must take place
@@ -32,11 +32,11 @@ typedef struct AASClientFrame_s {
     pmtype_t pm_type;
     vec3_t origin;
     vec3_t velocity;
-    vec3_t delta_angles; ///< Normalised via QuantizeEulerDegrees.
+    vec3_t delta_angles; ///< Raw bot_updateclient_t payload value.
     byte pm_flags;
     byte pm_time;
     float gravity;
-    vec3_t viewangles;  ///< Stored as short->angle converted floats.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32615-L32623】
+    vec3_t viewangles;  ///< Raw bot_updateclient_t payload value.
     vec3_t viewoffset;
     vec3_t kick_angles;
     vec3_t gunangles;
@@ -48,8 +48,8 @@ typedef struct AASClientFrame_s {
     int rdflags;
     short stats[MAX_STATS];
     int inventory[MAX_ITEMS];
-    float last_update_time; ///< Absolute timestamp pulled from the botlib heap.
-    float frame_delta;      ///< Computed as now - last_update_time.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32603-L32611】
+    float last_update_time; ///< Reconstruction-only bridge timestamp.
+    float frame_delta;      ///< Reconstruction-only bridge frame delta.
 } AASClientFrame;
 
 /**
@@ -79,7 +79,7 @@ typedef struct AASEntityFrame_s {
     int number;      ///< Entity slot written to the 0x84-byte table.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10358-L10390】
     int solid;       ///< bot_updateentity_t::solid.
     vec3_t origin;   ///< Current origin.
-    vec3_t angles;   ///< Orientation (quantised when solid == 3).
+    vec3_t angles;   ///< Raw orientation, updated only for SOLID_BSP.
     vec3_t mins;     ///< Bounding box mins.
     vec3_t maxs;     ///< Bounding box maxs.
     vec3_t old_origin; ///< Last networked origin.
@@ -96,19 +96,19 @@ typedef struct AASEntityFrame_s {
     int event_id;
     float last_update_time; ///< Absolute timestamp.
     float frame_delta;      ///< Time since the previous update.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10358-L10368】
-    bool angles_dirty;      ///< true when angles changed this frame.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10409】
-    bool bounds_dirty;      ///< true when mins/maxs changed (solid == 2 branch).【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10390-L10421】
+    bool angles_dirty;      ///< true only when SOLID_BSP angles changed.
+    bool bounds_dirty;      ///< true only when SOLID_BBOX bounds changed.
     bool origin_dirty;      ///< true when origin changed.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10421-L10433】
     bool is_mover;          ///< true when the entity's model is tracked as a mover in the catalogue.
 } AASEntityFrame;
 
 /**
- * \brief Converts Quake II short-based Euler angles into the quantised float
- * representation used by the botlib (short2angle/angle2short round-trip).
+ * \brief Convert Euler angles through retail's unsigned 16-bit angle grid.
  *
- * Mirrors j_sub_10042d40 which multiplies by 65536/360, rounds to int and then
- * scales back to degrees, matching the pmove delta-angle behaviour recorded in
- * the DLL.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L52520-L52605】
+ * This compatibility helper mirrors j_sub_10042d40: multiply by 65536/360,
+ * truncate to an integer, keep the low unsigned 16 bits, then scale back to
+ * degrees. BotUpdateClient does not apply it to the copied public snapshot.
+ *【F:dev_tools/gladiator.dll.bndb_hlil.txt†L52550-L52565】
  */
 void QuantizeEulerDegrees(vec3_t angles);
 
@@ -138,11 +138,13 @@ void TranslateEntity_SetCurrentTime(float time);
  *  - Verifying the target slot is active; otherwise emit the
  *    "tried to updated inactive bot client" log and return
  *    BLERR_AIUPDATEINACTIVECLIENT (0x18).【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32598-L32607】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L74440-L74441】
- *  - memcpy'ing the raw state, then running QuantizeEulerDegrees over delta
- *    angles, view angles and gun/view kick vectors so they honour the original
- *    16-bit precision limits.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32603-L32623】
- *  - Updating the cached timestamps to keep BotAI's thinktime consistent with
- *    the DLL implementation.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32603-L32611】
+ *  - Copying the raw state without altering delta, view, kick, or gun angles.
+ *  - Leaving private view-angle accumulation to AI_DMState_ApplyDeltaAngles,
+ *    which is the only value retail passes through j_sub_10042d40.
+ *    【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32603-L32623】
+ *
+ * last_update_time and frame_delta are reconstruction-only bridge diagnostics;
+ * they are outside the retail 0x4cc payload.
  */
 bot_status_t TranslateClientUpdate(int client_num,
                                    const bot_updateclient_t *src,
@@ -157,11 +159,11 @@ bot_status_t TranslateClientUpdate(int client_num,
  *    historic warning message.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10344-L10354】
  *  - Preserve prior origins before copying new data so downstream code can
  *    reconstruct instantaneous velocity (fields previous_origin vs. origin).
- *  - Mark angles/bounds/origin dirty when CopyIfChanged returns true and update
- *    the appropriate *_dirty flag so callers know when to call into
- *    j_sub_10005e60 / j_sub_1001c620 equivalents for spatial maintenance.
- *  - For brush models (solid == 3) ensure the orientation vector is copied when
- *    mins/maxs differ, matching the DLL's arg1 flag semantics.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10409】
+ *  - For SOLID_BSP, copy raw angles when changed and derive model bounds from
+ *    modelindex - 1; for SOLID_BBOX, copy mins/maxs only when either differs.
+ *    Other solid types leave cached angles and bounds untouched.
+ *  - Relink only for a SOLID_BSP angle change, SOLID_BBOX bounds change, or an
+ *    origin change.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10386-L10447】
  *  - Track the bridge-provided timestamps so downstream code can compute
  *    consistent delta times with the historic DLL implementation.
  */

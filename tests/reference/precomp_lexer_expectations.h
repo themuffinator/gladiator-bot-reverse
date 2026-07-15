@@ -32,7 +32,7 @@ static const char g_synonyms_source_path[] = "dev_tools/assets/syn.c";
 
 static const pc_token_snapshot_t g_fw_items_token_expectations[] = {
     {"weight", TT_NAME, 6, 27},
-    {"\"weapon_shotgun\"", TT_STRING, 14, 27},
+    {"\"weapon_shotgun\"", TT_STRING, 16, 27},
     {"{", TT_PUNCTUATION, P_BRACEOPEN, 28},
     {"switch", TT_NAME, 6, 29},
     {"(", TT_PUNCTUATION, P_PARENTHESESOPEN, 29},
@@ -56,17 +56,17 @@ static const pc_diagnostic_snapshot_t g_fw_items_diagnostics[] = {
 static const size_t g_fw_items_diagnostics_count = 0;
 
 static const pc_token_snapshot_t g_synonyms_token_expectations[] = {
-    {"CONTEXT_NEARBYITEM", TT_NAME, 18, 15},
+    {"2", TT_NUMBER, TT_INTEGER | TT_DECIMAL, 13},
     {"{", TT_PUNCTUATION, P_BRACEOPEN, 16},
     {"[", TT_PUNCTUATION, P_SQBRACKETOPEN, 18},
     {"(", TT_PUNCTUATION, P_PARENTHESESOPEN, 18},
-    {"\"Body Armor\"", TT_STRING, 10, 18},
+    {"\"Body Armor\"", TT_STRING, 12, 18},
     {",", TT_PUNCTUATION, P_COMMA, 18},
     {"1", TT_NUMBER, TT_INTEGER | TT_DECIMAL, 18},
     {")", TT_PUNCTUATION, P_PARENTHESESCLOSE, 18},
     {",", TT_PUNCTUATION, P_COMMA, 18},
     {"(", TT_PUNCTUATION, P_PARENTHESESOPEN, 18},
-    {"\"red armor\"", TT_STRING, 9, 18},
+    {"\"red armor\"", TT_STRING, 11, 18},
 };
 
 static const pc_diagnostic_snapshot_t g_synonyms_diagnostics[] = {

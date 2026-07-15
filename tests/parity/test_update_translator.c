@@ -13,6 +13,7 @@
 #include "q2bridge/aas_translation.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/update_translator.h"
+#include "botlib/aas/aas_map.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/ai_move/mover_catalogue.h"
 #include "botlib/interface/botlib_interface.h"
@@ -36,6 +37,9 @@ typedef struct translator_test_context_s
 } translator_test_context_t;
 
 static translator_test_context_t *g_active_context = NULL;
+static int g_bsp_bounds_calls = 0;
+static int g_bsp_bounds_modelnum = -1;
+static vec3_t g_bsp_bounds_angles;
 
 #define TRANSLATOR_DEFAULT_MAX_CLIENTS 4
 #define TRANSLATOR_DEFAULT_MAX_ENTITIES 1024
@@ -71,6 +75,31 @@ typedef struct translator_mock_limit_state_s
 static translator_mock_limit_state_t g_mock_limit_state;
 static int g_configured_max_clients = TRANSLATOR_DEFAULT_MAX_CLIENTS;
 static int g_configured_max_entities = TRANSLATOR_DEFAULT_MAX_ENTITIES;
+
+/*
+=============
+AAS_BSPModelMinsMaxsOrigin
+
+Provide deterministic BSP-model bounds to the isolated translator target.
+=============
+*/
+void AAS_BSPModelMinsMaxsOrigin(int modelnum,
+	const vec3_t angles,
+	vec3_t mins,
+	vec3_t maxs,
+	vec3_t origin)
+{
+	g_bsp_bounds_calls += 1;
+	g_bsp_bounds_modelnum = modelnum;
+	VectorCopy(angles, g_bsp_bounds_angles);
+
+	VectorSet(mins, -16.0f - modelnum, -8.0f, -4.0f);
+	VectorSet(maxs, 16.0f + modelnum, 8.0f, 4.0f);
+	if (origin != NULL)
+	{
+		VectorClear(origin);
+	}
+}
 
 static void translator_write_mock_libvar(libvar_t *var, char *buffer, size_t buffer_size, int value)
 {
@@ -237,6 +266,9 @@ static int translator_setup(void **state)
 
     Q2Bridge_SetImportTable(&context->imports);
     translator_set_mock_max_limits(TRANSLATOR_DEFAULT_MAX_CLIENTS, TRANSLATOR_DEFAULT_MAX_ENTITIES);
+	g_bsp_bounds_calls = 0;
+	g_bsp_bounds_modelnum = -1;
+	VectorClear(g_bsp_bounds_angles);
 
     *state = context;
     return 0;
@@ -261,15 +293,10 @@ static int translator_teardown(void **state)
 
 static float quantize_component(float angle)
 {
-    const float to_short = 65536.0f / 360.0f;
-    const float to_angle = 360.0f / 65536.0f;
-    long quantised = lroundf(angle * to_short);
-    quantised &= 0xFFFF;
-    if (quantised & 0x8000)
-    {
-        quantised -= 0x10000;
-    }
-    return (float)quantised * to_angle;
+	const float to_short = 65536.0f / 360.0f;
+	const float to_angle = 360.0f / 65536.0f;
+	int quantised = (int)(angle * to_short);
+	return (float)(unsigned short)quantised * to_angle;
 }
 
 static void assert_vec3_equal(const vec3_t actual, const vec3_t expected, float tolerance)
@@ -279,7 +306,12 @@ static void assert_vec3_equal(const vec3_t actual, const vec3_t expected, float 
     assert_float_equal(actual[2], expected[2], tolerance);
 }
 
-static void test_translate_client_quantises_payload(void **state)
+/*
+=============
+test_translate_client_preserves_raw_payload_angles
+=============
+*/
+static void test_translate_client_preserves_raw_payload_angles(void **state)
 {
     (void)state;
 
@@ -353,18 +385,10 @@ static void test_translate_client_quantises_payload(void **state)
     assert_memory_equal(frame.stats, update.stats, sizeof(frame.stats));
     assert_memory_equal(frame.inventory, update.inventory, sizeof(frame.inventory));
 
-    assert_float_equal(frame.delta_angles[0], quantize_component(update.delta_angles[0]), 0.0001f);
-    assert_float_equal(frame.delta_angles[1], quantize_component(update.delta_angles[1]), 0.0001f);
-    assert_float_equal(frame.delta_angles[2], quantize_component(update.delta_angles[2]), 0.0001f);
-    assert_float_equal(frame.viewangles[0], quantize_component(update.viewangles[0]), 0.0001f);
-    assert_float_equal(frame.viewangles[1], quantize_component(update.viewangles[1]), 0.0001f);
-    assert_float_equal(frame.viewangles[2], quantize_component(update.viewangles[2]), 0.0001f);
-    assert_float_equal(frame.kick_angles[0], quantize_component(update.kick_angles[0]), 0.0001f);
-    assert_float_equal(frame.kick_angles[1], quantize_component(update.kick_angles[1]), 0.0001f);
-    assert_float_equal(frame.kick_angles[2], quantize_component(update.kick_angles[2]), 0.0001f);
-    assert_float_equal(frame.gunangles[0], quantize_component(update.gunangles[0]), 0.0001f);
-    assert_float_equal(frame.gunangles[1], quantize_component(update.gunangles[1]), 0.0001f);
-    assert_float_equal(frame.gunangles[2], quantize_component(update.gunangles[2]), 0.0001f);
+    assert_vec3_equal(frame.delta_angles, update.delta_angles, 0.0001f);
+    assert_vec3_equal(frame.viewangles, update.viewangles, 0.0001f);
+    assert_vec3_equal(frame.kick_angles, update.kick_angles, 0.0001f);
+    assert_vec3_equal(frame.gunangles, update.gunangles, 0.0001f);
 
     assert_float_equal(frame.last_update_time, 1.25f, 0.0001f);
     assert_float_equal(frame.frame_delta, 0.0f, 0.0001f);
@@ -377,10 +401,56 @@ static void test_translate_client_quantises_payload(void **state)
     status = TranslateClientUpdate(1, &update, 3.75f, &frame);
     assert_int_equal(status, BLERR_NOERROR);
     assert_float_equal(frame.frame_delta, 2.5f, 0.0001f);
-    assert_float_equal(frame.delta_angles[0], quantize_component(update.delta_angles[0]), 0.0001f);
-    assert_float_equal(frame.viewangles[1], quantize_component(update.viewangles[1]), 0.0001f);
-    assert_float_equal(frame.kick_angles[2], quantize_component(update.kick_angles[2]), 0.0001f);
-    assert_float_equal(frame.gunangles[0], quantize_component(update.gunangles[0]), 0.0001f);
+    assert_float_equal(frame.delta_angles[0], update.delta_angles[0], 0.0001f);
+    assert_float_equal(frame.viewangles[1], update.viewangles[1], 0.0001f);
+    assert_float_equal(frame.kick_angles[2], update.kick_angles[2], 0.0001f);
+    assert_float_equal(frame.gunangles[0], update.gunangles[0], 0.0001f);
+}
+
+/*
+=============
+test_quantize_euler_degrees_uses_unsigned_truncated_grid
+=============
+*/
+static void test_quantize_euler_degrees_uses_unsigned_truncated_grid(void **state)
+{
+	(void)state;
+
+	vec3_t angles = {45.125f, -90.5f, 720.25f};
+	vec3_t expected = {
+		quantize_component(angles[0]),
+		quantize_component(angles[1]),
+		quantize_component(angles[2]),
+	};
+
+	QuantizeEulerDegrees(angles);
+	assert_vec3_equal(angles, expected, 0.0001f);
+	assert_true(angles[1] > 269.0f);
+}
+
+/*
+=============
+test_bridge_update_client_checks_inactive_before_null_adapter
+=============
+*/
+static void test_bridge_update_client_checks_inactive_before_null_adapter(void **state)
+{
+	translator_test_context_t *context = (translator_test_context_t *)(*state);
+	context->print_count = 0U;
+
+	assert_int_equal(Bridge_UpdateClient(0, NULL), BLERR_AIUPDATEINACTIVECLIENT);
+	assert_int_equal(context->print_count, 1U);
+	assert_string_equal(context->prints[0].message,
+		"tried to updated inactive bot client\n");
+	assert_int_equal(context->prints[0].severity, PRT_FATAL);
+
+	Bridge_SetClientActive(0, qtrue);
+	context->print_count = 0U;
+	assert_int_equal(Bridge_UpdateClient(0, NULL), BLERR_INVALIDIMPORT);
+	assert_int_equal(context->print_count, 1U);
+	assert_string_equal(context->prints[0].message,
+		"BotUpdateClient: NULL update payload provided\n");
+	assert_int_equal(context->prints[0].severity, PRT_ERROR);
 }
 
 static void test_bridge_update_client_inactive_logs_contract_message(void **state)
@@ -397,7 +467,7 @@ static void test_bridge_update_client_inactive_logs_contract_message(void **stat
 
     const botlib_contract_export_t *entry = BotlibContract_FindExport(&context->catalogue, "BridgeDiagnostics");
     assert_non_null(entry);
-    const botlib_contract_scenario_t *scenario = BotlibContract_FindScenario(entry, "success");
+    const botlib_contract_scenario_t *scenario = BotlibContract_FindScenario(entry, "failure");
     assert_non_null(scenario);
     const botlib_contract_message_t *expected = BotlibContract_FindMessageContaining(scenario, "inactive bot client");
     assert_non_null(expected);
@@ -585,8 +655,8 @@ static void test_bridge_update_client_accepts_runtime_limit_increase(void **stat
     memset(&frame, 0, sizeof(frame));
     assert_true(Bridge_ReadClientFrame(1, &frame));
     assert_int_equal(frame.pm_type, initial.pm_type);
-    assert_float_equal(frame.viewangles[0], quantize_component(initial.viewangles[0]), 0.0001f);
-    assert_float_equal(frame.viewangles[1], quantize_component(initial.viewangles[1]), 0.0001f);
+    assert_float_equal(frame.viewangles[0], initial.viewangles[0], 0.0001f);
+    assert_float_equal(frame.viewangles[1], initial.viewangles[1], 0.0001f);
     assert_float_equal(frame.last_update_time, 0.5f, 0.0001f);
 
     translator_set_mock_max_clients(4);
@@ -607,8 +677,8 @@ static void test_bridge_update_client_accepts_runtime_limit_increase(void **stat
     memset(&frame, 0, sizeof(frame));
     assert_true(Bridge_ReadClientFrame(2, &frame));
     assert_int_equal(frame.pm_type, expanded.pm_type);
-    assert_float_equal(frame.viewangles[0], quantize_component(expanded.viewangles[0]), 0.0001f);
-    assert_float_equal(frame.viewangles[1], quantize_component(expanded.viewangles[1]), 0.0001f);
+    assert_float_equal(frame.viewangles[0], expanded.viewangles[0], 0.0001f);
+    assert_float_equal(frame.viewangles[1], expanded.viewangles[1], 0.0001f);
     assert_float_equal(frame.last_update_time, 1.25f, 0.0001f);
     assert_float_equal(frame.frame_delta, 0.0f, 0.0001f);
 }
@@ -637,7 +707,7 @@ static void test_bridge_update_entity_accepts_runtime_limit_increase(void **stat
     initial.angles[0] = 10.0f;
     initial.angles[1] = -20.0f;
     initial.angles[2] = 5.0f;
-    initial.solid = 1;
+    initial.solid = SOLID_BBOX;
 
     int status = Bridge_UpdateEntity(3, &initial);
     assert_int_equal(status, BLERR_NOERROR);
@@ -648,6 +718,7 @@ static void test_bridge_update_entity_accepts_runtime_limit_increase(void **stat
     assert_int_equal(entity_frame.number, 3);
     assert_vec3_equal(entity_frame.origin, initial.origin, 0.0001f);
     assert_float_equal(entity_frame.last_update_time, 0.75f, 0.0001f);
+    assert_float_equal(entity_frame.frame_delta, 0.75f, 0.0001f);
 
     translator_set_mock_max_entities(8);
     context->print_count = 0U;
@@ -662,7 +733,7 @@ static void test_bridge_update_entity_accepts_runtime_limit_increase(void **stat
     expanded.angles[0] = 45.0f;
     expanded.angles[1] = 60.0f;
     expanded.angles[2] = -15.0f;
-    expanded.solid = 2;
+    expanded.solid = SOLID_BBOX;
 
     status = Bridge_UpdateEntity(7, &expanded);
     assert_int_equal(status, BLERR_NOERROR);
@@ -671,137 +742,178 @@ static void test_bridge_update_entity_accepts_runtime_limit_increase(void **stat
     assert_true(Bridge_ReadEntityFrame(7, &entity_frame));
     assert_int_equal(entity_frame.number, 7);
     assert_vec3_equal(entity_frame.origin, expanded.origin, 0.0001f);
-    assert_float_equal(entity_frame.angles[0], quantize_component(expanded.angles[0]), 0.0001f);
-    assert_float_equal(entity_frame.angles[1], quantize_component(expanded.angles[1]), 0.0001f);
-    assert_float_equal(entity_frame.angles[2], quantize_component(expanded.angles[2]), 0.0001f);
+    vec3_t zero_angles = {0.0f, 0.0f, 0.0f};
+    assert_vec3_equal(entity_frame.angles, zero_angles, 0.0001f);
     assert_int_equal(entity_frame.solid, expanded.solid);
     assert_float_equal(entity_frame.last_update_time, 2.0f, 0.0001f);
-    assert_float_equal(entity_frame.frame_delta, 0.0f, 0.0001f);
+    assert_float_equal(entity_frame.frame_delta, 2.0f, 0.0001f);
 }
 
-static void test_translate_entity_dirty_flags_and_relink_logging(void **state)
+/*
+=============
+test_translate_entity_retail_fields_and_relink_flags
+=============
+*/
+static void test_translate_entity_retail_fields_and_relink_flags(void **state)
 {
-    translator_test_context_t *context = (translator_test_context_t *)(*state);
-    context->print_count = 0U;
+	translator_test_context_t *context = (translator_test_context_t *)(*state);
+	context->print_count = 0U;
 
-    TranslateEntity_SetWorldLoaded(qtrue);
-    TranslateEntity_SetCurrentTime(1.0f);
+	TranslateEntity_SetWorldLoaded(qtrue);
+	TranslateEntity_SetCurrentTime(1.0f);
 
-    AASEntityFrame frame;
-    memset(&frame, 0, sizeof(frame));
+	AASEntityFrame frame;
+	memset(&frame, 0, sizeof(frame));
 
-    bot_updateentity_t update;
-    memset(&update, 0, sizeof(update));
+	bot_updateentity_t update;
+	memset(&update, 0, sizeof(update));
 
-    update.origin[0] = 64.0f;
-    update.origin[1] = 32.0f;
-    update.origin[2] = 16.0f;
-    update.old_origin[0] = 60.0f;
-    update.old_origin[1] = 30.0f;
-    update.old_origin[2] = 14.0f;
-    update.mins[0] = -16.0f;
-    update.mins[1] = -8.0f;
-    update.mins[2] = -4.0f;
-    update.maxs[0] = 16.0f;
-    update.maxs[1] = 8.0f;
-    update.maxs[2] = 4.0f;
-    update.angles[0] = 91.0f;
-    update.angles[1] = -45.0f;
-    update.angles[2] = 10.0f;
-    update.solid = 3;
-    update.modelindex = 2;
-    update.modelindex2 = 3;
-    update.modelindex3 = 4;
-    update.modelindex4 = 5;
-    update.frame = 6;
-    update.skinnum = 7;
-    update.effects = 8;
-    update.renderfx = 9;
-    update.sound = 10;
-    update.event = 11;
+	VectorSet(update.origin, 64.0f, 32.0f, 16.0f);
+	VectorSet(update.old_origin, 60.0f, 30.0f, 14.0f);
+	VectorSet(update.mins, -99.0f, -98.0f, -97.0f);
+	VectorSet(update.maxs, 99.0f, 98.0f, 97.0f);
+	VectorSet(update.angles, 91.0f, -45.0f, 10.0f);
+	update.solid = SOLID_BSP;
+	update.modelindex = 2;
+	update.modelindex2 = 3;
+	update.modelindex3 = 4;
+	update.modelindex4 = 5;
+	update.frame = 6;
+	update.skinnum = 7;
+	update.effects = 8;
+	update.renderfx = 9;
+	update.sound = 10;
+	update.event = 11;
 
-    int status = TranslateEntityUpdate(5, &update, &frame);
-    assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(frame.number, 5);
-    assert_true(frame.origin_dirty);
-    assert_true(frame.bounds_dirty);
-    assert_true(frame.angles_dirty);
-    assert_false(frame.is_mover);
-    assert_vec3_equal(frame.origin, update.origin, 0.0001f);
-    assert_vec3_equal(frame.old_origin, update.old_origin, 0.0001f);
-    vec3_t zero = {0.0f, 0.0f, 0.0f};
-    assert_vec3_equal(frame.previous_origin, zero, 0.0001f);
-    assert_vec3_equal(frame.mins, update.mins, 0.0001f);
-    assert_vec3_equal(frame.maxs, update.maxs, 0.0001f);
-    assert_float_equal(frame.angles[0], quantize_component(update.angles[0]), 0.0001f);
-    assert_float_equal(frame.angles[1], quantize_component(update.angles[1]), 0.0001f);
-    assert_float_equal(frame.angles[2], quantize_component(update.angles[2]), 0.0001f);
-    assert_int_equal(frame.solid, update.solid);
-    assert_int_equal(frame.modelindex, update.modelindex);
-    assert_int_equal(frame.modelindex2, update.modelindex2);
-    assert_int_equal(frame.modelindex3, update.modelindex3);
-    assert_int_equal(frame.modelindex4, update.modelindex4);
-    assert_int_equal(frame.frame, update.frame);
-    assert_int_equal(frame.skinnum, update.skinnum);
-    assert_int_equal(frame.effects, update.effects);
-    assert_int_equal(frame.renderfx, update.renderfx);
-    assert_int_equal(frame.sound, update.sound);
-    assert_int_equal(frame.event_id, update.event);
-    assert_float_equal(frame.last_update_time, 1.0f, 0.0001f);
-    assert_float_equal(frame.frame_delta, 0.0f, 0.0001f);
+	int status = TranslateEntityUpdate(5, &update, &frame);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(frame.number, 5);
+	assert_true(frame.origin_dirty);
+	assert_false(frame.bounds_dirty);
+	assert_true(frame.angles_dirty);
+	assert_false(frame.is_mover);
+	assert_vec3_equal(frame.origin, update.origin, 0.0001f);
+	assert_vec3_equal(frame.old_origin, update.old_origin, 0.0001f);
+	vec3_t zero = {0.0f, 0.0f, 0.0f};
+	assert_vec3_equal(frame.previous_origin, zero, 0.0001f);
+	vec3_t expected_mins = {-17.0f, -8.0f, -4.0f};
+	vec3_t expected_maxs = {17.0f, 8.0f, 4.0f};
+	assert_vec3_equal(frame.mins, expected_mins, 0.0001f);
+	assert_vec3_equal(frame.maxs, expected_maxs, 0.0001f);
+	assert_vec3_equal(frame.angles, update.angles, 0.0001f);
+	assert_int_equal(g_bsp_bounds_calls, 1);
+	assert_int_equal(g_bsp_bounds_modelnum, 1);
+	assert_vec3_equal(g_bsp_bounds_angles, update.angles, 0.0001f);
+	assert_int_equal(frame.solid, update.solid);
+	assert_int_equal(frame.modelindex, update.modelindex);
+	assert_int_equal(frame.modelindex2, update.modelindex2);
+	assert_int_equal(frame.modelindex3, update.modelindex3);
+	assert_int_equal(frame.modelindex4, update.modelindex4);
+	assert_int_equal(frame.frame, update.frame);
+	assert_int_equal(frame.skinnum, 0);
+	assert_int_equal(frame.effects, update.effects);
+	assert_int_equal(frame.renderfx, update.renderfx);
+	assert_int_equal(frame.sound, 0);
+	assert_int_equal(frame.event_id, 0);
+	assert_float_equal(frame.last_update_time, 1.0f, 0.0001f);
+	assert_float_equal(frame.frame_delta, 1.0f, 0.0001f);
+	assert_int_equal(context->print_count, 0U);
 
-    assert_true(context->print_count > 0U);
-    const botlib_contract_export_t *entry = BotlibContract_FindExport(&context->catalogue, "BridgeDiagnostics");
-    assert_non_null(entry);
-    const botlib_contract_scenario_t *scenario = BotlibContract_FindScenario(entry, "success");
-    assert_non_null(scenario);
-    const botlib_contract_message_t *brush_message = BotlibContract_FindMessageContaining(scenario, "brush model");
-    assert_non_null(brush_message);
-    assert_string_equal(context->prints[context->print_count - 1U].message, brush_message->text);
-    assert_int_equal(context->prints[context->print_count - 1U].severity, brush_message->severity);
+	TranslateEntity_SetCurrentTime(2.5f);
 
-    context->print_count = 0U;
-    TranslateEntity_SetCurrentTime(2.5f);
+	bot_updateentity_t follow_up = update;
+	VectorSet(follow_up.origin, 72.0f, 40.0f, 24.0f);
+	VectorSet(follow_up.old_origin, 68.0f, 36.0f, 20.0f);
 
-    bot_updateentity_t follow_up = update;
-    follow_up.origin[0] = 72.0f;
-    follow_up.origin[1] = 40.0f;
-    follow_up.origin[2] = 24.0f;
-    follow_up.old_origin[0] = 68.0f;
-    follow_up.old_origin[1] = 36.0f;
-    follow_up.old_origin[2] = 20.0f;
+	status = TranslateEntityUpdate(5, &follow_up, &frame);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(frame.origin_dirty);
+	assert_false(frame.bounds_dirty);
+	assert_false(frame.angles_dirty);
+	assert_vec3_equal(frame.previous_origin, update.origin, 0.0001f);
+	assert_float_equal(frame.frame_delta, 1.5f, 0.0001f);
+	assert_int_equal(g_bsp_bounds_calls, 2);
+	assert_int_equal(context->print_count, 0U);
 
-    status = TranslateEntityUpdate(5, &follow_up, &frame);
-    assert_int_equal(status, BLERR_NOERROR);
-    assert_true(frame.origin_dirty);
-    assert_false(frame.bounds_dirty);
-    assert_false(frame.angles_dirty);
-    assert_vec3_equal(frame.previous_origin, update.origin, 0.0001f);
-    assert_float_equal(frame.frame_delta, 1.5f, 0.0001f);
-    assert_int_equal(context->print_count, 0U);
+	BotMove_MoverCatalogueReset();
+	bot_mover_catalogue_entry_t mover_entry = {0};
+	mover_entry.modelnum = update.modelindex;
+	assert_true(BotMove_MoverCatalogueInsert(&mover_entry));
+	char model_name[] = "*2";
+	char *model_entries[] = {model_name};
+	botinterface_asset_list_t assets = {
+		.entries = model_entries,
+		.count = ARRAY_LEN(model_entries),
+	};
+	assert_true(BotMove_MoverCatalogueFinalize(&assets));
 
-    BotMove_MoverCatalogueReset();
-    bot_mover_catalogue_entry_t mover_entry = {0};
-    mover_entry.modelnum = update.modelindex;
-    assert_true(BotMove_MoverCatalogueInsert(&mover_entry));
-    char model_name[] = "*2";
-    char *model_entries[] = {model_name};
-    botinterface_asset_list_t assets = {
-        .entries = model_entries,
-        .count = ARRAY_LEN(model_entries),
-    };
-    assert_true(BotMove_MoverCatalogueFinalize(&assets));
+	TranslateEntity_SetCurrentTime(4.0f);
+	status = TranslateEntityUpdate(5, &follow_up, &frame);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(frame.is_mover);
+	assert_false(frame.bounds_dirty);
+	assert_false(frame.origin_dirty);
+	assert_float_equal(frame.frame_delta, 1.5f, 0.0001f);
+	assert_int_equal(g_bsp_bounds_calls, 3);
+	assert_int_equal(context->print_count, 0U);
 
-    context->print_count = 0U;
-    TranslateEntity_SetCurrentTime(4.0f);
-    status = TranslateEntityUpdate(5, &follow_up, &frame);
-    assert_int_equal(status, BLERR_NOERROR);
-    assert_true(frame.is_mover);
-    assert_int_equal(context->print_count, 1U);
-    assert_string_equal(context->prints[0].message, brush_message->text);
-    assert_int_equal(context->prints[0].severity, brush_message->severity);
+	TranslateEntity_SetCurrentTime(3.0f);
+	status = TranslateEntityUpdate(5, &follow_up, &frame);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_float_equal(frame.last_update_time, 3.0f, 0.0001f);
+	assert_float_equal(frame.frame_delta, -1.0f, 0.0001f);
+	assert_false(frame.angles_dirty);
+	assert_false(frame.bounds_dirty);
+	assert_false(frame.origin_dirty);
+	assert_vec3_equal(frame.previous_origin, follow_up.origin, 0.0001f);
+	assert_int_equal(g_bsp_bounds_calls, 4);
 
-    BotMove_MoverCatalogueReset();
+	BotMove_MoverCatalogueReset();
+}
+
+/*
+=============
+test_translate_entity_only_bsp_angles_and_bbox_bounds_are_mutable
+=============
+*/
+static void test_translate_entity_only_bsp_angles_and_bbox_bounds_are_mutable(void **state)
+{
+	(void)state;
+	TranslateEntity_SetWorldLoaded(qtrue);
+	TranslateEntity_SetCurrentTime(1.0f);
+
+	AASEntityFrame frame = {0};
+	VectorSet(frame.angles, 5.0f, 10.0f, 15.0f);
+	VectorSet(frame.mins, -4.0f, -4.0f, -4.0f);
+	VectorSet(frame.maxs, 4.0f, 4.0f, 4.0f);
+
+	bot_updateentity_t bbox = {0};
+	bbox.solid = SOLID_BBOX;
+	VectorSet(bbox.angles, 90.0f, 180.0f, 270.0f);
+	VectorSet(bbox.mins, -8.0f, -6.0f, -4.0f);
+	VectorSet(bbox.maxs, 8.0f, 6.0f, 4.0f);
+
+	assert_int_equal(TranslateEntityUpdate(2, &bbox, &frame), BLERR_NOERROR);
+	assert_true(frame.bounds_dirty);
+	assert_false(frame.angles_dirty);
+	vec3_t retained_angles = {5.0f, 10.0f, 15.0f};
+	assert_vec3_equal(frame.angles, retained_angles, 0.0001f);
+	assert_vec3_equal(frame.mins, bbox.mins, 0.0001f);
+	assert_vec3_equal(frame.maxs, bbox.maxs, 0.0001f);
+
+	bot_updateentity_t trigger = bbox;
+	trigger.solid = SOLID_TRIGGER;
+	VectorSet(trigger.angles, 1.0f, 2.0f, 3.0f);
+	VectorSet(trigger.mins, -32.0f, -32.0f, -32.0f);
+	VectorSet(trigger.maxs, 32.0f, 32.0f, 32.0f);
+	TranslateEntity_SetCurrentTime(2.0f);
+
+	assert_int_equal(TranslateEntityUpdate(2, &trigger, &frame), BLERR_NOERROR);
+	assert_false(frame.bounds_dirty);
+	assert_false(frame.angles_dirty);
+	assert_vec3_equal(frame.angles, retained_angles, 0.0001f);
+	assert_vec3_equal(frame.mins, bbox.mins, 0.0001f);
+	assert_vec3_equal(frame.maxs, bbox.maxs, 0.0001f);
 }
 
 static void test_translate_entity_aas_not_loaded_logs(void **state)
@@ -830,7 +942,11 @@ static void test_translate_entity_aas_not_loaded_logs(void **state)
     assert_string_equal(context->prints[0].message, expected->text);
     assert_int_equal(context->prints[0].severity, expected->severity);
 
-    const botlib_contract_return_code_t *code = BotlibContract_FindReturnCode(scenario, BLERR_NOAASFILE);
+    const botlib_contract_scenario_t *failure =
+        BotlibContract_FindScenario(entry, "failure");
+    assert_non_null(failure);
+    const botlib_contract_return_code_t *code =
+        BotlibContract_FindReturnCode(failure, BLERR_NOAASFILE);
     assert_non_null(code);
 }
 
@@ -867,6 +983,75 @@ static void test_bot_update_entity_logging_stops_after_map_load(void **state)
 	status = Bridge_UpdateEntity(3, &update);
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_int_equal(context->print_count, 0U);
+}
+
+/*
+=============
+test_bridge_failed_entity_update_preserves_last_successful_cache
+=============
+*/
+static void test_bridge_failed_entity_update_preserves_last_successful_cache(void **state)
+{
+	translator_test_context_t *context = (translator_test_context_t *)(*state);
+	TranslateEntity_SetWorldLoaded(qtrue);
+	Bridge_SetFrameTime(1.0f);
+
+	bot_updateentity_t update = {0};
+	update.solid = SOLID_BBOX;
+	VectorSet(update.origin, 16.0f, 8.0f, 4.0f);
+	VectorSet(update.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(update.maxs, 8.0f, 8.0f, 8.0f);
+	assert_int_equal(Bridge_UpdateEntity(3, &update), BLERR_NOERROR);
+
+	AASEntityFrame before = {0};
+	assert_true(Bridge_ReadEntityFrame(3, &before));
+
+	bot_updateentity_t rejected = update;
+	VectorSet(rejected.origin, 100.0f, 200.0f, 300.0f);
+	TranslateEntity_SetWorldLoaded(qfalse);
+	Bridge_SetFrameTime(9.0f);
+	context->print_count = 0U;
+	assert_int_equal(Bridge_UpdateEntity(3, &rejected), BLERR_NOAASFILE);
+	assert_int_equal(context->print_count, 1U);
+
+	AASEntityFrame after = {0};
+	assert_true(Bridge_ReadEntityFrame(3, &after));
+	assert_memory_equal(&after, &before, sizeof(after));
+}
+
+/*
+=============
+test_bridge_client_move_and_deactivate_preserve_retail_cache_lifecycle
+=============
+*/
+static void test_bridge_client_move_and_deactivate_preserve_retail_cache_lifecycle(void **state)
+{
+	(void)state;
+	Bridge_SetClientActive(1, qtrue);
+	Bridge_SetFrameTime(1.25f);
+
+	bot_updateclient_t update = {0};
+	update.pm_type = PM_SPECTATOR;
+	VectorSet(update.delta_angles, -12.75f, 181.25f, 360.5f);
+	VectorSet(update.viewangles, 15.125f, -30.25f, 45.5f);
+	assert_int_equal(Bridge_UpdateClient(1, &update), BLERR_NOERROR);
+
+	AASClientFrame before = {0};
+	assert_true(Bridge_ReadClientFrame(1, &before));
+	Bridge_SetFrameTime(9.0f);
+	assert_int_equal(Bridge_MoveClientSlot(1, 2), BLERR_NOERROR);
+
+	AASClientFrame moved = {0};
+	assert_false(Bridge_ReadClientFrame(1, &moved));
+	assert_true(Bridge_ReadClientFrame(2, &moved));
+	assert_memory_equal(&moved, &before, sizeof(moved));
+	assert_vec3_equal(moved.delta_angles, update.delta_angles, 0.0001f);
+	assert_vec3_equal(moved.viewangles, update.viewangles, 0.0001f);
+
+	Bridge_SetClientActive(2, qfalse);
+	assert_false(Bridge_ReadClientFrame(2, &moved));
+	Bridge_SetClientActive(2, qtrue);
+	assert_false(Bridge_ReadClientFrame(2, &moved));
 }
 
 static void test_bridge_entity_cache_tracks_maxentities(void **state)
@@ -910,7 +1095,13 @@ static void test_bridge_entity_cache_tracks_maxentities(void **state)
 int main(void)
 {
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test_setup_teardown(test_translate_client_quantises_payload,
+        cmocka_unit_test_setup_teardown(test_translate_client_preserves_raw_payload_angles,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_quantize_euler_degrees_uses_unsigned_truncated_grid,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_update_client_checks_inactive_before_null_adapter,
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_update_client_inactive_logs_contract_message,
@@ -931,13 +1122,22 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_bridge_update_entity_accepts_runtime_limit_increase,
                                         translator_setup,
                                         translator_teardown),
-        cmocka_unit_test_setup_teardown(test_translate_entity_dirty_flags_and_relink_logging,
+        cmocka_unit_test_setup_teardown(test_translate_entity_retail_fields_and_relink_flags,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_translate_entity_only_bsp_angles_and_bbox_bounds_are_mutable,
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_translate_entity_aas_not_loaded_logs,
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bot_update_entity_logging_stops_after_map_load,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_failed_entity_update_preserves_last_successful_cache,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_client_move_and_deactivate_preserve_retail_cache_lifecycle,
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_entity_cache_tracks_maxentities,

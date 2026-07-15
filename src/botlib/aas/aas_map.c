@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -29,6 +30,7 @@
 #include "botlib/ai_move/mover_catalogue.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
+#include "botlib/common/l_utils.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 
@@ -47,6 +49,8 @@ static qboolean AAS_AreaEntityCollision(int areanum,
                                         aas_trace_t *trace);
 static void AAS_ClampMinsMaxs(vec3_t mins, vec3_t maxs);
 static void AAS_ClearWorld(void);
+static void AAS_FreeEntityArray(void);
+static int AAS_AllocateConfiguredEntityArray(void);
 static void AAS_ParseEntityLump(const char *data, size_t length);
 
 #define AAS_AREA_STACK_SIZE 128
@@ -97,6 +101,9 @@ typedef struct aas_bsptrace_stack_s
  */
 aas_world_t aasworld = {0};
 static qboolean g_aasLibraryInitialized = qfalse;
+static qboolean g_aasEntityLimitsConfigured = qfalse;
+static int g_aasConfiguredMaxEntities = 0;
+static int g_aasConfiguredMaxClients = 0;
 
 qboolean AAS_WorldLoaded(void)
 {
@@ -2715,6 +2722,216 @@ qboolean AAS_InPVS(const vec3_t point1, const vec3_t point2)
 	return qfalse;
 }
 
+#define AAS_VISIBILITY_CONTENTS 0x02030003
+#define AAS_VISIBILITY_FLUIDS 0x00000038
+#define AAS_VISIBILITY_TRANSLUCENT_SURFACES 0x00000030
+
+/*
+=============
+AAS_InFieldOfVision
+
+Quantize retail pitch and yaw to the 16-bit angle grid and apply inclusive
+half-FOV bounds using the shortest signed difference.
+=============
+*/
+static qboolean AAS_InFieldOfVision(const vec3_t viewangles,
+	float fieldofview,
+	vec3_t targetangles)
+{
+	for (int axis = 0; axis < 2; ++axis)
+	{
+		float viewangle = AngleMod(viewangles[axis]);
+		float targetangle = AngleMod(targetangles[axis]);
+		targetangles[axis] = targetangle;
+
+		float difference = targetangle - viewangle;
+		if (targetangle < viewangle)
+		{
+			if (difference < -180.0f)
+			{
+				difference += 360.0f;
+			}
+		}
+		else if (difference > 180.0f)
+		{
+			difference -= 360.0f;
+		}
+
+		if (difference < 0.0f)
+		{
+			if (difference < fieldofview * -0.5f)
+			{
+				return qfalse;
+			}
+		}
+		else if (difference > fieldofview * 0.5f)
+		{
+			return qfalse;
+		}
+	}
+
+	return qtrue;
+}
+
+/*
+=============
+AAS_EntityVisible
+
+Test the target midpoint, bottom, and top in retail FOV/PVS/trace order,
+including liquid-boundary reversal and translucent-liquid continuation.
+=============
+*/
+int AAS_EntityVisible(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	float fieldofview,
+	int entnum)
+{
+	const aas_entity_t *entity = &aasworld.entities[entnum];
+	vec3_t sample;
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		sample[axis] = (entity->mins[axis] + entity->maxs[axis]) *
+			0.5f + entity->origin[axis];
+	}
+
+	vec3_t direction;
+	vec3_t targetangles;
+	VectorSubtract(sample, eye, direction);
+	Vector2Angles(direction, targetangles);
+	if (!AAS_InFieldOfVision(viewangles, fieldofview, targetangles))
+	{
+		return qfalse;
+	}
+
+	for (int sampleindex = 0; sampleindex < 3; ++sampleindex)
+	{
+		if (AAS_InPVS(eye, sample))
+		{
+			int contentmask = AAS_VISIBILITY_CONTENTS;
+			int passent = viewer;
+			int hitent = entnum;
+			vec3_t start;
+			vec3_t end;
+			VectorCopy(eye, start);
+			VectorCopy(sample, end);
+
+			if ((AAS_PointContents(sample) & AAS_VISIBILITY_FLUIDS) != 0)
+			{
+				contentmask |= AAS_VISIBILITY_FLUIDS;
+			}
+			if ((AAS_PointContents(eye) & AAS_VISIBILITY_FLUIDS) != 0)
+			{
+				if ((contentmask & AAS_VISIBILITY_FLUIDS) == 0)
+				{
+					VectorCopy(sample, start);
+					VectorCopy(eye, end);
+					passent = entnum;
+					hitent = viewer;
+				}
+				contentmask ^= AAS_VISIBILITY_FLUIDS;
+			}
+
+			bsp_trace_t trace = AAS_Trace(start,
+				NULL,
+				NULL,
+				end,
+				passent,
+				contentmask);
+			if ((trace.contents & AAS_VISIBILITY_FLUIDS) != 0 &&
+				(trace.surface.flags &
+					AAS_VISIBILITY_TRANSLUCENT_SURFACES) != 0)
+			{
+				contentmask &= ~AAS_VISIBILITY_FLUIDS;
+				trace = AAS_Trace(trace.endpos,
+					NULL,
+					NULL,
+					end,
+					passent,
+					contentmask);
+			}
+			if (trace.fraction >= 1.0f || trace.ent == hitent)
+			{
+				return qtrue;
+			}
+		}
+
+		if (sampleindex == 0)
+		{
+			sample[2] += entity->mins[2];
+		}
+		else if (sampleindex == 1)
+		{
+			sample[2] += entity->maxs[2] - entity->mins[2];
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+=============
+AAS_VisibleEntities
+
+Enumerate in-use client entities in ascending numeric order through the
+inclusive setup-time maxclients slot and stop at the caller's result cap.
+=============
+*/
+int AAS_VisibleEntities(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	float fieldofview,
+	int maxentities,
+	int *entitynums)
+{
+	int count = 0;
+	for (int entnum = 1; entnum <= aasworld.maxClients; ++entnum)
+	{
+		if (aasworld.entities[entnum].inuse &&
+			AAS_EntityVisible(viewer,
+				eye,
+				viewangles,
+				fieldofview,
+				entnum))
+		{
+			entitynums[count++] = entnum;
+			if (count >= maxentities)
+			{
+				break;
+			}
+		}
+	}
+	return count;
+}
+
+/*
+=============
+AAS_NextEntity
+
+Return the next in-use entity slot, with negative cursors beginning at zero.
+=============
+*/
+int AAS_NextEntity(int entnum)
+{
+	if (!aasworld.loaded)
+	{
+		return 0;
+	}
+	if (entnum < 0)
+	{
+		entnum = -1;
+	}
+
+	for (int next = entnum + 1; next < aasworld.maxEntities; ++next)
+	{
+		if (aasworld.entities[next].inuse)
+		{
+			return next;
+		}
+	}
+	return 0;
+}
+
 typedef struct aas_parsed_entity_s
 {
     char classname[64];
@@ -3748,6 +3965,53 @@ static void AAS_FixupBSPTexInfo(aas_bsptexinfo_t *texinfo, int count)
 		entry->flags = AAS_LittleLong(entry->flags);
 		entry->value = AAS_LittleLong(entry->value);
 		entry->nexttexinfo = AAS_LittleLong(entry->nexttexinfo);
+	}
+}
+
+/*
+=============
+AAS_FixupBSPEdges
+
+Convert loaded Quake II BSP edge records from little endian.
+=============
+*/
+static void AAS_FixupBSPEdges(aas_bspedge_t *edges, int count)
+{
+	if (edges == NULL || count <= 0)
+	{
+		return;
+	}
+
+	for (int index = 0; index < count; ++index)
+	{
+		edges[index].v[0] = AAS_LittleShort(edges[index].v[0]);
+		edges[index].v[1] = AAS_LittleShort(edges[index].v[1]);
+	}
+}
+
+/*
+=============
+AAS_FixupBSPFaces
+
+Convert loaded Quake II BSP face records from little endian.
+=============
+*/
+static void AAS_FixupBSPFaces(aas_bspface_t *faces, int count)
+{
+	if (faces == NULL || count <= 0)
+	{
+		return;
+	}
+
+	for (int index = 0; index < count; ++index)
+	{
+		aas_bspface_t *face = &faces[index];
+		face->planenum = AAS_LittleShort(face->planenum);
+		face->side = (short)AAS_LittleShort((uint16_t)face->side);
+		face->firstedge = AAS_LittleLong(face->firstedge);
+		face->numedges = (short)AAS_LittleShort((uint16_t)face->numedges);
+		face->texinfo = (short)AAS_LittleShort((uint16_t)face->texinfo);
+		face->lightofs = AAS_LittleLong(face->lightofs);
 	}
 }
 
@@ -5628,6 +5892,796 @@ static int AAS_LoadBSPCollisionData(const aas_map_file_source_t *bspSource,
 
 /*
 =============
+AAS_FreeLoadedBSPPointLightData
+
+Release pending BSP light-sampling buffers during map-load failure.
+=============
+*/
+static void AAS_FreeLoadedBSPPointLightData(vec3_t *vertexes,
+	aas_bspedge_t *edges,
+	int *surfedges,
+	aas_bspface_t *faces,
+	aas_bspsurfaceextent_t *surface_extents,
+	unsigned char *lightdata)
+{
+	free(vertexes);
+	free(edges);
+	free(surfedges);
+	free(faces);
+	free(surface_extents);
+	free(lightdata);
+}
+
+/*
+=============
+AAS_BSPPointLightDataFailure
+
+Report a deterministic guard rejection for malformed point-light BSP data.
+=============
+*/
+static int AAS_BSPPointLightDataFailure(const char *field, int index)
+{
+	BotLib_Print(PRT_ERROR,
+		"AAS_LoadMap: invalid BSP point-light %s at %d\n",
+		field != NULL ? field : "data",
+		index);
+	return BLERR_CANNOTREADBSPLUMP;
+}
+
+/*
+=============
+AAS_BSPPointLightSpanValid
+
+Check a signed first/count pair without allowing integer wraparound.
+=============
+*/
+static qboolean AAS_BSPPointLightSpanValid(int first, int count, int total)
+{
+	return first >= 0 && count >= 0 && total >= 0 &&
+		first <= total && count <= total - first;
+}
+
+/*
+=============
+AAS_BuildBSPPointLightExtents
+
+Validate retail BSP sampling references and build each face's eight-byte
+texture-minimum/extent cache.
+=============
+*/
+static int AAS_BuildBSPPointLightExtents(const aas_bspmodel_t *models,
+	int num_models,
+	const aas_bspnode_t *nodes,
+	int num_nodes,
+	const aas_plane_t *planes,
+	int num_planes,
+	const aas_bsptexinfo_t *texinfo,
+	int num_texinfo,
+	const vec3_t *vertexes,
+	int num_vertexes,
+	const aas_bspedge_t *edges,
+	int num_edges,
+	const int *surfedges,
+	int num_surfedges,
+	const aas_bspface_t *faces,
+	int num_faces,
+	const unsigned char *lightdata,
+	int lightdata_size,
+	aas_bspsurfaceextent_t **out_surface_extents)
+{
+	if (out_surface_extents == NULL)
+	{
+		return BLERR_CANNOTREADBSPLUMP;
+	}
+	*out_surface_extents = NULL;
+	if ((num_models > 0 && models == NULL) ||
+		(num_nodes > 0 && nodes == NULL) ||
+		(num_planes > 0 && planes == NULL) ||
+		(num_texinfo > 0 && texinfo == NULL) ||
+		(num_vertexes > 0 && vertexes == NULL) ||
+		(num_edges > 0 && edges == NULL) ||
+		(num_surfedges > 0 && surfedges == NULL) ||
+		(num_faces > 0 && faces == NULL))
+	{
+		return AAS_BSPPointLightDataFailure("missing lump", 0);
+	}
+
+	for (int index = 0; index < num_models; ++index)
+	{
+		const aas_bspmodel_t *model = &models[index];
+		if ((model->headnode >= num_nodes && model->headnode >= 0) ||
+			!AAS_BSPPointLightSpanValid(model->firstface,
+				model->numfaces,
+				num_faces))
+		{
+			return AAS_BSPPointLightDataFailure("model", index);
+		}
+	}
+
+	for (int index = 0; index < num_nodes; ++index)
+	{
+		const aas_bspnode_t *node = &nodes[index];
+		if (node->planenum < 0 || node->planenum >= num_planes ||
+			!AAS_BSPPointLightSpanValid((int)node->firstface,
+				(int)node->numfaces,
+				num_faces))
+		{
+			return AAS_BSPPointLightDataFailure("node", index);
+		}
+		for (int side = 0; side < 2; ++side)
+		{
+			if (node->children[side] >= num_nodes)
+			{
+				return AAS_BSPPointLightDataFailure("node child", index);
+			}
+		}
+	}
+
+	for (int index = 0; index < num_edges; ++index)
+	{
+		if ((int)edges[index].v[0] >= num_vertexes ||
+			(int)edges[index].v[1] >= num_vertexes)
+		{
+			return AAS_BSPPointLightDataFailure("edge vertex", index);
+		}
+	}
+
+	if (num_faces <= 0)
+	{
+		return BLERR_NOERROR;
+	}
+	if (faces == NULL || texinfo == NULL || vertexes == NULL ||
+		edges == NULL || surfedges == NULL)
+	{
+		return AAS_BSPPointLightDataFailure("missing face dependency", 0);
+	}
+
+	aas_bspsurfaceextent_t *surface_extents =
+		(aas_bspsurfaceextent_t *)calloc((size_t)num_faces,
+			sizeof(aas_bspsurfaceextent_t));
+	if (surface_extents == NULL)
+	{
+		return AAS_BSPPointLightDataFailure("extent allocation", 0);
+	}
+
+	for (int face_index = 0; face_index < num_faces; ++face_index)
+	{
+		const aas_bspface_t *face = &faces[face_index];
+		if ((int)face->planenum >= num_planes ||
+			face->texinfo < 0 || face->texinfo >= num_texinfo ||
+			!AAS_BSPPointLightSpanValid(face->firstedge,
+				(int)face->numedges,
+				num_surfedges) ||
+			face->numedges <= 0)
+		{
+			free(surface_extents);
+			return AAS_BSPPointLightDataFailure("face", face_index);
+		}
+
+		float mins[2] = {FLT_MAX, FLT_MAX};
+		float maxs[2] = {-FLT_MAX, -FLT_MAX};
+		for (int edge_offset = 0;
+			edge_offset < (int)face->numedges;
+			++edge_offset)
+		{
+			int surfedge = surfedges[face->firstedge + edge_offset];
+			if (surfedge == INT_MIN)
+			{
+				free(surface_extents);
+				return AAS_BSPPointLightDataFailure("surfedge", face_index);
+			}
+			int edge_index = surfedge >= 0 ? surfedge : -surfedge;
+			if (edge_index < 0 || edge_index >= num_edges)
+			{
+				free(surface_extents);
+				return AAS_BSPPointLightDataFailure("surfedge", face_index);
+			}
+
+			const aas_bspedge_t *edge = &edges[edge_index];
+			int vertex_index = surfedge >= 0 ?
+				(int)edge->v[0] : (int)edge->v[1];
+			if (vertex_index < 0 || vertex_index >= num_vertexes)
+			{
+				free(surface_extents);
+				return AAS_BSPPointLightDataFailure("face vertex", face_index);
+			}
+
+			const aas_bsptexinfo_t *face_texinfo = &texinfo[face->texinfo];
+			for (int axis = 0; axis < 2; ++axis)
+			{
+				float value = DotProduct(vertexes[vertex_index],
+					face_texinfo->vecs[axis]) +
+					face_texinfo->vecs[axis][3];
+				if (value < mins[axis])
+				{
+					mins[axis] = value;
+				}
+				if (value > maxs[axis])
+				{
+					maxs[axis] = value;
+				}
+			}
+		}
+
+		for (int axis = 0; axis < 2; ++axis)
+		{
+			double texture_minimum =
+				floor((double)mins[axis] / 16.0) * 16.0;
+			double texture_maximum =
+				ceil((double)maxs[axis] / 16.0) * 16.0;
+			double extent = texture_maximum - texture_minimum;
+			if (!isfinite(texture_minimum) || !isfinite(extent) ||
+				texture_minimum < (double)SHRT_MIN ||
+				texture_minimum > (double)SHRT_MAX ||
+				extent < 0.0 || extent > (double)SHRT_MAX)
+			{
+				free(surface_extents);
+				return AAS_BSPPointLightDataFailure("face extent", face_index);
+			}
+			surface_extents[face_index].texturemins[axis] =
+				(short)texture_minimum;
+			surface_extents[face_index].extents[axis] = (short)extent;
+		}
+
+		if (face->lightofs < 0)
+		{
+			continue;
+		}
+
+		int style_count = 0;
+		while (style_count < 4 && face->styles[style_count] != 0xffU)
+		{
+			style_count += 1;
+		}
+		int width = (surface_extents[face_index].extents[0] >> 4) + 1;
+		int height = (surface_extents[face_index].extents[1] >> 4) + 1;
+		size_t sample_count = (size_t)width * (size_t)height;
+		if (width <= 0 || height <= 0 ||
+			sample_count > SIZE_MAX / 3U ||
+			(size_t)style_count > SIZE_MAX / (sample_count * 3U))
+		{
+			free(surface_extents);
+			return AAS_BSPPointLightDataFailure("lightmap dimensions", face_index);
+		}
+		size_t light_bytes = sample_count * 3U * (size_t)style_count;
+		if (lightdata == NULL || lightdata_size < 0 ||
+			face->lightofs > lightdata_size ||
+			light_bytes > (size_t)(lightdata_size - face->lightofs))
+		{
+			free(surface_extents);
+			return AAS_BSPPointLightDataFailure("lightmap span", face_index);
+		}
+	}
+
+	*out_surface_extents = surface_extents;
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+AAS_LoadBSPPointLightData
+
+Load and endian-fix the BSP geometry/lightmap lumps retained by retail's
+point-light sampler, then calculate the per-face extent cache.
+=============
+*/
+static int AAS_LoadBSPPointLightData(const aas_map_file_source_t *bsp_source,
+	const aas_bspmodel_t *models,
+	int num_models,
+	const aas_bspnode_t *nodes,
+	int num_nodes,
+	const aas_plane_t *planes,
+	int num_planes,
+	const aas_bsptexinfo_t *texinfo,
+	int num_texinfo,
+	vec3_t **out_vertexes,
+	int *out_num_vertexes,
+	aas_bspedge_t **out_edges,
+	int *out_num_edges,
+	int **out_surfedges,
+	int *out_num_surfedges,
+	aas_bspface_t **out_faces,
+	int *out_num_faces,
+	aas_bspsurfaceextent_t **out_surface_extents,
+	unsigned char **out_lightdata,
+	int *out_lightdata_size)
+{
+	if (bsp_source == NULL || out_vertexes == NULL ||
+		out_num_vertexes == NULL || out_edges == NULL ||
+		out_num_edges == NULL || out_surfedges == NULL ||
+		out_num_surfedges == NULL || out_faces == NULL ||
+		out_num_faces == NULL || out_surface_extents == NULL ||
+		out_lightdata == NULL || out_lightdata_size == NULL)
+	{
+		return BLERR_CANNOTREADBSPLUMP;
+	}
+
+	*out_vertexes = NULL;
+	*out_num_vertexes = 0;
+	*out_edges = NULL;
+	*out_num_edges = 0;
+	*out_surfedges = NULL;
+	*out_num_surfedges = 0;
+	*out_faces = NULL;
+	*out_num_faces = 0;
+	*out_surface_extents = NULL;
+	*out_lightdata = NULL;
+	*out_lightdata_size = 0;
+
+	FILE *file = fopen(bsp_source->physicalPath, "rb");
+	if (file == NULL)
+	{
+		BotLib_Print(PRT_ERROR,
+			"AAS_LoadMap: cannot reopen BSP %s (%s)\n",
+			bsp_source->physicalPath,
+			strerror(errno));
+		return BLERR_CANNOTOPENBSPFILE;
+	}
+	if (fseek(file, bsp_source->offset, SEEK_SET) != 0)
+	{
+		fclose(file);
+		return BLERR_CANNOTSEEKTOBSPFILE;
+	}
+
+	long file_size = bsp_source->archived ?
+		bsp_source->length : AAS_GetFileSize(file);
+	if (file_size < 0L || file_size < (long)sizeof(q2_bsp_header_t))
+	{
+		fclose(file);
+		return BLERR_CANNOTREADBSPHEADER;
+	}
+	if (fseek(file, bsp_source->offset, SEEK_SET) != 0)
+	{
+		fclose(file);
+		return BLERR_CANNOTSEEKTOBSPFILE;
+	}
+
+	q2_bsp_header_t header;
+	if (fread(&header, sizeof(header), 1U, file) != 1U)
+	{
+		fclose(file);
+		return BLERR_CANNOTREADBSPHEADER;
+	}
+	header.ident = AAS_LittleLong(header.ident);
+	header.version = AAS_LittleLong(header.version);
+	for (int index = 0; index < Q2_BSP_LUMP_MAX; ++index)
+	{
+		header.lumps[index].offset =
+			AAS_LittleLong(header.lumps[index].offset);
+		header.lumps[index].length =
+			AAS_LittleLong(header.lumps[index].length);
+	}
+	if (header.ident != Q2_BSP_IDENT)
+	{
+		fclose(file);
+		return BLERR_WRONGBSPFILEID;
+	}
+	if (header.version != Q2_BSP_VERSION)
+	{
+		fclose(file);
+		return BLERR_WRONGBSPFILEVERSION;
+	}
+
+	vec3_t *vertexes = NULL;
+	int num_vertexes = 0;
+	aas_bspedge_t *edges = NULL;
+	int num_edges = 0;
+	int *surfedges = NULL;
+	int num_surfedges = 0;
+	aas_bspface_t *faces = NULL;
+	int num_faces = 0;
+	unsigned char *lightdata = NULL;
+	int lightdata_size = 0;
+	aas_bspsurfaceextent_t *surface_extents = NULL;
+
+	int result = AAS_ReadLump(file,
+		&header.lumps[Q2_BSP_LUMP_VERTICES],
+		sizeof(vec3_t),
+		(void **)&vertexes,
+		&num_vertexes,
+		bsp_source->offset,
+		file_size,
+		BLERR_CANNOTREADBSPLUMP,
+		"vertexes");
+	if (result != BLERR_NOERROR)
+	{
+		goto load_failure;
+	}
+	result = AAS_ReadLump(file,
+		&header.lumps[Q2_BSP_LUMP_EDGES],
+		sizeof(aas_bspedge_t),
+		(void **)&edges,
+		&num_edges,
+		bsp_source->offset,
+		file_size,
+		BLERR_CANNOTREADBSPLUMP,
+		"edges");
+	if (result != BLERR_NOERROR)
+	{
+		goto load_failure;
+	}
+	result = AAS_ReadLump(file,
+		&header.lumps[Q2_BSP_LUMP_SURFEDGES],
+		sizeof(int),
+		(void **)&surfedges,
+		&num_surfedges,
+		bsp_source->offset,
+		file_size,
+		BLERR_CANNOTREADBSPLUMP,
+		"surface edges");
+	if (result != BLERR_NOERROR)
+	{
+		goto load_failure;
+	}
+	result = AAS_ReadLump(file,
+		&header.lumps[Q2_BSP_LUMP_FACES],
+		sizeof(aas_bspface_t),
+		(void **)&faces,
+		&num_faces,
+		bsp_source->offset,
+		file_size,
+		BLERR_CANNOTREADBSPLUMP,
+		"faces");
+	if (result != BLERR_NOERROR)
+	{
+		goto load_failure;
+	}
+	result = AAS_ReadLump(file,
+		&header.lumps[Q2_BSP_LUMP_LIGHTING],
+		1U,
+		(void **)&lightdata,
+		&lightdata_size,
+		bsp_source->offset,
+		file_size,
+		BLERR_CANNOTREADBSPLUMP,
+		"lighting");
+	if (result != BLERR_NOERROR)
+	{
+		goto load_failure;
+	}
+	fclose(file);
+	file = NULL;
+
+	AAS_FixupVertexes((aas_vertex_t *)vertexes, num_vertexes);
+	AAS_FixupBSPEdges(edges, num_edges);
+	AAS_FixupIntArray(surfedges, num_surfedges);
+	AAS_FixupBSPFaces(faces, num_faces);
+	result = AAS_BuildBSPPointLightExtents(models,
+		num_models,
+		nodes,
+		num_nodes,
+		planes,
+		num_planes,
+		texinfo,
+		num_texinfo,
+		(const vec3_t *)vertexes,
+		num_vertexes,
+		edges,
+		num_edges,
+		surfedges,
+		num_surfedges,
+		faces,
+		num_faces,
+		lightdata,
+		lightdata_size,
+		&surface_extents);
+	if (result != BLERR_NOERROR)
+	{
+		goto load_failure;
+	}
+
+	*out_vertexes = vertexes;
+	*out_num_vertexes = num_vertexes;
+	*out_edges = edges;
+	*out_num_edges = num_edges;
+	*out_surfedges = surfedges;
+	*out_num_surfedges = num_surfedges;
+	*out_faces = faces;
+	*out_num_faces = num_faces;
+	*out_surface_extents = surface_extents;
+	*out_lightdata = lightdata;
+	*out_lightdata_size = lightdata_size;
+	return BLERR_NOERROR;
+
+load_failure:
+	if (file != NULL)
+	{
+		fclose(file);
+	}
+	AAS_FreeLoadedBSPPointLightData(vertexes,
+		edges,
+		surfedges,
+		faces,
+		surface_extents,
+		lightdata);
+	return result;
+}
+
+/*
+=============
+AAS_SampleBSPPointLightFace
+
+Sample one face at a BSP split point using retail's s-major lightmap address
+calculation and fixed 0x108 per-channel scale.
+=============
+*/
+static qboolean AAS_SampleBSPPointLightFace(int face_index,
+	const vec3_t point,
+	int *red,
+	int *green,
+	int *blue)
+{
+	if (face_index < 0 || face_index >= aasworld.numBspFaces ||
+		aasworld.bspFaces == NULL || aasworld.bspSurfaceExtents == NULL ||
+		aasworld.bspTexInfo == NULL || point == NULL)
+	{
+		return qfalse;
+	}
+
+	const aas_bspface_t *face = &aasworld.bspFaces[face_index];
+	if (face->texinfo < 0 || face->texinfo >= aasworld.numBspTexInfo)
+	{
+		return qfalse;
+	}
+	const aas_bsptexinfo_t *texinfo = &aasworld.bspTexInfo[face->texinfo];
+	const aas_bspsurfaceextent_t *surface_extent =
+		&aasworld.bspSurfaceExtents[face_index];
+
+	float light_s_value = DotProduct(point, texinfo->vecs[0]) +
+		texinfo->vecs[0][3];
+	float light_t_value = DotProduct(point, texinfo->vecs[1]) +
+		texinfo->vecs[1][3];
+	if (!isfinite(light_s_value) || !isfinite(light_t_value) ||
+		light_s_value < (float)INT_MIN || light_s_value > (float)INT_MAX ||
+		light_t_value < (float)INT_MIN || light_t_value > (float)INT_MAX)
+	{
+		return qfalse;
+	}
+	int light_s = (int)light_s_value;
+	int light_t = (int)light_t_value;
+	int delta_s = light_s - (int)surface_extent->texturemins[0];
+	int delta_t = light_t - (int)surface_extent->texturemins[1];
+	if (delta_s < 0 || delta_t < 0 ||
+		delta_s > (int)surface_extent->extents[0] ||
+		delta_t > (int)surface_extent->extents[1])
+	{
+		return qfalse;
+	}
+
+	int sample_red = 0;
+	int sample_green = 0;
+	int sample_blue = 0;
+	if (face->lightofs >= 0)
+	{
+		int width = ((int)surface_extent->extents[0] >> 4) + 1;
+		int height = ((int)surface_extent->extents[1] >> 4) + 1;
+		if (width <= 0 || height <= 0 || aasworld.bspLightData == NULL ||
+			aasworld.bspLightDataSize < 0 ||
+			face->lightofs > aasworld.bspLightDataSize)
+		{
+			return qfalse;
+		}
+		size_t sample_count = (size_t)width * (size_t)height;
+		size_t sample_index =
+			(size_t)(delta_s >> 4) * (size_t)width +
+			(size_t)(delta_t >> 4);
+		if (sample_count > SIZE_MAX / 3U)
+		{
+			return qfalse;
+		}
+		size_t style_bytes = sample_count * 3U;
+
+		for (int style = 0;
+			style < 4 && face->styles[style] != 0xffU;
+			++style)
+		{
+			size_t style_offset = (size_t)style * style_bytes;
+			size_t pixel_offset = sample_index * 3U;
+			if (style_offset > SIZE_MAX - pixel_offset ||
+				(size_t)face->lightofs > SIZE_MAX - style_offset - pixel_offset)
+			{
+				return qfalse;
+			}
+			size_t offset = (size_t)face->lightofs +
+				style_offset + pixel_offset;
+			if (offset > (size_t)aasworld.bspLightDataSize ||
+				(size_t)aasworld.bspLightDataSize - offset < 3U)
+			{
+				return qfalse;
+			}
+			const unsigned char *sample = &aasworld.bspLightData[offset];
+			sample_red += (int)sample[0] * 0x108;
+			sample_green += (int)sample[1] * 0x108;
+			sample_blue += (int)sample[2] * 0x108;
+		}
+		sample_red >>= 8;
+		sample_green >>= 8;
+		sample_blue >>= 8;
+	}
+
+	if (red != NULL)
+	{
+		*red = sample_red;
+	}
+	if (green != NULL)
+	{
+		*green = sample_green;
+	}
+	if (blue != NULL)
+	{
+		*blue = sample_blue;
+	}
+	return qtrue;
+}
+
+/*
+=============
+AAS_RecursiveBSPPointLight
+
+Walk the retail BSP split recursion, sampling node faces between the near and
+far child traversals.
+=============
+*/
+static qboolean AAS_RecursiveBSPPointLight(int nodenum,
+	const vec3_t start,
+	const vec3_t end,
+	vec3_t hit,
+	int *red,
+	int *green,
+	int *blue,
+	int depth)
+{
+	if (nodenum < 0)
+	{
+		return qfalse;
+	}
+	if (nodenum >= aasworld.numBspNodes || depth >= aasworld.numBspNodes ||
+		aasworld.bspNodes == NULL || aasworld.bspPlanes == NULL)
+	{
+		return qfalse;
+	}
+
+	const aas_bspnode_t *node = &aasworld.bspNodes[nodenum];
+	if (node->planenum < 0 || node->planenum >= aasworld.numBspPlanes)
+	{
+		return qfalse;
+	}
+	const aas_plane_t *plane = &aasworld.bspPlanes[node->planenum];
+	float front;
+	float back;
+	if (plane->type >= 0 && plane->type < 3)
+	{
+		front = start[plane->type] - plane->dist;
+		back = end[plane->type] - plane->dist;
+	}
+	else
+	{
+		front = DotProduct(start, plane->normal) - plane->dist;
+		back = DotProduct(end, plane->normal) - plane->dist;
+	}
+
+	int side = front < 0.0f;
+	if ((back < 0.0f) == side)
+	{
+		return AAS_RecursiveBSPPointLight(node->children[side],
+			start,
+			end,
+			hit,
+			red,
+			green,
+			blue,
+			depth + 1);
+	}
+
+	float denominator = front - back;
+	if (denominator == 0.0f)
+	{
+		return qfalse;
+	}
+	float fraction = front / denominator;
+	vec3_t middle;
+	for (int component = 0; component < 3; ++component)
+	{
+		middle[component] = start[component] +
+			fraction * (end[component] - start[component]);
+	}
+
+	if (AAS_RecursiveBSPPointLight(node->children[side],
+		start,
+		middle,
+		hit,
+		red,
+		green,
+		blue,
+		depth + 1))
+	{
+		return qtrue;
+	}
+
+	int first_face = (int)node->firstface;
+	int num_faces = (int)node->numfaces;
+	if (!AAS_BSPPointLightSpanValid(first_face,
+		num_faces,
+		aasworld.numBspFaces))
+	{
+		return qfalse;
+	}
+	for (int offset = 0; offset < num_faces; ++offset)
+	{
+		int sample_red;
+		int sample_green;
+		int sample_blue;
+		if (!AAS_SampleBSPPointLightFace(first_face + offset,
+			middle,
+			&sample_red,
+			&sample_green,
+			&sample_blue))
+		{
+			continue;
+		}
+		if (hit != NULL)
+		{
+			VectorCopy(middle, hit);
+		}
+		if (red != NULL)
+		{
+			*red = sample_red;
+		}
+		if (green != NULL)
+		{
+			*green = sample_green;
+		}
+		if (blue != NULL)
+		{
+			*blue = sample_blue;
+		}
+		return qtrue;
+	}
+
+	return AAS_RecursiveBSPPointLight(node->children[side ^ 1],
+		middle,
+		end,
+		hit,
+		red,
+		green,
+		blue,
+		depth + 1);
+}
+
+/*
+=============
+AAS_BSPTracePointLight
+
+Run retail's static point-light wrapper from the world model headnode.
+=============
+*/
+qboolean AAS_BSPTracePointLight(const vec3_t start,
+	const vec3_t end,
+	vec3_t hit,
+	int *red,
+	int *green,
+	int *blue)
+{
+	if (!aasworld.loaded || start == NULL || end == NULL ||
+		aasworld.bspLightData == NULL || aasworld.bspLightDataSize <= 0 ||
+		aasworld.bspModels == NULL || aasworld.numBspModels <= 0 ||
+		aasworld.bspNodes == NULL || aasworld.numBspNodes <= 0)
+	{
+		return qfalse;
+	}
+
+	return AAS_RecursiveBSPPointLight(aasworld.bspModels[0].headnode,
+		start,
+		end,
+		hit,
+		red,
+		green,
+		blue,
+		0);
+}
+
+/*
+=============
 AAS_LoadBSPVisibilityData
 
 Retain and endian-fix the Quake II dvis lump used by retail AAS_InPVS.
@@ -5759,6 +6813,79 @@ static size_t AAS_AreaBitWordCount(void)
     return (totalBits + 31U) / 32U;
 }
 
+/*
+=============
+AAS_FreeEntityArray
+
+Release the host-native entity table and all per-entity area bookkeeping.
+=============
+*/
+static void AAS_FreeEntityArray(void)
+{
+	if (aasworld.entities != NULL)
+	{
+		for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
+		{
+			aas_entity_t *entity = &aasworld.entities[entnum];
+			AAS_UnlinkEntityFromAreas(entity);
+			free(entity->areaOccupancyBits);
+			entity->areaOccupancyBits = NULL;
+			entity->areaOccupancyWords = 0U;
+			entity->areaOccupancyCount = 0;
+		}
+		free(aasworld.entities);
+	}
+
+	aasworld.entities = NULL;
+	aasworld.maxEntities = 0;
+	aasworld.maxClients = 0;
+}
+
+/*
+=============
+AAS_AllocateConfiguredEntityArray
+
+Restore the setup-time retail entity limits after map data is cleared.
+=============
+*/
+static int AAS_AllocateConfiguredEntityArray(void)
+{
+	if (!g_aasEntityLimitsConfigured)
+	{
+		return BLERR_NOERROR;
+	}
+
+	aasworld.maxEntities = g_aasConfiguredMaxEntities;
+	aasworld.maxClients = g_aasConfiguredMaxClients;
+	if (g_aasConfiguredMaxEntities <= 0)
+	{
+		return BLERR_NOERROR;
+	}
+	if ((size_t)g_aasConfiguredMaxEntities >
+		SIZE_MAX / sizeof(aas_entity_t))
+	{
+		return BLERR_INVALIDENTITYNUMBER;
+	}
+
+	aasworld.entities = (aas_entity_t *)calloc(
+		(size_t)g_aasConfiguredMaxEntities,
+		sizeof(aas_entity_t));
+	if (aasworld.entities == NULL)
+	{
+		return BLERR_INVALIDENTITYNUMBER;
+	}
+
+	AAS_InvalidateEntities();
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+AAS_ClearWorld
+
+Release every retained AAS and Quake II BSP allocation.
+=============
+*/
 static void AAS_ClearWorld(void)
 {
     BotMove_MoverCatalogueReset();
@@ -5770,23 +6897,7 @@ static void AAS_ClearWorld(void)
     free(aasworld.areacontentstravelflags);
     aasworld.areacontentstravelflags = NULL;
 
-    if (aasworld.entities != NULL)
-    {
-        for (int i = 0; i < aasworld.maxEntities; ++i)
-        {
-            AAS_UnlinkEntityFromAreas(&aasworld.entities[i]);
-            if (aasworld.entities[i].areaOccupancyBits != NULL)
-            {
-                free(aasworld.entities[i].areaOccupancyBits);
-                aasworld.entities[i].areaOccupancyBits = NULL;
-                aasworld.entities[i].areaOccupancyWords = 0U;
-            }
-            aasworld.entities[i].areaOccupancyCount = 0;
-        }
-
-        free(aasworld.entities);
-        aasworld.entities = NULL;
-    }
+	AAS_FreeEntityArray();
 
     if (aasworld.areaEntityLists != NULL)
     {
@@ -5835,6 +6946,42 @@ static void AAS_ClearWorld(void)
 	{
 		free(aasworld.bspTexInfo);
 		aasworld.bspTexInfo = NULL;
+	}
+
+	if (aasworld.bspVertexes != NULL)
+	{
+		free(aasworld.bspVertexes);
+		aasworld.bspVertexes = NULL;
+	}
+
+	if (aasworld.bspEdges != NULL)
+	{
+		free(aasworld.bspEdges);
+		aasworld.bspEdges = NULL;
+	}
+
+	if (aasworld.bspSurfEdges != NULL)
+	{
+		free(aasworld.bspSurfEdges);
+		aasworld.bspSurfEdges = NULL;
+	}
+
+	if (aasworld.bspFaces != NULL)
+	{
+		free(aasworld.bspFaces);
+		aasworld.bspFaces = NULL;
+	}
+
+	if (aasworld.bspSurfaceExtents != NULL)
+	{
+		free(aasworld.bspSurfaceExtents);
+		aasworld.bspSurfaceExtents = NULL;
+	}
+
+	if (aasworld.bspLightData != NULL)
+	{
+		free(aasworld.bspLightData);
+		aasworld.bspLightData = NULL;
 	}
 
 	if (aasworld.bspBrushSides != NULL)
@@ -5971,6 +7118,11 @@ int AAS_LoadMap(const char *mapname,
 	TranslateEntity_SetWorldLoaded(qfalse);
 
     AAS_ClearWorld();
+	int entitySetupStatus = AAS_AllocateConfiguredEntityArray();
+	if (entitySetupStatus != BLERR_NOERROR)
+	{
+		return entitySetupStatus;
+	}
 	if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
 	{
 		BotLib_Print(PRT_FATAL,
@@ -6661,6 +7813,64 @@ int AAS_LoadMap(const char *mapname,
 		free(clusters);
 		return result;
 	}
+
+	vec3_t *bspVertexes = NULL;
+	int numBspVertexes = 0;
+	aas_bspedge_t *bspEdges = NULL;
+	int numBspEdges = 0;
+	int *bspSurfEdges = NULL;
+	int bspSurfEdgeIndexSize = 0;
+	aas_bspface_t *bspFaces = NULL;
+	int numBspFaces = 0;
+	aas_bspsurfaceextent_t *bspSurfaceExtents = NULL;
+	unsigned char *bspLightData = NULL;
+	int bspLightDataSize = 0;
+	result = AAS_LoadBSPPointLightData(&bspSource,
+		bspModels,
+		numBspModels,
+		bspNodes,
+		numBspNodes,
+		bspPlanes,
+		numBspPlanes,
+		bspTexInfo,
+		numBspTexInfo,
+		&bspVertexes,
+		&numBspVertexes,
+		&bspEdges,
+		&numBspEdges,
+		&bspSurfEdges,
+		&bspSurfEdgeIndexSize,
+		&bspFaces,
+		&numBspFaces,
+		&bspSurfaceExtents,
+		&bspLightData,
+		&bspLightDataSize);
+	if (result != BLERR_NOERROR)
+	{
+		AAS_FreeLoadedBSPCollisionData(bspModels,
+			bspNodes,
+			bspLeaves,
+			bspLeafBrushes,
+			bspPlanes,
+			bspTexInfo,
+			bspBrushSides,
+			bspBrushes);
+		free(bboxes);
+		free(vertexes);
+		free(edges);
+		free(edgeIndex);
+		free(faces);
+		free(faceIndex);
+		free(areas);
+		free(areasettings);
+		free(reachability);
+		free(planes);
+		free(nodes);
+		free(portals);
+		free(portalIndex);
+		free(clusters);
+		return result;
+	}
 	unsigned char *bspVisibility = NULL;
 	size_t bspVisibilitySize = 0U;
 	int numBspVisibilityClusters = 0;
@@ -6705,6 +7915,17 @@ int AAS_LoadMap(const char *mapname,
 	aasworld.bspPlanes = bspPlanes;
 	aasworld.numBspTexInfo = numBspTexInfo;
 	aasworld.bspTexInfo = bspTexInfo;
+	aasworld.numBspVertexes = numBspVertexes;
+	aasworld.bspVertexes = bspVertexes;
+	aasworld.numBspEdges = numBspEdges;
+	aasworld.bspEdges = bspEdges;
+	aasworld.bspSurfEdgeIndexSize = bspSurfEdgeIndexSize;
+	aasworld.bspSurfEdges = bspSurfEdges;
+	aasworld.numBspFaces = numBspFaces;
+	aasworld.bspFaces = bspFaces;
+	aasworld.bspSurfaceExtents = bspSurfaceExtents;
+	aasworld.bspLightDataSize = bspLightDataSize;
+	aasworld.bspLightData = bspLightData;
 	aasworld.numBspBrushSides = numBspBrushSides;
 	aasworld.bspBrushSides = bspBrushSides;
 	aasworld.numBspBrushes = numBspBrushes;
@@ -6737,8 +7958,6 @@ int AAS_LoadMap(const char *mapname,
 	aasworld.portalIndex = portalIndex;
 	aasworld.numClusters = numClusters;
 	aasworld.clusters = clusters;
-    aasworld.maxEntities = 0;
-    aasworld.entities = NULL;
     aasworld.entitiesValid = qfalse;
     aasworld.numFrames = 0;
     aasworld.loaded = qtrue;
@@ -6765,6 +7984,24 @@ int AAS_LoadMap(const char *mapname,
     AAS_FrameSynchronise(0.0f);
     TranslateEntity_SetWorldLoaded(qtrue);
     return BLERR_NOERROR;
+}
+
+/*
+=============
+AAS_ConfigureEntityLimits
+
+Store the retail maxentities/maxclients setup values and allocate the cleared
+entity table used until AAS shutdown.
+=============
+*/
+int AAS_ConfigureEntityLimits(int maxentities, int maxclients)
+{
+	g_aasConfiguredMaxEntities = maxentities;
+	g_aasConfiguredMaxClients = maxclients;
+	g_aasEntityLimitsConfigured = qtrue;
+
+	AAS_FreeEntityArray();
+	return AAS_AllocateConfiguredEntityArray();
 }
 
 /*
@@ -6957,6 +8194,9 @@ void AAS_Shutdown(void)
     TranslateEntity_SetCurrentTime(0.0f);
     TranslateEntity_SetWorldLoaded(qfalse);
     AAS_ClearWorld();
+	g_aasEntityLimitsConfigured = qfalse;
+	g_aasConfiguredMaxEntities = 0;
+	g_aasConfiguredMaxClients = 0;
     g_aasLibraryInitialized = qfalse;
 }
 
@@ -6971,6 +8211,10 @@ static int AAS_EnsureEntityCapacity(int ent)
     {
         return BLERR_NOERROR;
     }
+	if (g_aasEntityLimitsConfigured)
+	{
+		return BLERR_INVALIDENTITYNUMBER;
+	}
 
     size_t previousCount = (size_t)aasworld.maxEntities;
     size_t requiredCount = (size_t)ent + 1U;
@@ -7282,6 +8526,11 @@ static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absm
     return BLERR_NOERROR;
 }
 
+/*
+=============
+AAS_UpdateEntity
+=============
+*/
 int AAS_UpdateEntity(int ent, const AASEntityFrame *state)
 {
     if (!aasworld.loaded)
@@ -7338,7 +8587,8 @@ int AAS_UpdateEntity(int ent, const AASEntityFrame *state)
     entity->lastUpdateTime = state->last_update_time;
     entity->deltaTime = state->frame_delta;
 
-    if (state->bounds_dirty || state->origin_dirty)
+	if (ent > 0 &&
+		(state->angles_dirty || state->bounds_dirty || state->origin_dirty))
     {
         vec3_t absmins;
         vec3_t absmaxs;
@@ -7353,7 +8603,7 @@ int AAS_UpdateEntity(int ent, const AASEntityFrame *state)
         }
     }
 
-    if (state->origin_dirty && entity->solid == SOLID_BSP)
+	if (ent > 0 && state->origin_dirty && entity->solid == SOLID_BSP)
     {
         float dx = fabsf(state->origin[0] - state->previous_origin[0]);
         float dy = fabsf(state->origin[1] - state->previous_origin[1]);

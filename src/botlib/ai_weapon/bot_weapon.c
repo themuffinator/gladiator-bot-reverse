@@ -610,7 +610,7 @@ int BotSelectBestFightWeapon(int client, int weaponstate, const int *inventory, 
 	if (state->current_weapon_model == NULL ||
 		Q_stricmp(weapon->model, state->current_weapon_model) != 0)
 	{
-		EA_Command(command_client, "use %s", weapon->name);
+		EA_UseItem(command_client, weapon->name);
 		state->next_weapon_select_time = now + weapon->activate + 3.0f;
 	}
 

@@ -11,6 +11,7 @@
 #include "botlib/ai/goal_move_orchestrator.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/ea/ea_local.h"
+#include "botlib/interface/bot_interface.h"
 #include "botlib/interface/bot_state.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/bridge_config.h"
@@ -84,11 +85,11 @@ struct ai_dm_state_s
 	float last_jump_time;
 	float attack_cooldown;
 	float avoid_duration;
-	int last_selected_weapon;
 	int last_avoid_entity;
 	float last_avoid_time;
 	int enemy_entity;
 	int last_enemy_area;
+	bool enemy_context_authoritative;
 	int revenge_enemy;
 	int revenge_kills;
 	bool enemy_visible;
@@ -113,7 +114,6 @@ struct ai_dm_state_s
 	float attack_chase_duration;
 	vec3_t last_enemy_origin;
 	vec3_t last_enemy_velocity;
-	bool view_initialised;
 	vec3_t viewangles;
 	vec3_t ideal_viewangles;
 	vec3_t viewanglespeed;
@@ -382,7 +382,7 @@ static void AI_DMChangeViewAngles(ai_dm_state_t *state,
 
 	float factor;
 	float max_change;
-	if (state->enemy_entity < 0)
+	if (state->enemy_entity == 0)
 	{
 		factor = 100.0f;
 		max_change = 150.0f;
@@ -489,7 +489,7 @@ static void AI_DMAimAtEnemy(ai_dm_state_t *state,
 			mins,
 			maxs,
 			best_origin,
-			client_state->client_number,
+			client_state->entity_number,
 			MASK_SHOT);
 		if (trace.fraction <= 1.0f && trace.ent != enemy->entity)
 		{
@@ -545,7 +545,7 @@ static void AI_DMAimAtEnemy(ai_dm_state_t *state,
 				NULL,
 				NULL,
 				ground_target,
-				client_state->client_number,
+				client_state->entity_number,
 				MASK_SHOT);
 			vec3_t impact_delta;
 			VectorSubtract(impact_trace.endpos,
@@ -779,9 +779,7 @@ static bool AI_DMTraceEntityIsTeammate(const bot_client_state_t *client_state,
 		return false;
 	}
 
-	const bot_client_state_t *other = BotState_Get(entity);
-	return other != NULL && client_state->team >= 0 && other->team >= 0 &&
-		client_state->team == other->team;
+	return BotAI_SameTeam(client_state, entity) != 0;
 }
 
 /*
@@ -813,7 +811,7 @@ static bool AI_DMCheckAttack(ai_dm_state_t *state,
 	vec3_t eye_position;
 	VectorCopy(client_state->last_client_update.origin, eye_position);
 	eye_position[2] += client_state->last_client_update.viewoffset[2];
-	if (!AI_DMEntityVisible(client_state->client_number,
+	if (!AI_DMEntityVisible(client_state->entity_number,
 		eye_position,
 		state->viewangles,
 		field_of_view,
@@ -856,7 +854,7 @@ static bool AI_DMCheckAttack(ai_dm_state_t *state,
 		mins,
 		maxs,
 		end,
-		client_state->client_number,
+		client_state->entity_number,
 		MASK_SHOT);
 
 	if (trace.ent != enemy->entity)
@@ -888,7 +886,7 @@ static bool AI_DMCheckAttack(ai_dm_state_t *state,
 			NULL,
 			NULL,
 			target_origin,
-			client_state->client_number,
+			client_state->entity_number,
 			MASK_SHOT);
 		if (trace.ent != enemy->entity)
 		{
@@ -913,8 +911,7 @@ static bool AI_DMCheckAttack(ai_dm_state_t *state,
 =============
 AI_DMSetupForMovement
 
-Rebuilds the move-state input used immediately before retail attack-chase
-goal movement.
+Rebuilds the move-state input at retail's post-gate attack-movement call sites.
 =============
 */
 static void AI_DMSetupForMovement(const ai_dm_state_t *state,
@@ -931,7 +928,7 @@ static void AI_DMSetupForMovement(const ai_dm_state_t *state,
 	VectorCopy(client_state->last_client_update.origin, initmove.origin);
 	VectorCopy(client_state->last_client_update.velocity, initmove.velocity);
 	VectorCopy(client_state->last_client_update.viewoffset, initmove.viewoffset);
-	initmove.entitynum = client_state->client_number;
+	initmove.entitynum = client_state->entity_number;
 	initmove.client = client_state->client_number;
 	initmove.thinktime = think_time;
 	initmove.presencetype =
@@ -1034,6 +1031,7 @@ static void AI_DMAttackMove(ai_dm_state_t *state,
 	{
 		return;
 	}
+	AI_DMSetupForMovement(state, client_state, think_time);
 
 	int move_type = MOVE_WALK;
 	if (state->attackcrouch_time < now - 1.0f)
@@ -1068,7 +1066,7 @@ static void AI_DMAttackMove(ai_dm_state_t *state,
 	vec3_t backward;
 	VectorNegate(forward, backward);
 
-	if (attack_skill <= AI_DM_SIMPLE_ATTACK_SKILL)
+	if (attack_skill < AI_DM_SIMPLE_ATTACK_SKILL)
 	{
 		if (distance > AI_DM_IDEAL_ATTACK_DISTANCE + AI_DM_ATTACK_DISTANCE_RANGE)
 		{
@@ -1211,7 +1209,6 @@ ai_dm_state_t *AI_DMState_Create(int client_number)
 	state->client_number = client_number;
 	state->attack_cooldown = AI_DM_ATTACK_COOLDOWN;
 	state->avoid_duration = AI_DM_AVOID_DURATION;
-	state->last_selected_weapon = -1;
 	state->last_avoid_entity = -1;
 	state->reaction_delay = AI_DM_REACTION_DELAY;
 	state->chase_duration = AI_DM_CHASE_DURATION;
@@ -1258,11 +1255,11 @@ void AI_DMState_Reset(ai_dm_state_t *state)
 
 	state->last_attack_time = -FLT_MAX;
 	state->last_jump_time = -FLT_MAX;
-	state->last_selected_weapon = -1;
 	state->last_avoid_entity = -1;
 	state->last_avoid_time = -FLT_MAX;
-	state->enemy_entity = -1;
+	state->enemy_entity = 0;
 	state->last_enemy_area = 0;
+	state->enemy_context_authoritative = false;
 	state->revenge_enemy = -1;
 	state->revenge_kills = 0;
 	state->enemy_visible = false;
@@ -1281,7 +1278,6 @@ void AI_DMState_Reset(ai_dm_state_t *state)
 	state->firethrottlewait_time = -FLT_MAX;
 	state->firethrottleshoot_time = -FLT_MAX;
 	state->last_think_time = -FLT_MAX;
-	state->view_initialised = false;
 	VectorClear(state->last_enemy_origin);
 	VectorClear(state->last_enemy_velocity);
 	VectorClear(state->viewangles);
@@ -1308,6 +1304,202 @@ void AI_DMState_SetClient(ai_dm_state_t *state, int client_number)
 	}
 
 	state->client_number = client_number;
+}
+
+/*
+=============
+AI_DMState_SetEnemyContext
+
+Adopts the authoritative retail enemy fields owned by bot_client_state.
+=============
+*/
+void AI_DMState_SetEnemyContext(ai_dm_state_t *state,
+	int enemy_entity,
+	float enemy_sight_time,
+	int last_enemy_area,
+	const vec3_t last_enemy_origin)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->enemy_entity = enemy_entity;
+	state->enemysight_time = enemy_sight_time;
+	state->last_enemy_area = last_enemy_area;
+	if (last_enemy_origin != NULL)
+	{
+		VectorCopy(last_enemy_origin, state->last_enemy_origin);
+	}
+	state->enemy_context_authoritative = true;
+}
+
+/*
+=============
+AI_DMState_SetChaseDeadline
+
+Transfers Battle Chase's retail ten-second deadline to the DM movement state
+without changing the ordinary visible-enemy refresh path.
+=============
+*/
+void AI_DMState_SetChaseDeadline(ai_dm_state_t *state, float chase_time)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->chase_time = chase_time;
+}
+
+/*
+=============
+AI_DMState_ApplyDeltaAngles
+
+Accumulates BotUpdateClient delta angles into retail's private view angles.
+=============
+*/
+void AI_DMState_ApplyDeltaAngles(ai_dm_state_t *state,
+	const vec3_t delta_angles)
+{
+	if (state == NULL || delta_angles == NULL)
+	{
+		return;
+	}
+
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		state->viewangles[axis] = AI_DMAngleMod(
+			state->viewangles[axis] + delta_angles[axis]);
+	}
+}
+
+/*
+=============
+AI_DMState_GetViewAngles
+
+Copies the private view angles consumed by retail enemy acquisition.
+=============
+*/
+int AI_DMState_GetViewAngles(const ai_dm_state_t *state,
+	vec3_t viewangles)
+{
+	if (state == NULL || viewangles == NULL)
+	{
+		return qfalse;
+	}
+
+	VectorCopy(state->viewangles, viewangles);
+	return qtrue;
+}
+
+/*
+=============
+AI_DMState_SetIdealViewAngles
+
+Transfers a node-owned movement view target into the retained retail combat
+view state without submitting it directly.
+=============
+*/
+void AI_DMState_SetIdealViewAngles(ai_dm_state_t *state,
+	const vec3_t ideal_viewangles)
+{
+	if (state == NULL || ideal_viewangles == NULL)
+	{
+		return;
+	}
+
+	VectorCopy(ideal_viewangles, state->ideal_viewangles);
+}
+
+/*
+=============
+AI_DMState_GetAttackCrouchTime
+
+Exposes the shared retail crouch timer used by both battle movement and the
+accompany formation hold.
+=============
+*/
+float AI_DMState_GetAttackCrouchTime(const ai_dm_state_t *state)
+{
+	if (state == NULL)
+	{
+		return -FLT_MAX;
+	}
+
+	return state->attackcrouch_time;
+}
+
+/*
+=============
+AI_DMState_SetAttackCrouchTime
+
+Updates the shared retail crouch timer from a non-battle node.
+=============
+*/
+void AI_DMState_SetAttackCrouchTime(ai_dm_state_t *state, float crouch_time)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	state->attackcrouch_time = crouch_time;
+}
+
+/*
+=============
+AI_DMState_ChangeViewAngles
+
+Runs Gladiator's private accelerated view turn for node-owned movement
+targets, matching the call sites that do not aim directly at an enemy.
+=============
+*/
+void AI_DMState_ChangeViewAngles(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	float think_time)
+{
+	AI_DMChangeViewAngles(state, client_state, think_time);
+}
+
+/*
+=============
+AI_DMState_AimAtEnemy
+
+Exposes the recovered weapon-aware aim path to battle nodes that own their
+movement result rather than the common Battle Fight update path.
+=============
+*/
+void AI_DMState_AimAtEnemy(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	const ai_dm_enemy_info_t *enemy,
+	float think_time)
+{
+	if (state == NULL || client_state == NULL || enemy == NULL)
+	{
+		return;
+	}
+
+	vec3_t eye_position;
+	VectorCopy(client_state->last_client_update.origin, eye_position);
+	eye_position[2] += client_state->last_client_update.viewoffset[2];
+	AI_DMAimAtEnemy(state, client_state, enemy, eye_position, think_time);
+}
+
+/*
+=============
+AI_DMState_CheckAttack
+
+Exposes the retail firing eligibility path for battle nodes whose movement is
+executed outside AI_DMState_Update.
+=============
+*/
+int AI_DMState_CheckAttack(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	const ai_dm_enemy_info_t *enemy,
+	float now)
+{
+	return AI_DMCheckAttack(state, client_state, enemy, now) ? qtrue : qfalse;
 }
 
 /*
@@ -1462,35 +1654,7 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 	{
 		return;
 	}
-	if (!state->view_initialised)
-	{
-		VectorCopy(client_state->last_client_update.viewangles,
-			state->viewangles);
-		state->view_initialised = true;
-	}
-
 	state->reaction_delay = AI_DMCharacteristic(client_state, AI_DM_CHARACTERISTIC_REACTION_TIME, AI_DM_REACTION_DELAY);
-
-	bool movement_controls_weapon =
-		client_state->has_move_result && (client_state->last_move_result.flags & MOVERESULT_MOVEMENTWEAPON);
-
-	int desired_weapon = client_state->current_weapon;
-	if (movement_controls_weapon)
-	{
-		desired_weapon = client_state->last_move_result.weapon;
-	}
-
-	bool allow_weapon_selection = (!movement_controls_weapon || desired_weapon > 0);
-	if (movement_controls_weapon && desired_weapon <= 0)
-	{
-		state->last_selected_weapon = -1;
-	}
-
-	if (allow_weapon_selection && desired_weapon > 0 && desired_weapon != state->last_selected_weapon)
-	{
-		EA_SelectWeapon(client, desired_weapon);
-		state->last_selected_weapon = desired_weapon;
-	}
 
 	bool enemy_valid = (enemy != NULL) && enemy->valid;
 	vec3_t eye_position = {0.0f, 0.0f, 0.0f};
@@ -1500,13 +1664,13 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 	pmtype_t pm_type = client_state->last_client_update.pm_type;
 	if (state->last_pm_type != PM_DEAD && pm_type == PM_DEAD)
 	{
-		if (state->enemy_entity >= 0)
+		if (state->enemy_entity > 0)
 		{
 			state->revenge_enemy = state->enemy_entity;
 			state->revenge_kills += 1;
 		}
 
-		state->enemy_entity = -1;
+		state->enemy_entity = 0;
 		state->enemy_visible = false;
 		state->chase_time = -FLT_MAX;
 	}
@@ -1522,15 +1686,16 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 		state->enemyvisible_time = (enemy->last_seen_time > -FLT_MAX * 0.5f) ? enemy->last_seen_time : now;
 		state->chase_time = now + state->chase_duration;
 
-		if (enemy_changed)
+		if (!state->enemy_context_authoritative && enemy_changed)
 		{
 			state->enemysight_time = now;
 		}
-		else if (!enemy_was_visible)
+		else if (!state->enemy_context_authoritative && !enemy_was_visible)
 		{
 			state->enemysight_time = now;
 		}
-		else if (state->enemysight_time <= -FLT_MAX * 0.5f)
+		else if (!state->enemy_context_authoritative &&
+			state->enemysight_time <= -FLT_MAX * 0.5f)
 		{
 			state->enemysight_time = now;
 		}
@@ -1555,9 +1720,9 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 		VectorCopy(enemy->origin, state->last_enemy_origin);
 		state->enemyposition_time = now;
 
-		vec3_t forward;
-		VectorSubtract(enemy->origin, eye_position, forward);
-		float distance = AI_DMVectorNormalise(forward);
+		vec3_t attack_direction;
+		VectorSubtract(enemy->origin, client_state->last_client_update.origin, attack_direction);
+		float attack_distance = AI_DMVectorNormalise(attack_direction);
 		int travel_flags = 0;
 		if (selection != NULL && selection->valid)
 		{
@@ -1565,8 +1730,8 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 		}
 		AI_DMAttackMove(state,
 			client_state,
-			forward,
-			distance,
+			attack_direction,
+			attack_distance,
 			now,
 			think_time,
 			travel_flags);
@@ -1582,17 +1747,6 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 			state->firethrottlewait_time = now;
 		}
 
-		float vertical = enemy->origin[2] - eye_position[2];
-		if (state->allow_rocket_jump && vertical > AI_DM_MIN_ROCKET_VERTICAL)
-		{
-			if (now >= state->last_jump_time + state->attack_cooldown)
-			{
-				EA_Jump(client);
-				state->last_jump_time = now;
-				state->attackjump_time = now;
-			}
-		}
-
 	}
 	else
 	{
@@ -1602,7 +1756,7 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 			state->enemydeath_time = now;
 		}
 
-		if (state->chase_time > now && state->enemy_entity >= 0)
+		if (state->chase_time > now && state->enemy_entity > 0)
 		{
 			vec3_t predicted;
 			VectorCopy(state->last_enemy_origin, predicted);
@@ -1633,7 +1787,7 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 		}
 		else
 		{
-			state->enemy_entity = -1;
+			state->enemy_entity = 0;
 			state->attackstrafe_timer = 0.0f;
 			state->strafe_side = 1;
 		}

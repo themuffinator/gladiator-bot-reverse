@@ -97,6 +97,10 @@ int PC_ReadToken(pc_source_t *source, pc_token_t *token);
 // configuration loader when probing for optional blocks.
 int PC_PeekToken(pc_source_t *source, pc_token_t *token);
 
+// Reads the next token and requires an exact literal spelling, reporting a
+// source diagnostic when the expected token is absent or differs.
+int PC_ExpectTokenString(pc_source_t *source, char *string);
+
 // Reads the next token and validates its type/subtype before returning it to
 // the caller. Mirrors the helper the Quake III parsers relied on to enforce
 // schema expectations while still reusing the low-level lexer.

@@ -32,6 +32,8 @@ typedef struct aas_debug_test_context_s
     captured_print_t prints[64];
     size_t print_count;
     bsp_trace_t bridge_trace_result;
+	bsp_trace_t bridge_trace_results[8];
+	size_t bridge_trace_result_count;
     int bridge_trace_count;
     vec3_t bridge_trace_start;
     vec3_t bridge_trace_mins;
@@ -39,9 +41,16 @@ typedef struct aas_debug_test_context_s
     vec3_t bridge_trace_end;
     int bridge_trace_passent;
     int bridge_trace_contentmask;
+	vec3_t bridge_trace_starts[8];
+	vec3_t bridge_trace_ends[8];
+	int bridge_trace_passents[8];
+	int bridge_trace_contentmasks[8];
     int bridge_point_contents_result;
+	int bridge_point_contents_results[16];
+	size_t bridge_point_contents_result_count;
     int bridge_point_contents_count;
     vec3_t bridge_point_contents_point;
+	vec3_t bridge_point_contents_points[16];
     aas_area_t *areas;
     aas_reachability_t *reachability;
     aas_areasettings_t *areasettings;
@@ -107,6 +116,7 @@ static bsp_trace_t Mock_BridgeTrace(vec3_t start,
 {
     if (g_active_context != NULL)
     {
+		size_t index = (size_t)g_active_context->bridge_trace_count;
         g_active_context->bridge_trace_count += 1;
         if (start != NULL)
         {
@@ -126,6 +136,17 @@ static bsp_trace_t Mock_BridgeTrace(vec3_t start,
         }
         g_active_context->bridge_trace_passent = passent;
         g_active_context->bridge_trace_contentmask = contentmask;
+		if (index < ARRAY_LEN(g_active_context->bridge_trace_starts))
+		{
+			VectorCopy(start, g_active_context->bridge_trace_starts[index]);
+			VectorCopy(end, g_active_context->bridge_trace_ends[index]);
+			g_active_context->bridge_trace_passents[index] = passent;
+			g_active_context->bridge_trace_contentmasks[index] = contentmask;
+		}
+		if (index < g_active_context->bridge_trace_result_count)
+		{
+			return g_active_context->bridge_trace_results[index];
+		}
         return g_active_context->bridge_trace_result;
     }
 
@@ -142,11 +163,21 @@ static int Mock_BridgePointContents(vec3_t point)
         return 0;
     }
 
-    g_active_context->bridge_point_contents_count += 1;
+	size_t index = (size_t)g_active_context->bridge_point_contents_count;
+	g_active_context->bridge_point_contents_count += 1;
     if (point != NULL)
     {
         VectorCopy(point, g_active_context->bridge_point_contents_point);
+		if (index < ARRAY_LEN(g_active_context->bridge_point_contents_points))
+		{
+			VectorCopy(point,
+				g_active_context->bridge_point_contents_points[index]);
+		}
     }
+	if (index < g_active_context->bridge_point_contents_result_count)
+	{
+		return g_active_context->bridge_point_contents_results[index];
+	}
     return g_active_context->bridge_point_contents_result;
 }
 
@@ -161,6 +192,8 @@ static void Mock_Reset(aas_debug_test_context_t *context)
     memset(context->prints, 0, sizeof(context->prints));
     memset(&context->bridge_trace_result, 0, sizeof(context->bridge_trace_result));
     context->bridge_trace_result.fraction = 1.0f;
+	memset(context->bridge_trace_results, 0, sizeof(context->bridge_trace_results));
+	context->bridge_trace_result_count = 0U;
     context->bridge_trace_count = 0;
     VectorClear(context->bridge_trace_start);
     VectorClear(context->bridge_trace_mins);
@@ -168,9 +201,22 @@ static void Mock_Reset(aas_debug_test_context_t *context)
     VectorClear(context->bridge_trace_end);
     context->bridge_trace_passent = 0;
     context->bridge_trace_contentmask = 0;
+	memset(context->bridge_trace_starts, 0, sizeof(context->bridge_trace_starts));
+	memset(context->bridge_trace_ends, 0, sizeof(context->bridge_trace_ends));
+	memset(context->bridge_trace_passents, 0, sizeof(context->bridge_trace_passents));
+	memset(context->bridge_trace_contentmasks,
+		0,
+		sizeof(context->bridge_trace_contentmasks));
     context->bridge_point_contents_result = 0;
+	memset(context->bridge_point_contents_results,
+		0,
+		sizeof(context->bridge_point_contents_results));
+	context->bridge_point_contents_result_count = 0U;
     context->bridge_point_contents_count = 0;
     VectorClear(context->bridge_point_contents_point);
+	memset(context->bridge_point_contents_points,
+		0,
+		sizeof(context->bridge_point_contents_points));
 }
 
 static const char *Mock_FindPrint(const aas_debug_test_context_t *context, const char *needle)
@@ -2812,6 +2858,325 @@ static void test_retail_route_query_preserves_guards_and_same_area_order(void **
 
 /*
 =============
+VisibilityPrepareEntity
+
+Populate one retail entity slot around a requested origin.
+=============
+*/
+static void VisibilityPrepareEntity(int entnum,
+	const vec3_t origin,
+	const vec3_t mins,
+	const vec3_t maxs)
+{
+	aas_entity_t *entity = &aasworld.entities[entnum];
+	entity->inuse = qtrue;
+	entity->number = entnum;
+	VectorCopy(origin, entity->origin);
+	VectorCopy(mins, entity->mins);
+	VectorCopy(maxs, entity->maxs);
+}
+
+/*
+=============
+VisibilityLinkEntity
+
+Give an entity the non-null retail area-link gate used by VisibleEntities.
+=============
+*/
+static void VisibilityLinkEntity(int entnum)
+{
+	aas_link_t *link = (aas_link_t *)calloc(1U, sizeof(*link));
+	assert_non_null(link);
+	link->entnum = entnum;
+	aasworld.entities[entnum].areas = link;
+}
+
+/*
+=============
+VisibilityReleaseEntities
+
+Release visibility-test slots through the configured entity lifecycle.
+=============
+*/
+static void VisibilityReleaseEntities(void)
+{
+	assert_int_equal(AAS_ConfigureEntityLimits(0, 0), BLERR_NOERROR);
+}
+
+/*
+=============
+test_retail_visibility_setup_enumeration_and_next_entity
+
+Pin setup-time slot numbering, live/dead filtering independent of area links,
+ascending capped clients, maxclients rather than maxentities, and NextEntity.
+=============
+*/
+static void test_retail_visibility_setup_enumeration_and_next_entity(void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)*state;
+	Mock_Reset(context);
+	assert_int_equal(AAS_ConfigureEntityLimits(8, 3), BLERR_NOERROR);
+	assert_int_equal(aasworld.maxEntities, 8);
+	assert_int_equal(aasworld.maxClients, 3);
+	assert_non_null(aasworld.entities);
+	for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
+	{
+		assert_int_equal(aasworld.entities[entnum].number, entnum);
+		assert_false(aasworld.entities[entnum].inuse);
+	}
+
+	vec3_t mins = {-4.0f, -4.0f, -4.0f};
+	vec3_t maxs = {4.0f, 4.0f, 4.0f};
+	vec3_t first_origin = {100.0f, 0.0f, 0.0f};
+	vec3_t stale_origin = {200.0f, 0.0f, 0.0f};
+	vec3_t third_origin = {300.0f, 0.0f, 0.0f};
+	vec3_t beyond_clients_origin = {400.0f, 0.0f, 0.0f};
+	VisibilityPrepareEntity(1, first_origin, mins, maxs);
+	VisibilityPrepareEntity(2, stale_origin, mins, maxs);
+	aasworld.entities[2].inuse = qfalse;
+	VisibilityLinkEntity(2);
+	VisibilityPrepareEntity(3, third_origin, mins, maxs);
+	VisibilityPrepareEntity(4, beyond_clients_origin, mins, maxs);
+
+	vec3_t eye = {0.0f, 0.0f, 0.0f};
+	vec3_t viewangles = {0.0f, 0.0f, 0.0f};
+	int entitynums[8] = {0};
+	int count = AAS_VisibleEntities(0,
+		eye,
+		viewangles,
+		360.0f,
+		(int)ARRAY_LEN(entitynums),
+		entitynums);
+	assert_int_equal(count, 2);
+	assert_int_equal(entitynums[0], 1);
+	assert_int_equal(entitynums[1], 3);
+	assert_int_equal(context->bridge_trace_count, 2);
+
+	Mock_Reset(context);
+	memset(entitynums, 0, sizeof(entitynums));
+	count = AAS_VisibleEntities(0,
+		eye,
+		viewangles,
+		360.0f,
+		1,
+		entitynums);
+	assert_int_equal(count, 1);
+	assert_int_equal(entitynums[0], 1);
+	assert_int_equal(context->bridge_trace_count, 1);
+
+	for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
+	{
+		aasworld.entities[entnum].inuse = qfalse;
+	}
+	aasworld.entities[0].inuse = qtrue;
+	aasworld.entities[2].inuse = qtrue;
+	aasworld.entities[7].inuse = qtrue;
+	aasworld.loaded = qfalse;
+	assert_int_equal(AAS_NextEntity(-9), 0);
+	aasworld.loaded = qtrue;
+	assert_int_equal(AAS_NextEntity(-9), 0);
+	assert_int_equal(AAS_NextEntity(0), 2);
+	assert_int_equal(AAS_NextEntity(2), 7);
+	assert_int_equal(AAS_NextEntity(7), 0);
+
+	VisibilityReleaseEntities();
+}
+
+/*
+=============
+test_retail_entity_visibility_quantized_inclusive_fov
+
+Pin both inclusive half-FOV axes and the retail 16-bit angle quantization.
+=============
+*/
+static void test_retail_entity_visibility_quantized_inclusive_fov(void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)*state;
+	assert_int_equal(AAS_ConfigureEntityLimits(3, 1), BLERR_NOERROR);
+	vec3_t origin = {100.0f, 0.0f, 0.0f};
+	vec3_t bounds = {0.0f, 0.0f, 0.0f};
+	vec3_t eye = {0.0f, 0.0f, 0.0f};
+	VisibilityPrepareEntity(1, origin, bounds, bounds);
+
+	Mock_Reset(context);
+	vec3_t viewangles = {45.0f, -45.0f, 0.0f};
+	assert_true(AAS_EntityVisible(0, eye, viewangles, 90.0f, 1));
+	assert_int_equal(context->bridge_trace_count, 1);
+
+	Mock_Reset(context);
+	VectorSet(viewangles, 0.0f, -45.0001f, 0.0f);
+	assert_true(AAS_EntityVisible(0, eye, viewangles, 90.0f, 1));
+	assert_int_equal(context->bridge_trace_count, 1);
+
+	Mock_Reset(context);
+	VectorSet(viewangles, 0.0f, -45.01f, 0.0f);
+	assert_false(AAS_EntityVisible(0, eye, viewangles, 90.0f, 1));
+	assert_int_equal(context->bridge_trace_count, 0);
+	assert_int_equal(context->bridge_point_contents_count, 0);
+
+	VisibilityReleaseEntities();
+}
+
+/*
+=============
+test_retail_entity_visibility_three_sample_order
+
+Pin center, bottom, then top sampling, with PVS preceding each target/eye
+contents pair and each blocked trace proceeding to the next sample.
+=============
+*/
+static void test_retail_entity_visibility_three_sample_order(void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)*state;
+	assert_int_equal(AAS_ConfigureEntityLimits(3, 1), BLERR_NOERROR);
+	vec3_t origin = {100.0f, 0.0f, 0.0f};
+	vec3_t mins = {-4.0f, -4.0f, -10.0f};
+	vec3_t maxs = {4.0f, 4.0f, 30.0f};
+	vec3_t eye = {0.0f, 0.0f, 10.0f};
+	vec3_t viewangles = {0.0f, 0.0f, 0.0f};
+	VisibilityPrepareEntity(1, origin, mins, maxs);
+
+	Mock_Reset(context);
+	context->bridge_trace_result.fraction = 0.25f;
+	context->bridge_trace_result.ent = -1;
+	assert_false(AAS_EntityVisible(0, eye, viewangles, 360.0f, 1));
+	assert_int_equal(context->bridge_trace_count, 3);
+	assert_int_equal(context->bridge_point_contents_count, 6);
+	assert_float_equal(context->bridge_trace_ends[0][2], 10.0f, 0.001f);
+	assert_float_equal(context->bridge_trace_ends[1][2], 0.0f, 0.001f);
+	assert_float_equal(context->bridge_trace_ends[2][2], 40.0f, 0.001f);
+	assert_float_equal(context->bridge_point_contents_points[0][2],
+		10.0f,
+		0.001f);
+	assert_memory_equal(context->bridge_point_contents_points[1],
+		eye,
+		sizeof(vec3_t));
+	assert_float_equal(context->bridge_point_contents_points[2][2],
+		0.0f,
+		0.001f);
+	assert_memory_equal(context->bridge_point_contents_points[3],
+		eye,
+		sizeof(vec3_t));
+	assert_float_equal(context->bridge_point_contents_points[4][2],
+		40.0f,
+		0.001f);
+	assert_memory_equal(context->bridge_point_contents_points[5],
+		eye,
+		sizeof(vec3_t));
+
+	VisibilityReleaseEntities();
+}
+
+/*
+=============
+test_retail_entity_visibility_direct_hit
+
+Pin the target-entity trace hit success path before lower samples are tried.
+=============
+*/
+static void test_retail_entity_visibility_direct_hit(void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)*state;
+	assert_int_equal(AAS_ConfigureEntityLimits(3, 1), BLERR_NOERROR);
+	vec3_t origin = {100.0f, 0.0f, 0.0f};
+	vec3_t bounds = {0.0f, 0.0f, 0.0f};
+	vec3_t eye = {0.0f, 0.0f, 0.0f};
+	vec3_t viewangles = {0.0f, 0.0f, 0.0f};
+	VisibilityPrepareEntity(1, origin, bounds, bounds);
+
+	Mock_Reset(context);
+	context->bridge_trace_result.fraction = 0.25f;
+	context->bridge_trace_result.ent = 1;
+	assert_true(AAS_EntityVisible(7, eye, viewangles, 90.0f, 1));
+	assert_int_equal(context->bridge_trace_count, 1);
+	assert_int_equal(context->bridge_trace_passents[0], 7);
+	assert_int_equal(context->bridge_trace_contentmasks[0], 0x02030003);
+
+	VisibilityReleaseEntities();
+}
+
+/*
+=============
+test_retail_entity_visibility_fluid_reversal
+
+Pin eye-wet/target-dry endpoint and entity reversal plus the XOR fluid mask.
+=============
+*/
+static void test_retail_entity_visibility_fluid_reversal(void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)*state;
+	assert_int_equal(AAS_ConfigureEntityLimits(3, 1), BLERR_NOERROR);
+	vec3_t origin = {100.0f, 0.0f, 0.0f};
+	vec3_t bounds = {0.0f, 0.0f, 0.0f};
+	vec3_t eye = {0.0f, 0.0f, 0.0f};
+	vec3_t viewangles = {0.0f, 0.0f, 0.0f};
+	VisibilityPrepareEntity(1, origin, bounds, bounds);
+
+	Mock_Reset(context);
+	context->bridge_point_contents_results[0] = 0;
+	context->bridge_point_contents_results[1] = CONTENTS_WATER;
+	context->bridge_point_contents_result_count = 2U;
+	context->bridge_trace_result.fraction = 0.25f;
+	context->bridge_trace_result.ent = 7;
+	assert_true(AAS_EntityVisible(7, eye, viewangles, 90.0f, 1));
+	assert_int_equal(context->bridge_trace_count, 1);
+	assert_memory_equal(context->bridge_trace_starts[0],
+		origin,
+		sizeof(vec3_t));
+	assert_memory_equal(context->bridge_trace_ends[0], eye, sizeof(vec3_t));
+	assert_int_equal(context->bridge_trace_passents[0], 1);
+	assert_int_equal(context->bridge_trace_contentmasks[0], 0x0203003b);
+
+	VisibilityReleaseEntities();
+}
+
+/*
+=============
+test_retail_entity_visibility_translucent_fluid_continuation
+
+Pin the second trace from the fluid hit point with fluid bits removed.
+=============
+*/
+static void test_retail_entity_visibility_translucent_fluid_continuation(void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)*state;
+	assert_int_equal(AAS_ConfigureEntityLimits(3, 1), BLERR_NOERROR);
+	vec3_t origin = {100.0f, 0.0f, 0.0f};
+	vec3_t bounds = {0.0f, 0.0f, 0.0f};
+	vec3_t eye = {0.0f, 0.0f, 0.0f};
+	vec3_t viewangles = {0.0f, 0.0f, 0.0f};
+	VisibilityPrepareEntity(1, origin, bounds, bounds);
+
+	Mock_Reset(context);
+	context->bridge_point_contents_results[0] = CONTENTS_WATER;
+	context->bridge_point_contents_results[1] = 0;
+	context->bridge_point_contents_result_count = 2U;
+	context->bridge_trace_results[0].fraction = 0.5f;
+	context->bridge_trace_results[0].contents = CONTENTS_WATER;
+	context->bridge_trace_results[0].surface.flags = 0x10;
+	VectorSet(context->bridge_trace_results[0].endpos, 50.0f, 0.0f, 0.0f);
+	context->bridge_trace_results[1].fraction = 1.0f;
+	context->bridge_trace_result_count = 2U;
+	assert_true(AAS_EntityVisible(7, eye, viewangles, 90.0f, 1));
+	assert_int_equal(context->bridge_trace_count, 2);
+	assert_int_equal(context->bridge_trace_contentmasks[0], 0x0203003b);
+	assert_int_equal(context->bridge_trace_contentmasks[1], 0x02030003);
+	assert_int_equal(context->bridge_trace_passents[0], 7);
+	assert_int_equal(context->bridge_trace_passents[1], 7);
+	assert_float_equal(context->bridge_trace_starts[1][0], 50.0f, 0.001f);
+	assert_memory_equal(context->bridge_trace_ends[1], origin, sizeof(vec3_t));
+
+	VisibilityReleaseEntities();
+}
+
+/*
+=============
 main
 
 Run the focused AAS debug and sampling parity tests.
@@ -2909,6 +3274,30 @@ int main(void)
 			setup_aas_debug,
 			teardown_aas_debug),
 		cmocka_unit_test_setup_teardown(test_retail_route_query_preserves_guards_and_same_area_order,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_visibility_setup_enumeration_and_next_entity,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_entity_visibility_quantized_inclusive_fov,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_entity_visibility_three_sample_order,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_entity_visibility_direct_hit,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_entity_visibility_fluid_reversal,
+			setup_aas_debug,
+			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_entity_visibility_translucent_fluid_continuation,
 			setup_aas_debug,
 			teardown_aas_debug),
     };

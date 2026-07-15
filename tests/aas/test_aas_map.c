@@ -2276,6 +2276,10 @@ static void test_aas_entity_linking_and_reachability(void **state)
 
     bot_updateentity_t fixtures[3];
     memset(fixtures, 0, sizeof(fixtures));
+	for (size_t index = 0; index < 3; ++index)
+	{
+		fixtures[index].solid = SOLID_BBOX;
+	}
 
     fixtures[0].origin[0] = 16.0f;
     fixtures[0].origin[1] = 16.0f;
@@ -2356,6 +2360,53 @@ static void test_aas_entity_linking_and_reachability(void **state)
     assert_travel_time_for_area(1, 42);
 
     AAS_Shutdown();
+}
+
+/*
+=============
+test_aas_entity_relinks_on_bsp_angle_change
+
+Retail relinks SOLID_BSP entities when their angles change even when their
+origin and derived bounds are otherwise unchanged.
+=============
+*/
+static void test_aas_entity_relinks_on_bsp_angle_change(void **state)
+{
+	(void)state;
+	assert_int_equal(AAS_LoadMap("test_nav", 0, NULL, 0, NULL, 0, NULL),
+		BLERR_NOERROR);
+
+	AASEntityFrame entity = {0};
+	entity.solid = SOLID_BSP;
+	VectorSet(entity.origin, 16.0f, 16.0f, 16.0f);
+	VectorSet(entity.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(entity.maxs, 8.0f, 8.0f, 8.0f);
+	entity.angles_dirty = true;
+	entity.angles[1] = 45.0f;
+
+	/* sub_1000a920 gates both spatial relink calls on entnum > 0. */
+	assert_int_equal(AAS_UpdateEntity(0, &entity), BLERR_NOERROR);
+	assert_null(aasworld.entities[0].areas);
+	assert_int_equal(aasworld.entities[0].areaOccupancyCount, 0);
+
+	entity.number = 2;
+	entity.angles_dirty = false;
+	entity.angles[1] = 0.0f;
+	assert_int_equal(AAS_UpdateEntity(2, &entity), BLERR_NOERROR);
+	assert_null(aasworld.entities[2].areas);
+	assert_int_equal(aasworld.entities[2].areaOccupancyCount, 0);
+
+	entity.angles_dirty = true;
+	entity.angles[1] = 45.0f;
+	assert_int_equal(AAS_UpdateEntity(2, &entity), BLERR_NOERROR);
+	assert_non_null(aasworld.entities[2].areas);
+	assert_int_equal(aasworld.entities[2].areaOccupancyCount, 1);
+	int expected_area[] = {1};
+	assert_entity_area_membership(2, expected_area, 1);
+
+	assert_int_equal(AAS_UpdateEntity(0, NULL), BLERR_NOERROR);
+	assert_int_equal(AAS_UpdateEntity(2, NULL), BLERR_NOERROR);
+	AAS_Shutdown();
 }
 
 static void test_routing_frame_respects_framereachability(void **state)
@@ -4036,6 +4087,9 @@ int main(void)
                                         aas_environment_setup,
                                         aas_environment_teardown),
         cmocka_unit_test_setup_teardown(test_aas_entity_linking_and_reachability,
+                                        aas_environment_setup,
+                                        aas_environment_teardown),
+        cmocka_unit_test_setup_teardown(test_aas_entity_relinks_on_bsp_angle_change,
                                         aas_environment_setup,
                                         aas_environment_teardown),
         cmocka_unit_test_setup_teardown(test_routing_frame_respects_framereachability,

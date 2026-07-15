@@ -3847,22 +3847,23 @@ static void test_setup_chat_ai_supplies_shared_reply_fallback(void)
 
 /*
 =============
-test_reply_chat_merges_setup_and_state_priorities
+test_reply_chat_uses_setup_owned_global_list
 
-Pins the retail single-list priority traversal when compatibility-loaded state
-rules coexist with the setup-owned global rchat table.
+Pins the retail setup ownership: the global rchat table is the only reply
+source after BotSetupChatAI, even when a personality file carries a higher
+priority compatibility rule.
 =============
 */
-static void test_reply_chat_merges_setup_and_state_priorities(void)
+static void test_reply_chat_uses_setup_owned_global_list(void)
 {
 	const char *setup_path = "bot_chat_setup_priority_test.c";
 	const char *state_path = "bot_chat_state_priority_test.c";
 	FILE *fp = fopen(setup_path, "wb");
 	assert(fp != NULL);
 	fputs(
-		"[\"global priority\"] = 9\n"
+		"[\"global priority\"] = 1\n"
 		"{\n"
-		"\"setup higher\";\n"
+		"\"setup owned\";\n"
 		"}\n",
 		fp);
 	assert(fclose(fp) == 0);
@@ -3870,9 +3871,9 @@ static void test_reply_chat_merges_setup_and_state_priorities(void)
 	fp = fopen(state_path, "wb");
 	assert(fp != NULL);
 	fputs(
-		"[\"global priority\"] = 1\n"
+		"[\"global priority\"] = 9\n"
 		"{\n"
-		"\"state lower\";\n"
+		"\"state higher but ignored\";\n"
 		"}\n",
 		fp);
 	assert(fclose(fp) == 0);
@@ -3891,7 +3892,7 @@ static void test_reply_chat_merges_setup_and_state_priorities(void)
 
 	char buffer[256];
 	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
-	assert(strcmp(buffer, "setup higher") == 0);
+	assert(strcmp(buffer, "setup owned") == 0);
 
 	BotFreeChatState(chat);
 	BotShutdownChatAI();
@@ -4270,7 +4271,7 @@ int main(void) {
 	test_setup_chat_ai_loads_default_assets();
 	test_setup_chat_ai_skips_reply_when_nochat_enabled();
 	test_setup_chat_ai_supplies_shared_reply_fallback();
-	test_reply_chat_merges_setup_and_state_priorities();
+	test_reply_chat_uses_setup_owned_global_list();
 	test_setup_chat_ai_exports_match_and_synonym_utilities();
 	test_setup_chat_ai_match_string_alternatives_capture_variables();
 	test_enter_chat_sends_command_via_bridge();

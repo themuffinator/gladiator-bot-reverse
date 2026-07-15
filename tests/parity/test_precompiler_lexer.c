@@ -233,6 +233,98 @@ static void test_pc_merges_numeric_tokens_with_matching_subtype(void **state)
 	PC_ShutdownLexer();
 }
 
+/*
+=============
+test_pc_expands_chat_named_define
+
+Ensures chat-looking identifiers still follow the retail define expansion path.
+=============
+*/
+static void test_pc_expands_chat_named_define(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "#define VICTIM 7\nVICTIM\n";
+	pc_source_t *source = PC_LoadSourceMemory("chat_named_define", script, strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_int_equal(TT_DECIMAL | TT_INTEGER, token.subtype);
+	assert_string_equal("7", token.string);
+	assert_int_equal(7, (int)token.intvalue);
+	assert_float_equal(7.0f, token.floatvalue, 0.0f);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_pc_reports_full_quoted_string_subtype
+
+Ensures quoted string subtypes include the leading and trailing quotes.
+=============
+*/
+static void test_pc_reports_full_quoted_string_subtype(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "\"abc\"";
+	pc_source_t *source = PC_LoadSourceMemory("quoted_string_subtype", script, strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_STRING, token.type);
+	assert_string_equal("\"abc\"", token.string);
+	assert_int_equal(5, token.subtype);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_pc_preserves_memory_block_comment_token_boundary
+
+Ensures in-memory block comments remain lexical whitespace between names.
+=============
+*/
+static void test_pc_preserves_memory_block_comment_token_boundary(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "left/**/right";
+	pc_source_t *source = PC_LoadSourceMemory("block_comment_separator", script, strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NAME, token.type);
+	assert_int_equal(4, token.subtype);
+	assert_string_equal("left", token.string);
+
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NAME, token.type);
+	assert_int_equal(5, token.subtype);
+	assert_string_equal("right", token.string);
+
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
 static void assert_fixture_diagnostics(pc_source_t *source,
                                        const pc_diagnostic_snapshot_t *expected,
                                        size_t expected_count)
@@ -344,6 +436,9 @@ int main(void)
         cmocka_unit_test(test_pc_loads_synonyms_and_matches_hlil_tokens),
         cmocka_unit_test(test_pc_peek_and_unread_mirror_hlil_behaviour),
         cmocka_unit_test(test_pc_merges_numeric_tokens_with_matching_subtype),
+		cmocka_unit_test(test_pc_expands_chat_named_define),
+		cmocka_unit_test(test_pc_reports_full_quoted_string_subtype),
+		cmocka_unit_test(test_pc_preserves_memory_block_comment_token_boundary),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

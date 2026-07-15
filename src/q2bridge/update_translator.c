@@ -331,93 +331,103 @@ static void Bridge_LogFirstCapture(qboolean *logged, const char *fmt, ...)
 	*logged = qtrue;
 }
 
+/*
+=============
+Bridge_UpdateClient
+=============
+*/
 int Bridge_UpdateClient(int client, const bot_updateclient_t *update)
 {
-    if (!Bridge_CheckLibraryReady("BotUpdateClient"))
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!Bridge_CheckLibraryReady("BotUpdateClient"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    if (!Bridge_CheckClientNumber(client, "BotUpdateClient"))
-    {
-        return BLERR_INVALIDCLIENTNUMBER;
-    }
+	if (!Bridge_CheckClientNumber(client, "BotUpdateClient"))
+	{
+		return BLERR_INVALIDCLIENTNUMBER;
+	}
 
-    if (update == NULL)
-    {
-        Bridge_LogMessage(PRT_ERROR, "BotUpdateClient: NULL update payload provided\n");
-        return BLERR_AIUPDATEINACTIVECLIENT;
-    }
+	bridge_client_slot_t *slot = &g_bridge_clients[client];
+	if (!slot->active)
+	{
+		BotlibLog(PRT_FATAL, "tried to updated inactive bot client\n");
+		return BLERR_AIUPDATEINACTIVECLIENT;
+	}
 
-    bridge_client_slot_t *slot = &g_bridge_clients[client];
-    if (!slot->active)
-    {
-        BotlibLog(PRT_WARNING, "tried to updated inactive bot client\n");
-        return BLERR_AIUPDATEINACTIVECLIENT;
-    }
+	if (update == NULL)
+	{
+		Bridge_LogMessage(PRT_ERROR, "BotUpdateClient: NULL update payload provided\n");
+		return BLERR_INVALIDIMPORT;
+	}
 
-    memcpy(&slot->snapshot, update, sizeof(*update));
+	memcpy(&slot->snapshot, update, sizeof(*update));
 
-    bot_status_t status = TranslateClientUpdate(client, update, g_bridge_frame_time, &slot->frame);
-    if (status != BLERR_NOERROR)
-    {
-        return status;
-    }
+	bot_status_t status = TranslateClientUpdate(client, update, g_bridge_frame_time, &slot->frame);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
 
-    slot->frame_valid = qtrue;
-    slot->seen = qtrue;
+	slot->frame_valid = qtrue;
+	slot->seen = qtrue;
 
-    Bridge_LogFirstCapture(&slot->logged,
-                           "[q2bridge] captured BotUpdateClient frame for client %d\n",
-                           client);
+	Bridge_LogFirstCapture(&slot->logged,
+		"[q2bridge] captured BotUpdateClient frame for client %d\n",
+		client);
 
-    return BLERR_NOERROR;
+	return BLERR_NOERROR;
 }
 
+/*
+=============
+Bridge_UpdateEntity
+=============
+*/
 int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update)
 {
-    if (!Bridge_CheckLibraryReady("BotUpdateEntity"))
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!Bridge_CheckLibraryReady("BotUpdateEntity"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    if (!Bridge_CheckEntityNumber(ent, "BotUpdateEntity"))
-    {
-        return BLERR_INVALIDENTITYNUMBER;
-    }
+	if (!Bridge_CheckEntityNumber(ent, "BotUpdateEntity"))
+	{
+		return BLERR_INVALIDENTITYNUMBER;
+	}
 
-    if (update == NULL)
-    {
-        Bridge_LogMessage(PRT_ERROR, "BotUpdateEntity: NULL update payload provided\n");
-        return BLERR_INVALIDENTITYNUMBER;
-    }
+	if (update == NULL)
+	{
+		Bridge_LogMessage(PRT_ERROR, "BotUpdateEntity: NULL update payload provided\n");
+		return BLERR_INVALIDIMPORT;
+	}
 
-    if (g_bridge_entities == NULL)
-    {
-        Bridge_LogMessage(PRT_ERROR,
-                          "BotUpdateEntity: entity cache unavailable for index %d\n",
-                          ent);
-        return BLERR_INVALIDENTITYNUMBER;
-    }
+	if (g_bridge_entities == NULL)
+	{
+		Bridge_LogMessage(PRT_ERROR,
+			"BotUpdateEntity: entity cache unavailable for index %d\n",
+			ent);
+		return BLERR_INVALIDENTITYNUMBER;
+	}
 
-    bridge_entity_slot_t *slot = &g_bridge_entities[ent];
-    memcpy(&slot->snapshot, update, sizeof(*update));
+	bridge_entity_slot_t *slot = &g_bridge_entities[ent];
+	AASEntityFrame translated = slot->frame;
+	bot_status_t status = TranslateEntityUpdate(ent, update, &translated);
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
 
-    slot->frame_valid = qfalse;
-    bot_status_t status = TranslateEntityUpdate(ent, update, &slot->frame);
-    if (status != BLERR_NOERROR)
-    {
-        return status;
-    }
+	memcpy(&slot->snapshot, update, sizeof(*update));
+	slot->frame = translated;
+	slot->frame_valid = qtrue;
+	slot->seen = qtrue;
 
-    slot->frame_valid = qtrue;
-    slot->seen = qtrue;
+	Bridge_LogFirstCapture(&slot->logged,
+		"[q2bridge] captured BotUpdateEntity frame for ent %d\n",
+		ent);
 
-    Bridge_LogFirstCapture(&slot->logged,
-                           "[q2bridge] captured BotUpdateEntity frame for ent %d\n",
-                           ent);
-
-    return BLERR_NOERROR;
+	return BLERR_NOERROR;
 }
 
 void Bridge_ResetCachedUpdates(void)
@@ -468,18 +478,9 @@ int Bridge_MoveClientSlot(int old_client, int new_client)
 		return BLERR_NOERROR;
 	}
 
-	bridge_client_slot_t *old_slot = &g_bridge_clients[old_client];
-	if (old_slot->seen)
-	{
-		bot_updateclient_t snapshot = old_slot->snapshot;
-		int status = Bridge_UpdateClient(new_client, &snapshot);
-		if (status != BLERR_NOERROR)
-		{
-			return status;
-		}
-	}
-
-	Bridge_ClearClientSlot(old_client);
+	/* Retail moves the whole client record; do not rebuild its cached frame. */
+	g_bridge_clients[new_client] = g_bridge_clients[old_client];
+	memset(&g_bridge_clients[old_client], 0, sizeof(g_bridge_clients[old_client]));
 
 	return BLERR_NOERROR;
 }
@@ -490,21 +491,27 @@ void Bridge_SetFrameTime(float time)
     TranslateEntity_SetCurrentTime(time);
 }
 
+/*
+=============
+Bridge_SetClientActive
+=============
+*/
 void Bridge_SetClientActive(int client, qboolean active)
 {
-    Bridge_UpdateMaxClientIndex(qfalse);
+	Bridge_UpdateMaxClientIndex(qfalse);
 
-    if (!Bridge_CheckClientNumber(client, "Bridge_SetClientActive"))
-    {
-        return;
-    }
+	if (!Bridge_CheckClientNumber(client, "Bridge_SetClientActive"))
+	{
+		return;
+	}
 
-    g_bridge_clients[client].active = active;
-    if (!active)
-    {
-        g_bridge_clients[client].frame_valid = qfalse;
-        memset(&g_bridge_clients[client].frame, 0, sizeof(g_bridge_clients[client].frame));
-    }
+	if (!active)
+	{
+		memset(&g_bridge_clients[client], 0, sizeof(g_bridge_clients[client]));
+		return;
+	}
+
+	g_bridge_clients[client].active = qtrue;
 }
 
 void Bridge_HandleMapStateChange(void)

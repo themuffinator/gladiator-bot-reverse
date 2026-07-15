@@ -26,6 +26,15 @@ The items below are ordered; "Work on the plan" means executing the next uncheck
    - Replace a skip only when the prerequisite can be provided portably; retain
      and document legitimate environment gates.
 4. [ ] Expand subsystem parity coverage using expectations from `tests/parity/README.md` and `docs/parity_testing_guide.md`.
+   - Game AI scheduler: extend the recovered Observer, Intermission,
+     enter-game, battle, dead/gib, random-chat, and direct help/accompany/
+     defend/CTF/camp/patrol LTG lifecycle, direct top-stack LTG movement, and
+     generic Seek-LTG/NBG nearby-goal handoff, then reconstruct the remaining
+     high-level goal bodies.
+     Preserve the existing
+     50-switch cap, node-owned enemy state, acquisition schedule, retained
+     last-seen-goal routing, nearby-goal timeout, node-specific travel masks,
+     direct battle result-view/aim/attack branches, and lifecycle timing.
    - Weight config guards: add tests for malformed weights, missing parameters, and boundary handling against `tests/reference/botlib_contract.json`.
    - Movement state exports: extend mover parity to cover crouch/ladder/water states and navigation flags, reusing staged `test_mover` assets.
    - Weapon state exports: add parity assertions for ammo counts, cooldowns, and weapon switching, ensuring fixtures seed predictable inventories.

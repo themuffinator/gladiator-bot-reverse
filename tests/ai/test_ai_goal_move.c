@@ -461,6 +461,8 @@ static void test_setup_allocates_goal_move_states(void **state)
     bot_client_state_t *slot = BotState_Get(0);
     assert_non_null(slot);
     assert_true(slot->active);
+	assert_int_equal(slot->client_number, 0);
+	assert_int_equal(slot->entity_number, 1);
     assert_non_null(slot->goal_state);
     assert_non_null(slot->move_state);
 
@@ -1174,7 +1176,10 @@ static void push_stack_goal(test_environment_t *env,
     int registered = BotGoal_RegisterLevelItem(&setup);
     assert_int_equal(registered, number);
 
-    int pushed = env->exports->BotPushGoal(slot->goal_handle, &setup.goal);
+	/* These tests stage direct LTGs; only the registered backing item is an item. */
+	bot_goal_t stack_goal = setup.goal;
+	stack_goal.flags = 0;
+    int pushed = env->exports->BotPushGoal(slot->goal_handle, &stack_goal);
     assert_int_not_equal(pushed, 0);
 }
 
@@ -1186,6 +1191,8 @@ static void submit_client_update(bot_export_t *exports,
     assert_non_null(exports);
     bot_updateclient_t update;
     memset(&update, 0, sizeof(update));
+	/* BotAI treats a zero health snapshot as the retail dead-state boundary. */
+	update.stats[STAT_HEALTH] = 100;
 
     if (origin != NULL)
     {
@@ -2203,6 +2210,14 @@ static void test_goal_update_refreshes_entity_items_before_selection(void **stat
 	assert_int_equal(remove(fixture_path), 0);
 }
 
+/*
+=============
+test_goal_refresh_and_movement_dispatch_order
+
+Confirms staged direct LTGs retain their stack order and do not synthesize a
+fallback movement command when the AAS world is unavailable.
+=============
+*/
 static void test_goal_refresh_and_movement_dispatch_order(void **state)
 {
     test_environment_t *env = (test_environment_t *)(*state);
@@ -2210,6 +2225,7 @@ static void test_goal_refresh_and_movement_dispatch_order(void **state)
 
     bot_client_state_t *slot = BotState_Get(0);
     assert_non_null(slot);
+	slot->enter_game_chat_attempted = true;
 
     reset_goal_runtime(slot);
 
@@ -2229,36 +2245,41 @@ static void test_goal_refresh_and_movement_dispatch_order(void **state)
 
     submit_client_update(env->exports, 1.0f, client_origin, client_viewangles);
     test_reset_bot_input_log();
+	/* Retain the manually staged LTG instead of asking the selector to replace it. */
+	slot->long_term_goal_time = AAS_Time() + 20.0f;
 
     int status = env->exports->BotAI(0, 0.1f);
     assert_int_equal(status, BLERR_NOERROR);
 
-    assert_int_equal(slot->goal_snapshot_count, 2);
-    assert_int_equal(slot->goal_snapshot[0].number, 3);
-    assert_int_equal(slot->goal_snapshot[1].number, 7);
-    assert_int_equal(slot->active_goal_number, 3);
+	bot_goal_t active_goal;
+	bot_goal_t next_goal;
+	assert_true(env->exports->BotGetTopGoal(slot->goal_handle, &active_goal));
+	assert_true(AI_GoalBotlib_GetSecondGoal(slot->goal_handle, &next_goal));
+	assert_int_equal(active_goal.number, 3);
+	assert_int_equal(next_goal.number, 7);
 
     assert_int_equal(g_bot_input_log.count, 1);
     assert_int_equal(g_bot_input_log.last_client, 0);
     assert_float_equal(g_bot_input_log.last_command.thinktime, 0.1f, 0.0001f);
-    assert_float_equal(g_bot_input_log.last_command.viewangles[0], client_viewangles[0], 0.01f);
-    assert_float_equal(g_bot_input_log.last_command.viewangles[1], client_viewangles[1], 0.01f);
-    assert_float_equal(g_bot_input_log.last_command.viewangles[2], client_viewangles[2], 0.01f);
+	/* Direct LTG movement advances the private view after submitting its mover input. */
 
-    vec3_t expected_delta;
-    VectorSubtract(primary_origin, client_origin, expected_delta);
-    vec3_t expected_dir;
-    float expected_speed = test_normalise_direction(expected_dir, expected_delta);
+    assert_float_equal(g_bot_input_log.last_command.speed, 0.0f, 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.dir[0], 0.0f, 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.dir[1], 0.0f, 0.0001f);
+    assert_float_equal(g_bot_input_log.last_command.dir[2], 0.0f, 0.0001f);
 
-    assert_float_equal(g_bot_input_log.last_command.speed, expected_speed, 0.0001f);
-    assert_float_equal(g_bot_input_log.last_command.dir[0], expected_dir[0], 0.0001f);
-    assert_float_equal(g_bot_input_log.last_command.dir[1], expected_dir[1], 0.0001f);
-    assert_float_equal(g_bot_input_log.last_command.dir[2], expected_dir[2], 0.0001f);
-
-    assert_int_equal(slot->current_weapon, 6);
-    assert_false(slot->has_move_result);
+	assert_int_equal(slot->current_weapon, 0);
+    assert_true(slot->has_move_result);
 }
 
+/*
+=============
+test_movement_error_propagates_without_submission
+
+Pins the retail nonfatal invalid-move-handle result: it submits a stationary
+frame without manufacturing an avoid goal or a bot-interface error.
+=============
+*/
 static void test_movement_error_propagates_without_submission(void **state)
 {
     test_environment_t *env = (test_environment_t *)(*state);
@@ -2266,6 +2287,7 @@ static void test_movement_error_propagates_without_submission(void **state)
 
     bot_client_state_t *slot = BotState_Get(0);
     assert_non_null(slot);
+	slot->enter_game_chat_attempted = true;
 
     reset_goal_runtime(slot);
 
@@ -2287,13 +2309,15 @@ static void test_movement_error_propagates_without_submission(void **state)
 
     submit_client_update(env->exports, 1.0f, NULL, NULL);
     test_reset_bot_input_log();
+	/* The invalid move handle is reached only while this staged LTG is retained. */
+	slot->long_term_goal_time = AAS_Time() + 20.0f;
 
     int status = env->exports->BotAI(0, 0.2f);
-    assert_int_equal(status, BLERR_INVALIDIMPORT);
+    assert_int_equal(status, BLERR_NOERROR);
 
     ai_avoid_list_t *avoid = AI_GoalState_GetAvoidList(slot->goal_state);
-    assert_true(AI_AvoidList_Contains(avoid, 11, 0.0f));
-    assert_int_equal(g_bot_input_log.count, 0);
+    assert_false(AI_AvoidList_Contains(avoid, 11, 0.0f));
+    assert_int_equal(g_bot_input_log.count, 1);
 
     slot->move_handle = original_handle;
     aasworld.loaded = previous_loaded;
@@ -2332,15 +2356,21 @@ static void test_bot_update_client_propagates_area_errors(void **state)
     assert_int_equal(status, BLERR_INVALIDIMPORT);
 }
 
-static void test_dm_enemy_selection_filters_invisible_and_chat(void **state)
+/*
+=============
+test_dm_enemy_selection_uses_retail_live_player_predicate
+
+Pins entity numbering, death effects/frames, and the absence of the older
+translucent/chatting exclusions in Gladiator's acquisition path.
+=============
+*/
+static void test_dm_enemy_selection_uses_retail_live_player_predicate(void **state)
 {
     test_environment_t *env = (test_environment_t *)(*state);
     activate_test_client(env);
 
     bot_client_state_t *self = BotState_Get(0);
     assert_non_null(self);
-    self->team = 1;
-
     bot_updateclient_t self_update;
     memset(&self_update, 0, sizeof(self_update));
     VectorSet(self_update.origin, 0.0f, 0.0f, 24.0f);
@@ -2360,12 +2390,16 @@ static void test_dm_enemy_selection_filters_invisible_and_chat(void **state)
     bot_updateentity_t enemy_entity;
     memset(&enemy_entity, 0, sizeof(enemy_entity));
     VectorCopy(enemy_update.origin, enemy_entity.origin);
+	VectorCopy(enemy_update.origin, enemy_entity.old_origin);
+	enemy_entity.modelindex = 255;
+	enemy_entity.frame = 173;
 
     bot_client_state_t *enemy_state = BotState_Create(1);
     assert_non_null(enemy_state);
     enemy_state->active = true;
-    enemy_state->team = 1;
+	enemy_state->team = self->team;
     enemy_state->last_client_update = enemy_update;
+	enemy_state->last_client_update.stats[STAT_LAYOUTS] = 1;
     enemy_state->client_update_valid = true;
     aasworld.loaded = qtrue;
     TranslateEntity_SetWorldLoaded(qtrue);
@@ -2374,60 +2408,61 @@ static void test_dm_enemy_selection_filters_invisible_and_chat(void **state)
     assert_int_equal(status, BLERR_NOERROR);
     status = env->exports->BotUpdateClient(0, &self_update);
     assert_int_equal(status, BLERR_NOERROR);
-    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    status = env->exports->BotUpdateEntity(2, &enemy_entity);
     assert_int_equal(status, BLERR_NOERROR);
 
     status = env->exports->BotAI(0, 0.1f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(self->combat.current_enemy, -1);
+	assert_int_equal(self->combat.current_enemy, 0);
 
-    enemy_state->team = 2;
-    enemy_entity.renderfx = RF_TRANSLUCENT;
+	enemy_entity.frame = 0;
+	enemy_entity.effects = EF_GIB;
 
     status = env->exports->BotStartFrame(0.2f);
     assert_int_equal(status, BLERR_NOERROR);
     status = env->exports->BotUpdateClient(0, &self_update);
     assert_int_equal(status, BLERR_NOERROR);
-    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    status = env->exports->BotUpdateEntity(2, &enemy_entity);
     assert_int_equal(status, BLERR_NOERROR);
     enemy_state->last_client_update = enemy_update;
     enemy_state->client_update_valid = true;
 
     status = env->exports->BotAI(0, 0.1f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(self->combat.current_enemy, -1);
+	assert_int_equal(self->combat.current_enemy, 0);
 
-    enemy_entity.renderfx = 0;
-    enemy_state->last_client_update.stats[STAT_LAYOUTS] = 1;
+	enemy_entity.effects = 0;
+	enemy_entity.renderfx = RF_TRANSLUCENT;
 
     status = env->exports->BotStartFrame(0.3f);
     assert_int_equal(status, BLERR_NOERROR);
     status = env->exports->BotUpdateClient(0, &self_update);
     assert_int_equal(status, BLERR_NOERROR);
-    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    status = env->exports->BotUpdateEntity(2, &enemy_entity);
     assert_int_equal(status, BLERR_NOERROR);
 
     status = env->exports->BotAI(0, 0.1f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(self->combat.current_enemy, -1);
-
-    enemy_state->last_client_update.stats[STAT_LAYOUTS] = 0;
-
-    status = env->exports->BotStartFrame(0.4f);
-    assert_int_equal(status, BLERR_NOERROR);
-    status = env->exports->BotUpdateClient(0, &self_update);
-    assert_int_equal(status, BLERR_NOERROR);
-    status = env->exports->BotUpdateEntity(1, &enemy_entity);
-    assert_int_equal(status, BLERR_NOERROR);
-
-    status = env->exports->BotAI(0, 0.1f);
-    assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(self->combat.current_enemy, 1);
-    assert_true(self->combat.enemy_visible);
+    assert_int_equal(self->combat.current_enemy, 2);
+	assert_int_equal(self->ai_node, BOT_AI_NODE_BATTLE_RETREAT);
+	assert_false(self->combat.enemy_visible);
+	bot_movestate_t *move_state = BotMoveStateFromHandle(self->move_handle);
+	assert_non_null(move_state);
+	/* Raw BotAttackMove uses BotMoveInDirection without refreshing move input. */
+	assert_int_equal(move_state->client, 0);
+	assert_int_equal(move_state->entitynum, 0);
 
     BotState_Destroy(1);
 }
 
+/*
+=============
+test_dm_enemy_selection_damage_alert
+
+Verifies inventory-health decrease widens acquisition to 360 degrees without
+writing the removed synthetic damage telemetry.
+=============
+*/
 static void test_dm_enemy_selection_damage_alert(void **state)
 {
     test_environment_t *env = (test_environment_t *)(*state);
@@ -2435,8 +2470,6 @@ static void test_dm_enemy_selection_damage_alert(void **state)
 
     bot_client_state_t *self = BotState_Get(0);
     assert_non_null(self);
-    self->team = 1;
-
     bot_updateclient_t self_update;
     memset(&self_update, 0, sizeof(self_update));
     VectorSet(self_update.origin, 0.0f, 0.0f, 24.0f);
@@ -2456,11 +2489,12 @@ static void test_dm_enemy_selection_damage_alert(void **state)
     bot_updateentity_t enemy_entity;
     memset(&enemy_entity, 0, sizeof(enemy_entity));
     VectorCopy(enemy_update.origin, enemy_entity.origin);
+	VectorCopy(enemy_update.origin, enemy_entity.old_origin);
+	enemy_entity.modelindex = 255;
 
     bot_client_state_t *enemy_state = BotState_Create(1);
     assert_non_null(enemy_state);
     enemy_state->active = true;
-    enemy_state->team = 2;
     enemy_state->last_client_update = enemy_update;
     enemy_state->client_update_valid = true;
     aasworld.loaded = qtrue;
@@ -2470,12 +2504,12 @@ static void test_dm_enemy_selection_damage_alert(void **state)
     assert_int_equal(status, BLERR_NOERROR);
     status = env->exports->BotUpdateClient(0, &self_update);
     assert_int_equal(status, BLERR_NOERROR);
-    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    status = env->exports->BotUpdateEntity(2, &enemy_entity);
     assert_int_equal(status, BLERR_NOERROR);
 
     status = env->exports->BotAI(0, 0.1f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(self->combat.current_enemy, -1);
+	assert_int_equal(self->combat.current_enemy, 0);
 
     self_update.stats[STAT_HEALTH] = 60;
     enemy_state->last_client_update = enemy_update;
@@ -2485,15 +2519,17 @@ static void test_dm_enemy_selection_damage_alert(void **state)
     assert_int_equal(status, BLERR_NOERROR);
     status = env->exports->BotUpdateClient(0, &self_update);
     assert_int_equal(status, BLERR_NOERROR);
-    status = env->exports->BotUpdateEntity(1, &enemy_entity);
+    status = env->exports->BotUpdateEntity(2, &enemy_entity);
     assert_int_equal(status, BLERR_NOERROR);
 
     status = env->exports->BotAI(0, 0.1f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(self->combat.current_enemy, 1);
-    assert_true(self->combat.took_damage);
-    assert_true(self->combat.enemy_visible);
-    assert_true(self->combat.last_damage_time >= 1.1f);
+    assert_int_equal(self->combat.current_enemy, 2);
+	assert_int_equal(self->combat.last_known_health, 60);
+	assert_false(self->combat.took_damage);
+	assert_int_equal(self->ai_node, BOT_AI_NODE_BATTLE_RETREAT);
+	assert_false(self->combat.enemy_visible);
+	assert_true(self->combat.last_damage_time < -1.0e30f);
 
     BotState_Destroy(1);
 }
@@ -2585,7 +2621,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_bot_update_client_propagates_area_errors,
                                         goal_move_setup,
                                         goal_move_teardown),
-        cmocka_unit_test_setup_teardown(test_dm_enemy_selection_filters_invisible_and_chat,
+        cmocka_unit_test_setup_teardown(test_dm_enemy_selection_uses_retail_live_player_predicate,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_dm_enemy_selection_damage_alert,

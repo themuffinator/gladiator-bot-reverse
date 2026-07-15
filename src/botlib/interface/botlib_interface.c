@@ -131,6 +131,14 @@ static int Botlib_SetupAASSubsystem(void)
         return status;
     }
 
+	status = AAS_ConfigureEntityLimits(g_library_variables.maxentities,
+		g_library_variables.maxclients);
+	if (status != BLERR_NOERROR)
+	{
+		AAS_Shutdown();
+		return status;
+	}
+
     g_subsystem_state.aas_initialised = true;
     return BLERR_NOERROR;
 }

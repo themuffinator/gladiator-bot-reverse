@@ -3275,97 +3275,6 @@ int PC_ReadDollarDirective(pc_source_t *source)
 	return qfalse;
 } //end of the function PC_ReadDirective
 
-#ifndef BOTLIB_PRECOMP_CONTEXT_PREFIX
-#define BOTLIB_PRECOMP_CONTEXT_PREFIX "CONTEXT_"
-#endif
-#ifndef BOTLIB_PRECOMP_MTCONTEXT_PREFIX
-#define BOTLIB_PRECOMP_MTCONTEXT_PREFIX "MTCONTEXT_"
-#endif
-
-/*
-=============
-PC_ShouldPreserveChatDefine
-
-Keeps chat match placeholders symbolic for the reconstructed chat builder.
-=============
-*/
-static qboolean PC_ShouldPreserveChatDefine(const char *name)
-{
-	static const char *const preserve_names[] = {
-		"VICTIM",
-		"KILLER",
-		"GENDER_HE",
-		"GENDER_HIS",
-		"GENDER_HIM",
-		"GENDER_GOD",
-		"THE_ENEMY",
-		"THE_TEAM",
-		"TEAM",
-		"NETNAME",
-		"ADDRESSEE",
-		"ITEM",
-		"TEAMMATE",
-		"TEAMNAME",
-		"KEYAREA",
-		"FORMATION",
-		"POSITION",
-		"NUMBER",
-		"TIME",
-		"NAME",
-		"MORE"
-	};
-
-	if (name == NULL)
-	{
-		return qfalse;
-	}
-
-	if (!strncmp(name, "MSG_", 4))
-	{
-		return qtrue;
-	}
-
-	for (size_t i = 0; i < sizeof(preserve_names) / sizeof(preserve_names[0]); ++i)
-	{
-		if (!strcmp(name, preserve_names[i]))
-		{
-			return qtrue;
-		}
-	}
-
-	return qfalse;
-}
-//============================================================================
-//
-// Parameter:				-
-// Returns:					-
-// Changes Globals:		-
-//============================================================================
-static qboolean PC_ShouldExpandDefine(const char *name)
-{
-	if (name == NULL)
-	{
-		return qfalse;
-	}
-
-	if (!strncmp(name, BOTLIB_PRECOMP_CONTEXT_PREFIX, strlen(BOTLIB_PRECOMP_CONTEXT_PREFIX)))
-	{
-		return qfalse;
-	}
-
-	if (!strncmp(name, BOTLIB_PRECOMP_MTCONTEXT_PREFIX, strlen(BOTLIB_PRECOMP_MTCONTEXT_PREFIX)))
-	{
-		return qfalse;
-	}
-
-	if (PC_ShouldPreserveChatDefine(name))
-	{
-		return qfalse;
-	}
-
-	return qtrue;
-} //end of the function PC_ShouldExpandDefine
-
 #ifdef QUAKEC
 //============================================================================
 //
@@ -3482,11 +3391,6 @@ int PC_ReadToken(pc_source_t *source, pc_token_t *token)
 		//if the token is a name
 		if (token->type == TT_NAME)
 		{
-			if (!PC_ShouldExpandDefine(token->string))
-			{
-				memcpy(&source->token, token, sizeof(pc_token_t));
-				return qtrue;
-			}
 			//check if the name is a define macro
 #if DEFINEHASHING
 			define = PC_FindHashedDefine(source->definehash, token->string);

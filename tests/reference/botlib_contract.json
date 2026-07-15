@@ -143,34 +143,28 @@
       "category": "bridge",
       "messages": [
         {
-          "address": "bridge::inactive_client",
-          "severity": 2,
-          "source": "unit_test",
+          "address": "0x100298a6",
+          "severity": 4,
+          "source": "100298a6  data_10063fe8(4, \"tried to updated inactive bot client\\n\")",
           "text": "tried to updated inactive bot client\n"
         },
         {
-          "address": "bridge::aas_not_loaded",
+          "address": "0x1000a933",
           "severity": 1,
-          "source": "unit_test",
+          "source": "1000a933  data_10063fe8(1, \"AAS_UpdateEntity: not loaded\\n\")",
           "text": "AAS_UpdateEntity: not loaded\n"
-        },
-        {
-          "address": "bridge::brush_relink",
-          "severity": 1,
-          "source": "unit_test",
-          "text": "[q2bridge] relinking brush model ent %d\n"
         }
       ],
       "name": "BridgeDiagnostics",
       "return_codes": [
         {
-          "address": "bridge::inactive_client_code",
-          "source": "unit_test",
+          "address": "0x100298b4",
+          "source": "100298b4  return 0x18",
           "value": 24
         },
         {
-          "address": "bridge::aas_not_loaded_code",
-          "source": "unit_test",
+          "address": "0x1000a944",
+          "source": "1000a944  return 5",
           "value": 5
         }
       ]
