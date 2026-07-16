@@ -47,8 +47,10 @@ mistaken for the retail slot-0 callback boundary.
 ## Reconstructed compatibility surface
 
 The reconstruction keeps the ten retail callbacks first and appends six
-bridge-only helpers. The retail `GetBotAPI` entry reads only the prefix;
-`GetBotAPIEx(imports, size)` is the explicit opt-in path for this tail:
+bridge-only helpers. The exported retail `GetBotAPI` entry accepts only the
+10-slot `bot_import_t`; the non-exported in-repo
+`GetBotAPIEx(bot_import_extended_t *, size)` helper is the explicit opt-in
+path for the separately typed tail:
 
 | Order | Callback | Signature |
 | --- | --- | --- |

@@ -14,6 +14,7 @@
 
 #include "botlib/ai_weapon/bot_weapon.h"
 #include "botlib/ea/ea_local.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
@@ -150,7 +151,7 @@ static const botlib_import_table_t g_test_imports = {
     .BotLibVarSet = test_libvar_set,
 };
 
-static bot_import_t g_test_q2_imports = {
+static bot_import_extended_t g_test_q2_imports = {
 	.BotClientCommand = test_capture_client_command,
 };
 
@@ -184,8 +185,9 @@ static void teardown_botlib_environment(void)
 {
 	Q2Bridge_ClearImportTable();
 	BotShutdownWeights();
-    LibVar_Shutdown();
-    BotMemory_Shutdown();
+	LibVar_Shutdown();
+	CRC_ResetSourceChecksums();
+	BotMemory_Shutdown();
     BotInterface_SetImportTable(NULL);
 }
 

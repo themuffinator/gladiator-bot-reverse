@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "botlib/common/l_log.h"
+#include "botlib/common/l_memory.h"
 
 typedef struct aas_optimized_s
 {
@@ -226,15 +227,15 @@ Release any compact geometry buffers that have not been transferred.
 */
 static void AAS_FreeOptimized(aas_optimized_t *optimized)
 {
-	free(optimized->vertexes);
-	free(optimized->edges);
-	free(optimized->edgeindex);
-	free(optimized->faces);
-	free(optimized->faceindex);
-	free(optimized->areas);
-	free(optimized->vertexoptimizeindex);
-	free(optimized->edgeoptimizeindex);
-	free(optimized->faceoptimizeindex);
+	FreeMemory(optimized->vertexes);
+	FreeMemory(optimized->edges);
+	FreeMemory(optimized->edgeindex);
+	FreeMemory(optimized->faces);
+	FreeMemory(optimized->faceindex);
+	FreeMemory(optimized->areas);
+	FreeMemory(optimized->vertexoptimizeindex);
+	FreeMemory(optimized->edgeoptimizeindex);
+	FreeMemory(optimized->faceoptimizeindex);
 	memset(optimized, 0, sizeof(*optimized));
 }
 
@@ -248,25 +249,24 @@ Allocate retail-sized compact arrays and old-to-new index tables.
 static int AAS_OptimizeAlloc(aas_optimized_t *optimized)
 {
 	memset(optimized, 0, sizeof(*optimized));
-	optimized->vertexes = (aas_vertex_t *)calloc((size_t)aasworld.numVertexes,
-		sizeof(aas_vertex_t));
-	optimized->edges = (aas_edge_t *)calloc((size_t)aasworld.numEdges,
-		sizeof(aas_edge_t));
-	optimized->edgeindex = (int *)calloc((size_t)aasworld.edgeIndexSize,
-		sizeof(int));
-	optimized->faces = (aas_face_t *)calloc((size_t)aasworld.numFaces,
-		sizeof(aas_face_t));
-	optimized->faceindex = (int *)calloc((size_t)aasworld.faceIndexSize,
-		sizeof(int));
-	optimized->areas = (aas_area_t *)calloc((size_t)aasworld.numAreas,
-		sizeof(aas_area_t));
-	optimized->vertexoptimizeindex = (int *)calloc(
-		(size_t)aasworld.numVertexes,
-		sizeof(int));
-	optimized->edgeoptimizeindex = (int *)calloc((size_t)aasworld.numEdges,
-		sizeof(int));
-	optimized->faceoptimizeindex = (int *)calloc((size_t)aasworld.numFaces,
-		sizeof(int));
+	optimized->vertexes = (aas_vertex_t *)GetClearedMemory(
+		(size_t)aasworld.numVertexes * sizeof(aas_vertex_t));
+	optimized->edges = (aas_edge_t *)GetClearedMemory(
+		(size_t)aasworld.numEdges * sizeof(aas_edge_t));
+	optimized->edgeindex = (int *)GetClearedMemory(
+		(size_t)aasworld.edgeIndexSize * sizeof(int));
+	optimized->faces = (aas_face_t *)GetClearedMemory(
+		(size_t)aasworld.numFaces * sizeof(aas_face_t));
+	optimized->faceindex = (int *)GetClearedMemory(
+		(size_t)aasworld.faceIndexSize * sizeof(int));
+	optimized->areas = (aas_area_t *)GetClearedMemory(
+		(size_t)aasworld.numAreas * sizeof(aas_area_t));
+	optimized->vertexoptimizeindex = (int *)GetClearedMemory(
+		(size_t)aasworld.numVertexes * sizeof(int));
+	optimized->edgeoptimizeindex = (int *)GetClearedMemory(
+		(size_t)aasworld.numEdges * sizeof(int));
+	optimized->faceoptimizeindex = (int *)GetClearedMemory(
+		(size_t)aasworld.numFaces * sizeof(int));
 
 	if ((aasworld.numVertexes > 0 &&
 		optimized->vertexes == NULL) ||
@@ -302,39 +302,39 @@ Replace world geometry with the compact retail geometry and free index maps.
 */
 static void AAS_OptimizeStore(aas_optimized_t *optimized)
 {
-	free(aasworld.vertexes);
+	FreeMemory(aasworld.vertexes);
 	aasworld.vertexes = optimized->vertexes;
 	aasworld.numVertexes = optimized->numvertexes;
 	optimized->vertexes = NULL;
 
-	free(aasworld.edges);
+	FreeMemory(aasworld.edges);
 	aasworld.edges = optimized->edges;
 	aasworld.numEdges = optimized->numedges;
 	optimized->edges = NULL;
 
-	free(aasworld.edgeIndex);
+	FreeMemory(aasworld.edgeIndex);
 	aasworld.edgeIndex = optimized->edgeindex;
 	aasworld.edgeIndexSize = optimized->edgeindexsize;
 	optimized->edgeindex = NULL;
 
-	free(aasworld.faces);
+	FreeMemory(aasworld.faces);
 	aasworld.faces = optimized->faces;
 	aasworld.numFaces = optimized->numfaces;
 	optimized->faces = NULL;
 
-	free(aasworld.faceIndex);
+	FreeMemory(aasworld.faceIndex);
 	aasworld.faceIndex = optimized->faceindex;
 	aasworld.faceIndexSize = optimized->faceindexsize;
 	optimized->faceindex = NULL;
 
-	free(aasworld.areas);
+	FreeMemory(aasworld.areas);
 	aasworld.areas = optimized->areas;
 	aasworld.numAreas = optimized->numareas;
 	optimized->areas = NULL;
 
-	free(optimized->vertexoptimizeindex);
-	free(optimized->edgeoptimizeindex);
-	free(optimized->faceoptimizeindex);
+	FreeMemory(optimized->vertexoptimizeindex);
+	FreeMemory(optimized->edgeoptimizeindex);
+	FreeMemory(optimized->faceoptimizeindex);
 	optimized->vertexoptimizeindex = NULL;
 	optimized->edgeoptimizeindex = NULL;
 	optimized->faceoptimizeindex = NULL;

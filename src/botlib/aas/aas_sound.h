@@ -13,27 +13,46 @@ extern "C" {
 
 typedef struct aas_soundinfo_s
 {
-    char name[128];
-    char normalized[128];
-    char subtitle[128];
-    float volume;
-    float duration;
-    int type;
-    float recognition;
+    char name[80];
+	float volume;
+	float duration;
+	int type;
+	float recognition;
+	char string[80];
 } aas_soundinfo_t;
+
+typedef char aas_soundinfo_size[
+	(sizeof(aas_soundinfo_t) == 0xb0U) ? 1 : -1];
+typedef char aas_soundinfo_name_offset[
+	(offsetof(aas_soundinfo_t, name) == 0x00U) ? 1 : -1];
+typedef char aas_soundinfo_volume_offset[
+	(offsetof(aas_soundinfo_t, volume) == 0x50U) ? 1 : -1];
+typedef char aas_soundinfo_duration_offset[
+	(offsetof(aas_soundinfo_t, duration) == 0x54U) ? 1 : -1];
+typedef char aas_soundinfo_type_offset[
+	(offsetof(aas_soundinfo_t, type) == 0x58U) ? 1 : -1];
+typedef char aas_soundinfo_recognition_offset[
+	(offsetof(aas_soundinfo_t, recognition) == 0x5cU) ? 1 : -1];
+typedef char aas_soundinfo_string_offset[
+	(offsetof(aas_soundinfo_t, string) == 0x60U) ? 1 : -1];
 
 typedef struct aas_sound_event_s
 {
+	float start;
+	float end;
     vec3_t origin;
+	int zero;
     int ent;
     int channel;
     int soundindex;
-    int info_index;
     float volume;
     float attenuation;
-    float timeofs;
-    float timestamp;
+	int next_index;
+	int prev_index;
 } aas_sound_event_t;
+
+typedef char aas_sound_event_size[
+	(sizeof(aas_sound_event_t) == 0x34U) ? 1 : -1];
 
 typedef struct aas_pointlight_event_s
 {
@@ -75,14 +94,28 @@ typedef struct aas_pointlight_event_summary_s
     bool expired_this_frame;
 } aas_pointlight_event_summary_t;
 
-int AAS_SoundSubsystem_Init(const botlib_library_variables_t *vars);
+int AAS_SoundSubsystem_Init(void);
 void AAS_SoundSubsystem_Shutdown(void);
+
+/* Mirrors AAS global-state clearing without releasing tracked sensory pools. */
+void AAS_SoundSubsystem_ResetState(void);
+
+/* Recovered standalone max_aaslights heap builder at gladiator.dll 0x1000d340. */
+void AAS_SoundSubsystem_InitPointLightHeap(void);
 
 void AAS_SoundSubsystem_ClearMapAssets(void);
 bool AAS_SoundSubsystem_RegisterMapAssets(int count, char *assets[]);
 
 void AAS_SoundSubsystem_SetFrameTime(float time);
 void AAS_SoundSubsystem_ResetFrameEvents(void);
+
+int AAS_SoundSubsystem_UpdateSound(const vec3_t origin,
+	int ent,
+	int channel,
+	int soundindex,
+	float volume,
+	float attenuation,
+	float timeofs);
 
 bool AAS_SoundSubsystem_RecordSound(const vec3_t origin,
 	int ent,

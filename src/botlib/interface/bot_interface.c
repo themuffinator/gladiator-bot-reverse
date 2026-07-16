@@ -22,6 +22,7 @@
 #include "q2bridge/bridge.h"
 #include "q2bridge/bridge_config.h"
 #include "q2bridge/update_translator.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
@@ -46,8 +47,8 @@
 static void BotInterface_Printf(int priority, const char *fmt, ...);
 
 
-static bot_import_t g_botImportStorage;
-static bot_import_t *g_botImport = NULL;
+static bot_import_extended_t g_botImportStorage;
+static bot_import_extended_t *g_botImport = NULL;
 static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;
 static botlib_import_table_t g_botInterfaceImportTable;
 
@@ -1752,31 +1753,35 @@ static void BotInterface_BeginFrame(float time)
 {
     g_botInterfaceFrameTime = time;
 	BotLib_LogSetTime(time);
+	BotGoal_SetCurrentTime(time);
     g_botInterfaceFrameNumber += 1U;
     Bridge_SetFrameTime(time);
     AAS_SoundSubsystem_SetFrameTime(time);
     BotInterface_ResetFrameQueues();
 }
 
-static void BotInterface_EnqueueSound(const vec3_t origin,
-                                      int ent,
-                                      int channel,
-                                      int soundindex,
-                                      float volume,
-                                      float attenuation,
-                                      float timeofs)
+/*
+=============
+BotInterface_EnqueueSound
+
+Forward one sound update through the retail status-returning sound leaf.
+=============
+*/
+static int BotInterface_EnqueueSound(const vec3_t origin,
+	int ent,
+	int channel,
+	int soundindex,
+	float volume,
+	float attenuation,
+	float timeofs)
 {
-    if (!AAS_SoundSubsystem_RecordSound(origin,
-                                        ent,
-                                        channel,
-                                        soundindex,
-                                        volume,
-                                        attenuation,
-                                        timeofs))
-    {
-        BotInterface_Printf(PRT_WARNING,
-                             "[bot_interface] BotAddSound: sound queue capacity exceeded\n");
-    }
+	return AAS_SoundSubsystem_UpdateSound(origin,
+		ent,
+		channel,
+		soundindex,
+		volume,
+		attenuation,
+		timeofs);
 }
 
 static void BotInterface_EnqueuePointLight(vec3_t origin,
@@ -2082,7 +2087,7 @@ static int BotInterface_BotLibVarSetWrapper(const char *var_name, const char *va
 	return status;
 }
 
-static void BotInterface_BuildImportTable(bot_import_t *import_table)
+static void BotInterface_BuildImportTable(const void *import_table)
 {
     (void)import_table;
 
@@ -2325,7 +2330,7 @@ BotInterface_InitialiseImportTable
 Prepares the bootstrapped import table used during library setup.
 =============
 */
-static void BotInterface_InitialiseImportTable(bot_import_t *imports,
+static void BotInterface_InitialiseImportTable(const void *imports,
 	size_t import_size)
 {
 	memset(&g_botImportStorage, 0, sizeof(g_botImportStorage));
@@ -2487,6 +2492,7 @@ static int BotSetupLibraryWrapper(void)
 		return BLERR_LIBRARYALREADYSETUP;
 	}
 
+	BotLib_LogOpen("botlib.log");
 	BotInterface_PrintBanner(PRT_MESSAGE, "------- BotLib Initialization -------\n");
 	BotInterface_PrintBanner(PRT_MESSAGE, "BotLib v0.96\n");
 	BotInterface_SetImportTable(&g_botlibImportTable);
@@ -2764,6 +2770,8 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 		return qfalse;
 	}
 
+	CRC_RegisterSourceChecksum(aasworld.mapName, aasworld.bspEntityChecksum);
+
 	if (BotState_Get(client) != NULL)
 	{
 		BotInterface_Printf(PRT_FATAL, "client %d already setup\n", client);
@@ -2802,10 +2810,10 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 		1.0f);
 	if (character_handle <= 0)
 	{
-		BotInterface_Printf(PRT_ERROR,
-							"[bot_interface] BotSetupClient: failed to load character '%s' for client %d\n",
-							settings->characterfile,
-							client);
+		BotInterface_Printf(PRT_FATAL,
+							"couldn't load bot character %s from %s\n",
+							settings->charactername,
+							settings->characterfile);
 		BotState_Destroy(client);
 		return qfalse;
 	}
@@ -3077,6 +3085,13 @@ static int BotSettings(int client, bot_settings_t *settings)
 	return BLERR_NOERROR;
 }
 
+/*
+=============
+BotStartFrame
+
+Advance the shared retail botlib/AAS frame state.
+=============
+*/
 static int BotStartFrame(float time)
 {
 	if (!BotInterface_EnsureLibraryReady("BotStartFrame"))
@@ -3084,17 +3099,14 @@ static int BotStartFrame(float time)
 		return BLERR_LIBRARYNOTSETUP;
 	}
 
-    AAS_FrameSynchronise(time);
-    BotInterface_BeginFrame(time);
-    AAS_UnlinkInvalidEntities();
-    AAS_InvalidateEntities();
-    AAS_ContinueInit(time);
-    AAS_RouteFrameUpdate();
-    AAS_ReachabilityFrameUpdate();
+	AAS_FrameSynchronise(time);
+	AAS_InvalidateEntities();
+	BotInterface_BeginFrame(time);
+	AAS_ContinueInit(time);
+	AAS_BeginFrameRouting();
+	AAS_RunFrameDiagnostics();
 
-    aasworld.numFrames += 1;
-
-    return BLERR_NOERROR;
+	return BLERR_NOERROR;
 }
 
 static int BotUpdateClient(int client, bot_updateclient_t *buc)
@@ -3257,7 +3269,7 @@ static int BotUpdateEntity(int ent, bot_updateentity_t *bue)
 =============
 BotAddSound
 
-Validates the source entity before recording a retail sound update.
+Validates the source entity then forwards the raw sound status and diagnostics.
 =============
 */
 static int BotAddSound(vec3_t origin,
@@ -3278,17 +3290,13 @@ static int BotAddSound(vec3_t origin,
 		return BLERR_INVALIDENTITYNUMBER;
 	}
 
-	if (soundindex < 0 || (size_t)soundindex >= g_botInterfaceMapCache.sounds.count)
-	{
-		BotInterface_Printf(PRT_ERROR,
-			"[bot_interface] BotAddSound: invalid sound index %d (count %zu)\n",
-			soundindex,
-			g_botInterfaceMapCache.sounds.count);
-		return BLERR_INVALIDSOUNDINDEX;
-	}
-
-	BotInterface_EnqueueSound(origin, ent, channel, soundindex, volume, attenuation, timeofs);
-	return BLERR_NOERROR;
+	return BotInterface_EnqueueSound(origin,
+		ent,
+		channel,
+		soundindex,
+		volume,
+		attenuation,
+		timeofs);
 }
 
 /*
@@ -7413,21 +7421,26 @@ buttons/triggers with a reachable contact point enter the dedicated activation
 node.
 =============
 */
-static void BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
+static bool BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 	bot_moveresult_t *result,
-	const aas_bspentity_t *entity,
-	int modelindex)
+	const aas_bspentity_t *entity)
 {
 	if (state == NULL || result == NULL || entity == NULL)
 	{
-		return;
+		return false;
 	}
 
+	const char *model = AAS_ValueForBSPEpairKey(entity, "model");
+	if (model == NULL)
+	{
+		return false;
+	}
+	int modelindex = (int)strtol(model + (model[0] == '*'), NULL, 10);
 	vec3_t model_mins;
 	vec3_t model_maxs;
 	if (!BotAI_BlockedBspModelBounds(modelindex, model_mins, model_maxs))
 	{
-		return;
+		return false;
 	}
 
 	vec3_t center;
@@ -7436,14 +7449,14 @@ static void BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 	const char *classname = AAS_ValueForBSPEpairKey(entity, "classname");
 	if (classname == NULL)
 	{
-		return;
+		return false;
 	}
 
 	if (strcmp(classname, "func_door") == 0 ||
 		strcmp(classname, "func_door_secret") == 0)
 	{
 		BotAI_SetBlockedAttack(state, result, center);
-		return;
+		return true;
 	}
 
 	vec3_t goal_mins;
@@ -7467,7 +7480,7 @@ static void BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 			vec3_t face;
 			VectorMA(center, -half_extent, move_direction, face);
 			BotAI_SetBlockedAttack(state, result, face);
-			return;
+			return true;
 		}
 
 		vec3_t trace_start;
@@ -7486,14 +7499,13 @@ static void BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 			goal_mins[axis] -= 5.0f;
 			goal_maxs[axis] += 5.0f;
 		}
-		(void)BotAI_StoreBlockedActivationGoal(state,
+		return BotAI_StoreBlockedActivationGoal(state,
 			result,
 			center,
 			goal_mins,
 			goal_maxs,
 			trace_start,
 			trace_end);
-		return;
 	}
 
 	if (strcmp(classname, "trigger_multiple") == 0 ||
@@ -7504,7 +7516,7 @@ static void BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 		VectorCopy(center, trace_start);
 		VectorCopy(center, trace_end);
 		trace_end[2] = model_maxs[2] + 24.0f - 100.0f;
-		(void)BotAI_StoreBlockedActivationGoal(state,
+		return BotAI_StoreBlockedActivationGoal(state,
 			result,
 			center,
 			goal_mins,
@@ -7512,6 +7524,187 @@ static void BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 			trace_start,
 			trace_end);
 	}
+
+	return false;
+}
+
+/*
+=============
+BotAI_FindBspEntityByModel
+
+Finds the map entity paired with the blocked game's inline BSP model, using
+the same literal `*n` model name that retail BotEntityToActivate constructs.
+=============
+*/
+static const aas_bspentity_t *BotAI_FindBspEntityByModel(
+	const aas_bspentity_t *entities,
+	const char *model)
+{
+	if (model == NULL)
+	{
+		return NULL;
+	}
+
+	for (const aas_bspentity_t *entity = entities;
+		entity != NULL;
+		entity = entity->next)
+	{
+		const char *entity_model = AAS_ValueForBSPEpairKey(entity, "model");
+		if (entity_model != NULL && strcmp(entity_model, model) == 0)
+		{
+			return entity;
+		}
+	}
+
+	return NULL;
+}
+
+/*
+=============
+BotAI_FindBspEntityByTarget
+
+Finds the next map entity whose `target` points at a saved targetname. The
+caller retains the successor cursor so it can reproduce retail's backtracking
+through maps with multiple matching target links.
+=============
+*/
+static const aas_bspentity_t *BotAI_FindBspEntityByTarget(
+	const aas_bspentity_t *entity,
+	const char *target)
+{
+	if (target == NULL)
+	{
+		return NULL;
+	}
+
+	for (; entity != NULL; entity = entity->next)
+	{
+		const char *entity_target = AAS_ValueForBSPEpairKey(entity, "target");
+		if (entity_target != NULL && strcmp(entity_target, target) == 0)
+		{
+			return entity;
+		}
+	}
+
+	return NULL;
+}
+
+/*
+=============
+BotAI_EntityToActivate
+
+Reconstructs retail BotEntityToActivate: beginning at a blocked inline model,
+walk reverse target links through trigger_counter and trigger_relay entities
+until a usable button/trigger is found. It preserves the retail depth limit,
+diagnostics, and trigger_key rejection.
+=============
+*/
+const aas_bspentity_t *BotAI_EntityToActivate(
+	const aas_bspentity_t *entities,
+	int modelindex)
+{
+	char model[32];
+	int written = snprintf(model, sizeof(model), "*%d", modelindex);
+	if (modelindex <= 0 || written < 0 || (size_t)written >= sizeof(model))
+	{
+		return NULL;
+	}
+
+	const aas_bspentity_t *entity = BotAI_FindBspEntityByModel(entities, model);
+	if (entity == NULL)
+	{
+		BotLib_Print(PRT_ERROR,
+			"BotEntityToActivate: no entity found with model %s\n",
+			model);
+		return NULL;
+	}
+
+	const char *classname = AAS_ValueForBSPEpairKey(entity, "classname");
+	if (classname == NULL)
+	{
+		BotLib_Print(PRT_ERROR,
+			"BotEntityToActivate: entity with model %s has no classname\n",
+			model);
+		return NULL;
+	}
+
+	const char *targetname = AAS_ValueForBSPEpairKey(entity, "targetname");
+	if (strcmp(classname, "func_door_secret") == 0 &&
+		(targetname == NULL ||
+			(AAS_IntForBSPEpairKey(entity, "spawnflags") & 1) != 0))
+	{
+		return entity;
+	}
+	if (strcmp(classname, "func_door") == 0 &&
+		AAS_FloatForBSPEpairKey(entity, "health") != 0.0f)
+	{
+		return entity;
+	}
+
+	const char *target_stack[10] = {targetname};
+	const aas_bspentity_t *search_stack[10] = {entities};
+	int depth = 0;
+	const char *last_classname = classname;
+	while (depth >= 0)
+	{
+		const aas_bspentity_t *match = BotAI_FindBspEntityByTarget(
+			search_stack[depth], target_stack[depth]);
+		if (match == NULL)
+		{
+			if (target_stack[depth] != NULL)
+			{
+				BotLib_Print(PRT_ERROR,
+					"BotEntityToActivate: no entity with target \"%s\"\n",
+					target_stack[depth]);
+			}
+			--depth;
+			continue;
+		}
+		search_stack[depth] = match->next;
+
+		classname = AAS_ValueForBSPEpairKey(match, "classname");
+		if (classname == NULL)
+		{
+			BotLib_Print(PRT_ERROR,
+				"BotEntityToActivate: entity with target \"%s\" has no classname\n",
+				target_stack[depth] != NULL ? target_stack[depth] : "");
+			return NULL;
+		}
+		last_classname = classname;
+
+		if (strcmp(classname, "trigger_counter") == 0 ||
+			strcmp(classname, "trigger_relay") == 0)
+		{
+			if (depth >= 9)
+			{
+				BotLib_Print(PRT_ERROR,
+					"BotEntityToActivate: stacked up more than %d trigger_counter or trigger_relay\n",
+					depth);
+				break;
+			}
+			++depth;
+			target_stack[depth] = AAS_ValueForBSPEpairKey(match, "targetname");
+			search_stack[depth] = entities;
+			continue;
+		}
+
+		if (strcmp(classname, "func_button") == 0 ||
+			strcmp(classname, "trigger_multiple") == 0 ||
+			strcmp(classname, "trigger_once") == 0 ||
+			strcmp(classname, "func_door_rotating") == 0)
+		{
+			return match;
+		}
+		if (strcmp(classname, "trigger_key") == 0)
+		{
+			return NULL;
+		}
+	}
+
+	BotLib_Print(PRT_ERROR,
+		"BotEntityToActivate: unkown activator with classname \"%s\"\n",
+		last_classname != NULL ? last_classname : "");
+	return NULL;
 }
 
 /*
@@ -7547,36 +7740,14 @@ static bool BotAI_HandleBlockedMovement(bot_client_state_t *state,
 			entity_info.modelindex > 0)
 		{
 			aas_bspentity_t *entities = AAS_LoadBSPEntities();
-			for (const aas_bspentity_t *entity = entities;
-				entity != NULL;
-				entity = entity->next)
+			const aas_bspentity_t *entity = BotAI_EntityToActivate(entities,
+				entity_info.modelindex);
+			if (entity != NULL && BotAI_HandleBlockedStaticEntity(state,
+				result,
+				entity))
 			{
-				const char *model = AAS_ValueForBSPEpairKey(entity, "model");
-				if (model == NULL)
-				{
-					continue;
-				}
-				int static_model = (int)strtol(model + (model[0] == '*'), NULL, 10);
-				if (static_model != entity_info.modelindex)
-				{
-					continue;
-				}
-
-				const char *classname = AAS_ValueForBSPEpairKey(entity, "classname");
-				if (classname != NULL &&
-					(strcmp(classname, "func_door") == 0 ||
-						strcmp(classname, "func_door_secret") == 0 ||
-						strcmp(classname, "func_button") == 0 ||
-						strcmp(classname, "trigger_multiple") == 0 ||
-						strcmp(classname, "trigger_once") == 0))
-				{
-					BotAI_HandleBlockedStaticEntity(state,
-						result,
-						entity,
-						entity_info.modelindex);
-					AAS_FreeBSPEntities(entities);
-					return false;
-				}
+				AAS_FreeBSPEntities(entities);
+				return false;
 			}
 			AAS_FreeBSPEntities(entities);
 		}
@@ -9968,13 +10139,14 @@ static void BotInterface_BotReplaceSynonyms(char *string, unsigned long int cont
 =============
 BotInterface_GetBotAPI
 
-Builds the export table from an explicitly bounded caller import table.
+Builds the in-repo extended table from an explicitly bounded caller import
+table. Its first 20 entries retain the exact retail layout.
 =============
 */
-static bot_export_t *BotInterface_GetBotAPI(bot_import_t *import,
+static bot_export_extended_t *BotInterface_GetBotAPI(const void *import,
 	size_t import_size)
 {
-	static bot_export_t exportTable;
+	static bot_export_extended_t exportTable;
 
 	memset(&exportTable, 0, sizeof(exportTable));
 
@@ -10117,12 +10289,19 @@ static bot_export_t *BotInterface_GetBotAPI(bot_import_t *import,
 =============
 GetBotAPI
 
-Copies only the immutable ten-callback Gladiator 0.96 import prefix.
+Copies only the immutable ten-callback Gladiator 0.96 import prefix and
+returns a physically separate 20-callback retail export table.
 =============
 */
 GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 {
-	return BotInterface_GetBotAPI(import, BOT_IMPORT_RETAIL_SIZE);
+	static bot_export_t retailExportTable;
+	bot_export_extended_t *extendedExportTable = BotInterface_GetBotAPI(import,
+		BOT_IMPORT_RETAIL_SIZE);
+
+	/* Do not return the first bytes of the extension table to retail callers. */
+	memcpy(&retailExportTable, extendedExportTable, sizeof(retailExportTable));
+	return &retailExportTable;
 }
 
 /*
@@ -10130,9 +10309,11 @@ GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 GetBotAPIEx
 
 Accepts the reconstruction's optional import tail through an explicit size.
+This in-repo seam deliberately has no dllexport marker: the retail DLL has
+only the GetBotAPI export.
 =============
 */
-GLADIATOR_API bot_export_t *GetBotAPIEx(bot_import_t *import,
+bot_export_extended_t *GetBotAPIEx(bot_import_extended_t *import,
 	size_t import_size)
 {
 	return BotInterface_GetBotAPI(import, import_size);

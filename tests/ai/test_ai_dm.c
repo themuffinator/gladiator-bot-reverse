@@ -76,8 +76,6 @@ typedef struct dm_ea_state_s
 #define DM_CHARACTERISTIC_PIZZA_PREFERENCE 48
 #define DM_MAX_MOVE_CALLS 8
 #define DM_MAX_TRACE_CALLS 32
-#define DM_VISIBILITY_CONTENTS 0x02030003
-#define DM_VISIBILITY_FLUIDS (CONTENTS_LAVA | CONTENTS_SLIME | CONTENTS_WATER)
 
 typedef struct dm_move_call_s
 {
@@ -152,16 +150,13 @@ static int g_dm_bot_state_capacity = DM_MAX_TEST_CLIENTS - 1;
 static int g_dm_same_team_result;
 static int g_dm_same_team_entity;
 static const bot_client_state_t *g_dm_same_team_state;
-static aas_entityinfo_t g_dm_entity_info[DM_MAX_TEST_CLIENTS];
-static qboolean g_dm_pvs_results[3];
-static int g_dm_pvs_result_count;
-static int g_dm_pvs_call_count;
-static vec3_t g_dm_pvs_point1[3];
-static vec3_t g_dm_pvs_point2[3];
-static int g_dm_point_contents_results[8];
-static int g_dm_point_contents_result_count;
-static int g_dm_point_contents_call_count;
-static vec3_t g_dm_point_contents_points[8];
+static qboolean g_dm_entity_visible_result;
+static int g_dm_entity_visible_call_count;
+static int g_dm_entity_visible_viewer;
+static vec3_t g_dm_entity_visible_eye;
+static vec3_t g_dm_entity_visible_viewangles;
+static float g_dm_entity_visible_field_of_view;
+static int g_dm_entity_visible_target;
 
 /*
 =============
@@ -650,67 +645,24 @@ bsp_trace_t Q2_Trace(vec3_t start,
 
 /*
 =============
-AAS_EntityInfo
+AAS_EntityVisible
 
-Returns deterministic retail entity bounds for visibility tests.
+Captures the direct retail visibility adapter used by the attack gate.
 =============
 */
-void AAS_EntityInfo(int entity, aas_entityinfo_t *info)
+int AAS_EntityVisible(int viewer,
+	const vec3_t eye,
+	const vec3_t viewangles,
+	float fieldofview,
+	int entnum)
 {
-	if (info == NULL)
-	{
-		return;
-	}
-	memset(info, 0, sizeof(*info));
-	if (entity >= 0 && entity < DM_MAX_TEST_CLIENTS)
-	{
-		*info = g_dm_entity_info[entity];
-	}
-}
-
-/*
-=============
-AAS_InPVS
-
-Returns scripted potential-visibility results and captures sample points.
-=============
-*/
-qboolean AAS_InPVS(const vec3_t point1, const vec3_t point2)
-{
-	int call_index = g_dm_pvs_call_count;
-	g_dm_pvs_call_count += 1;
-	if (call_index >= 0 && call_index < 3)
-	{
-		VectorCopy(point1, g_dm_pvs_point1[call_index]);
-		VectorCopy(point2, g_dm_pvs_point2[call_index]);
-	}
-	if (call_index >= 0 && call_index < g_dm_pvs_result_count)
-	{
-		return g_dm_pvs_results[call_index];
-	}
-	return qtrue;
-}
-
-/*
-=============
-AAS_PointContents
-
-Returns scripted media contents in target-then-eye call order.
-=============
-*/
-int AAS_PointContents(const vec3_t point)
-{
-	int call_index = g_dm_point_contents_call_count;
-	g_dm_point_contents_call_count += 1;
-	if (call_index >= 0 && call_index < 8)
-	{
-		VectorCopy(point, g_dm_point_contents_points[call_index]);
-	}
-	if (call_index >= 0 && call_index < g_dm_point_contents_result_count)
-	{
-		return g_dm_point_contents_results[call_index];
-	}
-	return 0;
+	g_dm_entity_visible_call_count += 1;
+	g_dm_entity_visible_viewer = viewer;
+	VectorCopy(eye, g_dm_entity_visible_eye);
+	VectorCopy(viewangles, g_dm_entity_visible_viewangles);
+	g_dm_entity_visible_field_of_view = fieldofview;
+	g_dm_entity_visible_target = entnum;
+	return g_dm_entity_visible_result;
 }
 
 /*
@@ -924,18 +876,13 @@ static int dm_test_setup(void)
 	g_dm_same_team_result = 0;
 	g_dm_same_team_entity = -1;
 	g_dm_same_team_state = NULL;
-	memset(g_dm_entity_info, 0, sizeof(g_dm_entity_info));
-	memset(g_dm_pvs_results, 0, sizeof(g_dm_pvs_results));
-	g_dm_pvs_result_count = 0;
-	g_dm_pvs_call_count = 0;
-	memset(g_dm_pvs_point1, 0, sizeof(g_dm_pvs_point1));
-	memset(g_dm_pvs_point2, 0, sizeof(g_dm_pvs_point2));
-	memset(g_dm_point_contents_results, 0,
-		sizeof(g_dm_point_contents_results));
-	g_dm_point_contents_result_count = 0;
-	g_dm_point_contents_call_count = 0;
-	memset(g_dm_point_contents_points, 0,
-		sizeof(g_dm_point_contents_points));
+	g_dm_entity_visible_result = qtrue;
+	g_dm_entity_visible_call_count = 0;
+	g_dm_entity_visible_viewer = -1;
+	VectorClear(g_dm_entity_visible_eye);
+	VectorClear(g_dm_entity_visible_viewangles);
+	g_dm_entity_visible_field_of_view = 0.0f;
+	g_dm_entity_visible_target = -1;
 	srand(1);
 	return 0;
 }
@@ -998,14 +945,6 @@ static void dm_prepare_enemy(ai_dm_enemy_info_t *enemy, int entity, const vec3_t
 	VectorCopy(origin, enemy->origin);
 	enemy->distance = distance;
 	enemy->last_seen_time = last_seen;
-	if (entity >= 0 && entity < DM_MAX_TEST_CLIENTS)
-	{
-		aas_entityinfo_t *entity_info = &g_dm_entity_info[entity];
-		memset(entity_info, 0, sizeof(*entity_info));
-		entity_info->valid = qtrue;
-		entity_info->number = entity;
-		VectorCopy(origin, entity_info->origin);
-	}
 }
 
 /*
@@ -2567,70 +2506,12 @@ static void test_dm_aim_radial_ground_target_rejects_exact_impact_boundaries(voi
 
 /*
 =============
-test_dm_entity_visible_uses_center_pvs_and_three_samples
+test_dm_check_attack_uses_aas_entity_visible
 
-Pins bounding-box center selection, PVS trace suppression, and center/bottom/top samples.
+Pins BotCheckAttack's direct call to the retail AAS visibility service.
 =============
 */
-static void test_dm_entity_visible_uses_center_pvs_and_three_samples(void)
-{
-	const int client = 0;
-	g_dm_characteristics[DM_CHARACTERISTIC_PIZZA_PREFERENCE] = 1.0f;
-	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.0f;
-	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
-	g_dm_weapon_available = true;
-	bsp_trace_t *trace = dm_trace_result_at(0);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace = dm_trace_result_at(2);
-	trace->fraction = 0.5f;
-	trace->ent = 2;
-	g_dm_pvs_results[0] = qfalse;
-	g_dm_pvs_results[1] = qfalse;
-	g_dm_pvs_results[2] = qtrue;
-	g_dm_pvs_result_count = 3;
-
-	ai_dm_state_t *dm_state = AI_DMState_Create(client);
-	DM_ASSERT(dm_state != NULL);
-	bot_client_state_t client_state;
-	dm_prepare_client_state(&client_state, client);
-	client_state.weapon_state = 1;
-	ai_dm_enemy_info_t enemy;
-	vec3_t enemy_origin = {90.0f, 0.0f, 0.0f};
-	dm_prepare_enemy(&enemy, 2, enemy_origin, 90.0f, 20.0f);
-	VectorSet(g_dm_entity_info[2].mins, -10.0f, -20.0f, -30.0f);
-	VectorSet(g_dm_entity_info[2].maxs, 10.0f, 20.0f, 50.0f);
-	bot_input_t base = {0};
-	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
-	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
-	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 20.0f);
-	bot_input_t command = dm_consume_input(client, 0.1f);
-
-	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
-	DM_ASSERT(g_dm_pvs_call_count == 3);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_pvs_point2[0][2], 10.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_pvs_point2[1][2], -20.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_pvs_point2[2][2], 60.0f, 0.0001f);
-	DM_ASSERT(g_dm_point_contents_call_count == 2);
-	DM_ASSERT(g_dm_trace_count == 3);
-	DM_ASSERT(!g_dm_trace_calls[1].has_mins);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[0], 90.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[2], 60.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_calls[1].mask == DM_VISIBILITY_CONTENTS);
-	AI_DMState_Destroy(dm_state);
-}
-
-/*
-=============
-test_dm_entity_visible_adjusts_fluid_direction_and_mask
-
-Pins target/eye medium masks, dry-to-fluid reversal, swapped hit entity, and
-the matching-fluid XOR removal.
-=============
-*/
-static void test_dm_entity_visible_adjusts_fluid_direction_and_mask(void)
+static void test_dm_check_attack_uses_aas_entity_visible(void)
 {
 	const int client = 0;
 	bot_input_t base = {0};
@@ -2642,18 +2523,44 @@ static void test_dm_entity_visible_adjusts_fluid_direction_and_mask(void)
 	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.0f;
 	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
 	g_dm_weapon_available = true;
-	g_dm_point_contents_results[0] = CONTENTS_WATER;
-	g_dm_point_contents_results[1] = 0;
-	g_dm_point_contents_result_count = 2;
 	bsp_trace_t *trace = dm_trace_result_at(0);
 	trace->fraction = 1.0f;
 	trace->ent = 2;
 	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace = dm_trace_result_at(2);
 	trace->fraction = 0.5f;
 	trace->ent = 2;
+
 	ai_dm_state_t *dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+	dm_prepare_client_state(&client_state, client);
+	client_state.weapon_state = 1;
+	client_state.last_client_update.viewoffset[2] = 20.0f;
+	dm_prepare_enemy(&enemy, 2, enemy_origin, 200.0f, 20.0f);
+	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
+	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
+	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 20.0f);
+	bot_input_t command = dm_consume_input(client, 0.1f);
+
+	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
+	DM_ASSERT(g_dm_entity_visible_call_count == 1);
+	DM_ASSERT(g_dm_entity_visible_viewer == client + 1);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_entity_visible_eye[2], 20.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_entity_visible_viewangles[YAW], 0.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_entity_visible_field_of_view, 50.0f, 0.0001f);
+	DM_ASSERT(g_dm_entity_visible_target == enemy.entity);
+	DM_ASSERT(g_dm_trace_count == 2);
+	AI_DMState_Destroy(dm_state);
+
+	dm_test_setup();
+	g_dm_characteristics[DM_CHARACTERISTIC_PIZZA_PREFERENCE] = 1.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
+	g_dm_weapon_available = true;
+	g_dm_entity_visible_result = qfalse;
+	trace = dm_trace_result_at(0);
+	trace->fraction = 1.0f;
+	trace->ent = 2;
+	dm_state = AI_DMState_Create(client);
 	DM_ASSERT(dm_state != NULL);
 	dm_prepare_client_state(&client_state, client);
 	client_state.weapon_state = 1;
@@ -2661,141 +2568,10 @@ static void test_dm_entity_visible_adjusts_fluid_direction_and_mask(void)
 	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
 	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
 	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 20.1f);
-	bot_input_t command = dm_consume_input(client, 0.1f);
-	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
-	DM_ASSERT(g_dm_trace_count == 3);
-	DM_ASSERT(g_dm_trace_calls[1].passent == client + 1);
-	DM_ASSERT(g_dm_trace_calls[1].mask ==
-		(DM_VISIBILITY_CONTENTS | DM_VISIBILITY_FLUIDS));
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].start[0], 0.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[0], 200.0f, 0.0001f);
-	AI_DMState_Destroy(dm_state);
-
-	dm_test_setup();
-	g_dm_characteristics[DM_CHARACTERISTIC_PIZZA_PREFERENCE] = 1.0f;
-	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.0f;
-	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
-	g_dm_weapon_available = true;
-	g_dm_point_contents_results[0] = 0;
-	g_dm_point_contents_results[1] = CONTENTS_WATER;
-	g_dm_point_contents_result_count = 2;
-	trace = dm_trace_result_at(0);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(1);
-	trace->fraction = 0.5f;
-	trace->ent = client + 1;
-	trace = dm_trace_result_at(2);
-	trace->fraction = 0.5f;
-	trace->ent = 2;
-	dm_state = AI_DMState_Create(client);
-	DM_ASSERT(dm_state != NULL);
-	dm_prepare_client_state(&client_state, client);
-	client_state.weapon_state = 1;
-	dm_prepare_enemy(&enemy, 2, enemy_origin, 200.0f, 20.2f);
-	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
-	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
-	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 20.2f);
 	command = dm_consume_input(client, 0.1f);
-	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
-	DM_ASSERT(g_dm_trace_count == 3);
-	DM_ASSERT(g_dm_trace_calls[1].passent == enemy.entity);
-	DM_ASSERT(g_dm_trace_calls[1].mask ==
-		(DM_VISIBILITY_CONTENTS | DM_VISIBILITY_FLUIDS));
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].start[0], 200.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[0], 0.0f, 0.0001f);
-	AI_DMState_Destroy(dm_state);
-
-	dm_test_setup();
-	g_dm_characteristics[DM_CHARACTERISTIC_PIZZA_PREFERENCE] = 1.0f;
-	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.0f;
-	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
-	g_dm_weapon_available = true;
-	g_dm_point_contents_results[0] = CONTENTS_WATER;
-	g_dm_point_contents_results[1] = CONTENTS_WATER;
-	g_dm_point_contents_result_count = 2;
-	trace = dm_trace_result_at(0);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace = dm_trace_result_at(2);
-	trace->fraction = 0.5f;
-	trace->ent = 2;
-	dm_state = AI_DMState_Create(client);
-	DM_ASSERT(dm_state != NULL);
-	dm_prepare_client_state(&client_state, client);
-	client_state.weapon_state = 1;
-	dm_prepare_enemy(&enemy, 2, enemy_origin, 200.0f, 20.3f);
-	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
-	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
-	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 20.3f);
-	command = dm_consume_input(client, 0.1f);
-	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
-	DM_ASSERT(g_dm_trace_count == 3);
-	DM_ASSERT(g_dm_trace_calls[1].passent == client + 1);
-	DM_ASSERT(g_dm_trace_calls[1].mask == DM_VISIBILITY_CONTENTS);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].start[0], 0.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[0], 200.0f, 0.0001f);
-	AI_DMState_Destroy(dm_state);
-}
-
-/*
-=============
-test_dm_entity_visible_continues_translucent_fluid
-
-Pins the retail second visibility trace through a translucent fluid surface.
-=============
-*/
-static void test_dm_entity_visible_continues_translucent_fluid(void)
-{
-	const int client = 0;
-	g_dm_characteristics[DM_CHARACTERISTIC_PIZZA_PREFERENCE] = 1.0f;
-	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.0f;
-	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
-	g_dm_weapon_available = true;
-	g_dm_point_contents_results[0] = CONTENTS_WATER;
-	g_dm_point_contents_results[1] = 0;
-	g_dm_point_contents_result_count = 2;
-	bsp_trace_t *trace = dm_trace_result_at(0);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(1);
-	trace->fraction = 0.4f;
-	trace->ent = -1;
-	trace->contents = CONTENTS_WATER;
-	trace->surface.flags = 0x10;
-	VectorSet(trace->endpos, 50.0f, 0.0f, 0.0f);
-	trace = dm_trace_result_at(2);
-	trace->fraction = 1.0f;
-	trace = dm_trace_result_at(3);
-	trace->fraction = 0.5f;
-	trace->ent = 2;
-
-	ai_dm_state_t *dm_state = AI_DMState_Create(client);
-	DM_ASSERT(dm_state != NULL);
-	bot_client_state_t client_state;
-	dm_prepare_client_state(&client_state, client);
-	client_state.weapon_state = 1;
-	ai_dm_enemy_info_t enemy;
-	vec3_t enemy_origin = {200.0f, 0.0f, 0.0f};
-	dm_prepare_enemy(&enemy, 2, enemy_origin, 200.0f, 20.4f);
-	bot_input_t base = {0};
-	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
-	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
-	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 20.4f);
-	bot_input_t command = dm_consume_input(client, 0.1f);
-
-	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
-	DM_ASSERT(g_dm_trace_count == 4);
-	DM_ASSERT(g_dm_trace_calls[1].mask ==
-		(DM_VISIBILITY_CONTENTS | DM_VISIBILITY_FLUIDS));
-	DM_ASSERT(!g_dm_trace_calls[1].has_mins);
-	DM_ASSERT(!g_dm_trace_calls[2].has_mins);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].start[0], 50.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[0], 200.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_calls[2].passent == client + 1);
-	DM_ASSERT(g_dm_trace_calls[2].mask == DM_VISIBILITY_CONTENTS);
+	DM_ASSERT((command.actionflags & ACTION_ATTACK) == 0);
+	DM_ASSERT(g_dm_entity_visible_call_count == 1);
+	DM_ASSERT(g_dm_trace_count == 1);
 	AI_DMState_Destroy(dm_state);
 }
 
@@ -2845,17 +2621,17 @@ static void test_dm_check_attack_builds_retail_weapon_sweep(void)
 	bot_input_t command = dm_consume_input(client, 0.1f);
 
 	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
-	DM_ASSERT(g_dm_trace_count == 3);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].start[0], 6.0f, 0.01f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].start[1], 0.0f, 0.01f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].start[2], 26.0f, 0.01f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[0], 6.0f, 0.01f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[1], 1012.0f, 0.02f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[2], 26.0f, 0.01f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].mins[0], -8.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].maxs[2], 8.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_calls[2].passent == client + 1);
-	DM_ASSERT(g_dm_trace_calls[2].mask == MASK_SHOT);
+	DM_ASSERT(g_dm_trace_count == 2);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].start[0], 6.0f, 0.01f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].start[1], 0.0f, 0.01f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].start[2], 26.0f, 0.01f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[0], 6.0f, 0.01f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[1], 1012.0f, 0.02f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].end[2], 26.0f, 0.01f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].mins[0], -8.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[1].maxs[2], 8.0f, 0.0001f);
+	DM_ASSERT(g_dm_trace_calls[1].passent == client + 1);
+	DM_ASSERT(g_dm_trace_calls[1].mask == MASK_SHOT);
 	ai_dm_metrics_t metrics;
 	AI_DMState_GetMetrics(dm_state, &metrics);
 	DM_ASSERT(metrics.attack_latched);
@@ -2900,7 +2676,9 @@ static void test_dm_check_attack_preserves_distance_fov_boundary(void)
 	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 12.0f);
 	bot_input_t command = dm_consume_input(client, 0.1f);
 	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
-	DM_ASSERT(g_dm_trace_count == 3);
+	DM_ASSERT(g_dm_trace_count == 2);
+	DM_ASSERT(g_dm_entity_visible_call_count == 1);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_entity_visible_field_of_view, 120.0f, 0.0001f);
 	AI_DMState_Destroy(dm_state);
 
 	dm_test_setup();
@@ -2925,8 +2703,10 @@ static void test_dm_check_attack_preserves_distance_fov_boundary(void)
 	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
 	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 13.0f);
 	command = dm_consume_input(client, 0.1f);
-	DM_ASSERT((command.actionflags & ACTION_ATTACK) == 0);
-	DM_ASSERT(g_dm_trace_count == 1);
+	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
+	DM_ASSERT(g_dm_trace_count == 2);
+	DM_ASSERT(g_dm_entity_visible_call_count == 1);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_entity_visible_field_of_view, 50.0f, 0.0001f);
 	AI_DMState_Destroy(dm_state);
 }
 
@@ -2948,9 +2728,6 @@ static void test_dm_check_attack_suppresses_teammate_and_radial_self_damage(void
 	trace->fraction = 1.0f;
 	trace->ent = 2;
 	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(2);
 	trace->fraction = 0.2f;
 	trace->ent = 3;
 	ai_dm_state_t *dm_state = AI_DMState_Create(client);
@@ -2990,9 +2767,6 @@ static void test_dm_check_attack_suppresses_teammate_and_radial_self_damage(void
 	trace->fraction = 1.0f;
 	trace->ent = 2;
 	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(2);
 	trace->fraction = 0.05f;
 	trace->ent = -1;
 	dm_state = AI_DMState_Create(client);
@@ -3022,9 +2796,6 @@ static void test_dm_check_attack_suppresses_teammate_and_radial_self_damage(void
 	trace->fraction = 1.0f;
 	trace->ent = 2;
 	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(2);
 	trace->fraction = 0.1f;
 	trace->ent = -1;
 	dm_state = AI_DMState_Create(client);
@@ -3052,9 +2823,6 @@ static void test_dm_check_attack_suppresses_teammate_and_radial_self_damage(void
 	trace->fraction = 1.0f;
 	trace->ent = 2;
 	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(2);
 	trace->fraction = 0.2f;
 	trace->ent = -1;
 	dm_state = AI_DMState_Create(client);
@@ -3088,14 +2856,11 @@ static void test_dm_check_attack_verifies_window_and_release_latch(void)
 	trace->fraction = 1.0f;
 	trace->ent = 2;
 	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace->ent = 2;
-	trace = dm_trace_result_at(2);
 	trace->fraction = 0.5f;
 	trace->ent = -1;
 	trace->contents = CONTENTS_WINDOW;
 	trace->endpos[0] = 50.0f;
-	trace = dm_trace_result_at(3);
+	trace = dm_trace_result_at(2);
 	trace->fraction = 0.25f;
 	trace->ent = 2;
 	ai_dm_state_t *dm_state = AI_DMState_Create(client);
@@ -3112,11 +2877,11 @@ static void test_dm_check_attack_verifies_window_and_release_latch(void)
 	AI_DMState_Update(dm_state, &client_state, NULL, &enemy, NULL, 18.0f);
 	bot_input_t command = dm_consume_input(client, 0.1f);
 	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
-	DM_ASSERT(g_dm_trace_count == 4);
-	DM_ASSERT(!g_dm_trace_calls[3].has_mins);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[3].start[0], 50.0f, 0.0001f);
-	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[3].end[0], 200.0f, 0.0001f);
-	DM_ASSERT(g_dm_trace_calls[3].passent == client + 1);
+	DM_ASSERT(g_dm_trace_count == 3);
+	DM_ASSERT(!g_dm_trace_calls[2].has_mins);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].start[0], 50.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(g_dm_trace_calls[2].end[0], 200.0f, 0.0001f);
+	DM_ASSERT(g_dm_trace_calls[2].passent == client + 1);
 	AI_DMState_Destroy(dm_state);
 
 	dm_test_setup();
@@ -3128,13 +2893,11 @@ static void test_dm_check_attack_verifies_window_and_release_latch(void)
 	trace->fraction = 1.0f;
 	trace->ent = 2;
 	trace = dm_trace_result_at(1);
-	trace->fraction = 1.0f;
-	trace = dm_trace_result_at(2);
 	trace->fraction = 0.5f;
 	trace->ent = -1;
 	trace->contents = CONTENTS_WINDOW;
 	trace->endpos[0] = 50.0f;
-	trace = dm_trace_result_at(3);
+	trace = dm_trace_result_at(2);
 	trace->fraction = 1.0f;
 	trace->ent = -1;
 	dm_state = AI_DMState_Create(client);
@@ -3150,7 +2913,7 @@ static void test_dm_check_attack_verifies_window_and_release_latch(void)
 	AI_DMState_GetMetrics(dm_state, &metrics);
 	DM_ASSERT((command.actionflags & ACTION_ATTACK) == 0);
 	DM_ASSERT(!metrics.attack_latched);
-	DM_ASSERT(g_dm_trace_count == 4);
+	DM_ASSERT(g_dm_trace_count == 3);
 	AI_DMState_Destroy(dm_state);
 
 	dm_test_setup();
@@ -3178,7 +2941,7 @@ static void test_dm_check_attack_verifies_window_and_release_latch(void)
 	AI_DMState_GetMetrics(dm_state, &metrics);
 	DM_ASSERT((command.actionflags & ACTION_ATTACK) != 0);
 	DM_ASSERT(!metrics.attack_latched);
-	DM_ASSERT(g_dm_trace_count == 6);
+	DM_ASSERT(g_dm_trace_count == 4);
 	AI_DMState_Destroy(dm_state);
 }
 
@@ -3321,9 +3084,7 @@ int main(void)
 		{"aim_radial_ground", dm_test_setup, test_dm_aim_radial_ground_target_uses_retail_trace_order, dm_test_teardown},
 		{"aim_radial_gates", dm_test_setup, test_dm_aim_radial_ground_target_preserves_strict_gates, dm_test_teardown},
 		{"aim_radial_exact_impacts", dm_test_setup, test_dm_aim_radial_ground_target_rejects_exact_impact_boundaries, dm_test_teardown},
-		{"entity_visible_samples", dm_test_setup, test_dm_entity_visible_uses_center_pvs_and_three_samples, dm_test_teardown},
-		{"entity_visible_fluids", dm_test_setup, test_dm_entity_visible_adjusts_fluid_direction_and_mask, dm_test_teardown},
-		{"entity_visible_translucent", dm_test_setup, test_dm_entity_visible_continues_translucent_fluid, dm_test_teardown},
+		{"attack_aas_visibility", dm_test_setup, test_dm_check_attack_uses_aas_entity_visible, dm_test_teardown},
 		{"attack_sweep", dm_test_setup, test_dm_check_attack_builds_retail_weapon_sweep, dm_test_teardown},
 		{"attack_fov", dm_test_setup, test_dm_check_attack_preserves_distance_fov_boundary, dm_test_teardown},
 		{"attack_safety", dm_test_setup, test_dm_check_attack_suppresses_teammate_and_radial_self_damage, dm_test_teardown},

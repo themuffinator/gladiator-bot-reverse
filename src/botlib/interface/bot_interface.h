@@ -15,7 +15,9 @@ typedef int (*bot_ai_node_step_fn)(bot_client_state_t *state, void *context);
 #define BOT_AI_MAX_NODE_SWITCHES 50
 
 GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import_table);
-GLADIATOR_API bot_export_t *GetBotAPIEx(bot_import_t *import_table,
+
+/* Internal explicit-size compatibility seam; never a retail DLL export. */
+bot_export_extended_t *GetBotAPIEx(bot_import_extended_t *import_table,
 	size_t import_size);
 
 /* Internal combat-parity seams; these are not retail export-table entries. */

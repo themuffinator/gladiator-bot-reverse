@@ -21,6 +21,10 @@ if(UNIX AND NOT APPLE)
 endif()
 
 add_test(NAME aas_map COMMAND aas_map_tests)
+# cmocka reports the seven setup-skipped map-fixture cases with exit code 7
+# when the externally supplied test_nav BSP/AAS pair is absent. Preserve
+# normal assertion failures while presenting that known asset gate as a skip.
+set_tests_properties(aas_map PROPERTIES SKIP_RETURN_CODE 7)
 
 add_executable(aas_pointlight_tests
 	test_aas_pointlight.c

@@ -357,7 +357,8 @@ Allocates a tracked payload and clears the requested payload bytes.
 void *GetClearedMemory(size_t size)
 {
 	void *ptr = GetMemory(size);
-	if (ptr != NULL) {
+	if (ptr != NULL)
+	{
 		memset(ptr, 0, size);
 	}
 	return ptr;
@@ -424,6 +425,18 @@ Returns the current retail tracked-byte counter.
 size_t BotMemory_TotalAllocated(void)
 {
 	return g_memory_state.allocated_bytes;
+}
+
+/*
+=============
+BotMemory_BlockCount
+
+Returns the current retail tracked-block counter.
+=============
+*/
+size_t BotMemory_BlockCount(void)
+{
+	return g_memory_state.block_count;
 }
 
 /*

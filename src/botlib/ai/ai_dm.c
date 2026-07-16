@@ -67,10 +67,6 @@
 #define AI_DM_IDEAL_ATTACK_DISTANCE 140.0f
 #define AI_DM_ATTACK_DISTANCE_RANGE 40.0f
 #define AI_DM_RETAIL_THINK_TIME 0.1f
-#define AI_DM_VISIBILITY_CONTENTS 0x02030003
-#define AI_DM_VISIBILITY_FLUIDS (CONTENTS_LAVA | CONTENTS_SLIME | CONTENTS_WATER)
-#define AI_DM_TRANSLUCENT_SURFACES 0x30
-
 struct ai_dm_state_s
 {
 	int client_number;
@@ -648,123 +644,6 @@ static void AI_DMAngleVectors(const vec3_t angles,
 
 /*
 =============
-AI_DMInFieldOfVision
-
-Checks both retail pitch and yaw half-FOV bounds against a target direction.
-=============
-*/
-static bool AI_DMInFieldOfVision(const vec3_t viewangles,
-	float field_of_view,
-	const vec3_t direction)
-{
-	vec3_t target_angles;
-	AI_DMVectorToAngles(direction, target_angles);
-	float half_fov = field_of_view * 0.5f;
-	float pitch = fabsf(AI_DMAngleDifference(viewangles[PITCH],
-		target_angles[PITCH]));
-	float yaw = fabsf(AI_DMAngleDifference(viewangles[YAW],
-		target_angles[YAW]));
-	return pitch <= half_fov && yaw <= half_fov;
-}
-
-/*
-=============
-AI_DMEntityVisible
-
-Reconstructs retail BotEntityVisible's three-point FOV/PVS/medium trace.
-=============
-*/
-static bool AI_DMEntityVisible(int viewer,
-	const vec3_t eye,
-	const vec3_t viewangles,
-	float field_of_view,
-	int entity)
-{
-	aas_entityinfo_t entity_info;
-	memset(&entity_info, 0, sizeof(entity_info));
-	AAS_EntityInfo(entity, &entity_info);
-
-	vec3_t middle;
-	for (int axis = 0; axis < 3; ++axis)
-	{
-		middle[axis] = (entity_info.mins[axis] +
-			entity_info.maxs[axis]) * 0.5f + entity_info.origin[axis];
-	}
-	vec3_t direction;
-	VectorSubtract(middle, eye, direction);
-	if (!AI_DMInFieldOfVision(viewangles, field_of_view, direction))
-	{
-		return false;
-	}
-
-	for (int sample = 0; sample < 3; ++sample)
-	{
-		if (AAS_InPVS(eye, middle))
-		{
-			int contents_mask = AI_DM_VISIBILITY_CONTENTS;
-			int passent = viewer;
-			int hit_entity = entity;
-			vec3_t start;
-			vec3_t end;
-			VectorCopy(eye, start);
-			VectorCopy(middle, end);
-
-			if ((AAS_PointContents(middle) &
-				AI_DM_VISIBILITY_FLUIDS) != 0)
-			{
-				contents_mask |= AI_DM_VISIBILITY_FLUIDS;
-			}
-			if ((AAS_PointContents(eye) &
-				AI_DM_VISIBILITY_FLUIDS) != 0)
-			{
-				if ((contents_mask & AI_DM_VISIBILITY_FLUIDS) == 0)
-				{
-					passent = entity;
-					hit_entity = viewer;
-					VectorCopy(middle, start);
-					VectorCopy(eye, end);
-				}
-				contents_mask ^= AI_DM_VISIBILITY_FLUIDS;
-			}
-
-			bsp_trace_t trace = Q2_Trace(start,
-				NULL,
-				NULL,
-				end,
-				passent,
-				contents_mask);
-			if ((trace.contents & AI_DM_VISIBILITY_FLUIDS) != 0 &&
-				(trace.surface.flags & AI_DM_TRANSLUCENT_SURFACES) != 0)
-			{
-				contents_mask &= ~AI_DM_VISIBILITY_FLUIDS;
-				trace = Q2_Trace(trace.endpos,
-					NULL,
-					NULL,
-					end,
-					passent,
-					contents_mask);
-			}
-			if (trace.fraction >= 1.0f || trace.ent == hit_entity)
-			{
-				return true;
-			}
-		}
-
-		if (sample == 0)
-		{
-			middle[2] += entity_info.mins[2];
-		}
-		else if (sample == 1)
-		{
-			middle[2] += entity_info.maxs[2] -
-				entity_info.mins[2];
-		}
-	}
-	return false;
-}
-
-/*
-=============
 AI_DMTraceEntityIsTeammate
 
 Resolves the retail wrong-client firing-sweep guard through live bot states.
@@ -811,7 +690,7 @@ static bool AI_DMCheckAttack(ai_dm_state_t *state,
 	vec3_t eye_position;
 	VectorCopy(client_state->last_client_update.origin, eye_position);
 	eye_position[2] += client_state->last_client_update.viewoffset[2];
-	if (!AI_DMEntityVisible(client_state->entity_number,
+	if (!AAS_EntityVisible(client_state->entity_number,
 		eye_position,
 		state->viewangles,
 		field_of_view,

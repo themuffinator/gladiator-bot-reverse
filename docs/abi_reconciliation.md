@@ -37,21 +37,23 @@ inventory at `src2/maps/abi_inventory.json`. The first generated pass found:
   `BotLibLoadMap` -> `BotLoadMap` and `BotLibTestHook` -> `Test`. Regenerate
   it with `src2/scripts/generate_export_aliases.py`.
 
-The production header now preserves those retail prefixes explicitly. The
-first twenty `bot_export_t` callbacks and first ten `bot_import_t` callbacks
-are contiguous in original order, and runtime parity tests fail on any slot
-offset drift. `GetBotAPI` copies exactly the ten-callback retail prefix into
-library-owned storage, so it neither over-reads a 0.96 caller nor follows later
-caller-table mutation. The explicit-size `GetBotAPIEx` compatibility entry
-point admits the six bridge-only trailing callbacks for in-repo integrations.
+The production header now preserves those retail prefixes explicitly.
+`bot_export_t` is exactly the first twenty callbacks and `bot_import_t` starts
+with the ten retail callbacks, all in original order; runtime ABI tests fail on
+any offset or retail-table-size drift. `GetBotAPI` accepts only the exact
+ten-callback `bot_import_t` and copies it into library-owned storage, so it
+neither over-reads a 0.96 caller nor follows later caller-table mutation. The
+non-exported, explicit-size `GetBotAPIEx` accepts `bot_import_extended_t` and
+returns a separately typed compatibility table that duplicates the 20-field
+prefix before its extension tail.
 Likewise, `bot_input_t.actionflags` is back in its original prefix slot;
 the successor-only `weapon` field follows it as a trailing extension.
 
 | Area | Original 0.96 header | Current reconstructed headers | Intake action |
 | --- | --- | --- | --- |
-| Export table | Classic lifecycle/client/map/test functions | Original 20-slot prefix followed by goal, movement, weight, weapon, character, and chat extensions | Keep extensions after the tested retail prefix. |
+| Export table | Classic lifecycle/client/map/test functions | `GetBotAPI` returns only the original 20-slot `bot_export_t`; internal `GetBotAPIEx` returns `bot_export_extended_t`, whose same prefix precedes goal, movement, weight, weapon, character, and chat extensions | Keep extensions physically outside the retail table. |
 | `bot_input_t` | Five-field command input layout | Original fields retain their offsets; trailing `weapon` supports successor code | Keep the trailing extension outside the retail prefix. |
-| Import table | Ten callbacks from `BotInput` through `DebugLineShow` | `GetBotAPI` reads only the original 10-slot prefix; `GetBotAPIEx` accepts the six-callback compatibility tail; a separate internal shim adapts libvars and commands | Keep all three boundaries explicit and prevent prefix drift or caller over-read. |
+| Import table | Ten callbacks from `BotInput` through `DebugLineShow` | Exported `GetBotAPI` accepts only the 10-slot `bot_import_t`; non-exported `GetBotAPIEx` accepts the six-callback-tail `bot_import_extended_t`; a separate internal shim adapts libvars and commands | Keep all three boundaries explicit and prevent prefix drift or caller over-read. |
 | Error codes | Botlib error vocabulary from the original interface | Mirrored in multiple headers with local additions | Keep values address-backed and de-duplicate once ABI is stable. |
 | Libvar cache | Defaults observed in HLIL contract | Bridge cache in `src/q2bridge/bridge_config.c` extends current behavior | Use `src2/maps/address_to_name.csv` `DAT_` mappings as evidence for original cache slots. |
 

@@ -375,7 +375,7 @@ static int AAS_MovePointHasHazard(const vec3_t point)
 	}
 
 	int contents = 0;
-	bot_import_t *imports = Q2Bridge_GetImportTable();
+	bot_import_extended_t *imports = Q2Bridge_GetImportTable();
 	if (imports != NULL && imports->PointContents != NULL)
 	{
 		vec3_t sample;

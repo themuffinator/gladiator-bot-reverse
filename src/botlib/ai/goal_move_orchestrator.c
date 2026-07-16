@@ -202,7 +202,7 @@ static bool ai_goal_make_sound_candidate(ai_goal_state_t *state,
         return false;
     }
 
-    float age = now - event->timestamp;
+    float age = now - event->start;
     if (age > AI_GOAL_SOUND_MAX_AGE)
     {
         return false;

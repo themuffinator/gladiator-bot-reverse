@@ -9,10 +9,10 @@
 
 #include "q2bridge/bridge_config.h"
 
-static bot_import_t *g_q2_imports = NULL;
+static bot_import_extended_t *g_q2_imports = NULL;
 static bool g_q2_debug_lines_enabled = false;
 
-static bot_import_t *Q2Bridge_GetImportsInternal(void)
+static bot_import_extended_t *Q2Bridge_GetImportsInternal(void)
 {
     return g_q2_imports;
 }
@@ -122,7 +122,7 @@ static void Q2Bridge_PrintFormatted(int type, const char *message)
         return;
     }
 
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports != NULL && imports->Print != NULL)
     {
         imports->Print(type, "%s", message);
@@ -140,7 +140,7 @@ static bsp_trace_t Q2Bridge_DefaultTrace(void)
     return trace;
 }
 
-void Q2Bridge_SetImportTable(bot_import_t *imports)
+void Q2Bridge_SetImportTable(bot_import_extended_t *imports)
 {
     g_q2_imports = imports;
 }
@@ -150,7 +150,7 @@ void Q2Bridge_ClearImportTable(void)
     g_q2_imports = NULL;
 }
 
-bot_import_t *Q2Bridge_GetImportTable(void)
+bot_import_extended_t *Q2Bridge_GetImportTable(void)
 {
     return g_q2_imports;
 }
@@ -167,7 +167,7 @@ bool Q2Bridge_DebugLinesEnabled(void)
 
 void Q2_BotInput(int client, bot_input_t *input)
 {
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->BotInput == NULL)
     {
         return;
@@ -189,7 +189,7 @@ void Q2_BotInput(int client, bot_input_t *input)
 
 void Q2_BotClientCommand(int client, const char *command, ...)
 {
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->BotClientCommand == NULL || command == NULL)
     {
         return;
@@ -257,7 +257,7 @@ void Q2_Error(const char *fmt, ...)
         return;
     }
 
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports != NULL && imports->Error != NULL)
     {
         imports->Error("%s", message);
@@ -272,7 +272,7 @@ void Q2_Error(const char *fmt, ...)
 
 cvar_t *Q2_CvarGet(const char *name, const char *default_value, int flags)
 {
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->CvarGet == NULL)
     {
         return NULL;
@@ -294,7 +294,7 @@ bsp_trace_t Q2_Trace(vec3_t start,
                      int passent,
                      int contentmask)
 {
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->Trace == NULL)
     {
         Q2_Print(PRT_WARNING, "[q2bridge] Trace: import not available\n");
@@ -320,7 +320,7 @@ bsp_trace_t Q2_Trace(vec3_t start,
 
 int Q2_PointContents(vec3_t point)
 {
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->PointContents == NULL)
     {
         Q2_Print(PRT_WARNING, "[q2bridge] PointContents: import not available\n");
@@ -344,7 +344,7 @@ void *Q2_GetMemory(int size)
         return NULL;
     }
 
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->GetMemory == NULL)
     {
         Q2_Print(PRT_ERROR, "[q2bridge] GetMemory: allocator not available for %d bytes\n", size);
@@ -361,7 +361,7 @@ void Q2_FreeMemory(void *ptr)
         return;
     }
 
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->FreeMemory == NULL)
     {
         Q2_Print(PRT_WARNING, "[q2bridge] FreeMemory: allocator not available\n");
@@ -378,7 +378,7 @@ int Q2_DebugLineCreate(void)
         return -1;
     }
 
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->DebugLineCreate == NULL)
     {
         Q2_Print(PRT_WARNING, "[q2bridge] DebugLineCreate: import not available\n");
@@ -406,7 +406,7 @@ void Q2_DebugLineDelete(int line)
         return;
     }
 
-    bot_import_t *imports = Q2Bridge_GetImportsInternal();
+    bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
     if (imports == NULL || imports->DebugLineDelete == NULL)
     {
         Q2_Print(PRT_WARNING, "[q2bridge] DebugLineDelete: import not available\n");
@@ -431,7 +431,7 @@ void Q2_DebugLineShow(int line, vec3_t start, vec3_t end, int color)
 		return;
 	}
 
-	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+        bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
 	if (imports == NULL || imports->DebugLineShow == NULL)
 	{
 		Q2_Print(PRT_WARNING, "[q2bridge] DebugLineShow: import not available\n");
@@ -450,7 +450,7 @@ Registers a console command callback through the Quake II import table.
 */
 void Q2_AddCommand(const char *name, void (*callback)(void))
 {
-	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+        bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
 	if (imports == NULL || imports->AddCommand == NULL)
 	{
 		Q2_Print(PRT_WARNING, "[q2bridge] AddCommand: import not available\n");
@@ -481,7 +481,7 @@ Removes a console command callback via the Quake II import table.
 */
 void Q2_RemoveCommand(const char *name)
 {
-	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+        bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
 	if (imports == NULL || imports->RemoveCommand == NULL)
 	{
 		Q2_Print(PRT_WARNING, "[q2bridge] RemoveCommand: import not available\n");
@@ -506,7 +506,7 @@ Reads the engine-provided command argument count.
 */
 int Q2_CmdArgc(void)
 {
-	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+        bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
 	if (imports == NULL || imports->CmdArgc == NULL)
 	{
 		Q2_Print(PRT_WARNING, "[q2bridge] CmdArgc: import not available\n");
@@ -531,7 +531,7 @@ const char *Q2_CmdArgv(int index)
 		return NULL;
 	}
 
-	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+        bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
 	if (imports == NULL || imports->CmdArgv == NULL)
 	{
 		Q2_Print(PRT_WARNING, "[q2bridge] CmdArgv: import not available\n");

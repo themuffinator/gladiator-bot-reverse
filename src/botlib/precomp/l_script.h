@@ -181,6 +181,12 @@ pc_script_t *PS_CreateScriptFromSource(pc_source_t *source);
 // Destroys a script wrapper created by PS_CreateScriptFromSource.
 void PS_FreeScript(pc_script_t *script);
 
+// Legacy file/memory script entry points retained by the Gladiator loaders.
+pc_script_t *LoadScriptFile(const char *filename);
+pc_script_t *LoadScriptMemory(char *ptr, int length, char *name);
+void FreeScript(pc_script_t *script);
+void PS_SetBaseFolder(char *path);
+
 #ifdef BOTLIB_TEST_INJECT_SCRIPT_CREATE_FAILURE
 void PS_TestForceCreateFailure(int enable);
 #endif

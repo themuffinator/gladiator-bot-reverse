@@ -5,6 +5,7 @@
 
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_memory.h"
 #include "q2bridge/bridge_config.h"
 #include "q2bridge/update_translator.h"
 
@@ -47,6 +48,13 @@ static void AAS_FrameRemoveLink(aas_link_t *link)
     }
 }
 
+/*
+=============
+AAS_FrameUnlinkEntity
+
+Release the invalid frame's pooled AAS entity links and occupancy state.
+=============
+*/
 static void AAS_FrameUnlinkEntity(aas_entity_t *entity)
 {
     if (entity == NULL)
@@ -59,7 +67,7 @@ static void AAS_FrameUnlinkEntity(aas_entity_t *entity)
     {
         aas_link_t *next = link->next_area;
         AAS_FrameRemoveLink(link);
-        free(link);
+		AAS_FreeAASLink(link);
         link = next;
     }
 
@@ -85,11 +93,34 @@ void AAS_UnlinkInvalidEntities(void)
     for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
     {
         aas_entity_t *entity = &aasworld.entities[entnum];
-        if (!entity->inuse && entity->areas != NULL)
+        if (!entity->inuse && (entity->areas != NULL || entity->leaves != NULL))
         {
             AAS_FrameUnlinkEntity(entity);
+			AAS_UnlinkEntityFromBSPLeaves(entity);
         }
-    }
+	}
+}
+
+/*
+=============
+AAS_ResetEntityLinks
+
+Mirror retail's raw entity-table link reset without reclaiming either heap.
+=============
+*/
+void AAS_ResetEntityLinks(void)
+{
+	if (aasworld.entities == NULL || aasworld.maxEntities <= 0)
+	{
+		return;
+	}
+
+	for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
+	{
+		aas_entity_t *entity = &aasworld.entities[entnum];
+		entity->areas = NULL;
+		entity->leaves = NULL;
+	}
 }
 
 void AAS_InvalidateEntities(void)
@@ -177,4 +208,47 @@ void AAS_FrameSynchronise(float time)
 {
     aasworld.time = time;
     TranslateEntity_SetCurrentTime(time);
+}
+
+/*
+=============
+AAS_RunFrameDiagnostics
+
+Execute the retail one-shot AAS and memory diagnostic libvars.
+=============
+*/
+void AAS_RunFrameDiagnostics(void)
+{
+	if (LibVarValue("showcacheupdates", "0") != 0.0f)
+	{
+		BotLib_Print(PRT_MESSAGE,
+			"%d area cache updates\n",
+			AAS_RetailAreaCacheUpdateCount());
+		BotLib_Print(PRT_MESSAGE,
+			"%d portal cache updates\n",
+			AAS_RetailPortalCacheUpdateCount());
+		LibVarSet("showcacheupdates", "0");
+	}
+
+	if (LibVarValue("showmemoryusage", "0") != 0.0f)
+	{
+		BotLib_Print(PRT_MESSAGE,
+			"total botlib memory: %d KB\n",
+			(int)(BotMemory_TotalAllocated() >> 10));
+		BotLib_Print(PRT_MESSAGE,
+			"total memory blocks: %d\n",
+			(int)BotMemory_BlockCount());
+		LibVarSet("showmemoryusage", "0");
+	}
+
+	if (LibVarValue("memorydump", "0") != 0.0f)
+	{
+		BotLib_Print(PRT_MESSAGE,
+			"total botlib memory: %d KB\n",
+			(int)(BotMemory_TotalAllocated() >> 10));
+		BotLib_Print(PRT_MESSAGE,
+			"total memory blocks: %d\n",
+			(int)BotMemory_BlockCount());
+		LibVarSet("memorydump", "0");
+	}
 }

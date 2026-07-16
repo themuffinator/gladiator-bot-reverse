@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -136,6 +137,12 @@ typedef struct {
 	size_t template_count;
 	size_t template_capacity;
 } bot_initial_chat_type_t;
+
+typedef struct {
+	char **names;
+	size_t count;
+	size_t capacity;
+} bot_missing_random_list_t;
 
 typedef struct {
     char *buffer;
@@ -1611,6 +1618,238 @@ static char *BotChat_StringDuplicate(const char *text)
     }
 
     return copy;
+}
+
+/*
+=============
+BotChat_MissingRandomWasReported
+
+Checks the temporary retail load-time report list for a random identifier.
+=============
+*/
+static int BotChat_MissingRandomWasReported(
+	const bot_missing_random_list_t *missing_randoms,
+	const char *name)
+{
+	if (missing_randoms == NULL || name == NULL)
+	{
+		return 0;
+	}
+
+	for (size_t i = 0; i < missing_randoms->count; ++i)
+	{
+		if (strcmp(missing_randoms->names[i], name) == 0)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+/*
+=============
+BotChat_RecordMissingRandom
+
+Adds one unrecognised random identifier to the temporary retail report list.
+=============
+*/
+static void BotChat_RecordMissingRandom(bot_missing_random_list_t *missing_randoms,
+	const char *name)
+{
+	if (missing_randoms == NULL || name == NULL
+		|| BotChat_MissingRandomWasReported(missing_randoms, name))
+	{
+		return;
+	}
+
+	if (missing_randoms->count == missing_randoms->capacity)
+	{
+		const size_t capacity = missing_randoms->capacity == 0U
+			? 4U
+			: missing_randoms->capacity * 2U;
+		char **names = realloc(missing_randoms->names,
+			capacity * sizeof(*names));
+		if (names == NULL)
+		{
+			return;
+		}
+
+		missing_randoms->names = names;
+		missing_randoms->capacity = capacity;
+	}
+
+	char *duplicate = BotChat_StringDuplicate(name);
+	if (duplicate == NULL)
+	{
+		return;
+	}
+
+	missing_randoms->names[missing_randoms->count++] = duplicate;
+}
+
+/*
+=============
+BotChat_FreeMissingRandoms
+
+Releases the temporary duplicate-suppression list used during one load pass.
+=============
+*/
+static void BotChat_FreeMissingRandoms(bot_missing_random_list_t *missing_randoms)
+{
+	if (missing_randoms == NULL)
+	{
+		return;
+	}
+
+	for (size_t i = 0; i < missing_randoms->count; ++i)
+	{
+		free(missing_randoms->names[i]);
+	}
+	free(missing_randoms->names);
+	memset(missing_randoms, 0, sizeof(*missing_randoms));
+}
+
+/*
+=============
+BotChat_CheckMessageIntegrity
+
+Mirrors sub_1002cb40 by checking escaped random references after chat parsing.
+=============
+*/
+static void BotChat_CheckMessageIntegrity(const bot_chatstate_t *state,
+	const char *message,
+	bot_missing_random_list_t *missing_randoms)
+{
+	const char *cursor = message;
+
+	if (message == NULL)
+	{
+		return;
+	}
+
+	while (*cursor != '\0')
+	{
+		if (*cursor != BOT_CHAT_ESCAPE_CHAR)
+		{
+			++cursor;
+			continue;
+		}
+
+		++cursor;
+		if (*cursor == 'r')
+		{
+			char random_name[0x98];
+			size_t name_length = 0U;
+
+			++cursor;
+			while (cursor[name_length] != '\0'
+				&& cursor[name_length] != BOT_CHAT_ESCAPE_CHAR)
+			{
+				++name_length;
+			}
+
+			if (name_length < sizeof(random_name))
+			{
+				memcpy(random_name, cursor, name_length);
+				random_name[name_length] = '\0';
+				if (BotChat_FindStateRandomTable(state, random_name) == NULL
+					&& !BotChat_MissingRandomWasReported(missing_randoms,
+						random_name))
+				{
+					BotLib_LogWrite("%s = {\"%s\"} //MISSING RANDOM",
+						random_name,
+						random_name);
+					BotChat_RecordMissingRandom(missing_randoms, random_name);
+				}
+			}
+
+			cursor += name_length;
+			if (*cursor == BOT_CHAT_ESCAPE_CHAR)
+			{
+				++cursor;
+			}
+			continue;
+		}
+
+		if (*cursor == 'v')
+		{
+			++cursor;
+			while (*cursor != '\0' && *cursor != BOT_CHAT_ESCAPE_CHAR)
+			{
+				++cursor;
+			}
+			if (*cursor == BOT_CHAT_ESCAPE_CHAR)
+			{
+				++cursor;
+			}
+			continue;
+		}
+
+		BotLib_Print(PRT_FATAL,
+			"BotCheckChatMessageIntegrety: message \"%s\" invalid escape char\n",
+			message);
+	}
+}
+
+/*
+=============
+BotChat_CheckInitialChatIntegrity
+
+Applies the retail load-time random-reference check to all initial templates.
+=============
+*/
+static void BotChat_CheckInitialChatIntegrity(const bot_chatstate_t *state)
+{
+	bot_missing_random_list_t missing_randoms = {0};
+
+	if (state == NULL)
+	{
+		return;
+	}
+
+	for (size_t i = 0; i < state->initial_type_count; ++i)
+	{
+		const bot_initial_chat_type_t *type = &state->initial_types[i];
+		for (size_t j = 0; j < type->template_count; ++j)
+		{
+			BotChat_CheckMessageIntegrity(state,
+				type->templates[j],
+				&missing_randoms);
+		}
+	}
+
+	BotChat_FreeMissingRandoms(&missing_randoms);
+}
+
+/*
+=============
+BotChat_CheckReplyChatIntegrity
+
+Applies the retail load-time random-reference check to all reply responses.
+=============
+*/
+static void BotChat_CheckReplyChatIntegrity(const bot_chatstate_t *state)
+{
+	bot_missing_random_list_t missing_randoms = {0};
+
+	if (state == NULL)
+	{
+		return;
+	}
+
+	for (size_t i = 0; i < state->replies.rule_count; ++i)
+	{
+		const bot_reply_rule_t *rule = &state->replies.rules[i];
+		for (size_t j = 0; j < rule->response_count; ++j)
+		{
+			BotChat_CheckMessageIntegrity(state,
+				rule->responses[j],
+				&missing_randoms);
+		}
+	}
+
+	BotChat_FreeMissingRandoms(&missing_randoms);
 }
 
 static int BotChat_StringEqualsIgnoreCase(const char *lhs, const char *rhs);
@@ -7122,7 +7361,13 @@ Loads retail setup reply chat files.
 static int BotChat_ParseSetupReplyScript(bot_chatstate_t *state,
 	pc_script_t *script)
 {
-	return BotChat_ParseReplyScript(state, script);
+	if (!BotChat_ParseReplyScript(state, script))
+	{
+		return 0;
+	}
+
+	BotChat_CheckReplyChatIntegrity(state);
+	return 1;
 }
 
 /*
@@ -7450,6 +7695,7 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 		BotFreeChatFile(state);
 		return 0;
 	}
+	BotChat_CheckInitialChatIntegrity(state);
 	BotChat_CloseActiveScript(state);
 
 	open_status = BotChat_OpenActiveScript(state, chatfile);
@@ -7515,6 +7761,7 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 		BotFreeChatFile(state);
 		return 0;
 	}
+	BotChat_CheckReplyChatIntegrity(state);
 	BotChat_CloseActiveScript(state);
 
 	strncpy(state->active_chatfile, chatfile, sizeof(state->active_chatfile) - 1);
@@ -7636,32 +7883,32 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 				++i;
 			}
 
-			unsigned long value = 0;
+			/*
+			 * sub_1002e060 does not validate decimal digits here.  It sign-extends
+			 * each byte and performs x86 32-bit base-ten arithmetic before testing
+			 * the resulting index.  Keep that observable diagnostic for malformed
+			 * but non-dangerous input, while refusing the negative values that would
+			 * make the retail pointer arithmetic undefined in this reconstruction.
+			 */
+			uint32_t raw_value = 0U;
 			for (size_t j = start_index; j < end_index; ++j)
 			{
-				if (!isdigit((unsigned char)template_text[j]))
-				{
-					BotLib_Print(PRT_ERROR,
-						"BotConstructChat: message \"%s\" invalid escape char\n",
-						template_text);
-					return 0;
-				}
-				if (value <= 10UL)
-				{
-					value = value * 10UL + (unsigned long)(template_text[j] - '0');
-				}
+				const int32_t signed_character = (int32_t)(int8_t)template_text[j];
+				raw_value = raw_value * 10U
+					+ (uint32_t)(signed_character - (int32_t)'0');
 			}
-			if (value > 10UL)
+			const int32_t value = (int32_t)raw_value;
+			if (value < 0 || value > 10)
 			{
 				BotLib_Print(PRT_ERROR,
-					"BotConstructChat: message %s variable %lu out of range\n",
+					"BotConstructChat: message %s variable %d out of range\n",
 					template_text,
 					value);
 				return 0;
 			}
 
 			if (variables != NULL
-				&& value < BOT_CHAT_MAX_MATCH_VARIABLES
+				&& (size_t)value < BOT_CHAT_MAX_MATCH_VARIABLES
 				&& variables[value] != NULL)
 			{
 				const int written = snprintf(replacement_buffer,
@@ -7671,7 +7918,7 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 				if (written < 0 || (size_t)written >= sizeof(replacement_buffer))
 				{
 					BotLib_Print(PRT_ERROR,
-						"BotConstructChat: message \"%s\" too long\n",
+						"BotConstructChat: message %s too long\n",
 						template_text);
 					return 0;
 				}
@@ -7701,9 +7948,18 @@ static int BotChat_ExpandChatMessageOnce(bot_chatstate_t *state,
 		if (assembled_length + replacement_length >= BOT_CHAT_RETAIL_MESSAGE_PAYLOAD_CHARS
 			|| assembled_length + replacement_length >= out_size)
 		{
-			BotLib_Print(PRT_ERROR,
-				"BotConstructChat: message \"%s\" too long\n",
-				template_text);
+			if (escape == 'v')
+			{
+				BotLib_Print(PRT_ERROR,
+					"BotConstructChat: message %s too long\n",
+					template_text);
+			}
+			else
+			{
+				BotLib_Print(PRT_ERROR,
+					"BotConstructChat: message \"%s\" too long\n",
+					template_text);
+			}
 			return 0;
 		}
 

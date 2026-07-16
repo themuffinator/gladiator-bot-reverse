@@ -1,13 +1,8 @@
 #include "l_struct.h"
 
-#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-#define STRUCT_MAX(a, b) ((a) > (b) ? (a) : (b))
-#define STRUCT_MIN(a, b) ((a) < (b) ? (a) : (b))
 
 static bool g_l_struct_initialised = false;
 
@@ -21,90 +16,6 @@ void StripSingleQuotes(char *string);
 void StripDoubleQuotes(char *string);
 void SourceError(pc_source_t *source, char *str, ...);
 void SourceWarning(pc_source_t *source, char *str, ...);
-
-/*
-=============
-L_Struct_ParseIntegerToken
-
-Parses integer text instead of relying on optional lexer value caches.
-=============
-*/
-static bool L_Struct_ParseIntegerToken(const pc_token_t *token, long int *value)
-{
-	if (token == NULL || value == NULL)
-	{
-		return false;
-	}
-
-	const char *text = token->string;
-	if ((token->subtype & TT_BINARY) != 0)
-	{
-		if (text[0] == '0' && (text[1] == 'b' || text[1] == 'B'))
-		{
-			text += 2;
-		}
-
-		long int parsed = 0;
-		for (const char *cursor = text; *cursor != '\0'; ++cursor)
-		{
-			if (*cursor != '0' && *cursor != '1')
-			{
-				return false;
-			}
-			parsed = (parsed << 1) + (*cursor - '0');
-		}
-
-		*value = parsed;
-		return true;
-	}
-
-	int base = 10;
-	if ((token->subtype & TT_HEX) != 0)
-	{
-		base = 16;
-	}
-	else if ((token->subtype & TT_OCTAL) != 0)
-	{
-		base = 8;
-	}
-
-	errno = 0;
-	char *end = NULL;
-	long int parsed = strtol(token->string, &end, base);
-	if (errno != 0 || end == token->string || (end != NULL && *end != '\0'))
-	{
-		return false;
-	}
-
-	*value = parsed;
-	return true;
-}
-
-/*
-=============
-L_Struct_ParseFloatToken
-
-Parses floating-point text instead of relying on optional lexer value caches.
-=============
-*/
-static bool L_Struct_ParseFloatToken(const pc_token_t *token, double *value)
-{
-	if (token == NULL || value == NULL)
-	{
-		return false;
-	}
-
-	errno = 0;
-	char *end = NULL;
-	double parsed = strtod(token->string, &end);
-	if (errno != 0 || end == token->string || (end != NULL && *end != '\0'))
-	{
-		return false;
-	}
-
-	*value = parsed;
-	return true;
-}
 
 bool L_Struct_Init(void) {
     if (g_l_struct_initialised) {
@@ -137,146 +48,173 @@ const fielddef_t *FindField(const fielddef_t *defs, const char *name) {
     return NULL;
 }
 
-bool ReadNumber(pc_source_t *source, const fielddef_t *fd, void *p) {
-    if (source == NULL || fd == NULL || p == NULL) {
-        return false;
-    }
+/*
+=============
+ReadNumber
 
-    pc_token_t token;
-    bool negative = false;
+Consumes the lexer-populated numeric values using the retail signed 32-bit
+intermediate representation.
+=============
+*/
+bool ReadNumber(pc_source_t *source, const fielddef_t *fd, void *p)
+{
+	if (source == NULL || fd == NULL || p == NULL)
+	{
+		return false;
+	}
 
-    if (!PC_ExpectAnyToken(source, &token)) {
-        return false;
-    }
+	pc_token_t token;
+	bool negative = false;
 
-    if (token.type == TT_PUNCTUATION) {
-        if ((fd->type & FT_UNSIGNED) != 0) {
-            SourceError(source, "expected unsigned value, found %s", token.string);
-            return false;
-        }
+	if (!PC_ExpectAnyToken(source, &token))
+	{
+		return false;
+	}
 
-        if (strcmp(token.string, "-") != 0) {
-            SourceError(source, "unexpected punctuation %s", token.string);
-            return false;
-        }
+	if (token.type == TT_PUNCTUATION)
+	{
+		if ((fd->type & FT_UNSIGNED) != 0)
+		{
+			SourceError(source, "expected unsigned value, found %s", token.string);
+			return false;
+		}
 
-        negative = true;
+		if (strcmp(token.string, "-") != 0)
+		{
+			SourceError(source, "unexpected punctuation %s", token.string);
+			return false;
+		}
 
-        if (!PC_ExpectAnyToken(source, &token)) {
-            return false;
-        }
-    }
+		negative = true;
+		if (!PC_ExpectAnyToken(source, &token))
+		{
+			return false;
+		}
+	}
 
-    if (token.type != TT_NUMBER) {
-        SourceError(source, "expected number, found %s", token.string);
-        return false;
-    }
+	if (token.type != TT_NUMBER)
+	{
+		SourceError(source, "expected number, found %s", token.string);
+		return false;
+	}
 
-    if ((token.subtype & TT_FLOAT) != 0) {
-        if ((fd->type & FT_TYPE) != FT_FLOAT) {
-            SourceError(source, "unexpected float");
-            return false;
-        }
+	if ((token.subtype & TT_FLOAT) != 0)
+	{
+		if ((fd->type & FT_TYPE) != FT_FLOAT)
+		{
+			SourceError(source, "unexpected float");
+			return false;
+		}
 
-        double floatvalue = 0.0;
-        if (!L_Struct_ParseFloatToken(&token, &floatvalue)) {
-            SourceError(source, "invalid float %s", token.string);
-            return false;
-        }
+		double floatvalue = (double)token.floatvalue;
+		if (negative)
+		{
+			floatvalue = -floatvalue;
+		}
 
-        if (negative) {
-            floatvalue = -floatvalue;
-        }
+		if ((fd->type & FT_BOUNDED) != 0 &&
+			(floatvalue < fd->floatmin || floatvalue > fd->floatmax))
+		{
+			SourceError(source, "float out of range [%f, %f]",
+				fd->floatmin, fd->floatmax);
+			return false;
+		}
 
-        if ((fd->type & FT_BOUNDED) != 0) {
-            if (floatvalue < fd->floatmin || floatvalue > fd->floatmax) {
-                SourceError(source,
-                             "float out of range [%f, %f]",
-                             fd->floatmin,
-                             fd->floatmax);
-                return false;
-            }
-        }
+		*(float *)p = (float)floatvalue;
+		return true;
+	}
 
-        *(float *)p = (float)floatvalue;
-        return true;
-    }
+	int intval = (int)(unsigned int)token.intvalue;
+	if (negative)
+	{
+		intval = -intval;
+	}
 
-    long int intval = 0;
-    if (!L_Struct_ParseIntegerToken(&token, &intval)) {
-        SourceError(source, "invalid integer %s", token.string);
-        return false;
-    }
+	int intmin = 0;
+	int intmax = 0;
+	if ((fd->type & FT_TYPE) == FT_CHAR)
+	{
+		if ((fd->type & FT_UNSIGNED) != 0)
+		{
+			intmax = 255;
+		}
+		else
+		{
+			intmin = -128;
+			intmax = 127;
+		}
+	}
+	else if ((fd->type & FT_TYPE) == FT_INT)
+	{
+		if ((fd->type & FT_UNSIGNED) != 0)
+		{
+			intmax = 65535;
+		}
+		else
+		{
+			intmin = -32768;
+			intmax = 32767;
+		}
+	}
 
-    if (negative) {
-        intval = -intval;
-    }
+	if ((fd->type & FT_TYPE) == FT_CHAR || (fd->type & FT_TYPE) == FT_INT)
+	{
+		if ((fd->type & FT_BOUNDED) != 0)
+		{
+			if (fd->floatmin > intmin)
+			{
+				intmin = (int)fd->floatmin;
+			}
+			if (fd->floatmax < intmax)
+			{
+				intmax = (int)fd->floatmax;
+			}
+		}
 
-    int intmin = 0;
-    int intmax = 0;
+		if (intval < intmin || intval > intmax)
+		{
+			SourceError(source, "value %d out of range [%d, %d]", intval,
+				intmin, intmax);
+			return false;
+		}
+	}
+	else if ((fd->type & FT_TYPE) == FT_FLOAT &&
+		(fd->type & FT_BOUNDED) != 0 &&
+		(intval < fd->floatmin || intval > fd->floatmax))
+	{
+		SourceError(source, "value %d out of range [%f, %f]", intval,
+			fd->floatmin, fd->floatmax);
+		return false;
+	}
 
-    if ((fd->type & FT_TYPE) == FT_CHAR) {
-        if ((fd->type & FT_UNSIGNED) != 0) {
-            intmin = 0;
-            intmax = 255;
-        } else {
-            intmin = -128;
-            intmax = 127;
-        }
-    } else if ((fd->type & FT_TYPE) == FT_INT) {
-        if ((fd->type & FT_UNSIGNED) != 0) {
-            intmin = 0;
-            intmax = 65535;
-        } else {
-            intmin = -32768;
-            intmax = 32767;
-        }
-    }
+	if ((fd->type & FT_TYPE) == FT_CHAR)
+	{
+		if ((fd->type & FT_UNSIGNED) != 0)
+		{
+			*(unsigned char *)p = (unsigned char)intval;
+		}
+		else
+		{
+			*(char *)p = (char)intval;
+		}
+	}
+	else if ((fd->type & FT_TYPE) == FT_INT)
+	{
+		if ((fd->type & FT_UNSIGNED) != 0)
+		{
+			*(unsigned int *)p = (unsigned int)intval;
+		}
+		else
+		{
+			*(int *)p = intval;
+		}
+	}
+	else if ((fd->type & FT_TYPE) == FT_FLOAT)
+	{
+		*(float *)p = (float)intval;
+	}
 
-    if ((fd->type & FT_TYPE) == FT_CHAR || (fd->type & FT_TYPE) == FT_INT) {
-        if ((fd->type & FT_BOUNDED) != 0) {
-            intmin = (int)STRUCT_MAX((double)intmin, fd->floatmin);
-            intmax = (int)STRUCT_MIN((double)intmax, fd->floatmax);
-        }
-
-        if (intval < intmin || intval > intmax) {
-            SourceError(source,
-                         "value %ld out of range [%d, %d]",
-                         intval,
-                         intmin,
-                         intmax);
-            return false;
-        }
-    } else if ((fd->type & FT_TYPE) == FT_FLOAT) {
-        if ((fd->type & FT_BOUNDED) != 0) {
-            if (intval < fd->floatmin || intval > fd->floatmax) {
-                SourceError(source,
-                             "value %ld out of range [%f, %f]",
-                             intval,
-                             fd->floatmin,
-                             fd->floatmax);
-                return false;
-            }
-        }
-    }
-
-    if ((fd->type & FT_TYPE) == FT_CHAR) {
-        if ((fd->type & FT_UNSIGNED) != 0) {
-            *(unsigned char *)p = (unsigned char)intval;
-        } else {
-            *(char *)p = (char)intval;
-        }
-    } else if ((fd->type & FT_TYPE) == FT_INT) {
-        if ((fd->type & FT_UNSIGNED) != 0) {
-            *(unsigned int *)p = (unsigned int)intval;
-        } else {
-            *(int *)p = (int)intval;
-        }
-    } else if ((fd->type & FT_TYPE) == FT_FLOAT) {
-        *(float *)p = (float)intval;
-    }
-
-    return true;
+	return true;
 }
 
 bool ReadChar(pc_source_t *source, const fielddef_t *fd, void *p) {

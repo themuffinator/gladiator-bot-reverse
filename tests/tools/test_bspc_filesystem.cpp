@@ -354,8 +354,24 @@ bool TestResolveCompanionsFromDisk()
 
 } // namespace
 
+/*
+=============
+main
+
+Runs filesystem regressions when the externally supplied BSP fixture exists.
+=============
+*/
 int main()
 {
+	const std::filesystem::path bsp_fixture = std::filesystem::path(PROJECT_SOURCE_DIR) /
+		"dev_tools/assets/maps/2box4.bsp";
+	if (!std::filesystem::exists(bsp_fixture))
+	{
+		std::cout << "bspc filesystem regression skipped: missing "
+			<< bsp_fixture.string() << '\n';
+		return 125;
+	}
+
     bool success = true;
     success &= TestReadFileFromDisk();
     success &= TestReadFileFromArchive();

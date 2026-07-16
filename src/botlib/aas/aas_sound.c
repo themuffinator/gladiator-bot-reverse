@@ -1,10 +1,8 @@
 #include "aas_sound.h"
 
 #include <ctype.h>
-#include <errno.h>
 #include <limits.h>
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,6 +14,8 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/common/l_struct.h"
+#include "botlib/precomp/l_script.h"
 
 typedef struct aas_sound_state_s
 {
@@ -24,13 +24,18 @@ typedef struct aas_sound_state_s
     size_t info_capacity;
 
     char **asset_names;
-    char **asset_normalized;
-    int *asset_info_index;
+	aas_soundinfo_t **asset_info_by_index;
     size_t asset_count;
 
     aas_sound_event_t *sound_events;
     size_t sound_event_count;
+    size_t sound_scheduled_count;
     size_t sound_event_capacity;
+	int sound_active_head;
+	int sound_active_tail;
+	int sound_scheduled_head;
+	int sound_scheduled_tail;
+	int sound_free_head;
 
     aas_pointlight_event_t *pointlight_events;
     size_t pointlight_event_count;
@@ -55,10 +60,55 @@ typedef struct aas_sound_state_s
 } aas_sound_state_t;
 
 #define AAS_POINTLIGHT_NULL_INDEX (-1)
+#define AAS_SOUND_NULL_INDEX (-1)
+#define AAS_SOUND_INFO_OFS(field) ((int)offsetof(aas_soundinfo_t, field))
+
+static const fielddef_t g_aas_soundinfo_fields[] = {
+	{"name", AAS_SOUND_INFO_OFS(name), FT_STRING},
+	{"volume", AAS_SOUND_INFO_OFS(volume), FT_FLOAT},
+	{"duration", AAS_SOUND_INFO_OFS(duration), FT_FLOAT},
+	{"type", AAS_SOUND_INFO_OFS(type), FT_INT},
+	{"recognition", AAS_SOUND_INFO_OFS(recognition), FT_FLOAT},
+	{"string", AAS_SOUND_INFO_OFS(string), FT_STRING},
+	{NULL, 0, 0, 0},
+};
+
+static const structdef_t g_aas_soundinfo_struct = {
+	(int)sizeof(aas_soundinfo_t),
+	g_aas_soundinfo_fields,
+};
 
 static aas_sound_state_t g_aas_sound_state;
 
 static bool AAS_Sound_PushInfo(const aas_soundinfo_t *info);
+
+/*
+=============
+AAS_Sound_InitInfoDefaults
+
+Initialise one raw 0xb0-byte soundinfo record with its table-defined defaults.
+=============
+*/
+static void AAS_Sound_InitInfoDefaults(aas_soundinfo_t *info)
+{
+	if (info == NULL)
+	{
+		return;
+	}
+
+	memset(info, 0, sizeof(*info));
+	info->volume = 80.0f;
+	info->duration = 10.0f;
+	info->recognition = 1.0f;
+}
+
+/*
+=============
+AAS_Sound_NormalizeName
+
+Normalize a host-facing lookup name for the retained compatibility query path.
+=============
+*/
 static void AAS_Sound_NormalizeName(const char *input, char *output, size_t size)
 {
     if (output == NULL || size == 0)
@@ -95,503 +145,68 @@ static void AAS_Sound_NormalizeName(const char *input, char *output, size_t size
     output[size - 1U] = '\0';
 }
 
-#define AAS_SOUND_MAX_MACROS 64
+/*
+=============
+AAS_Sound_ParseConfigSource
 
-typedef struct aas_sound_macro_s
+Consumes only top-level `soundinfo` records from a preprocessed source, as in
+retail `sub_1001c760`.
+=============
+*/
+static bool AAS_Sound_ParseConfigSource(pc_source_t *source)
 {
-    char name[64];
-    int value;
-} aas_sound_macro_t;
+	if (source == NULL)
+	{
+		return false;
+	}
 
-static aas_sound_macro_t g_aas_sound_macros[AAS_SOUND_MAX_MACROS];
-static size_t g_aas_sound_macro_count = 0U;
+	for (;;)
+	{
+		pc_token_t definition;
+		int read_result = PC_ReadToken(source, &definition);
+		if (read_result == 0)
+		{
+			return true;
+		}
+		if (read_result < 0)
+		{
+			return false;
+		}
+		if (definition.type != TT_NAME ||
+			strcmp(definition.string, "soundinfo") != 0)
+		{
+			BotLib_Print(PRT_ERROR,
+				"unknown definition %s\n",
+				definition.string);
+			return false;
+		}
+		if (g_aas_sound_state.info_count >= g_aas_sound_state.info_capacity)
+		{
+			BotLib_Print(PRT_ERROR,
+				"more than %d sound infos defined\n",
+				(int)g_aas_sound_state.info_capacity);
+			return false;
+		}
 
-static void AAS_Sound_ClearMacros(void)
-{
-    g_aas_sound_macro_count = 0U;
-}
-
-static void AAS_Sound_RegisterMacro(const char *name, int value)
-{
-    if (name == NULL || *name == '\0')
-    {
-        return;
-    }
-
-    for (size_t i = 0; i < g_aas_sound_macro_count; ++i)
-    {
-        if (Q_stricmp(g_aas_sound_macros[i].name, name) == 0)
-        {
-            g_aas_sound_macros[i].value = value;
-            return;
-        }
-    }
-
-    if (g_aas_sound_macro_count < AAS_SOUND_MAX_MACROS)
-    {
-        aas_sound_macro_t *slot = &g_aas_sound_macros[g_aas_sound_macro_count++];
-        strncpy(slot->name, name, sizeof(slot->name) - 1U);
-        slot->name[sizeof(slot->name) - 1U] = '\0';
-        slot->value = value;
-    }
-}
-
-static bool AAS_Sound_FindMacroValue(const char *name, int *out)
-{
-    if (name == NULL || out == NULL)
-    {
-        return false;
-    }
-
-    for (size_t i = 0; i < g_aas_sound_macro_count; ++i)
-    {
-        if (Q_stricmp(g_aas_sound_macros[i].name, name) == 0)
-        {
-            *out = g_aas_sound_macros[i].value;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static void AAS_Sound_SkipWhitespace(char **cursor)
-{
-    if (cursor == NULL || *cursor == NULL)
-    {
-        return;
-    }
-
-    char *ptr = *cursor;
-    while (*ptr != '\0' && isspace((unsigned char)*ptr))
-    {
-        ++ptr;
-    }
-    *cursor = ptr;
-}
-
-static char *AAS_Sound_Trim(char *text)
-{
-    if (text == NULL)
-    {
-        return NULL;
-    }
-
-    char *start = text;
-    while (*start != '\0' && isspace((unsigned char)*start))
-    {
-        ++start;
-    }
-
-    char *end = start + strlen(start);
-    while (end > start && isspace((unsigned char)end[-1]))
-    {
-        --end;
-    }
-
-    *end = '\0';
-    return start;
-}
-
-static bool AAS_Sound_ParseBareToken(char **cursor, char *buffer, size_t size)
-{
-    if (cursor == NULL || buffer == NULL || size == 0U)
-    {
-        return false;
-    }
-
-    char *ptr = *cursor;
-    AAS_Sound_SkipWhitespace(&ptr);
-    if (*ptr == '\0')
-    {
-        *cursor = ptr;
-        return false;
-    }
-
-    size_t index = 0U;
-    while (*ptr != '\0' && !isspace((unsigned char)*ptr))
-    {
-        if (index + 1U < size)
-        {
-            buffer[index++] = *ptr;
-        }
-        ++ptr;
-    }
-    buffer[index] = '\0';
-    *cursor = ptr;
-    return index > 0U;
-}
-
-static bool AAS_Sound_ParseStringToken(char **cursor, char *buffer, size_t size)
-{
-    if (cursor == NULL || buffer == NULL || size == 0U)
-    {
-        return false;
-    }
-
-    char *ptr = *cursor;
-    AAS_Sound_SkipWhitespace(&ptr);
-    if (*ptr != '"')
-    {
-        return false;
-    }
-
-    ++ptr;
-    size_t index = 0U;
-    while (*ptr != '\0' && *ptr != '"')
-    {
-        if (index + 1U < size)
-        {
-            buffer[index++] = *ptr;
-        }
-        ++ptr;
-    }
-    buffer[index] = '\0';
-    if (*ptr == '"')
-    {
-        ++ptr;
-    }
-    *cursor = ptr;
-    return true;
-}
-
-static bool AAS_Sound_ParseDefineLine(char *line)
-{
-    if (line == NULL)
-    {
-        return false;
-    }
-
-    char *cursor = line + 7;
-    AAS_Sound_SkipWhitespace(&cursor);
-
-    char name[64];
-    if (!AAS_Sound_ParseBareToken(&cursor, name, sizeof(name)))
-    {
-        return false;
-    }
-
-    AAS_Sound_SkipWhitespace(&cursor);
-    char value_text[64];
-    if (!AAS_Sound_ParseBareToken(&cursor, value_text, sizeof(value_text)))
-    {
-        return false;
-    }
-
-    char *endptr = NULL;
-    long value = strtol(value_text, &endptr, 0);
-    if (endptr == value_text)
-    {
-        return false;
-    }
-
-    AAS_Sound_RegisterMacro(name, (int)value);
-    return true;
-}
-
-static bool AAS_Sound_ParseFloatFromString(const char *text, float *out)
-{
-    if (text == NULL || out == NULL)
-    {
-        return false;
-    }
-
-    char *endptr = NULL;
-    double value = strtod(text, &endptr);
-    if (endptr == text)
-    {
-        return false;
-    }
-
-    *out = (float)value;
-    return true;
-}
-
-static bool AAS_Sound_ParseIntFromString(const char *text, int *out)
-{
-    if (text == NULL || out == NULL)
-    {
-        return false;
-    }
-
-    char *endptr = NULL;
-    long value = strtol(text, &endptr, 0);
-    if (endptr != text && *endptr == '\0')
-    {
-        *out = (int)value;
-        return true;
-    }
-
-    int macro_value = 0;
-    if (AAS_Sound_FindMacroValue(text, &macro_value))
-    {
-        *out = macro_value;
-        return true;
-    }
-
-    return false;
-}
-
-static char *AAS_Sound_RemoveComments(const char *input, size_t length)
-{
-    if (input == NULL)
-    {
-        return NULL;
-    }
-
-    char *output = (char *)malloc(length + 1U);
-    if (output == NULL)
-    {
-        return NULL;
-    }
-
-    bool in_block = false;
-    bool in_line = false;
-    size_t out_index = 0U;
-
-    for (size_t index = 0; index < length; ++index)
-    {
-        char c = input[index];
-        char next = (index + 1U < length) ? input[index + 1U] : '\0';
-
-        if (in_block)
-        {
-            if (c == '*' && next == '/')
-            {
-                in_block = false;
-                ++index;
-            }
-            else if (c == '\n')
-            {
-                output[out_index++] = c;
-            }
-            continue;
-        }
-
-        if (in_line)
-        {
-            if (c == '\n')
-            {
-                in_line = false;
-                output[out_index++] = c;
-            }
-            continue;
-        }
-
-        if (c == '/' && next == '*')
-        {
-            in_block = true;
-            ++index;
-            continue;
-        }
-
-        if (c == '/' && next == '/')
-        {
-            in_line = true;
-            ++index;
-            continue;
-        }
-
-        output[out_index++] = c;
-    }
-
-    output[out_index] = '\0';
-    return output;
-}
-
-static bool AAS_Sound_ParseConfigBuffer(char *buffer, const char *log_path)
-{
-    if (buffer == NULL)
-    {
-        return false;
-    }
-
-    AAS_Sound_ClearMacros();
-
-    bool inside_block = false;
-    bool awaiting_block = false;
-    aas_soundinfo_t info;
-    memset(&info, 0, sizeof(info));
-
-    char *line = buffer;
-    while (line != NULL)
-    {
-        char *next_line = strchr(line, '\n');
-        if (next_line != NULL)
-        {
-            *next_line = '\0';
-            ++next_line;
-        }
-
-        char *trimmed = AAS_Sound_Trim(line);
-        if (trimmed == NULL || *trimmed == '\0')
-        {
-            line = next_line;
-            continue;
-        }
-
-        if (strncmp(trimmed, "#define", 7) == 0)
-        {
-            AAS_Sound_ParseDefineLine(trimmed);
-            line = next_line;
-            continue;
-        }
-
-        if (!inside_block)
-        {
-            if (strncmp(trimmed, "soundinfo", 9) == 0)
-            {
-                awaiting_block = true;
-                if (strchr(trimmed, '{') != NULL)
-                {
-                    inside_block = true;
-                    awaiting_block = false;
-                    memset(&info, 0, sizeof(info));
-                }
-            }
-            else if (awaiting_block && strchr(trimmed, '{') != NULL)
-            {
-                inside_block = true;
-                awaiting_block = false;
-                memset(&info, 0, sizeof(info));
-            }
-
-            line = next_line;
-            continue;
-        }
-
-        if (strchr(trimmed, '{') != NULL)
-        {
-            line = next_line;
-            continue;
-        }
-
-        if (strchr(trimmed, '}') != NULL)
-        {
-            if (info.name[0] != '\0')
-            {
-                if (info.normalized[0] == '\0')
-                {
-                    AAS_Sound_NormalizeName(info.name, info.normalized, sizeof(info.normalized));
-                }
-                AAS_Sound_PushInfo(&info);
-            }
-            else
-            {
-                BotLib_Print(PRT_WARNING,
-                             "AAS_Sound: soundinfo missing name in %s\n",
-                             (log_path != NULL) ? log_path : "<memory>");
-            }
-
-            inside_block = false;
-            line = next_line;
-            continue;
-        }
-
-        char *cursor = trimmed;
-        char key[64];
-        if (!AAS_Sound_ParseBareToken(&cursor, key, sizeof(key)))
-        {
-            line = next_line;
-            continue;
-        }
-
-        if (strcmp(key, "name") == 0)
-        {
-            char value[128];
-            if (AAS_Sound_ParseStringToken(&cursor, value, sizeof(value)))
-            {
-                strncpy(info.name, value, sizeof(info.name) - 1U);
-                info.name[sizeof(info.name) - 1U] = '\0';
-                AAS_Sound_NormalizeName(info.name, info.normalized, sizeof(info.normalized));
-            }
-        }
-        else if (strcmp(key, "string") == 0)
-        {
-            char value[128];
-            if (AAS_Sound_ParseStringToken(&cursor, value, sizeof(value)))
-            {
-                strncpy(info.subtitle, value, sizeof(info.subtitle) - 1U);
-                info.subtitle[sizeof(info.subtitle) - 1U] = '\0';
-            }
-        }
-        else if (strcmp(key, "volume") == 0)
-        {
-            char value_text[64];
-            if (AAS_Sound_ParseBareToken(&cursor, value_text, sizeof(value_text)))
-            {
-                float parsed = 0.0f;
-                if (AAS_Sound_ParseFloatFromString(value_text, &parsed))
-                {
-                    info.volume = parsed;
-                }
-            }
-        }
-        else if (strcmp(key, "duration") == 0)
-        {
-            char value_text[64];
-            if (AAS_Sound_ParseBareToken(&cursor, value_text, sizeof(value_text)))
-            {
-                float parsed = 0.0f;
-                if (AAS_Sound_ParseFloatFromString(value_text, &parsed))
-                {
-                    info.duration = parsed;
-                }
-            }
-        }
-        else if (strcmp(key, "type") == 0)
-        {
-            char value_text[64];
-            if (AAS_Sound_ParseBareToken(&cursor, value_text, sizeof(value_text)))
-            {
-                int parsed = 0;
-                if (AAS_Sound_ParseIntFromString(value_text, &parsed))
-                {
-                    info.type = parsed;
-                }
-            }
-        }
-        else if (strcmp(key, "recognition") == 0)
-        {
-            char value_text[64];
-            if (AAS_Sound_ParseBareToken(&cursor, value_text, sizeof(value_text)))
-            {
-                float parsed = 0.0f;
-                if (AAS_Sound_ParseFloatFromString(value_text, &parsed))
-                {
-                    info.recognition = parsed;
-                }
-            }
-        }
-
-        line = next_line;
-    }
-
-    if (inside_block)
-    {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_Sound: soundinfo missing closing brace in %s\n",
-                     (log_path != NULL) ? log_path : "<memory>");
-        return false;
-    }
-
-    return true;
+		aas_soundinfo_t info;
+		AAS_Sound_InitInfoDefaults(&info);
+		if (!ReadStructure(source, &g_aas_soundinfo_struct, &info) ||
+			!AAS_Sound_PushInfo(&info))
+		{
+			return false;
+		}
+	}
 }
 
 static bool AAS_Sound_EnsureInfoCapacity(void)
 {
-    if (g_aas_sound_state.info_capacity == 0U)
-    {
-        return false;
-    }
-
     if (g_aas_sound_state.infos != NULL)
     {
         return true;
     }
 
-    g_aas_sound_state.infos =
-        (aas_soundinfo_t *)calloc(g_aas_sound_state.info_capacity, sizeof(aas_soundinfo_t));
+	g_aas_sound_state.infos = (aas_soundinfo_t *)GetClearedMemory(
+		g_aas_sound_state.info_capacity * sizeof(aas_soundinfo_t));
     return (g_aas_sound_state.infos != NULL);
 }
 
@@ -623,7 +238,7 @@ static bool AAS_Sound_PushInfo(const aas_soundinfo_t *info)
 
 static void AAS_Sound_FreeInfos(void)
 {
-    free(g_aas_sound_state.infos);
+	FreeMemory(g_aas_sound_state.infos);
     g_aas_sound_state.infos = NULL;
     g_aas_sound_state.info_count = 0U;
     g_aas_sound_state.info_capacity = 0U;
@@ -631,45 +246,101 @@ static void AAS_Sound_FreeInfos(void)
 
 static void AAS_Sound_FreeAssets(void)
 {
-    if (g_aas_sound_state.asset_names != NULL)
-    {
-        for (size_t i = 0; i < g_aas_sound_state.asset_count; ++i)
-        {
-            free(g_aas_sound_state.asset_names[i]);
-            free(g_aas_sound_state.asset_normalized[i]);
-        }
-    }
-
-    free(g_aas_sound_state.asset_names);
-    free(g_aas_sound_state.asset_normalized);
-    free(g_aas_sound_state.asset_info_index);
+    FreeMemory(g_aas_sound_state.asset_info_by_index);
 
     g_aas_sound_state.asset_names = NULL;
-    g_aas_sound_state.asset_normalized = NULL;
-    g_aas_sound_state.asset_info_index = NULL;
+	g_aas_sound_state.asset_info_by_index = NULL;
     g_aas_sound_state.asset_count = 0U;
+}
+
+/*
+=============
+AAS_Sound_FreeSoundEvents
+
+Release the replaceable retail max_aassounds heap.
+=============
+*/
+static void AAS_Sound_FreeSoundEvents(void)
+{
+	FreeMemory(g_aas_sound_state.sound_events);
+
+	g_aas_sound_state.sound_events = NULL;
+	g_aas_sound_state.sound_event_count = 0U;
+	g_aas_sound_state.sound_scheduled_count = 0U;
+	g_aas_sound_state.sound_event_capacity = 0U;
+	g_aas_sound_state.sound_active_head = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_active_tail = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_scheduled_head = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_scheduled_tail = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_free_head = AAS_SOUND_NULL_INDEX;
+}
+
+/*
+=============
+AAS_Sound_FreePointLightEvents
+
+Release the separately-owned max_aaslights heap for explicit test teardown.
+=============
+*/
+static void AAS_Sound_FreePointLightEvents(void)
+{
+	FreeMemory(g_aas_sound_state.pointlight_events);
+
+	g_aas_sound_state.pointlight_events = NULL;
+	g_aas_sound_state.pointlight_event_count = 0U;
+	g_aas_sound_state.pointlight_event_capacity = 0U;
+	g_aas_sound_state.pointlight_active_head = AAS_POINTLIGHT_NULL_INDEX;
+	g_aas_sound_state.pointlight_free_head = AAS_POINTLIGHT_NULL_INDEX;
 }
 
 /*
 =============
 AAS_Sound_FreeEvents
 
-Release transient sounds and the persistent point-light heap.
+Release both independently-owned sensory heaps during explicit teardown.
 =============
 */
 static void AAS_Sound_FreeEvents(void)
 {
-    free(g_aas_sound_state.sound_events);
-    free(g_aas_sound_state.pointlight_events);
+	AAS_Sound_FreeSoundEvents();
+	AAS_Sound_FreePointLightEvents();
+}
 
-    g_aas_sound_state.sound_events = NULL;
-    g_aas_sound_state.pointlight_events = NULL;
-    g_aas_sound_state.sound_event_count = 0U;
-    g_aas_sound_state.pointlight_event_count = 0U;
-    g_aas_sound_state.sound_event_capacity = 0U;
-    g_aas_sound_state.pointlight_event_capacity = 0U;
-	g_aas_sound_state.pointlight_active_head = AAS_POINTLIGHT_NULL_INDEX;
-	g_aas_sound_state.pointlight_free_head = AAS_POINTLIGHT_NULL_INDEX;
+/*
+=============
+AAS_Sound_InitSoundHeap
+
+Build the raw 0x34-byte sound-record free list in ascending slot order.
+=============
+*/
+static void AAS_Sound_InitSoundHeap(void)
+{
+	g_aas_sound_state.sound_active_head = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_active_tail = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_scheduled_head = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_scheduled_tail = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_free_head = AAS_SOUND_NULL_INDEX;
+	g_aas_sound_state.sound_event_count = 0U;
+	g_aas_sound_state.sound_scheduled_count = 0U;
+
+	if (g_aas_sound_state.sound_events == NULL ||
+		g_aas_sound_state.sound_event_capacity == 0U)
+	{
+		return;
+	}
+
+	g_aas_sound_state.sound_free_head = 0;
+	for (size_t index = 0U;
+		index < g_aas_sound_state.sound_event_capacity;
+		++index)
+	{
+		aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+		event->prev_index = (index == 0U) ? AAS_SOUND_NULL_INDEX :
+			(int)(index - 1U);
+		event->next_index =
+			(index + 1U < g_aas_sound_state.sound_event_capacity) ?
+				(int)(index + 1U) : AAS_SOUND_NULL_INDEX;
+	}
 }
 
 static void AAS_Sound_FreeSummaries(void)
@@ -722,178 +393,214 @@ static void AAS_Sound_InitPointLightHeap(void)
 
 /*
 =============
-AAS_SoundSubsystem_Init
+AAS_Sound_FreeSoundSummaries
 
-Initialise sound metadata and the retail point-light heap.
+Release only the compatibility view derived from the sound-event heap.
 =============
 */
-int AAS_SoundSubsystem_Init(const botlib_library_variables_t *vars)
+static void AAS_Sound_FreeSoundSummaries(void)
 {
-    if (vars == NULL)
-    {
-        return BLERR_INVALIDIMPORT;
-    }
+	free(g_aas_sound_state.sound_summaries);
 
-    AAS_SoundSubsystem_Shutdown();
+	g_aas_sound_state.sound_summaries = NULL;
+	g_aas_sound_state.sound_summary_count = 0U;
+	g_aas_sound_state.sound_summary_capacity = 0U;
+	g_aas_sound_state.sound_summaries_dirty = false;
+}
 
-	float max_pointlights = LibVarValue("max_aaslights", "128");
-	int max_pointlight_count;
-	if (!isfinite(max_pointlights) ||
-		(double)max_pointlights < (double)INT_MIN ||
-		(double)max_pointlights >= (double)INT_MAX + 1.0)
+/*
+=============
+AAS_Sound_ReadCapacityLibVar
+
+Converts and bounds a retail sensory-pool libvar, restoring its raw fallback
+value when it falls outside the recovered inclusive range.
+=============
+*/
+static int AAS_Sound_ReadCapacityLibVar(const char *name,
+	const char *default_value,
+	int maximum,
+	int fallback)
+{
+	float configured = LibVarValue(name, default_value);
+	int count;
+	if (!isfinite(configured) ||
+		(double)configured < (double)INT_MIN ||
+		(double)configured >= (double)INT_MAX + 1.0)
 	{
-		max_pointlight_count = INT_MIN;
+		count = INT_MIN;
 	}
 	else
 	{
-		max_pointlight_count = (int)max_pointlights;
+		count = (int)configured;
 	}
-	if (max_pointlight_count < 0 || max_pointlight_count > 65536)
-	{
-		BotLib_Print(PRT_ERROR, "max_aaslights out of range [0, 65536]\n");
-		max_pointlight_count = 128;
-	}
-	g_aas_sound_state.pointlight_event_capacity =
-		(size_t)max_pointlight_count;
-	if (g_aas_sound_state.pointlight_event_capacity > 0U)
-	{
-		g_aas_sound_state.pointlight_events =
-			(aas_pointlight_event_t *)calloc(
-				g_aas_sound_state.pointlight_event_capacity,
-				sizeof(aas_pointlight_event_t));
-		if (g_aas_sound_state.pointlight_events == NULL)
-		{
-			AAS_SoundSubsystem_Shutdown();
-			return BLERR_INVALIDIMPORT;
-		}
-	}
-	AAS_Sound_InitPointLightHeap();
 
-    if (vars->max_soundinfo <= 0)
-    {
-        BotLib_Print(PRT_WARNING, "AAS_Sound: max_soundinfo disabled\n");
-		g_aas_sound_state.initialised = true;
-        return BLERR_NOERROR;
-    }
+	if (count < 0 || count > maximum)
+	{
+		BotLib_Print(PRT_ERROR,
+			"%s out of range [0, %d]\n",
+			name,
+			maximum);
+		count = fallback;
+		LibVarSet(name, default_value);
+	}
 
-    g_aas_sound_state.info_capacity = (size_t)vars->max_soundinfo;
-    g_aas_sound_state.sound_event_capacity =
-        (vars->max_aassounds > 0) ? (size_t)vars->max_aassounds : (size_t)vars->max_soundinfo;
+	return count;
+}
+
+/*
+=============
+AAS_SoundSubsystem_Init
+
+Initialise the retail max_aassounds heap and soundinfo metadata. The separate
+max_aaslights heap is built only by its recovered standalone initializer.
+=============
+*/
+int AAS_SoundSubsystem_Init(void)
+{
+	AAS_Sound_FreeInfos();
+	AAS_Sound_FreeSoundEvents();
+	AAS_Sound_FreeSoundSummaries();
+	g_aas_sound_state.initialised = false;
+
+	int max_soundinfo = AAS_Sound_ReadCapacityLibVar("max_soundinfo",
+		"256",
+		65535,
+		256);
+	g_aas_sound_state.info_capacity = (size_t)max_soundinfo;
+	if (!AAS_Sound_EnsureInfoCapacity())
+	{
+		AAS_Sound_FreeInfos();
+		return BLERR_INVALIDIMPORT;
+	}
+	int max_aassounds = AAS_Sound_ReadCapacityLibVar("max_aassounds",
+		"256",
+		65536,
+		256);
+	g_aas_sound_state.sound_event_capacity = (size_t)max_aassounds;
 
     if (g_aas_sound_state.sound_event_capacity > 0U)
     {
-        g_aas_sound_state.sound_events =
-            (aas_sound_event_t *)calloc(g_aas_sound_state.sound_event_capacity,
-                                        sizeof(aas_sound_event_t));
+		g_aas_sound_state.sound_events =
+			(aas_sound_event_t *)GetMemory(
+				g_aas_sound_state.sound_event_capacity *
+				sizeof(aas_sound_event_t));
 		if (g_aas_sound_state.sound_events == NULL)
         {
-            AAS_SoundSubsystem_Shutdown();
+			AAS_Sound_FreeInfos();
+			AAS_Sound_FreeSoundEvents();
             return BLERR_INVALIDIMPORT;
         }
 	}
+	AAS_Sound_InitSoundHeap();
 
     char resolved_path[BOTLIB_ASSET_MAX_PATH];
-    const char *requested = (vars->soundconfig[0] != '\0') ? vars->soundconfig : "sounds.c";
-    if (!BotLib_ResolveAssetPath(requested, "soundconfig", resolved_path, sizeof(resolved_path)))
-    {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_Sound: failed to resolve sound config '%s'\n",
-                     requested);
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
+	const char *requested = LibVarString("soundconfig", "sounds.c");
+	if (!BotLib_ResolveAssetPath(requested, "soundconfig", resolved_path, sizeof(resolved_path)))
+	{
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n", requested);
+		g_aas_sound_state.initialised = true;
+		return BLERR_NOERROR;
+	}
 
-    FILE *file = fopen(resolved_path, "rb");
-    if (file == NULL)
-    {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_Sound: failed to open sound config %s (%s)\n",
-                     resolved_path,
-                     strerror(errno));
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
+	pc_source_t *source = PC_LoadSourceFile(resolved_path);
+	if (source == NULL)
+	{
+		BotLib_Print(PRT_ERROR, "counldn't load %s\n", requested);
+		g_aas_sound_state.initialised = true;
+		return BLERR_NOERROR;
+	}
 
-    if (fseek(file, 0, SEEK_END) != 0)
-    {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_Sound: failed to seek sound config %s\n",
-                     resolved_path);
-        fclose(file);
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
+	bool parsed = AAS_Sound_ParseConfigSource(source);
+	PC_FreeSource(source);
 
-    long file_length = ftell(file);
-    if (file_length < 0)
-    {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_Sound: failed to determine size of %s\n",
-                     resolved_path);
-        fclose(file);
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
-
-    if (fseek(file, 0, SEEK_SET) != 0)
-    {
-        BotLib_Print(PRT_ERROR,
-                     "AAS_Sound: failed to rewind %s\n",
-                     resolved_path);
-        fclose(file);
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
-
-    char *raw_buffer = (char *)malloc((size_t)file_length + 1U);
-    if (raw_buffer == NULL)
-    {
-        BotLib_Print(PRT_ERROR, "AAS_Sound: out of memory reading %s\n", resolved_path);
-        fclose(file);
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
-
-    size_t read = fread(raw_buffer, 1U, (size_t)file_length, file);
-    fclose(file);
-    if (read != (size_t)file_length)
-    {
-        BotLib_Print(PRT_ERROR, "AAS_Sound: failed to read %s\n", resolved_path);
-        free(raw_buffer);
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
-    raw_buffer[file_length] = '\0';
-
-    char *sanitized = AAS_Sound_RemoveComments(raw_buffer, (size_t)file_length);
-    free(raw_buffer);
-    if (sanitized == NULL)
-    {
-        BotLib_Print(PRT_ERROR, "AAS_Sound: failed to process %s\n", resolved_path);
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
-
-    bool parsed = AAS_Sound_ParseConfigBuffer(sanitized, resolved_path);
-    free(sanitized);
-
-    if (!parsed)
-    {
-        AAS_SoundSubsystem_Shutdown();
-        return BLERR_INVALIDIMPORT;
-    }
+	if (!parsed)
+	{
+		g_aas_sound_state.initialised = true;
+		return BLERR_NOERROR;
+	}
 
     g_aas_sound_state.initialised = true;
     return BLERR_NOERROR;
 }
 
+/*
+=============
+AAS_SoundSubsystem_InitPointLightHeap
+
+Build the unconnected retail max_aaslights heap recovered at 0x1000d340.
+Retail's normal BotSetup path does not invoke this helper.
+=============
+*/
+void AAS_SoundSubsystem_InitPointLightHeap(void)
+{
+	float configured = LibVarValue("max_aaslights", "128");
+	int capacity;
+	if (!isfinite(configured) ||
+		(double)configured < (double)INT_MIN ||
+		(double)configured >= (double)INT_MAX + 1.0)
+	{
+		capacity = INT_MIN;
+	}
+	else
+	{
+		capacity = (int)configured;
+	}
+
+	if (capacity < 0 || capacity > 65536)
+	{
+		BotLib_Print(PRT_ERROR, "max_aaslights out of range [0, 65536]\n");
+		capacity = 128;
+	}
+
+	/* The raw helper overwrites its heap pointer without a preceding free. */
+	g_aas_sound_state.pointlight_event_capacity = (size_t)capacity;
+	g_aas_sound_state.pointlight_event_count = 0U;
+	g_aas_sound_state.pointlight_active_head = AAS_POINTLIGHT_NULL_INDEX;
+	g_aas_sound_state.pointlight_free_head = AAS_POINTLIGHT_NULL_INDEX;
+	if (g_aas_sound_state.pointlight_event_capacity == 0U)
+	{
+		return;
+	}
+
+	g_aas_sound_state.pointlight_events =
+		(aas_pointlight_event_t *)GetMemory(
+			g_aas_sound_state.pointlight_event_capacity *
+			sizeof(aas_pointlight_event_t));
+	if (g_aas_sound_state.pointlight_events == NULL)
+	{
+		g_aas_sound_state.pointlight_event_capacity = 0U;
+		return;
+	}
+
+	AAS_Sound_InitPointLightHeap();
+}
+
+/*
+=============
+AAS_SoundSubsystem_Shutdown
+
+Mirror retail sub_1001d290, which intentionally performs no cleanup. The AAS
+global-state clear and BotMemory_Shutdown own normal teardown.
+=============
+*/
 void AAS_SoundSubsystem_Shutdown(void)
 {
-    AAS_Sound_FreeInfos();
-    AAS_Sound_FreeAssets();
-    AAS_Sound_FreeEvents();
-    AAS_Sound_FreeSummaries();
-    memset(&g_aas_sound_state, 0, sizeof(g_aas_sound_state));
+}
+
+/*
+=============
+AAS_SoundSubsystem_ResetState
+
+Discard the sound-state references when AAS tears down. Retail's final AAS
+global memset performs this without directly releasing the tracked sensory
+pools; BotMemory_Shutdown owns their eventual reclamation.
+=============
+*/
+void AAS_SoundSubsystem_ResetState(void)
+{
+	/* Compatibility summaries use the C heap and have no retail counterpart. */
+	AAS_Sound_FreeSummaries();
+	memset(&g_aas_sound_state, 0, sizeof(g_aas_sound_state));
 }
 
 void AAS_SoundSubsystem_ClearMapAssets(void)
@@ -902,54 +609,57 @@ void AAS_SoundSubsystem_ClearMapAssets(void)
     g_aas_sound_state.sound_summaries_dirty = true;
 }
 
+/*
+=============
+AAS_SoundSubsystem_RegisterMapAssets
+
+Build the raw cleared sound-index-to-soundinfo pointer table over engine-owned
+asset name slots.
+=============
+*/
 bool AAS_SoundSubsystem_RegisterMapAssets(int count, char *assets[])
 {
     AAS_Sound_FreeAssets();
 
-    if (count <= 0 || assets == NULL)
+    if (count < 0)
     {
         return true;
     }
 
     size_t desired = (size_t)count;
-    g_aas_sound_state.asset_names =
-        (char **)calloc(desired, sizeof(char *));
-    g_aas_sound_state.asset_normalized =
-        (char **)calloc(desired, sizeof(char *));
-    g_aas_sound_state.asset_info_index =
-        (int *)calloc(desired, sizeof(int));
-    if (g_aas_sound_state.asset_names == NULL || g_aas_sound_state.asset_normalized == NULL
-        || g_aas_sound_state.asset_info_index == NULL)
+	g_aas_sound_state.asset_info_by_index =
+		(aas_soundinfo_t **)GetMemory(desired *
+			sizeof(*g_aas_sound_state.asset_info_by_index));
+	if (g_aas_sound_state.asset_info_by_index == NULL)
     {
         AAS_Sound_FreeAssets();
-        return false;
-    }
+		return false;
+	}
 
+	memset(g_aas_sound_state.asset_info_by_index,
+		0,
+		desired * sizeof(*g_aas_sound_state.asset_info_by_index));
+	g_aas_sound_state.asset_names = assets;
     for (size_t i = 0; i < desired; ++i)
     {
-        const char *name = assets[i];
+        const char *name = (assets != NULL) ? assets[i] : NULL;
         if (name == NULL)
         {
             continue;
         }
 
-        size_t length = strlen(name);
-        g_aas_sound_state.asset_names[i] = (char *)malloc(length + 1U);
-        g_aas_sound_state.asset_normalized[i] = (char *)malloc(length + 1U);
-        if (g_aas_sound_state.asset_names[i] == NULL
-            || g_aas_sound_state.asset_normalized[i] == NULL)
+        for (size_t info_index = 0U;
+            info_index < g_aas_sound_state.info_count;
+            ++info_index)
         {
-            AAS_Sound_FreeAssets();
-            return false;
+            aas_soundinfo_t *info =
+				&g_aas_sound_state.infos[info_index];
+			if (strcmp(info->name, name) == 0)
+			{
+				g_aas_sound_state.asset_info_by_index[i] = info;
+				break;
+			}
         }
-
-        memcpy(g_aas_sound_state.asset_names[i], name, length + 1U);
-        AAS_Sound_NormalizeName(name,
-                                g_aas_sound_state.asset_normalized[i],
-                                length + 1U);
-
-        int info_index = AAS_SoundSubsystem_FindInfoIndex(g_aas_sound_state.asset_normalized[i]);
-        g_aas_sound_state.asset_info_index[i] = info_index;
     }
 
     g_aas_sound_state.asset_count = desired;
@@ -1042,9 +752,318 @@ static void AAS_Sound_ExpirePointLights(float frame_time)
 
 /*
 =============
+AAS_Sound_EventIndexValid
+
+Validate an index before following a link in the reconstructed sound heap.
+=============
+*/
+static bool AAS_Sound_EventIndexValid(int index)
+{
+	return index >= 0 &&
+		(size_t)index < g_aas_sound_state.sound_event_capacity;
+}
+
+/*
+=============
+AAS_Sound_PopFreeEvent
+
+Pop the first retail sound record from the free list.
+=============
+*/
+static int AAS_Sound_PopFreeEvent(void)
+{
+	int index = g_aas_sound_state.sound_free_head;
+	if (!AAS_Sound_EventIndexValid(index))
+	{
+		return AAS_SOUND_NULL_INDEX;
+	}
+
+	aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+	g_aas_sound_state.sound_free_head = event->next_index;
+	if (AAS_Sound_EventIndexValid(g_aas_sound_state.sound_free_head))
+	{
+		g_aas_sound_state.sound_events[
+			g_aas_sound_state.sound_free_head].prev_index = AAS_SOUND_NULL_INDEX;
+	}
+	event->next_index = AAS_SOUND_NULL_INDEX;
+	event->prev_index = AAS_SOUND_NULL_INDEX;
+	return index;
+}
+
+/*
+=============
+AAS_Sound_PushFreeEvent
+
+Return an unlinked sound record to the retail free-list head.
+=============
+*/
+static void AAS_Sound_PushFreeEvent(int index)
+{
+	if (!AAS_Sound_EventIndexValid(index))
+	{
+		return;
+	}
+
+	aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+	event->prev_index = AAS_SOUND_NULL_INDEX;
+	event->next_index = g_aas_sound_state.sound_free_head;
+	if (AAS_Sound_EventIndexValid(g_aas_sound_state.sound_free_head))
+	{
+		g_aas_sound_state.sound_events[
+			g_aas_sound_state.sound_free_head].prev_index = index;
+	}
+	g_aas_sound_state.sound_free_head = index;
+}
+
+/*
+=============
+AAS_Sound_UnlinkActiveEvent
+
+Unlink an active sound without changing its record contents.
+=============
+*/
+static void AAS_Sound_UnlinkActiveEvent(int index)
+{
+	if (!AAS_Sound_EventIndexValid(index))
+	{
+		return;
+	}
+
+	aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+	int previous = event->prev_index;
+	int next = event->next_index;
+	if (AAS_Sound_EventIndexValid(previous))
+	{
+		g_aas_sound_state.sound_events[previous].next_index = next;
+	}
+	else
+	{
+		g_aas_sound_state.sound_active_head = next;
+	}
+	if (AAS_Sound_EventIndexValid(next))
+	{
+		g_aas_sound_state.sound_events[next].prev_index = previous;
+	}
+	else
+	{
+		g_aas_sound_state.sound_active_tail = previous;
+	}
+	event->next_index = AAS_SOUND_NULL_INDEX;
+	event->prev_index = AAS_SOUND_NULL_INDEX;
+	if (g_aas_sound_state.sound_event_count > 0U)
+	{
+		g_aas_sound_state.sound_event_count -= 1U;
+	}
+}
+
+/*
+=============
+AAS_Sound_UnlinkScheduledEvent
+
+Unlink one delayed sound from the start-time-ordered retail queue.
+=============
+*/
+static void AAS_Sound_UnlinkScheduledEvent(int index)
+{
+	if (!AAS_Sound_EventIndexValid(index))
+	{
+		return;
+	}
+
+	aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+	int previous = event->prev_index;
+	int next = event->next_index;
+	if (AAS_Sound_EventIndexValid(previous))
+	{
+		g_aas_sound_state.sound_events[previous].next_index = next;
+	}
+	else
+	{
+		g_aas_sound_state.sound_scheduled_head = next;
+	}
+	if (AAS_Sound_EventIndexValid(next))
+	{
+		g_aas_sound_state.sound_events[next].prev_index = previous;
+	}
+	else
+	{
+		g_aas_sound_state.sound_scheduled_tail = previous;
+	}
+	event->next_index = AAS_SOUND_NULL_INDEX;
+	event->prev_index = AAS_SOUND_NULL_INDEX;
+	if (g_aas_sound_state.sound_scheduled_count > 0U)
+	{
+		g_aas_sound_state.sound_scheduled_count -= 1U;
+	}
+}
+
+/*
+=============
+AAS_Sound_InsertActiveEvent
+
+Insert one record by ascending end time, retaining the raw equal-time order.
+=============
+*/
+static void AAS_Sound_InsertActiveEvent(int index)
+{
+	if (!AAS_Sound_EventIndexValid(index))
+	{
+		return;
+	}
+
+	aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+	int previous = g_aas_sound_state.sound_active_tail;
+	while (AAS_Sound_EventIndexValid(previous) &&
+		g_aas_sound_state.sound_events[previous].end >= event->end)
+	{
+		previous = g_aas_sound_state.sound_events[previous].prev_index;
+	}
+
+	int next = AAS_Sound_EventIndexValid(previous) ?
+		g_aas_sound_state.sound_events[previous].next_index :
+		g_aas_sound_state.sound_active_head;
+	event->prev_index = previous;
+	event->next_index = next;
+	if (AAS_Sound_EventIndexValid(previous))
+	{
+		g_aas_sound_state.sound_events[previous].next_index = index;
+	}
+	else
+	{
+		g_aas_sound_state.sound_active_head = index;
+	}
+	if (AAS_Sound_EventIndexValid(next))
+	{
+		g_aas_sound_state.sound_events[next].prev_index = index;
+	}
+	else
+	{
+		g_aas_sound_state.sound_active_tail = index;
+	}
+	g_aas_sound_state.sound_event_count += 1U;
+}
+
+/*
+=============
+AAS_Sound_InsertScheduledEvent
+
+Insert one record by ascending start time, retaining the raw equal-time order.
+=============
+*/
+static void AAS_Sound_InsertScheduledEvent(int index)
+{
+	if (!AAS_Sound_EventIndexValid(index))
+	{
+		return;
+	}
+
+	aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+	int previous = g_aas_sound_state.sound_scheduled_tail;
+	while (AAS_Sound_EventIndexValid(previous) &&
+		g_aas_sound_state.sound_events[previous].start >= event->start)
+	{
+		previous = g_aas_sound_state.sound_events[previous].prev_index;
+	}
+
+	int next = AAS_Sound_EventIndexValid(previous) ?
+		g_aas_sound_state.sound_events[previous].next_index :
+		g_aas_sound_state.sound_scheduled_head;
+	event->prev_index = previous;
+	event->next_index = next;
+	if (AAS_Sound_EventIndexValid(previous))
+	{
+		g_aas_sound_state.sound_events[previous].next_index = index;
+	}
+	else
+	{
+		g_aas_sound_state.sound_scheduled_head = index;
+	}
+	if (AAS_Sound_EventIndexValid(next))
+	{
+		g_aas_sound_state.sound_events[next].prev_index = index;
+	}
+	else
+	{
+		g_aas_sound_state.sound_scheduled_tail = index;
+	}
+	g_aas_sound_state.sound_scheduled_count += 1U;
+}
+
+/*
+=============
+AAS_Sound_RemoveActiveEntitySound
+
+Remove the first active record with the exact entity/sound-index pair.
+=============
+*/
+static void AAS_Sound_RemoveActiveEntitySound(int ent, int soundindex)
+{
+	for (int index = g_aas_sound_state.sound_active_head;
+		AAS_Sound_EventIndexValid(index);
+		index = g_aas_sound_state.sound_events[index].next_index)
+	{
+		aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+		if (event->ent == ent && event->soundindex == soundindex)
+		{
+			AAS_Sound_UnlinkActiveEvent(index);
+			AAS_Sound_PushFreeEvent(index);
+			return;
+		}
+	}
+}
+
+/*
+=============
+AAS_Sound_ExpireActiveSounds
+
+Return every active record whose end is less than or equal to this frame.
+=============
+*/
+static void AAS_Sound_ExpireActiveSounds(float frame_time)
+{
+	while (AAS_Sound_EventIndexValid(g_aas_sound_state.sound_active_head))
+	{
+		int index = g_aas_sound_state.sound_active_head;
+		if (!(g_aas_sound_state.sound_events[index].end <= frame_time))
+		{
+			break;
+		}
+		AAS_Sound_UnlinkActiveEvent(index);
+		AAS_Sound_PushFreeEvent(index);
+	}
+}
+
+/*
+=============
+AAS_Sound_ActivateScheduledSounds
+
+Move records whose start strictly precedes this frame into the active list.
+=============
+*/
+static void AAS_Sound_ActivateScheduledSounds(float frame_time)
+{
+	while (AAS_Sound_EventIndexValid(g_aas_sound_state.sound_scheduled_head))
+	{
+		int index = g_aas_sound_state.sound_scheduled_head;
+		aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+		if (!(event->start < frame_time))
+		{
+			break;
+		}
+
+		int ent = event->ent;
+		int soundindex = event->soundindex;
+		AAS_Sound_UnlinkScheduledEvent(index);
+		AAS_Sound_RemoveActiveEntitySound(ent, soundindex);
+		AAS_Sound_InsertActiveEvent(index);
+	}
+}
+
+/*
+=============
 AAS_SoundSubsystem_SetFrameTime
 
-Advance sensory time and run the retail persistent-light expiry pass.
+Advance sensory time and run the raw sound and point-light expiry passes.
 =============
 */
 void AAS_SoundSubsystem_SetFrameTime(float time)
@@ -1060,6 +1079,8 @@ void AAS_SoundSubsystem_SetFrameTime(float time)
     }
 
     g_aas_sound_state.frame_time = time;
+	AAS_Sound_ExpireActiveSounds(time);
+	AAS_Sound_ActivateScheduledSounds(time);
 	AAS_Sound_ExpirePointLights(time);
     g_aas_sound_state.sound_summaries_dirty = true;
     g_aas_sound_state.pointlight_summaries_dirty = true;
@@ -1069,53 +1090,73 @@ void AAS_SoundSubsystem_SetFrameTime(float time)
 =============
 AAS_SoundSubsystem_ResetFrameEvents
 
-Clear transient sounds while retaining retail point lights across frames.
+Retained host entry point. Retail advances the two sound lists by time instead
+of clearing them at frame boundaries.
 =============
 */
 void AAS_SoundSubsystem_ResetFrameEvents(void)
 {
-    g_aas_sound_state.sound_event_count = 0U;
-    g_aas_sound_state.sound_summary_count = 0U;
     g_aas_sound_state.pointlight_summary_count = 0U;
     g_aas_sound_state.sound_summaries_dirty = true;
     g_aas_sound_state.pointlight_summaries_dirty = true;
 }
 
-static void AAS_Sound_SetEntitySound(int ent, int soundindex)
+/*
+=============
+AAS_SoundSubsystem_UpdateSound
+
+Mirror the raw BotUpdateSound leaf, including its sound-index diagnostic and
+handled no-table/empty-heap paths.
+=============
+*/
+int AAS_SoundSubsystem_UpdateSound(const vec3_t origin,
+	int ent,
+	int channel,
+	int soundindex,
+	float volume,
+	float attenuation,
+	float timeofs)
 {
-    if (!aasworld.loaded || aasworld.entities == NULL || ent < 0 || ent >= aasworld.maxEntities)
-    {
-        return;
-    }
+	if (!g_aas_sound_state.initialised)
+	{
+		return BLERR_INVALIDIMPORT;
+	}
+	if (soundindex < 0 || (size_t)soundindex >= g_aas_sound_state.asset_count)
+	{
+		BotLib_Print(PRT_FATAL,
+			"sound index %d out of range [0, %d]\n",
+			soundindex,
+			(int)g_aas_sound_state.asset_count);
+		return BLERR_INVALIDSOUNDINDEX;
+	}
+	if (g_aas_sound_state.sound_events == NULL ||
+		g_aas_sound_state.sound_event_capacity == 0U ||
+		g_aas_sound_state.asset_info_by_index == NULL)
+	{
+		BotLib_Print(PRT_MESSAGE, "no soundindex to soundinfo table\n");
+		return BLERR_NOERROR;
+	}
 
-    aasworld.entities[ent].sound = soundindex;
-    aasworld.entities[ent].lastUpdateTime = g_aas_sound_state.frame_time;
-}
+	aas_soundinfo_t *info =
+		g_aas_sound_state.asset_info_by_index[soundindex];
+	if (info == NULL)
+	{
+		return BLERR_NOERROR;
+	}
 
-bool AAS_SoundSubsystem_RecordSound(const vec3_t origin,
-                                    int ent,
-                                    int channel,
-                                    int soundindex,
-                                    float volume,
-                                    float attenuation,
-                                    float timeofs)
-{
-    if (!g_aas_sound_state.initialised || g_aas_sound_state.sound_events == NULL
-        || g_aas_sound_state.sound_event_capacity == 0U)
-    {
-        return false;
-    }
+	if (timeofs < 0.0f)
+	{
+		AAS_Sound_RemoveActiveEntitySound(ent, soundindex);
+	}
 
-    if (g_aas_sound_state.sound_event_count == g_aas_sound_state.sound_event_capacity)
-    {
-        memmove(&g_aas_sound_state.sound_events[0],
-                &g_aas_sound_state.sound_events[1],
-                (g_aas_sound_state.sound_event_capacity - 1U) * sizeof(aas_sound_event_t));
-        g_aas_sound_state.sound_event_count -= 1U;
-    }
+	int index = AAS_Sound_PopFreeEvent();
+	if (!AAS_Sound_EventIndexValid(index))
+	{
+		BotLib_Print(PRT_ERROR, "empty sound heap\n");
+		return BLERR_NOERROR;
+	}
 
-    aas_sound_event_t *event =
-        &g_aas_sound_state.sound_events[g_aas_sound_state.sound_event_count++];
+	aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
 
     if (origin != NULL)
     {
@@ -1126,25 +1167,42 @@ bool AAS_SoundSubsystem_RecordSound(const vec3_t origin,
         VectorClear(event->origin);
     }
 
-    event->ent = ent;
+	event->start = g_aas_sound_state.frame_time + timeofs;
+	event->end = event->start + info->duration;
+	event->zero = 0;
+	event->ent = ent;
     event->channel = channel;
     event->soundindex = soundindex;
     event->volume = volume;
     event->attenuation = attenuation;
-    event->timeofs = timeofs;
-    event->timestamp = g_aas_sound_state.frame_time + timeofs;
-    event->info_index =
-        (soundindex >= 0 && (size_t)soundindex < g_aas_sound_state.asset_count)
-            ? g_aas_sound_state.asset_info_index[soundindex]
-            : -1;
+	AAS_Sound_InsertScheduledEvent(index);
     g_aas_sound_state.sound_summaries_dirty = true;
 
-    if (soundindex >= 0)
-    {
-        AAS_Sound_SetEntitySound(ent, soundindex);
-    }
+	return BLERR_NOERROR;
+}
 
-    return true;
+/*
+=============
+AAS_SoundSubsystem_RecordSound
+
+Retain the host boolean convenience surface over the raw status-returning API.
+=============
+*/
+bool AAS_SoundSubsystem_RecordSound(const vec3_t origin,
+	int ent,
+	int channel,
+	int soundindex,
+	float volume,
+	float attenuation,
+	float timeofs)
+{
+	return AAS_SoundSubsystem_UpdateSound(origin,
+		ent,
+		channel,
+		soundindex,
+		volume,
+		attenuation,
+		timeofs) == BLERR_NOERROR;
 }
 
 /*
@@ -1165,11 +1223,6 @@ bool AAS_SoundSubsystem_RecordPointLight(vec3_t origin,
 	float time,
 	float decay)
 {
-	if (!g_aas_sound_state.initialised)
-	{
-		return false;
-	}
-
 	int index = g_aas_sound_state.pointlight_free_head;
 	if (!AAS_Sound_PointLightIndexValid(index))
 	{
@@ -1225,7 +1278,21 @@ const aas_sound_event_t *AAS_SoundSubsystem_SoundEvent(size_t index)
     {
         return NULL;
     }
-    return &g_aas_sound_state.sound_events[index];
+
+	int event_index = g_aas_sound_state.sound_active_head;
+	for (size_t position = 0U; position < index; ++position)
+	{
+		if (!AAS_Sound_EventIndexValid(event_index))
+		{
+			return NULL;
+		}
+		event_index = g_aas_sound_state.sound_events[event_index].next_index;
+	}
+	if (!AAS_Sound_EventIndexValid(event_index))
+	{
+		return NULL;
+	}
+	return &g_aas_sound_state.sound_events[event_index];
 }
 
 /*
@@ -1448,34 +1515,31 @@ static bool AAS_SoundSubsystem_RebuildSoundSummaries(void)
         return false;
     }
 
-    for (size_t index = 0; index < event_count; ++index)
+    int event_index = g_aas_sound_state.sound_active_head;
+	for (size_t index = 0U; index < event_count; ++index)
     {
-        const aas_sound_event_t *event = &g_aas_sound_state.sound_events[index];
+        if (!AAS_Sound_EventIndexValid(event_index))
+        {
+            g_aas_sound_state.sound_summary_count = 0U;
+            return false;
+        }
+
+		const aas_sound_event_t *event =
+			&g_aas_sound_state.sound_events[event_index];
         aas_sound_event_summary_t *summary = &g_aas_sound_state.sound_summaries[index];
 
-        int info_index = event->info_index;
-        if ((info_index < 0 || (size_t)info_index >= g_aas_sound_state.info_count)
-            && event->soundindex >= 0
-            && (size_t)event->soundindex < g_aas_sound_state.asset_count
-            && g_aas_sound_state.asset_info_index != NULL)
-        {
-            info_index = g_aas_sound_state.asset_info_index[event->soundindex];
-            if (info_index >= 0)
-            {
-                aas_sound_event_t *mutable_event =
-                    (aas_sound_event_t *)&g_aas_sound_state.sound_events[index];
-                mutable_event->info_index = info_index;
-            }
-        }
-
-        const aas_soundinfo_t *info = NULL;
-        if (info_index >= 0 && (size_t)info_index < g_aas_sound_state.info_count)
-        {
-            info = &g_aas_sound_state.infos[info_index];
-        }
+		const aas_soundinfo_t *info =
+			(event->soundindex >= 0 &&
+			(size_t)event->soundindex < g_aas_sound_state.asset_count &&
+			g_aas_sound_state.asset_info_by_index != NULL) ?
+				g_aas_sound_state.asset_info_by_index[event->soundindex] : NULL;
+		int info_index = (info != NULL &&
+			info >= g_aas_sound_state.infos &&
+			info < g_aas_sound_state.infos + g_aas_sound_state.info_count) ?
+			(int)(info - g_aas_sound_state.infos) : -1;
 
         summary->event = event;
-        summary->timestamp = event->timestamp;
+		summary->timestamp = event->start;
         summary->info_index = info_index;
         summary->info = info;
         summary->has_info = (info != NULL);
@@ -1486,10 +1550,10 @@ static bool AAS_SoundSubsystem_RebuildSoundSummaries(void)
         summary->expired = false;
         summary->expired_this_frame = false;
 
-        if (info != NULL && info->duration > 0.0f)
+        if (info != NULL)
         {
             summary->has_expiry = true;
-            summary->expiry_time = event->timestamp + info->duration;
+			summary->expiry_time = event->end;
 
             if (g_aas_sound_state.frame_time >= summary->expiry_time)
             {
@@ -1501,6 +1565,8 @@ static bool AAS_SoundSubsystem_RebuildSoundSummaries(void)
                 }
             }
         }
+
+		event_index = event->next_index;
     }
 
     qsort(g_aas_sound_state.sound_summaries,
@@ -1619,7 +1685,11 @@ int AAS_SoundSubsystem_FindInfoIndex(const char *name)
     for (size_t i = 0; i < g_aas_sound_state.info_count; ++i)
     {
         const aas_soundinfo_t *info = &g_aas_sound_state.infos[i];
-        if (strcmp(info->normalized, normalized) == 0)
+		char info_normalized[sizeof(info->name)];
+		AAS_Sound_NormalizeName(info->name,
+			info_normalized,
+			sizeof(info_normalized));
+		if (strcmp(info_normalized, normalized) == 0)
         {
             return (int)i;
         }
@@ -1631,18 +1701,12 @@ int AAS_SoundSubsystem_FindInfoIndex(const char *name)
 const aas_soundinfo_t *AAS_SoundSubsystem_InfoForSoundIndex(int soundindex)
 {
     if (soundindex < 0 || (size_t)soundindex >= g_aas_sound_state.asset_count
-        || g_aas_sound_state.asset_info_index == NULL)
+		|| g_aas_sound_state.asset_info_by_index == NULL)
     {
         return NULL;
     }
 
-    int info_index = g_aas_sound_state.asset_info_index[soundindex];
-    if (info_index < 0 || (size_t)info_index >= g_aas_sound_state.info_count)
-    {
-        return NULL;
-    }
-
-    return &g_aas_sound_state.infos[info_index];
+	return g_aas_sound_state.asset_info_by_index[soundindex];
 }
 
 const char *AAS_SoundSubsystem_AssetName(int soundindex)

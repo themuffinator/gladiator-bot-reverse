@@ -19,6 +19,8 @@
 extern void BotLib_TestResetLastMessage(void);
 extern const char *BotLib_TestGetLastMessage(void);
 extern int BotLib_TestGetLastMessageType(void);
+extern void BotLib_TestResetMessageHistory(void);
+extern const char *BotLib_TestGetMessageHistory(void);
 extern void BotLib_TestSetLibVar(const char *var_name, float value);
 extern void BotLib_TestSetLibVarString(const char *var_name, const char *value);
 extern void BotLib_TestResetLibVars(void);
@@ -166,7 +168,7 @@ typedef struct chat_bridge_mock_s
 } chat_bridge_mock_t;
 
 static chat_bridge_mock_t g_chat_bridge_mock;
-static bot_import_t g_chat_bridge_imports;
+static bot_import_extended_t g_chat_bridge_imports;
 
 /*
 =============
@@ -2266,7 +2268,8 @@ static void test_reply_chat_selected_constructor_failure_returns_true(void)
 test_constructor_retail_escape_and_variable_semantics
 
 Covers byte-one escape parsing, missing-variable omission, literal legacy
-syntax, safe unterminated random/variable paths, and the Gladiator 0..10 bounds.
+syntax, safe unterminated random/variable paths, the raw non-digit index
+diagnostic, and the Gladiator 0..10 bounds.
 =============
 */
 static void test_constructor_retail_escape_and_variable_semantics(void)
@@ -2296,6 +2299,10 @@ static void test_constructor_retail_escape_and_variable_semantics(void)
 		"{\n"
 		"\"A\\1rknown\";\n"
 		"}\n"
+		"type \"nondigit\"\n"
+		"{\n"
+		"\"A\\1vA\";\n"
+		"}\n"
 		"type \"unknown\"\n"
 		"{\n"
 		"\"A\\1xB\";\n"
@@ -2303,6 +2310,10 @@ static void test_constructor_retail_escape_and_variable_semantics(void)
 		"type \"ten\"\n"
 		"{\n"
 		"\"slot \", 10;\n"
+		"}\n"
+		"type \"variable_overflow\"\n"
+		"{\n"
+		"\"\1v0\1\";\n"
 		"}\n"
 		"type \"eleven\"\n"
 		"{\n"
@@ -2339,6 +2350,13 @@ static void test_constructor_retail_escape_and_variable_semantics(void)
 
 	drain_console(chat);
 	BotLib_TestResetLastMessage();
+	assert(!BotInitialChat(chat, "nondigit", 0, NULL));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(), "variable 17 out of range") != NULL);
+	assert(BotNumConsoleMessages(chat) == 0U);
+
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
 	assert(BotInitialChat(chat, "unknown", 0, NULL));
 	assert(BotLib_TestGetLastMessageType() == PRT_FATAL);
 	assert(strstr(BotLib_TestGetLastMessage(), "invalid escape char") != NULL);
@@ -2362,6 +2380,21 @@ static void test_constructor_retail_escape_and_variable_semantics(void)
 		"ten"));
 	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
 	assert(strcmp(buffer, "slot ten") == 0);
+
+	char oversized_variable[151];
+	memset(oversized_variable, 'v', sizeof(oversized_variable) - 1U);
+	oversized_variable[sizeof(oversized_variable) - 1U] = '\0';
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	assert(!BotInitialChat(chat,
+		"variable_overflow",
+		0,
+		oversized_variable,
+		NULL));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strcmp(BotLib_TestGetLastMessage(),
+		"BotConstructChat: message \1v0\1 too long\n") == 0);
+	assert(BotNumConsoleMessages(chat) == 0U);
 
 	drain_console(chat);
 	BotLib_TestResetLastMessage();
@@ -4182,6 +4215,59 @@ static void test_reply_chat_enter_handoff_uses_bridge_speaker(void)
 
 /*
 =============
+test_chat_loader_reports_unique_missing_randoms
+
+Pins the raw initial/reply load-time integrity scan, including its separate
+per-pass duplicate suppression.
+=============
+*/
+static void test_chat_loader_reports_unique_missing_randoms(void)
+{
+	const char *path = "bot_chat_integrity_test.c";
+	const char *initial_report =
+		"initial_missing = {\"initial_missing\"} //MISSING RANDOM";
+	const char *reply_report =
+		"reply_missing = {\"reply_missing\"} //MISSING RANDOM";
+
+	remove(path);
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"chat \"integrity\"\n"
+		"{\n"
+		"type \"line\"\n"
+		"{\n"
+		"initial_missing;\n"
+		"initial_missing;\n"
+		"}\n"
+		"}\n"
+		"[\"integrity trigger\"] = 16\n"
+		"{\n"
+		"reply_missing;\n"
+		"reply_missing;\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	BotLib_TestResetMessageHistory();
+	assert(BotLoadChatFile(chat, path, "integrity"));
+
+	const char *history = BotLib_TestGetMessageHistory();
+	const char *initial = strstr(history, initial_report);
+	const char *reply = strstr(history, reply_report);
+	assert(initial != NULL);
+	assert(strstr(initial + strlen(initial_report), initial_report) == NULL);
+	assert(reply != NULL);
+	assert(strstr(reply + strlen(reply_report), reply_report) == NULL);
+
+	BotFreeChatState(chat);
+	remove(path);
+}
+
+/*
+=============
 main
 =============
 */
@@ -4278,6 +4364,7 @@ int main(void) {
 	test_enter_chat_team_command_uses_say_team();
 	test_enter_chat_tell_uses_owner_client_and_target();
 	test_reply_chat_enter_handoff_uses_bridge_speaker();
+	test_chat_loader_reports_unique_missing_randoms();
 
 	printf("bot_chat_tests: all checks passed\n");
 	return 0;

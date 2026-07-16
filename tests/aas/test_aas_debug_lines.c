@@ -17,7 +17,7 @@
 
 typedef struct aas_debug_line_test_context_s
 {
-	bot_import_t imports;
+	bot_import_extended_t imports;
 	int print_count;
 	int point_contents_count;
 	int debug_line_create_count;

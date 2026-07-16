@@ -5,11 +5,11 @@
       "name": "Launch Quake II (Gladiator + addbot)",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "C:\\q2Clean\\quake2.exe",
+      "program": "E:\\Games\\q2Clean\\quake2.exe",
       "args": [
         "+set",
         "basedir",
-        "C:/q2Clean",
+        "E:/Games/q2Clean",
         "+set",
         "game",
         "gladiator",
@@ -28,8 +28,8 @@
         "+wait",
         "+addbot"
       ],
-      "cwd": "C:\\q2Clean",
-      "preLaunchTask": "Install gladiator.dll to C:\\q2Clean\\gladiator",
+      "cwd": "E:\\Games\\q2Clean",
+      "preLaunchTask": "Install gladiator.dll to E:\\Games\\q2Clean\\gladiator",
       "stopAtEntry": false,
       "console": "externalTerminal"
     }

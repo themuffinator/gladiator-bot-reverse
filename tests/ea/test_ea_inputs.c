@@ -53,7 +53,7 @@ typedef struct capture_state_s
 
 typedef struct ea_test_context_s
 {
-    bot_import_t imports;
+    bot_import_extended_t imports;
 } ea_test_context_t;
 
 static capture_mode_t g_capture_mode = CAPTURE_NONE;
@@ -759,6 +759,40 @@ static void test_ea_left_action_matches_retail_latch_alias(void **state)
 	assert_int_equal(input.actionflags & ACTION_MOVELEFT, 0);
 }
 
+/*
+=============
+test_ea_right_and_delayed_jump_match_retail_bit_aliases
+
+Pins the raw 0x01/0x02 action aliases used by the right-move and delayed-jump
+elementary-action writers.
+=============
+*/
+static void test_ea_right_and_delayed_jump_match_retail_bit_aliases(void **state)
+{
+	(void)state;
+
+	assert_int_equal(EA_ResetClient(0), BLERR_NOERROR);
+	EA_MoveRight(0);
+
+	bot_input_t input = {0};
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(input.actionflags, 0x01);
+
+	assert_int_equal(EA_ResetClient(0), BLERR_NOERROR);
+	EA_DelayedJump(0);
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(input.actionflags, 0x02);
+
+	/* A preceding immediate jump latches bit 0x80 and suppresses this alias. */
+	assert_int_equal(EA_ResetClient(0), BLERR_NOERROR);
+	EA_Jump(0);
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(input.actionflags, 0x08);
+	EA_DelayedJump(0);
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(input.actionflags, 0);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -776,6 +810,7 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_ea_reset_input_preserves_retail_persistent_fields, setup_ea, teardown_ea),
 		cmocka_unit_test_setup_teardown(test_ea_action_exports_match_retail_bits, setup_ea, teardown_ea),
 		cmocka_unit_test_setup_teardown(test_ea_left_action_matches_retail_latch_alias, setup_ea, teardown_ea),
+		cmocka_unit_test_setup_teardown(test_ea_right_and_delayed_jump_match_retail_bit_aliases, setup_ea, teardown_ea),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

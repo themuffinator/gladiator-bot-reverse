@@ -28,14 +28,22 @@
 #include "aas_local.h"
 #include "aas_sound.h"
 #include "botlib/ai_move/mover_catalogue.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
+#include "botlib/common/l_memory.h"
 #include "botlib/common/l_utils.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 
 static void AAS_UnlinkEntityFromAreas(aas_entity_t *entity);
 static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs);
+static int AAS_LinkEntityToBSPLeaves(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs);
+static int AAS_BSPModelPointContents(const vec3_t point,
+                                     int modelnum,
+                                     const vec3_t origin,
+                                     const vec3_t angles,
+                                     qboolean includeentities);
 static void AAS_ResetEntityBitset(aas_entity_t *entity);
 static int AAS_PrepareEntityBitset(aas_entity_t *entity);
 static int AAS_EnsureAreaListArray(void);
@@ -48,10 +56,19 @@ static qboolean AAS_AreaEntityCollision(int areanum,
                                         int passent,
                                         aas_trace_t *trace);
 static void AAS_ClampMinsMaxs(vec3_t mins, vec3_t maxs);
+static void AAS_ClearBSPData(void);
+static void AAS_ClearAASData(void);
 static void AAS_ClearWorld(void);
 static void AAS_FreeEntityArray(void);
 static int AAS_AllocateConfiguredEntityArray(void);
 static void AAS_ParseEntityLump(const char *data, size_t length);
+
+static aas_link_t *g_aasLinkHeap;
+static aas_link_t *g_aasLinkFreeList;
+static int g_aasLinkHeapSize;
+static bsp_link_t *g_bspLinkHeap;
+static bsp_link_t *g_bspLinkFreeList;
+static int g_bspLinkHeapSize;
 
 #define AAS_AREA_STACK_SIZE 128
 #define AAS_CLIENT_TRACE_STACK_SIZE 64
@@ -94,6 +111,13 @@ typedef struct aas_bsptrace_stack_s
 	float endfraction;
 	int nodenum;
 } aas_bsptrace_stack_t;
+
+typedef struct aas_bsptrace_transform_s
+{
+	vec3_t origin;
+	vec3_t axis[3];
+	qboolean rotated;
+} aas_bsptrace_transform_t;
 
 /*
  * Global AAS world state.  The original DLL zeroed the data_100667e0 block
@@ -172,12 +196,12 @@ bsp_trace_t AAS_Trace(const vec3_t start,
 =============
 AAS_PointContents
 
-Return the BSP contents at a point through the Quake II collision import.
+Return the world BSP and linked-entity contents at a point.
 =============
 */
 int AAS_PointContents(const vec3_t point)
 {
-	return Q2_PointContents((vec_t *)point);
+	return AAS_BSPModelPointContents(point, 0, NULL, NULL, qtrue);
 }
 
 /*
@@ -354,9 +378,32 @@ int AAS_EntityModelindex(int entnum)
 
 /*
 =============
+AAS_EntityRenderFX
+
+Return the render effects stored for an entity slot.
+=============
+*/
+int AAS_EntityRenderFX(int entnum)
+{
+	if (!aasworld.initialized)
+	{
+		return 0;
+	}
+
+	if (!AAS_EntitySlotInRange(entnum))
+	{
+		BotLib_Print(PRT_FATAL, "AAS_EntityRenderFX: entnum %d out of range\n", entnum);
+		return 0;
+	}
+
+	return aasworld.entities[entnum].renderfx;
+}
+
+/*
+=============
 AAS_EntityModelNum
 
-Return the raw model index through the Q3-compatible helper name.
+Return the zero-based model number derived from the stored model index.
 =============
 */
 int AAS_EntityModelNum(int entnum)
@@ -372,7 +419,7 @@ int AAS_EntityModelNum(int entnum)
 		return 0;
 	}
 
-	return aasworld.entities[entnum].modelindex;
+	return aasworld.entities[entnum].modelindex - 1;
 }
 
 /*
@@ -409,12 +456,13 @@ void AAS_EntitySize(int entnum, vec3_t mins, vec3_t maxs)
 =============
 AAS_OriginOfMoverWithModelNum
 
-Find a live mover entity by brush-model number and copy its origin.
+Find the first entity slot with the requested brush-model number and copy its
+origin.
 =============
 */
 int AAS_OriginOfMoverWithModelNum(int modelnum, vec3_t origin)
 {
-	if (origin == NULL || modelnum <= 0 || aasworld.entities == NULL)
+	if (origin == NULL || aasworld.entities == NULL)
 	{
 		return qfalse;
 	}
@@ -422,12 +470,7 @@ int AAS_OriginOfMoverWithModelNum(int modelnum, vec3_t origin)
 	for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
 	{
 		const aas_entity_t *entity = &aasworld.entities[entnum];
-		if (!AAS_EntityIsMover(entity))
-		{
-			continue;
-		}
-
-		if (AAS_ModelNumForEntity(entnum) == modelnum)
+		if (entity->modelindex - 1 == modelnum)
 		{
 			VectorCopy(entity->origin, origin);
 			return qtrue;
@@ -435,6 +478,50 @@ int AAS_OriginOfMoverWithModelNum(int modelnum, vec3_t origin)
 	}
 
 	return qfalse;
+}
+
+/*
+=============
+AAS_NearestEntity
+
+Return the closest entity slot with the requested raw model index.
+=============
+*/
+int AAS_NearestEntity(const vec3_t origin, int modelindex)
+{
+	if (origin == NULL || aasworld.entities == NULL)
+	{
+		return 0;
+	}
+
+	int bestentnum = 0;
+	float bestdistance = 99999.0f;
+	for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
+	{
+		const aas_entity_t *entity = &aasworld.entities[entnum];
+		if (entity->modelindex != modelindex)
+		{
+			continue;
+		}
+
+		vec3_t direction;
+		VectorSubtract(entity->origin, origin, direction);
+		if (abs((int)direction[0]) >= 40 || abs((int)direction[1]) >= 40)
+		{
+			continue;
+		}
+
+		float distance = sqrtf(direction[0] * direction[0] +
+			direction[1] * direction[1] +
+			direction[2] * direction[2]);
+		if (distance < bestdistance)
+		{
+			bestdistance = distance;
+			bestentnum = entnum;
+		}
+	}
+
+	return bestentnum;
 }
 
 /*
@@ -626,61 +713,19 @@ static qboolean AAS_AreaAllowsPresence(int areanum, int presencetype)
 
 /*
 =============
-AAS_TraceContentMaskBlocksEntity
-
-Check whether the trace mask can collide with a botlib solid entity.
-=============
-*/
-static qboolean AAS_TraceContentMaskBlocksEntity(int contentmask)
-{
-	return (contentmask & (CONTENTS_SOLID | CONTENTS_PLAYERCLIP |
-	                       CONTENTS_MONSTER | CONTENTS_MONSTERCLIP)) != 0;
-}
-
-/*
-=============
 AAS_TraceEntitySolid
 
 Check whether an entity should participate in reconstructed AAS entity traces.
 =============
 */
-static qboolean AAS_TraceEntitySolid(const aas_entity_t *entity, int contentmask)
+static qboolean AAS_TraceEntitySolid(const aas_entity_t *entity)
 {
 	if (entity == NULL || !entity->inuse)
 	{
 		return qfalse;
 	}
-	if (!AAS_TraceContentMaskBlocksEntity(contentmask))
-	{
-		return qfalse;
-	}
 
 	return entity->solid == SOLID_BBOX || entity->solid == SOLID_BSP;
-}
-
-/*
-=============
-AAS_PointInsideBounds
-
-Return true when a point is inside or on a bounding box.
-=============
-*/
-static qboolean AAS_PointInsideBounds(const vec3_t point, const vec3_t mins, const vec3_t maxs)
-{
-	if (point == NULL || mins == NULL || maxs == NULL)
-	{
-		return qfalse;
-	}
-
-	for (int axis = 0; axis < 3; ++axis)
-	{
-		if (point[axis] < mins[axis] || point[axis] > maxs[axis])
-		{
-			return qfalse;
-		}
-	}
-
-	return qtrue;
 }
 
 /*
@@ -741,7 +786,7 @@ static qboolean AAS_TraceEntityBBox(const aas_entity_t *entity,
                                     int contentmask,
                                     bsp_trace_t *trace)
 {
-	if (!AAS_TraceEntitySolid(entity, contentmask) ||
+	if (!AAS_TraceEntitySolid(entity) ||
 	    start == NULL ||
 	    end == NULL ||
 	    trace == NULL)
@@ -788,20 +833,38 @@ static qboolean AAS_TraceEntityBBox(const aas_entity_t *entity,
 	memset(&local, 0, sizeof(local));
 	local.fraction = 1.0f;
 	local.ent = entnum;
-	local.contents = CONTENTS_SOLID;
+	/* Retail BBOX traces use the sentinel side and leave contents clear. */
+	local.sidenum = -1;
 
-	if (AAS_PointInsideBounds(start, expandedmins, expandedmaxs))
+	qboolean startsinside = qtrue;
+	float startsolidmargin = (entity->solid == SOLID_BBOX) ? 0.5f : 0.0f;
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		if (start[axis] < expandedmins[axis] - startsolidmargin ||
+			start[axis] > expandedmaxs[axis] + startsolidmargin)
+		{
+			startsinside = qfalse;
+			break;
+		}
+	}
+
+	if (startsinside)
 	{
 		local.startsolid = qtrue;
 		local.fraction = 0.0f;
-		local.allsolid = AAS_PointInsideBounds(end, expandedmins, expandedmaxs);
+		/*
+		 * Retail sub_10003680 marks both fields as soon as a BBOX sweep
+		 * starts inside the expanded bounds, even if its endpoint escapes.
+		 */
+		local.allsolid = qtrue;
 		VectorCopy(start, local.endpos);
-		if (local.fraction < trace->fraction || !trace->startsolid)
-		{
-			*trace = local;
-			return qtrue;
-		}
-		return qfalse;
+		/*
+		 * sub_10003680 writes this start-inside BBOX result straight to its
+		 * caller record.  Unlike an ordinary sweep hit, it does not retain an
+		 * already-zero fraction from an earlier linked entity.
+		 */
+		*trace = local;
+		return qtrue;
 	}
 
 	vec3_t direction;
@@ -867,6 +930,14 @@ static qboolean AAS_TraceEntityBBox(const aas_entity_t *entity,
 	VectorClear(normal);
 	normal[hitaxis] = hitnormal;
 	AAS_SetTraceCPlane(&local.plane, normal, local.endpos, hitaxis);
+	/*
+	 * sub_10003680 leaves cplane.signbits clear for BBOX hits, then adjusts
+	 * the face distance back out to the entity boundary with the swept extent.
+	 */
+	local.plane.signbits = 0;
+	local.exp_dist = (hitnormal < 0.0f) ?
+		sweepmaxs[hitaxis] : -sweepmins[hitaxis];
+	local.plane.dist -= local.exp_dist;
 
 	*trace = local;
 	return qtrue;
@@ -927,7 +998,7 @@ AAS_RotateLocalVector
 Rotate a local model-space vector into world orientation.
 =============
 */
-static void AAS_RotateLocalVector(const vec3_t local, vec3_t axis[3], vec3_t world)
+static void AAS_RotateLocalVector(const vec3_t local, const vec3_t axis[3], vec3_t world)
 {
 	for (int component = 0; component < 3; ++component)
 	{
@@ -978,6 +1049,12 @@ void AAS_BSPModelMinsMaxsOrigin(int modelnum,
                                 vec3_t maxs,
                                 vec3_t origin)
 {
+	/* sub_10005e60 returns before touching any caller output with no model table. */
+	if (aasworld.bspModels == NULL)
+	{
+		return;
+	}
+
 	if (mins != NULL)
 	{
 		VectorClear(mins);
@@ -993,13 +1070,10 @@ void AAS_BSPModelMinsMaxsOrigin(int modelnum,
 
 	if (!AAS_BSPModelValid(modelnum))
 	{
-		if (aasworld.bspModels != NULL)
-		{
-			BotLib_Print(PRT_FATAL,
-			             "AAS_BSPModelMinsMaxs: modelnum %d out of range [0-%d]",
-			             modelnum,
-			             aasworld.numBspModels);
-		}
+		BotLib_Print(PRT_FATAL,
+		             "AAS_BSPModelMinsMaxs: modelnum %d out of range [0-%d]",
+		             modelnum,
+		             aasworld.numBspModels);
 		return;
 	}
 
@@ -1009,25 +1083,33 @@ void AAS_BSPModelMinsMaxsOrigin(int modelnum,
 		VectorCopy(model->origin, origin);
 	}
 
-	if (mins == NULL || maxs == NULL)
+	if (mins == NULL && maxs == NULL)
 	{
 		return;
 	}
 
 	if (angles == NULL || AAS_VectorIsZero(angles))
 	{
-		VectorCopy(model->mins, mins);
-		VectorCopy(model->maxs, maxs);
+		if (mins != NULL)
+		{
+			VectorCopy(model->mins, mins);
+		}
+		if (maxs != NULL)
+		{
+			VectorCopy(model->maxs, maxs);
+		}
 		return;
 	}
 
 	vec3_t axis[3];
+	vec3_t rotatedmins;
+	vec3_t rotatedmaxs;
 	AAS_AnglesToAxis(angles, axis);
 
 	for (int component = 0; component < 3; ++component)
 	{
-		mins[component] = 999999.0f;
-		maxs[component] = -999999.0f;
+		rotatedmins[component] = 999999.0f;
+		rotatedmaxs[component] = -999999.0f;
 	}
 
 	for (int corner = 0; corner < 8; ++corner)
@@ -1041,15 +1123,24 @@ void AAS_BSPModelMinsMaxsOrigin(int modelnum,
 		AAS_RotateLocalVector(local, axis, rotated);
 		for (int component = 0; component < 3; ++component)
 		{
-			if (rotated[component] < mins[component])
+			if (rotated[component] < rotatedmins[component])
 			{
-				mins[component] = rotated[component];
+				rotatedmins[component] = rotated[component];
 			}
-			if (rotated[component] > maxs[component])
+			if (rotated[component] > rotatedmaxs[component])
 			{
-				maxs[component] = rotated[component];
+				rotatedmaxs[component] = rotated[component];
 			}
 		}
+	}
+
+	if (mins != NULL)
+	{
+		VectorCopy(rotatedmins, mins);
+	}
+	if (maxs != NULL)
+	{
+		VectorCopy(rotatedmaxs, maxs);
 	}
 }
 
@@ -1057,12 +1148,12 @@ void AAS_BSPModelMinsMaxsOrigin(int modelnum,
 =============
 AAS_BSPTracePlaneOffset
 
-Calculate the plane expansion offset for tracing an axial box through a brush.
+Calculate the plane expansion offset for tracing a world-axis-aligned box.
 =============
 */
-static float AAS_BSPTracePlaneOffset(const aas_plane_t *plane, const vec3_t mins, const vec3_t maxs)
+static float AAS_BSPTracePlaneOffset(const vec3_t normal, const vec3_t mins, const vec3_t maxs)
 {
-	if (plane == NULL)
+	if (normal == NULL)
 	{
 		return 0.0f;
 	}
@@ -1070,13 +1161,13 @@ static float AAS_BSPTracePlaneOffset(const aas_plane_t *plane, const vec3_t mins
 	float offset = 0.0f;
 	for (int component = 0; component < 3; ++component)
 	{
-		if (plane->normal[component] < 0.0f)
+		if (normal[component] < 0.0f)
 		{
-			offset += plane->normal[component] * ((maxs != NULL) ? maxs[component] : 0.0f);
+			offset += normal[component] * ((maxs != NULL) ? maxs[component] : 0.0f);
 		}
 		else
 		{
-			offset += plane->normal[component] * ((mins != NULL) ? mins[component] : 0.0f);
+			offset += normal[component] * ((mins != NULL) ? mins[component] : 0.0f);
 		}
 	}
 
@@ -1085,9 +1176,51 @@ static float AAS_BSPTracePlaneOffset(const aas_plane_t *plane, const vec3_t mins
 
 /*
 =============
+AAS_BSPTraceWorldPlane
+
+Convert one model-local BSP plane into the world-space plane used by the
+retail transformed trace walker.
+=============
+*/
+static void AAS_BSPTraceWorldPlane(const aas_plane_t *plane,
+	                                  const aas_bsptrace_transform_t *transform,
+	                                  vec3_t normal,
+	                                  float *dist)
+{
+	if (normal == NULL || dist == NULL)
+	{
+		return;
+	}
+
+	VectorClear(normal);
+	*dist = 0.0f;
+	if (plane == NULL)
+	{
+		return;
+	}
+
+	if (transform != NULL && transform->rotated)
+	{
+		AAS_RotateLocalVector(plane->normal, transform->axis, normal);
+	}
+	else
+	{
+		VectorCopy(plane->normal, normal);
+	}
+
+	*dist = plane->dist;
+	if (transform != NULL)
+	{
+		*dist += DotProduct(normal, transform->origin);
+	}
+}
+
+/*
+=============
 AAS_CopyBSPTracePlane
 
-Copy a BSP plane into a trace result.
+Copy the raw loaded BSP cplane into a trace result.  The transformed collision
+math stays in world space, but sub_10004310 writes this model-local payload.
 =============
 */
 static void AAS_CopyBSPTracePlane(bsp_trace_t *trace, const aas_plane_t *plane)
@@ -1100,14 +1233,15 @@ static void AAS_CopyBSPTracePlane(bsp_trace_t *trace, const aas_plane_t *plane)
 	VectorCopy(plane->normal, trace->plane.normal);
 	trace->plane.dist = plane->dist;
 	trace->plane.type = (byte)plane->type;
-	trace->plane.signbits = AAS_CPlaneSignBits(plane->normal);
+	/* The raw 0x54-byte writer leaves this byte from its zeroed trace record. */
+	trace->plane.signbits = 0;
 }
 
 /*
 =============
 AAS_TraceThroughBSPBrush
 
-Clip a local-space box sweep through one convex BSP brush.
+Clip a world-axis-aligned box sweep through one transformed convex BSP brush.
 =============
 */
 static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
@@ -1116,6 +1250,7 @@ static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
                                          const vec3_t maxs,
                                          const vec3_t end,
                                          int contentmask,
+	                                         const aas_bsptrace_transform_t *transform,
                                          bsp_trace_t *trace)
 {
 	if (brush == NULL ||
@@ -1135,7 +1270,6 @@ static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
 	float clipdist = 0.0f;
 	int clipside = -1;
 	qboolean startsout = qfalse;
-	qboolean endsout = qfalse;
 
 	for (int sideindex = 0; sideindex < brush->numsides; ++sideindex)
 	{
@@ -1153,17 +1287,16 @@ static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
 		}
 
 		const aas_plane_t *plane = &aasworld.bspPlanes[planenum];
-		float expandedDist = plane->dist + AAS_BSPTracePlaneOffset(plane, mins, maxs);
-		float startdist = DotProduct(start, plane->normal) - expandedDist;
-		float enddist = DotProduct(end, plane->normal) - expandedDist;
+		vec3_t normal;
+		float planedist;
+		AAS_BSPTraceWorldPlane(plane, transform, normal, &planedist);
+		float expandedDist = planedist + AAS_BSPTracePlaneOffset(normal, mins, maxs);
+		float startdist = DotProduct(start, normal) - expandedDist;
+		float enddist = DotProduct(end, normal) - expandedDist;
 
 		if (startdist > 0.0f)
 		{
 			startsout = qtrue;
-		}
-		if (enddist > 0.0f)
-		{
-			endsout = qtrue;
 		}
 		if (startdist > 0.0f && enddist > 0.0f)
 		{
@@ -1199,10 +1332,11 @@ static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
 	{
 		trace->startsolid = qtrue;
 		trace->contents = brush->contents;
-		if (!endsout)
-		{
-			trace->allsolid = qtrue;
-		}
+		/*
+		 * The retail BSP brush writer carries the same start-inside allsolid
+		 * quirk as its BBOX branch, regardless of whether the trace exits.
+		 */
+		trace->allsolid = qtrue;
 		return qtrue;
 	}
 
@@ -1241,6 +1375,7 @@ static void AAS_TraceThroughBSPLeaf(int leafnum,
                                     const vec3_t maxs,
                                     const vec3_t end,
                                     int contentmask,
+	                                const aas_bsptrace_transform_t *transform,
                                     bsp_trace_t *trace)
 {
 	if (leafnum < 0 ||
@@ -1273,6 +1408,7 @@ static void AAS_TraceThroughBSPLeaf(int leafnum,
 		                         maxs,
 		                         end,
 		                         contentmask,
+		                         transform,
 		                         trace);
 		if (trace->allsolid)
 		{
@@ -1325,6 +1461,7 @@ static void AAS_TraceBSPModelTree(int headnode,
                                   const vec3_t maxs,
                                   const vec3_t end,
                                   int contentmask,
+	                                  const aas_bsptrace_transform_t *transform,
                                   bsp_trace_t *trace)
 {
 	aas_bsptrace_stack_t stack[AAS_AREA_STACK_SIZE];
@@ -1351,6 +1488,7 @@ static void AAS_TraceBSPModelTree(int headnode,
 			                        maxs,
 			                        end,
 			                        contentmask,
+			                        transform,
 			                        trace);
 			continue;
 		}
@@ -1367,10 +1505,21 @@ static void AAS_TraceBSPModelTree(int headnode,
 		}
 
 		const aas_plane_t *plane = &aasworld.bspPlanes[node->planenum];
-		float expandedDist = plane->dist + AAS_BSPTracePlaneOffset(plane, mins, maxs);
-		float front = DotProduct(current.start, plane->normal) - expandedDist;
-		float back = DotProduct(current.end, plane->normal) - expandedDist;
-		if (front >= 0.0f && back >= 0.0f)
+		vec3_t normal;
+		float planedist;
+		AAS_BSPTraceWorldPlane(plane, transform, normal, &planedist);
+		float expandedDist = planedist + AAS_BSPTracePlaneOffset(normal, mins, maxs);
+		float front = DotProduct(current.start, normal) - expandedDist;
+		float back = DotProduct(current.end, normal) - expandedDist;
+		/*
+		 * sub_100044f0 classifies the expanded box against BSP split planes
+		 * through a ±0.005 band before deciding that a segment is wholly in
+		 * one child.  This is distinct from the brush clip epsilon below:
+		 * a segment whose front endpoint is just ahead of the plane can be
+		 * routed straight to the back child instead of visiting both leaves.
+		 */
+		if (front > -AAS_BSP_TRACE_EPSILON &&
+			back > -AAS_BSP_TRACE_EPSILON)
 		{
 			if (!AAS_PushBSPTraceNode(stack,
 			                          &stacktop,
@@ -1384,7 +1533,8 @@ static void AAS_TraceBSPModelTree(int headnode,
 			}
 			continue;
 		}
-		if (front < 0.0f && back < 0.0f)
+		if (front < AAS_BSP_TRACE_EPSILON &&
+			back < AAS_BSP_TRACE_EPSILON)
 		{
 			if (!AAS_PushBSPTraceNode(stack,
 			                          &stacktop,
@@ -1482,24 +1632,13 @@ bsp_trace_t AAS_TraceBSPModel(int modelnum,
 		VectorAdd(totalOrigin, origin, totalOrigin);
 	}
 
-	qboolean rotated = angles != NULL && !AAS_VectorIsZero(angles);
-	vec3_t axis[3];
-	if (rotated)
+	aas_bsptrace_transform_t transform;
+	memset(&transform, 0, sizeof(transform));
+	VectorCopy(totalOrigin, transform.origin);
+	transform.rotated = angles != NULL && !AAS_VectorIsZero(angles);
+	if (transform.rotated)
 	{
-		AAS_AnglesToAxis(angles, axis);
-	}
-
-	vec3_t localStart;
-	vec3_t localEnd;
-	VectorSubtract(start, totalOrigin, localStart);
-	VectorSubtract(end, totalOrigin, localEnd);
-	if (rotated)
-	{
-		vec3_t delta;
-		VectorCopy(localStart, delta);
-		AAS_WorldToLocalVector(delta, axis, localStart);
-		VectorCopy(localEnd, delta);
-		AAS_WorldToLocalVector(delta, axis, localEnd);
+		AAS_AnglesToAxis(angles, transform.axis);
 	}
 
 	vec3_t traceMins;
@@ -1523,44 +1662,272 @@ bsp_trace_t AAS_TraceBSPModel(int modelnum,
 	AAS_ClampMinsMaxs(traceMins, traceMaxs);
 
 	AAS_TraceBSPModelTree(model->headnode,
-	                      localStart,
+	                      start,
 	                      traceMins,
 	                      traceMaxs,
-	                      localEnd,
+	                      end,
 	                      contentmask,
+	                      &transform,
 	                      &trace);
 
-	vec3_t localTraceEnd;
 	if (trace.startsolid)
 	{
-		VectorCopy(localStart, localTraceEnd);
+		VectorCopy(start, trace.endpos);
 		trace.fraction = 0.0f;
 	}
 	else
 	{
-		VectorSubtract(localEnd, localStart, localTraceEnd);
-		VectorMA(localStart, trace.fraction, localTraceEnd, localTraceEnd);
-	}
-
-	if (rotated)
-	{
-		vec3_t worldEnd;
-		AAS_RotateLocalVector(localTraceEnd, axis, worldEnd);
-		VectorAdd(worldEnd, totalOrigin, trace.endpos);
-
-		vec3_t worldNormal;
-		AAS_RotateLocalVector(trace.plane.normal, axis, worldNormal);
-		VectorCopy(worldNormal, trace.plane.normal);
-		trace.plane.dist = DotProduct(trace.plane.normal, trace.endpos);
-		trace.plane.signbits = AAS_CPlaneSignBits(trace.plane.normal);
-	}
-	else
-	{
-		VectorAdd(localTraceEnd, totalOrigin, trace.endpos);
-		trace.plane.dist += DotProduct(trace.plane.normal, totalOrigin);
+		vec3_t direction;
+		VectorSubtract(end, start, direction);
+		VectorMA(start, trace.fraction, direction, trace.endpos);
 	}
 
 	return trace;
+}
+
+/*
+=============
+AAS_BSPModelPointLeafNum
+
+Resolve a local-space point to one Quake II BSP leaf using the retail
+front-on-positive, back-on-zero node rule.
+=============
+*/
+static int AAS_BSPModelPointLeafNum(int modelnum, const vec3_t point)
+{
+	if (!AAS_BSPModelValid(modelnum) || point == NULL)
+	{
+		return -1;
+	}
+
+	int nodenum = aasworld.bspModels[modelnum].headnode;
+	while (nodenum >= 0)
+	{
+		if (aasworld.bspNodes == NULL || nodenum >= aasworld.numBspNodes)
+		{
+			return -1;
+		}
+
+		const aas_bspnode_t *node = &aasworld.bspNodes[nodenum];
+		if (aasworld.bspPlanes == NULL ||
+			node->planenum < 0 || node->planenum >= aasworld.numBspPlanes)
+		{
+			return -1;
+		}
+
+		const aas_plane_t *plane = &aasworld.bspPlanes[node->planenum];
+		float distance = DotProduct(point, plane->normal) - plane->dist;
+		nodenum = node->children[(distance > 0.0f) ? 0 : 1];
+	}
+
+	int leafnum = -1 - nodenum;
+	if (aasworld.bspLeaves == NULL || leafnum < 0 || leafnum >= aasworld.numBspLeaves)
+	{
+		return -1;
+	}
+
+	return leafnum;
+}
+
+/*
+=============
+AAS_PointInsideBSPBrush
+
+Test a point against a convex brush with the DLL's 0.005 outside epsilon.
+=============
+*/
+static qboolean AAS_PointInsideBSPBrush(const aas_bspbrush_t *brush, const vec3_t point)
+{
+	if (brush == NULL || point == NULL || brush->firstside < 0 ||
+		brush->numsides <= 0 || aasworld.bspBrushSides == NULL ||
+		aasworld.bspPlanes == NULL)
+	{
+		return qfalse;
+	}
+
+	for (int sideindex = 0; sideindex < brush->numsides; ++sideindex)
+	{
+		int brushsideindex = brush->firstside + sideindex;
+		if (brushsideindex < 0 || brushsideindex >= aasworld.numBspBrushSides)
+		{
+			return qfalse;
+		}
+
+		int planenum = (int)aasworld.bspBrushSides[brushsideindex].planenum;
+		if (planenum < 0 || planenum >= aasworld.numBspPlanes)
+		{
+			return qfalse;
+		}
+
+		const aas_plane_t *plane = &aasworld.bspPlanes[planenum];
+		if (DotProduct(point, plane->normal) - plane->dist > 0.005f)
+		{
+			return qfalse;
+		}
+	}
+
+	return qtrue;
+}
+
+/*
+=============
+AAS_BSPLeafPointContents
+
+Return the first loaded brush contents containing a local-space point.
+=============
+*/
+static int AAS_BSPLeafPointContents(int leafnum, const vec3_t point)
+{
+	if (leafnum < 0 || leafnum >= aasworld.numBspLeaves ||
+		aasworld.bspLeaves == NULL || aasworld.bspLeafBrushes == NULL ||
+		aasworld.bspBrushes == NULL)
+	{
+		return 0;
+	}
+
+	const aas_bspleaf_t *leaf = &aasworld.bspLeaves[leafnum];
+	for (int index = 0; index < leaf->numleafbrushes; ++index)
+	{
+		int leafbrushindex = (int)leaf->firstleafbrush + index;
+		if (leafbrushindex < 0 || leafbrushindex >= aasworld.bspLeafBrushIndexSize)
+		{
+			continue;
+		}
+
+		int brushnum = (int)aasworld.bspLeafBrushes[leafbrushindex];
+		if (brushnum < 0 || brushnum >= aasworld.numBspBrushes)
+		{
+			continue;
+		}
+
+		const aas_bspbrush_t *brush = &aasworld.bspBrushes[brushnum];
+		if (AAS_PointInsideBSPBrush(brush, point))
+		{
+			return brush->contents;
+		}
+	}
+
+	return 0;
+}
+
+/*
+=============
+AAS_PointInsideEntityBounds
+
+Check a world-space point against the inclusive bounds kept for one entity.
+=============
+*/
+static qboolean AAS_PointInsideEntityBounds(const aas_entity_t *entity, const vec3_t point)
+{
+	if (entity == NULL || point == NULL)
+	{
+		return qfalse;
+	}
+
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		float min = entity->origin[axis] + entity->mins[axis];
+		float max = entity->origin[axis] + entity->maxs[axis];
+		if (min > max)
+		{
+			float temporary = min;
+			min = max;
+			max = temporary;
+		}
+		if (point[axis] < min || point[axis] > max)
+		{
+			return qfalse;
+		}
+	}
+
+	return qtrue;
+}
+
+/*
+=============
+AAS_BSPModelPointContents
+
+Mirror sub_100057a0 for static model brushes and world-leaf linked entities.
+=============
+*/
+static int AAS_BSPModelPointContents(const vec3_t point,
+                                     int modelnum,
+                                     const vec3_t origin,
+                                     const vec3_t angles,
+                                     qboolean includeentities)
+{
+	if (point == NULL || !AAS_BSPModelValid(modelnum))
+	{
+		return 0;
+	}
+
+	vec3_t totalorigin;
+	VectorCopy(aasworld.bspModels[modelnum].origin, totalorigin);
+	if (origin != NULL)
+	{
+		VectorAdd(totalorigin, origin, totalorigin);
+	}
+
+	vec3_t localpoint;
+	VectorSubtract(point, totalorigin, localpoint);
+	if (angles != NULL && !AAS_VectorIsZero(angles))
+	{
+		vec3_t axis[3];
+		vec3_t transformed;
+		vec3_t inverseangles;
+		VectorNegate(angles, inverseangles);
+		AAS_AnglesToAxis(inverseangles, axis);
+		VectorCopy(localpoint, transformed);
+		/* sub_100057a0 builds -angles, then multiplies the point by that matrix. */
+		AAS_RotateLocalVector(transformed, axis, localpoint);
+	}
+
+	int leafnum = AAS_BSPModelPointLeafNum(modelnum, localpoint);
+	if (leafnum < 0)
+	{
+		return 0;
+	}
+
+	int contents = AAS_BSPLeafPointContents(leafnum, localpoint);
+	if (contents != 0 || !includeentities ||
+		aasworld.bspLeafEntityLists == NULL ||
+		(size_t)leafnum >= aasworld.bspLeafEntityListCount ||
+		aasworld.entities == NULL)
+	{
+		return contents;
+	}
+
+	for (bsp_link_t *link = aasworld.bspLeafEntityLists[leafnum];
+		link != NULL;
+		link = link->next_ent)
+	{
+		if (link->entnum <= 0 || link->entnum >= aasworld.maxEntities)
+		{
+			continue;
+		}
+
+		const aas_entity_t *entity = &aasworld.entities[link->entnum];
+		if (!entity->inuse || !AAS_PointInsideEntityBounds(entity, point))
+		{
+			continue;
+		}
+
+		if (entity->solid == SOLID_BBOX)
+		{
+			contents |= CONTENTS_MONSTER;
+		}
+		else if (entity->solid == SOLID_BSP)
+		{
+			int entitymodel = AAS_ModelNumForEntity(link->entnum);
+			contents |= AAS_BSPModelPointContents(point,
+			                                      entitymodel,
+			                                      entity->origin,
+			                                      entity->angles,
+			                                      qfalse);
+		}
+	}
+
+	return contents;
 }
 
 /*
@@ -1600,7 +1967,12 @@ qboolean AAS_EntityCollision(int entnum,
 			                                           boxmaxs,
 			                                           end,
 			                                           contentmask);
-			if (modeltrace.startsolid || modeltrace.fraction < trace->fraction)
+			/*
+			 * The SOLID_BSP path is deliberately different from the BBOX
+			 * start-inside writer above: sub_10003680 accepts its nested BSP
+			 * trace only on a strict fraction improvement.
+			 */
+			if (modeltrace.fraction < trace->fraction)
 			{
 				modeltrace.ent = entnum;
 				*trace = modeltrace;
@@ -2816,11 +3188,11 @@ int AAS_EntityVisible(int viewer,
 			VectorCopy(eye, start);
 			VectorCopy(sample, end);
 
-			if ((AAS_PointContents(sample) & AAS_VISIBILITY_FLUIDS) != 0)
+			if ((Q2_PointContents(sample) & AAS_VISIBILITY_FLUIDS) != 0)
 			{
 				contentmask |= AAS_VISIBILITY_FLUIDS;
 			}
-			if ((AAS_PointContents(eye) & AAS_VISIBILITY_FLUIDS) != 0)
+			if ((Q2_PointContents((vec_t *)eye) & AAS_VISIBILITY_FLUIDS) != 0)
 			{
 				if ((contentmask & AAS_VISIBILITY_FLUIDS) == 0)
 				{
@@ -5534,7 +5906,7 @@ static int AAS_ReadLump(FILE *file,
 		return AAS_LumpFailure(readError, lumpName, qtrue);
 	}
 
-	void *buffer = malloc(length);
+	void *buffer = GetClearedMemory(length);
 	if (buffer == NULL)
 	{
 		return AAS_LumpFailure(readError, lumpName, qfalse);
@@ -5542,7 +5914,7 @@ static int AAS_ReadLump(FILE *file,
 
 	if (fread(buffer, 1U, length, file) != length)
 	{
-		free(buffer);
+		FreeMemory(buffer);
 		return AAS_LumpFailure(readError, lumpName, qfalse);
 	}
 
@@ -5571,14 +5943,14 @@ static void AAS_FreeLoadedBSPCollisionData(aas_bspmodel_t *models,
                                            aas_bspbrushside_t *brushsides,
                                            aas_bspbrush_t *brushes)
 {
-	free(models);
-	free(nodes);
-	free(leaves);
-	free(leafbrushes);
-	free(planes);
-	free(texinfo);
-	free(brushsides);
-	free(brushes);
+	FreeMemory(models);
+	FreeMemory(nodes);
+	FreeMemory(leaves);
+	FreeMemory(leafbrushes);
+	FreeMemory(planes);
+	FreeMemory(texinfo);
+	FreeMemory(brushsides);
+	FreeMemory(brushes);
 }
 
 /*
@@ -5727,7 +6099,7 @@ static int AAS_LoadBSPCollisionData(const aas_map_file_source_t *bspSource,
 	                      "nodes");
 	if (result != BLERR_NOERROR)
 	{
-		free(models);
+		FreeMemory(models);
 		fclose(file);
 		return result;
 	}
@@ -5745,8 +6117,8 @@ static int AAS_LoadBSPCollisionData(const aas_map_file_source_t *bspSource,
 	                      "leafs");
 	if (result != BLERR_NOERROR)
 	{
-		free(models);
-		free(nodes);
+		FreeMemory(models);
+		FreeMemory(nodes);
 		fclose(file);
 		return result;
 	}
@@ -5764,9 +6136,9 @@ static int AAS_LoadBSPCollisionData(const aas_map_file_source_t *bspSource,
 	                      "leaf brushes");
 	if (result != BLERR_NOERROR)
 	{
-		free(models);
-		free(nodes);
-		free(leaves);
+		FreeMemory(models);
+		FreeMemory(nodes);
+		FreeMemory(leaves);
 		fclose(file);
 		return result;
 	}
@@ -5784,10 +6156,10 @@ static int AAS_LoadBSPCollisionData(const aas_map_file_source_t *bspSource,
 	                      "planes");
 	if (result != BLERR_NOERROR)
 	{
-		free(models);
-		free(nodes);
-		free(leaves);
-		free(leafbrushes);
+		FreeMemory(models);
+		FreeMemory(nodes);
+		FreeMemory(leaves);
+		FreeMemory(leafbrushes);
 		fclose(file);
 		return result;
 	}
@@ -5805,11 +6177,11 @@ static int AAS_LoadBSPCollisionData(const aas_map_file_source_t *bspSource,
 	                      "texinfo");
 	if (result != BLERR_NOERROR)
 	{
-		free(models);
-		free(nodes);
-		free(leaves);
-		free(leafbrushes);
-		free(planes);
+		FreeMemory(models);
+		FreeMemory(nodes);
+		FreeMemory(leaves);
+		FreeMemory(leafbrushes);
+		FreeMemory(planes);
 		fclose(file);
 		return result;
 	}
@@ -5827,12 +6199,12 @@ static int AAS_LoadBSPCollisionData(const aas_map_file_source_t *bspSource,
 	                      "brush sides");
 	if (result != BLERR_NOERROR)
 	{
-		free(models);
-		free(nodes);
-		free(leaves);
-		free(leafbrushes);
-		free(planes);
-		free(texinfo);
+		FreeMemory(models);
+		FreeMemory(nodes);
+		FreeMemory(leaves);
+		FreeMemory(leafbrushes);
+		FreeMemory(planes);
+		FreeMemory(texinfo);
 		fclose(file);
 		return result;
 	}
@@ -5904,12 +6276,12 @@ static void AAS_FreeLoadedBSPPointLightData(vec3_t *vertexes,
 	aas_bspsurfaceextent_t *surface_extents,
 	unsigned char *lightdata)
 {
-	free(vertexes);
-	free(edges);
-	free(surfedges);
-	free(faces);
+	FreeMemory(vertexes);
+	FreeMemory(edges);
+	FreeMemory(surfedges);
+	FreeMemory(faces);
 	free(surface_extents);
-	free(lightdata);
+	FreeMemory(lightdata);
 }
 
 /*
@@ -6755,7 +7127,7 @@ static qboolean AAS_LoadBSPVisibilityData(
 	fclose(file);
 	if (result != BLERR_NOERROR)
 	{
-		free(visibility);
+		FreeMemory(visibility);
 		return qfalse;
 	}
 	if (visibility == NULL || visibility_size == 0)
@@ -6764,7 +7136,7 @@ static qboolean AAS_LoadBSPVisibilityData(
 	}
 	if (visibility_size < (int)sizeof(int32_t))
 	{
-		free(visibility);
+		FreeMemory(visibility);
 		return qfalse;
 	}
 
@@ -6776,7 +7148,7 @@ static qboolean AAS_LoadBSPVisibilityData(
 		((size_t)visibility_size - sizeof(int32_t)) /
 			(2U * sizeof(int32_t)))
 	{
-		free(visibility);
+		FreeMemory(visibility);
 		return qfalse;
 	}
 	memcpy(visibility, &num_clusters, sizeof(num_clusters));
@@ -6828,12 +7200,13 @@ static void AAS_FreeEntityArray(void)
 		{
 			aas_entity_t *entity = &aasworld.entities[entnum];
 			AAS_UnlinkEntityFromAreas(entity);
+			AAS_UnlinkEntityFromBSPLeaves(entity);
 			free(entity->areaOccupancyBits);
 			entity->areaOccupancyBits = NULL;
 			entity->areaOccupancyWords = 0U;
 			entity->areaOccupancyCount = 0;
 		}
-		free(aasworld.entities);
+		FreeMemory(aasworld.entities);
 	}
 
 	aasworld.entities = NULL;
@@ -6843,9 +7216,231 @@ static void AAS_FreeEntityArray(void)
 
 /*
 =============
+AAS_InitAASLinkHeap
+
+Initialise the retail-sized fixed AAS entity-link heap from max_aaslinks.
+=============
+*/
+void AAS_InitAASLinkHeap(void)
+{
+	int maxlinks = g_aasLinkHeapSize;
+	if (g_aasLinkHeap == NULL)
+	{
+		maxlinks = (int)LibVarValue("max_aaslinks", "4096");
+		if (maxlinks < 0)
+		{
+			maxlinks = 0;
+		}
+
+		if ((size_t)maxlinks > SIZE_MAX / sizeof(*g_aasLinkHeap))
+		{
+			maxlinks = 0;
+		}
+
+		g_aasLinkHeapSize = maxlinks;
+		if (maxlinks > 0)
+		{
+			g_aasLinkHeap = (aas_link_t *)GetMemory(
+				(size_t)maxlinks * sizeof(*g_aasLinkHeap));
+		}
+	}
+
+	for (int index = 0; index < maxlinks && g_aasLinkHeap != NULL; ++index)
+	{
+		aas_link_t *link = &g_aasLinkHeap[index];
+		link->prev_ent = index > 0 ? &g_aasLinkHeap[index - 1] : NULL;
+		link->next_ent = index + 1 < maxlinks ? &g_aasLinkHeap[index + 1] : NULL;
+	}
+
+	g_aasLinkFreeList = g_aasLinkHeap;
+}
+
+/*
+=============
+AAS_FreeAASLinkHeap
+
+Release the retail AAS entity-link heap during full AAS shutdown.
+=============
+*/
+void AAS_FreeAASLinkHeap(void)
+{
+	if (g_aasLinkHeap != NULL)
+	{
+		FreeMemory(g_aasLinkHeap);
+	}
+
+	g_aasLinkHeap = NULL;
+	g_aasLinkFreeList = NULL;
+	g_aasLinkHeapSize = 0;
+}
+
+/*
+=============
+AAS_AllocAASLink
+
+Pop one entity-to-area link from the retail fixed free list.
+=============
+*/
+aas_link_t *AAS_AllocAASLink(void)
+{
+	aas_link_t *link = g_aasLinkFreeList;
+	if (link == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "empty aas link heap\n");
+		return NULL;
+	}
+
+	g_aasLinkFreeList = link->next_ent;
+	if (g_aasLinkFreeList != NULL)
+	{
+		g_aasLinkFreeList->prev_ent = NULL;
+	}
+
+	return link;
+}
+
+/*
+=============
+AAS_FreeAASLink
+
+Return one entity-to-area link to the head of the retail free list.
+=============
+*/
+void AAS_FreeAASLink(aas_link_t *link)
+{
+	if (link == NULL)
+	{
+		return;
+	}
+
+	if (g_aasLinkFreeList != NULL)
+	{
+		g_aasLinkFreeList->prev_ent = link;
+	}
+
+	link->prev_ent = NULL;
+	link->next_ent = g_aasLinkFreeList;
+	link->next_area = NULL;
+	link->prev_area = NULL;
+	g_aasLinkFreeList = link;
+}
+
+/*
+=============
+AAS_InitBSPLinkHeap
+
+Initialise the retail-sized fixed BSP leaf/entity-link heap from max_bsplinks.
+=============
+*/
+void AAS_InitBSPLinkHeap(void)
+{
+	int maxlinks = g_bspLinkHeapSize;
+	if (g_bspLinkHeap == NULL)
+	{
+		maxlinks = (int)LibVarValue("max_bsplinks", "4096");
+		if (maxlinks < 0)
+		{
+			maxlinks = 0;
+		}
+
+		if ((size_t)maxlinks > SIZE_MAX / sizeof(*g_bspLinkHeap))
+		{
+			maxlinks = 0;
+		}
+
+		g_bspLinkHeapSize = maxlinks;
+		if (maxlinks > 0)
+		{
+			g_bspLinkHeap = (bsp_link_t *)GetMemory(
+				(size_t)maxlinks * sizeof(*g_bspLinkHeap));
+		}
+	}
+
+	for (int index = 0; index < maxlinks && g_bspLinkHeap != NULL; ++index)
+	{
+		bsp_link_t *link = &g_bspLinkHeap[index];
+		link->prev_ent = index > 0 ? &g_bspLinkHeap[index - 1] : NULL;
+		link->next_ent = index + 1 < maxlinks ? &g_bspLinkHeap[index + 1] : NULL;
+	}
+
+	g_bspLinkFreeList = g_bspLinkHeap;
+}
+
+/*
+=============
+AAS_FreeBSPLinkHeap
+
+Release the retained BSP leaf/entity-link heap for isolated teardown.
+=============
+*/
+void AAS_FreeBSPLinkHeap(void)
+{
+	if (g_bspLinkHeap != NULL)
+	{
+		FreeMemory(g_bspLinkHeap);
+	}
+
+	g_bspLinkHeap = NULL;
+	g_bspLinkFreeList = NULL;
+	g_bspLinkHeapSize = 0;
+}
+
+/*
+=============
+AAS_AllocBSPLink
+
+Pop one entity-to-BSP-leaf link from the retail fixed free list.
+=============
+*/
+bsp_link_t *AAS_AllocBSPLink(void)
+{
+	bsp_link_t *link = g_bspLinkFreeList;
+	if (link == NULL)
+	{
+		BotLib_Print(PRT_FATAL, "empty bsp link heap\n");
+		return NULL;
+	}
+
+	g_bspLinkFreeList = link->next_ent;
+	if (g_bspLinkFreeList != NULL)
+	{
+		g_bspLinkFreeList->prev_ent = NULL;
+	}
+
+	return link;
+}
+
+/*
+=============
+AAS_FreeBSPLink
+
+Return one entity-to-BSP-leaf link to the head of the retail free list.
+=============
+*/
+void AAS_FreeBSPLink(bsp_link_t *link)
+{
+	if (link == NULL)
+	{
+		return;
+	}
+
+	if (g_bspLinkFreeList != NULL)
+	{
+		g_bspLinkFreeList->prev_ent = link;
+	}
+
+	link->prev_ent = NULL;
+	link->next_ent = g_bspLinkFreeList;
+	link->next_leaf = NULL;
+	link->prev_leaf = NULL;
+	g_bspLinkFreeList = link;
+}
+
+/*
+=============
 AAS_AllocateConfiguredEntityArray
 
-Restore the setup-time retail entity limits after map data is cleared.
+Allocate the setup-time retail entity table.
 =============
 */
 static int AAS_AllocateConfiguredEntityArray(void)
@@ -6867,108 +7462,95 @@ static int AAS_AllocateConfiguredEntityArray(void)
 		return BLERR_INVALIDENTITYNUMBER;
 	}
 
-	aasworld.entities = (aas_entity_t *)calloc(
-		(size_t)g_aasConfiguredMaxEntities,
-		sizeof(aas_entity_t));
+	aasworld.entities = (aas_entity_t *)GetClearedMemory(
+		(size_t)g_aasConfiguredMaxEntities * sizeof(aas_entity_t));
 	if (aasworld.entities == NULL)
 	{
 		return BLERR_INVALIDENTITYNUMBER;
 	}
 
-	AAS_InvalidateEntities();
 	return BLERR_NOERROR;
 }
 
 /*
 =============
-AAS_ClearWorld
+AAS_ClearBSPData
 
-Release every retained AAS and Quake II BSP allocation.
+Release the Quake II BSP data at the same point retail's BSP loader starts.
 =============
 */
-static void AAS_ClearWorld(void)
+static void AAS_ClearBSPData(void)
 {
-    BotMove_MoverCatalogueReset();
-    AAS_RouteFrameResetDiagnostics();
-    AAS_ReachabilityFrameResetDiagnostics();
-    AAS_ShutDownReachabilityHeap();
-    AAS_FreeAllRoutingCaches();
-    AAS_ClearReachabilityData();
-    free(aasworld.areacontentstravelflags);
-    aasworld.areacontentstravelflags = NULL;
-
-	AAS_FreeEntityArray();
-
-    if (aasworld.areaEntityLists != NULL)
-    {
-        free(aasworld.areaEntityLists);
-        aasworld.areaEntityLists = NULL;
-        aasworld.areaEntityListCount = 0U;
-    }
+	if (aasworld.bspLeafEntityLists != NULL)
+	{
+		free(aasworld.bspLeafEntityLists);
+		aasworld.bspLeafEntityLists = NULL;
+		aasworld.bspLeafEntityListCount = 0U;
+	}
 
 	if (aasworld.bspModels != NULL)
 	{
-		free(aasworld.bspModels);
+		FreeMemory(aasworld.bspModels);
 		aasworld.bspModels = NULL;
 	}
 
 	if (aasworld.bspNodes != NULL)
 	{
-		free(aasworld.bspNodes);
+		FreeMemory(aasworld.bspNodes);
 		aasworld.bspNodes = NULL;
 	}
 
 	if (aasworld.bspLeaves != NULL)
 	{
-		free(aasworld.bspLeaves);
+		FreeMemory(aasworld.bspLeaves);
 		aasworld.bspLeaves = NULL;
 	}
 
 	if (aasworld.bspVisibility != NULL)
 	{
-		free(aasworld.bspVisibility);
+		FreeMemory(aasworld.bspVisibility);
 		aasworld.bspVisibility = NULL;
 	}
 
 	if (aasworld.bspLeafBrushes != NULL)
 	{
-		free(aasworld.bspLeafBrushes);
+		FreeMemory(aasworld.bspLeafBrushes);
 		aasworld.bspLeafBrushes = NULL;
 	}
 
 	if (aasworld.bspPlanes != NULL)
 	{
-		free(aasworld.bspPlanes);
+		FreeMemory(aasworld.bspPlanes);
 		aasworld.bspPlanes = NULL;
 	}
 
 	if (aasworld.bspTexInfo != NULL)
 	{
-		free(aasworld.bspTexInfo);
+		FreeMemory(aasworld.bspTexInfo);
 		aasworld.bspTexInfo = NULL;
 	}
 
 	if (aasworld.bspVertexes != NULL)
 	{
-		free(aasworld.bspVertexes);
+		FreeMemory(aasworld.bspVertexes);
 		aasworld.bspVertexes = NULL;
 	}
 
 	if (aasworld.bspEdges != NULL)
 	{
-		free(aasworld.bspEdges);
+		FreeMemory(aasworld.bspEdges);
 		aasworld.bspEdges = NULL;
 	}
 
 	if (aasworld.bspSurfEdges != NULL)
 	{
-		free(aasworld.bspSurfEdges);
+		FreeMemory(aasworld.bspSurfEdges);
 		aasworld.bspSurfEdges = NULL;
 	}
 
 	if (aasworld.bspFaces != NULL)
 	{
-		free(aasworld.bspFaces);
+		FreeMemory(aasworld.bspFaces);
 		aasworld.bspFaces = NULL;
 	}
 
@@ -6980,112 +7562,189 @@ static void AAS_ClearWorld(void)
 
 	if (aasworld.bspLightData != NULL)
 	{
-		free(aasworld.bspLightData);
+		FreeMemory(aasworld.bspLightData);
 		aasworld.bspLightData = NULL;
 	}
 
 	if (aasworld.bspBrushSides != NULL)
 	{
-		free(aasworld.bspBrushSides);
+		FreeMemory(aasworld.bspBrushSides);
 		aasworld.bspBrushSides = NULL;
 	}
 
 	if (aasworld.bspBrushes != NULL)
 	{
-		free(aasworld.bspBrushes);
+		FreeMemory(aasworld.bspBrushes);
 		aasworld.bspBrushes = NULL;
 	}
 
-    if (aasworld.areas != NULL)
-    {
-        free(aasworld.areas);
-        aasworld.areas = NULL;
-    }
+	aasworld.numBspModels = 0;
+	aasworld.numBspNodes = 0;
+	aasworld.numBspLeaves = 0;
+	aasworld.numBspVisibilityClusters = 0;
+	aasworld.bspVisibilitySize = 0U;
+	aasworld.bspLeafBrushIndexSize = 0;
+	aasworld.numBspPlanes = 0;
+	aasworld.numBspTexInfo = 0;
+	aasworld.numBspVertexes = 0;
+	aasworld.numBspEdges = 0;
+	aasworld.bspSurfEdgeIndexSize = 0;
+	aasworld.numBspFaces = 0;
+	aasworld.bspLightDataSize = 0;
+	aasworld.numBspBrushSides = 0;
+	aasworld.numBspBrushes = 0;
+	aasworld.bspLeafEntityListCount = 0U;
+	aasworld.bspChecksum = 0;
+	aasworld.bspEntityChecksum = 0U;
+}
+
+/*
+=============
+AAS_ClearAASData
+
+Release navigation data when retail's AAS loader begins after a candidate has
+been found.
+=============
+*/
+static void AAS_ClearAASData(void)
+{
+	BotMove_MoverCatalogueReset();
+	AAS_RouteFrameResetDiagnostics();
+	AAS_ReachabilityFrameResetDiagnostics();
+	AAS_ShutDownReachabilityHeap();
+	AAS_FreeAllRoutingCaches();
+	AAS_ClearReachabilityData();
+	free(aasworld.areacontentstravelflags);
+	aasworld.areacontentstravelflags = NULL;
+
+	if (aasworld.areaEntityLists != NULL)
+	{
+		FreeMemory(aasworld.areaEntityLists);
+		aasworld.areaEntityLists = NULL;
+	}
+
+	if (aasworld.areas != NULL)
+	{
+		FreeMemory(aasworld.areas);
+		aasworld.areas = NULL;
+	}
 
 	if (aasworld.bboxes != NULL)
 	{
-		free(aasworld.bboxes);
+		FreeMemory(aasworld.bboxes);
 		aasworld.bboxes = NULL;
 	}
 
 	if (aasworld.vertexes != NULL)
 	{
-		free(aasworld.vertexes);
+		FreeMemory(aasworld.vertexes);
 		aasworld.vertexes = NULL;
 	}
 
 	if (aasworld.edges != NULL)
 	{
-		free(aasworld.edges);
+		FreeMemory(aasworld.edges);
 		aasworld.edges = NULL;
 	}
 
 	if (aasworld.edgeIndex != NULL)
 	{
-		free(aasworld.edgeIndex);
+		FreeMemory(aasworld.edgeIndex);
 		aasworld.edgeIndex = NULL;
 	}
 
 	if (aasworld.faces != NULL)
 	{
-		free(aasworld.faces);
+		FreeMemory(aasworld.faces);
 		aasworld.faces = NULL;
 	}
 
 	if (aasworld.faceIndex != NULL)
 	{
-		free(aasworld.faceIndex);
+		FreeMemory(aasworld.faceIndex);
 		aasworld.faceIndex = NULL;
 	}
 
-    if (aasworld.areasettings != NULL)
-    {
-        free(aasworld.areasettings);
-        aasworld.areasettings = NULL;
-    }
+	if (aasworld.areasettings != NULL)
+	{
+		FreeMemory(aasworld.areasettings);
+		aasworld.areasettings = NULL;
+	}
 
-    if (aasworld.reachability != NULL)
-    {
-        free(aasworld.reachability);
-        aasworld.reachability = NULL;
-    }
+	if (aasworld.reachability != NULL)
+	{
+		FreeMemory(aasworld.reachability);
+		aasworld.reachability = NULL;
+	}
 
-    if (aasworld.nodes != NULL)
-    {
-        free(aasworld.nodes);
-        aasworld.nodes = NULL;
-    }
+	if (aasworld.nodes != NULL)
+	{
+		FreeMemory(aasworld.nodes);
+		aasworld.nodes = NULL;
+	}
 
 	if (aasworld.planes != NULL)
 	{
-		free(aasworld.planes);
+		FreeMemory(aasworld.planes);
 		aasworld.planes = NULL;
 	}
 
 	if (aasworld.portals != NULL)
 	{
-		free(aasworld.portals);
+		FreeMemory(aasworld.portals);
 		aasworld.portals = NULL;
 	}
 
 	if (aasworld.portalIndex != NULL)
 	{
-		free(aasworld.portalIndex);
+		FreeMemory(aasworld.portalIndex);
 		aasworld.portalIndex = NULL;
 	}
 
 	if (aasworld.clusters != NULL)
 	{
-		free(aasworld.clusters);
+		FreeMemory(aasworld.clusters);
 		aasworld.clusters = NULL;
 	}
 
-    AAS_SoundSubsystem_ClearMapAssets();
-    BotMove_MoverCatalogueReset();
-    memset(&aasworld, 0, sizeof(aasworld));
+	aasworld.numReachabilityAreas = 0;
+	aasworld.aasChecksum = 0;
+	aasworld.saveFile = qfalse;
+	aasworld.aasFilePath[0] = '\0';
+	aasworld.numAreas = 0;
+	aasworld.numBBoxes = 0;
+	aasworld.numVertexes = 0;
+	aasworld.numEdges = 0;
+	aasworld.edgeIndexSize = 0;
+	aasworld.numFaces = 0;
+	aasworld.faceIndexSize = 0;
+	aasworld.numReachability = 0;
+	aasworld.numAreaSettings = 0;
+	aasworld.numNodes = 0;
+	aasworld.numPlanes = 0;
+	aasworld.numPortals = 0;
+	aasworld.portalIndexSize = 0;
+	aasworld.numClusters = 0;
+	aasworld.areaEntityListCount = 0U;
+	memset(aasworld.travelflagfortype, 0, sizeof(aasworld.travelflagfortype));
+}
 
-    TranslateEntity_SetCurrentTime(0.0f);
-    TranslateEntity_SetWorldLoaded(qfalse);
+/*
+=============
+AAS_ClearWorld
+
+Release every retained AAS allocation during full AAS shutdown.
+=============
+*/
+static void AAS_ClearWorld(void)
+{
+	AAS_FreeEntityArray();
+	AAS_ClearAASData();
+	AAS_ClearBSPData();
+	AAS_SoundSubsystem_ClearMapAssets();
+	memset(&aasworld, 0, sizeof(aasworld));
+	TranslateEntity_SetCurrentTime(0.0f);
+	TranslateEntity_SetWorldLoaded(qfalse);
 }
 
 /*
@@ -7115,14 +7774,11 @@ int AAS_LoadMap(const char *mapname,
 		return BLERR_NOERROR;
 	}
 
+	aasworld.initialized = qfalse;
+	aasworld.loaded = qfalse;
 	TranslateEntity_SetWorldLoaded(qfalse);
+	AAS_ResetEntityLinks();
 
-    AAS_ClearWorld();
-	int entitySetupStatus = AAS_AllocateConfiguredEntityArray();
-	if (entitySetupStatus != BLERR_NOERROR)
-	{
-		return entitySetupStatus;
-	}
 	if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
 	{
 		BotLib_Print(PRT_FATAL,
@@ -7155,6 +7811,7 @@ int AAS_LoadMap(const char *mapname,
 			bspCandidate);
 		return BLERR_NOBSPFILE;
 	}
+	AAS_ClearBSPData();
 
 	FILE *bspFile = fopen(bspSource.physicalPath, "rb");
     if (bspFile == NULL)
@@ -7243,10 +7900,12 @@ int AAS_LoadMap(const char *mapname,
 		return entityStatus;
 	}
 
+	aasworld.bspEntityChecksum = CRC_ProcessString((uint8_t *)entityData,
+		entityLength);
 	if (entityData != NULL)
 	{
 		AAS_ParseEntityLump(entityData, (size_t)entityLength);
-		free(entityData);
+		FreeMemory(entityData);
 	}
 
     fclose(bspFile);
@@ -7294,6 +7953,7 @@ int AAS_LoadMap(const char *mapname,
 		BotLib_Print(PRT_FATAL, "no AAS file available\n");
 		return BLERR_NOAASFILE;
 	}
+	AAS_ClearAASData();
 
 	aasFile = fopen(aasSource.physicalPath, "rb");
 	if (aasFile == NULL)
@@ -7407,7 +8067,7 @@ int AAS_LoadMap(const char *mapname,
 	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
-		free(bboxes);
+		FreeMemory(bboxes);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7425,8 +8085,8 @@ int AAS_LoadMap(const char *mapname,
 	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
-		free(bboxes);
-		free(vertexes);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7444,9 +8104,9 @@ int AAS_LoadMap(const char *mapname,
 	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
-		free(bboxes);
-		free(vertexes);
-		free(edges);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7464,10 +8124,10 @@ int AAS_LoadMap(const char *mapname,
 	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7485,11 +8145,11 @@ int AAS_LoadMap(const char *mapname,
 	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7505,14 +8165,14 @@ int AAS_LoadMap(const char *mapname,
                               aasFileSize,
                               BLERR_CANNOTREADAASLUMP,
                               NULL);
-    if (result != BLERR_NOERROR)
-    {
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
+	if (result != BLERR_NOERROR)
+	{
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
     }
@@ -7530,13 +8190,13 @@ int AAS_LoadMap(const char *mapname,
                           NULL);
     if (result != BLERR_NOERROR)
     {
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-        free(areas);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+        FreeMemory(areas);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
     }
@@ -7554,14 +8214,14 @@ int AAS_LoadMap(const char *mapname,
                           NULL);
     if (result != BLERR_NOERROR)
     {
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-        free(areas);
-        free(areasettings);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+        FreeMemory(areas);
+        FreeMemory(areasettings);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
     }
@@ -7577,17 +8237,17 @@ int AAS_LoadMap(const char *mapname,
 	                      aasFileSize,
 	                      BLERR_CANNOTREADAASLUMP,
 	                      NULL);
-	if (result != BLERR_NOERROR)
-	{
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-		free(areas);
-		free(areasettings);
-		free(reachability);
+    if (result != BLERR_NOERROR)
+    {
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+        FreeMemory(areas);
+        FreeMemory(areasettings);
+        FreeMemory(reachability);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7603,18 +8263,18 @@ int AAS_LoadMap(const char *mapname,
                           aasFileSize,
                           BLERR_CANNOTREADAASLUMP,
                           NULL);
-    if (result != BLERR_NOERROR)
-    {
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-        free(areas);
-        free(areasettings);
-        free(reachability);
-		free(planes);
+	if (result != BLERR_NOERROR)
+	{
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+        FreeMemory(areas);
+        FreeMemory(areasettings);
+        FreeMemory(reachability);
+		FreeMemory(planes);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
     }
@@ -7630,19 +8290,19 @@ int AAS_LoadMap(const char *mapname,
 	                      aasFileSize,
 	                      BLERR_CANNOTREADAASLUMP,
 	                      NULL);
-	if (result != BLERR_NOERROR)
-	{
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-		free(areas);
-		free(areasettings);
-		free(reachability);
-		free(planes);
-		free(nodes);
+    if (result != BLERR_NOERROR)
+    {
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+        FreeMemory(areas);
+        FreeMemory(areasettings);
+        FreeMemory(reachability);
+		FreeMemory(planes);
+		FreeMemory(nodes);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7660,18 +8320,18 @@ int AAS_LoadMap(const char *mapname,
 	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-		free(areas);
-		free(areasettings);
-		free(reachability);
-		free(planes);
-		free(nodes);
-		free(portals);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+		FreeMemory(areas);
+		FreeMemory(areasettings);
+		FreeMemory(reachability);
+		FreeMemory(planes);
+		FreeMemory(nodes);
+		FreeMemory(portals);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7689,19 +8349,19 @@ int AAS_LoadMap(const char *mapname,
 	                      NULL);
 	if (result != BLERR_NOERROR)
 	{
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-		free(areas);
-		free(areasettings);
-		free(reachability);
-		free(planes);
-		free(nodes);
-		free(portals);
-		free(portalIndex);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+		FreeMemory(areas);
+		FreeMemory(areasettings);
+		FreeMemory(reachability);
+		FreeMemory(planes);
+		FreeMemory(nodes);
+		FreeMemory(portals);
+		FreeMemory(portalIndex);
 		fclose(aasFile);
 		return AAS_ReturnAASLoadFailure(&aasSource, result);
 	}
@@ -7732,20 +8392,20 @@ int AAS_LoadMap(const char *mapname,
 		BotLib_Print(PRT_ERROR,
 			"AAS_LoadMap: failed to compute checksum for %s\n",
 			aasSource.physicalPath);
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-        free(areas);
-        free(areasettings);
-        free(reachability);
-		free(planes);
-        free(nodes);
-		free(portals);
-		free(portalIndex);
-		free(clusters);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+        FreeMemory(areas);
+        FreeMemory(areasettings);
+        FreeMemory(reachability);
+		FreeMemory(planes);
+        FreeMemory(nodes);
+		FreeMemory(portals);
+		FreeMemory(portalIndex);
+		FreeMemory(clusters);
 		return AAS_ReturnAASLoadFailure(&aasSource,
 			BLERR_CANNOTREADAASHEADER);
     }
@@ -7797,20 +8457,20 @@ int AAS_LoadMap(const char *mapname,
 	                                  &numBspBrushes);
 	if (result != BLERR_NOERROR)
 	{
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-		free(areas);
-		free(areasettings);
-		free(reachability);
-		free(planes);
-		free(nodes);
-		free(portals);
-		free(portalIndex);
-		free(clusters);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+		FreeMemory(areas);
+		FreeMemory(areasettings);
+		FreeMemory(reachability);
+		FreeMemory(planes);
+		FreeMemory(nodes);
+		FreeMemory(portals);
+		FreeMemory(portalIndex);
+		FreeMemory(clusters);
 		return result;
 	}
 
@@ -7855,20 +8515,20 @@ int AAS_LoadMap(const char *mapname,
 			bspTexInfo,
 			bspBrushSides,
 			bspBrushes);
-		free(bboxes);
-		free(vertexes);
-		free(edges);
-		free(edgeIndex);
-		free(faces);
-		free(faceIndex);
-		free(areas);
-		free(areasettings);
-		free(reachability);
-		free(planes);
-		free(nodes);
-		free(portals);
-		free(portalIndex);
-		free(clusters);
+		FreeMemory(bboxes);
+		FreeMemory(vertexes);
+		FreeMemory(edges);
+		FreeMemory(edgeIndex);
+		FreeMemory(faces);
+		FreeMemory(faceIndex);
+		FreeMemory(areas);
+		FreeMemory(areasettings);
+		FreeMemory(reachability);
+		FreeMemory(planes);
+		FreeMemory(nodes);
+		FreeMemory(portals);
+		FreeMemory(portalIndex);
+		FreeMemory(clusters);
 		return result;
 	}
 	unsigned char *bspVisibility = NULL;
@@ -7959,23 +8619,24 @@ int AAS_LoadMap(const char *mapname,
 	aasworld.numClusters = numClusters;
 	aasworld.clusters = clusters;
     aasworld.entitiesValid = qfalse;
-    aasworld.numFrames = 0;
-    aasworld.loaded = qtrue;
+	aasworld.loaded = qtrue;
     aasworld.initialized = qfalse;
 
-    AAS_InitTravelFlagFromType();
-    AAS_InitAreaContentsTravelFlags();
-    int reachStatus = AAS_PrepareReachability();
-    if (reachStatus != BLERR_NOERROR)
-    {
-        AAS_ClearWorld();
-        return reachStatus;
+	AAS_InitTravelFlagFromType();
+	AAS_InitAreaContentsTravelFlags();
+	AAS_InitBSPLinkHeap();
+	AAS_InitAASLinkHeap();
+	int reachStatus = AAS_PrepareReachability();
+	if (reachStatus != BLERR_NOERROR)
+	{
+		AAS_ClearAASData();
+		return reachStatus;
     }
 
     int areaStatus = AAS_EnsureAreaListArray();
-    if (areaStatus != BLERR_NOERROR)
-    {
-        AAS_ClearWorld();
+	if (areaStatus != BLERR_NOERROR)
+	{
+		AAS_ClearAASData();
         return areaStatus;
     }
 
@@ -7990,8 +8651,8 @@ int AAS_LoadMap(const char *mapname,
 =============
 AAS_ConfigureEntityLimits
 
-Store the retail maxentities/maxclients setup values and allocate the cleared
-entity table used until AAS shutdown.
+Store retail entity limits, initialise sound state, then invalidate the fixed
+entity table in the same order as sub_1000edc0.
 =============
 */
 int AAS_ConfigureEntityLimits(int maxentities, int maxclients)
@@ -8001,7 +8662,15 @@ int AAS_ConfigureEntityLimits(int maxentities, int maxclients)
 	g_aasEntityLimitsConfigured = qtrue;
 
 	AAS_FreeEntityArray();
-	return AAS_AllocateConfiguredEntityArray();
+	int status = AAS_AllocateConfiguredEntityArray();
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+
+	status = AAS_SoundSubsystem_Init();
+	AAS_InvalidateEntities();
+	return status;
 }
 
 /*
@@ -8191,9 +8860,11 @@ void AAS_Shutdown(void)
         BotLib_Print(PRT_MESSAGE, "AAS shutdown.\n");
     }
 
-    TranslateEntity_SetCurrentTime(0.0f);
-    TranslateEntity_SetWorldLoaded(qfalse);
-    AAS_ClearWorld();
+	TranslateEntity_SetCurrentTime(0.0f);
+	TranslateEntity_SetWorldLoaded(qfalse);
+	AAS_ClearWorld();
+	AAS_FreeAASLinkHeap();
+	AAS_SoundSubsystem_ResetState();
 	g_aasEntityLimitsConfigured = qfalse;
 	g_aasConfiguredMaxEntities = 0;
 	g_aasConfiguredMaxClients = 0;
@@ -8216,26 +8887,31 @@ static int AAS_EnsureEntityCapacity(int ent)
 		return BLERR_INVALIDENTITYNUMBER;
 	}
 
-    size_t previousCount = (size_t)aasworld.maxEntities;
-    size_t requiredCount = (size_t)ent + 1U;
-    size_t newSize = requiredCount * sizeof(aas_entity_t);
+	size_t previousCount = (size_t)aasworld.maxEntities;
+	size_t requiredCount = (size_t)ent + 1U;
+	if (requiredCount > (size_t)INT_MAX ||
+		requiredCount > SIZE_MAX / sizeof(aas_entity_t))
+	{
+		return BLERR_INVALIDENTITYNUMBER;
+	}
 
-    aas_entity_t *resized = realloc(aasworld.entities, newSize);
-    if (resized == NULL)
-    {
-        return BLERR_INVALIDENTITYNUMBER;
-    }
+	aas_entity_t *resized = (aas_entity_t *)GetClearedMemory(
+		requiredCount * sizeof(aas_entity_t));
+	if (resized == NULL)
+	{
+		return BLERR_INVALIDENTITYNUMBER;
+	}
 
-    /* zero initialise the new tail */
-    if (requiredCount > previousCount)
-    {
-        size_t delta = requiredCount - previousCount;
-        memset(resized + previousCount, 0, delta * sizeof(aas_entity_t));
-    }
-
-    aasworld.entities = resized;
-    aasworld.maxEntities = (int)requiredCount;
-    return BLERR_NOERROR;
+	if (aasworld.entities != NULL && previousCount > 0U)
+	{
+		memcpy(resized,
+			aasworld.entities,
+			previousCount * sizeof(aas_entity_t));
+	}
+	FreeMemory(aasworld.entities);
+	aasworld.entities = resized;
+	aasworld.maxEntities = (int)requiredCount;
+	return BLERR_NOERROR;
 }
 
 static void AAS_ResetEntityBitset(aas_entity_t *entity)
@@ -8306,11 +8982,12 @@ static void AAS_SetEntityAreaBit(aas_entity_t *entity, int areanum)
 
 static int AAS_EnsureAreaListArray(void)
 {
-    size_t desired = (size_t)aasworld.numAreas + 1U;
-    if (desired == 0U)
+    if (aasworld.numAreas < 0)
     {
-        desired = 1U;
+        return BLERR_INVALIDENTITYNUMBER;
     }
+
+    size_t desired = (size_t)aasworld.numAreas;
 
     if (aasworld.areaEntityLists != NULL && aasworld.areaEntityListCount == desired)
     {
@@ -8319,13 +8996,19 @@ static int AAS_EnsureAreaListArray(void)
 
     if (aasworld.areaEntityLists != NULL)
     {
-        free(aasworld.areaEntityLists);
+        FreeMemory(aasworld.areaEntityLists);
         aasworld.areaEntityLists = NULL;
         aasworld.areaEntityListCount = 0U;
     }
 
-    aasworld.areaEntityLists = (aas_link_t **)calloc(desired, sizeof(aas_link_t *));
-    if (aasworld.areaEntityLists == NULL)
+    if (desired > SIZE_MAX / sizeof(*aasworld.areaEntityLists))
+    {
+        return BLERR_INVALIDENTITYNUMBER;
+    }
+
+    aasworld.areaEntityLists = (aas_link_t **)GetClearedMemory(
+        desired * sizeof(*aasworld.areaEntityLists));
+    if (aasworld.areaEntityLists == NULL && desired > 0U)
     {
         return BLERR_INVALIDENTITYNUMBER;
     }
@@ -8379,8 +9062,8 @@ static void AAS_UnlinkEntityFromAreas(aas_entity_t *entity)
     while (link != NULL)
     {
         aas_link_t *next = link->next_area;
-        AAS_RemoveLinkFromAreaList(link);
-        free(link);
+		AAS_RemoveLinkFromAreaList(link);
+		AAS_FreeAASLink(link);
         link = next;
     }
 
@@ -8400,7 +9083,7 @@ static int AAS_LinkEntityToArea(aas_entity_t *entity, int areanum)
         return BLERR_INVALIDENTITYNUMBER;
     }
 
-    aas_link_t *link = (aas_link_t *)malloc(sizeof(aas_link_t));
+	aas_link_t *link = AAS_AllocAASLink();
     if (link == NULL)
     {
         return BLERR_INVALIDENTITYNUMBER;
@@ -8425,7 +9108,214 @@ static int AAS_LinkEntityToArea(aas_entity_t *entity, int areanum)
     }
     aasworld.areaEntityLists[areanum] = link;
 
-    return BLERR_NOERROR;
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+AAS_EnsureBSPLeafEntityListArray
+
+Allocate the head table used by the retail BSP leaf/entity link lists.
+=============
+*/
+static int AAS_EnsureBSPLeafEntityListArray(void)
+{
+	if (aasworld.numBspLeaves <= 0 || aasworld.bspLeaves == NULL)
+	{
+		return BLERR_NOERROR;
+	}
+
+	size_t desired = (size_t)aasworld.numBspLeaves;
+	if (aasworld.bspLeafEntityLists != NULL &&
+		aasworld.bspLeafEntityListCount == desired)
+	{
+		return BLERR_NOERROR;
+	}
+
+	if (aasworld.entities != NULL)
+	{
+		for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
+		{
+			AAS_UnlinkEntityFromBSPLeaves(&aasworld.entities[entnum]);
+		}
+	}
+	free(aasworld.bspLeafEntityLists);
+	aasworld.bspLeafEntityLists =
+		(bsp_link_t **)calloc(desired, sizeof(*aasworld.bspLeafEntityLists));
+	if (aasworld.bspLeafEntityLists == NULL)
+	{
+		aasworld.bspLeafEntityListCount = 0U;
+		return BLERR_INVALIDENTITYNUMBER;
+	}
+
+	aasworld.bspLeafEntityListCount = desired;
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+AAS_UnlinkEntityFromBSPLeaves
+
+Remove and release every BSP leaf link owned by one entity.
+=============
+*/
+void AAS_UnlinkEntityFromBSPLeaves(aas_entity_t *entity)
+{
+	if (entity == NULL)
+	{
+		return;
+	}
+
+	bsp_link_t *link = entity->leaves;
+	while (link != NULL)
+	{
+		bsp_link_t *next = link->next_leaf;
+		if (link->leafnum >= 0 && aasworld.bspLeafEntityLists != NULL &&
+			(size_t)link->leafnum < aasworld.bspLeafEntityListCount)
+		{
+			if (link->prev_ent != NULL)
+			{
+				link->prev_ent->next_ent = link->next_ent;
+			}
+			else
+			{
+				aasworld.bspLeafEntityLists[link->leafnum] = link->next_ent;
+			}
+			if (link->next_ent != NULL)
+			{
+				link->next_ent->prev_ent = link->prev_ent;
+			}
+		}
+		AAS_FreeBSPLink(link);
+		link = next;
+	}
+
+	entity->leaves = NULL;
+}
+
+/*
+=============
+AAS_LinkEntityToBSPLeaf
+
+Insert one entity into both the specified leaf's and entity's link chains.
+=============
+*/
+static int AAS_LinkEntityToBSPLeaf(aas_entity_t *entity, int leafnum)
+{
+	if (entity == NULL || leafnum < 0 || aasworld.bspLeafEntityLists == NULL ||
+		(size_t)leafnum >= aasworld.bspLeafEntityListCount)
+	{
+		return BLERR_INVALIDENTITYNUMBER;
+	}
+
+	bsp_link_t *link = AAS_AllocBSPLink();
+	if (link == NULL)
+	{
+		return BLERR_INVALIDENTITYNUMBER;
+	}
+
+	link->entnum = entity->number;
+	link->leafnum = leafnum;
+
+	link->prev_leaf = NULL;
+	link->next_leaf = entity->leaves;
+	if (entity->leaves != NULL)
+	{
+		entity->leaves->prev_leaf = link;
+	}
+	entity->leaves = link;
+
+	link->prev_ent = NULL;
+	link->next_ent = aasworld.bspLeafEntityLists[leafnum];
+	if (link->next_ent != NULL)
+	{
+		link->next_ent->prev_ent = link;
+	}
+	aasworld.bspLeafEntityLists[leafnum] = link;
+
+	return BLERR_NOERROR;
+}
+
+/*
+=============
+AAS_LinkEntityToBSPLeaves
+
+Walk model zero's BSP tree and attach an entity to every touched leaf.
+=============
+*/
+static int AAS_LinkEntityToBSPLeaves(aas_entity_t *entity,
+	                                  const vec3_t absmins,
+	                                  const vec3_t absmaxs)
+{
+	AAS_UnlinkEntityFromBSPLeaves(entity);
+	if (entity == NULL || absmins == NULL || absmaxs == NULL ||
+		!AAS_BSPModelValid(0))
+	{
+		return BLERR_NOERROR;
+	}
+
+	int status = AAS_EnsureBSPLeafEntityListArray();
+	if (status != BLERR_NOERROR || aasworld.bspLeafEntityLists == NULL)
+	{
+		return status;
+	}
+
+	int stack[AAS_AREA_STACK_SIZE];
+	int stacktop = 0;
+	stack[stacktop++] = aasworld.bspModels[0].headnode;
+	while (stacktop > 0)
+	{
+		int nodenum = stack[--stacktop];
+		if (nodenum < 0)
+		{
+			int leafnum = -1 - nodenum;
+			if (leafnum >= 0 && leafnum < aasworld.numBspLeaves)
+			{
+				status = AAS_LinkEntityToBSPLeaf(entity, leafnum);
+				if (status != BLERR_NOERROR)
+				{
+					return BLERR_NOERROR;
+				}
+			}
+			continue;
+		}
+
+		if (aasworld.bspNodes == NULL || nodenum >= aasworld.numBspNodes)
+		{
+			continue;
+		}
+
+		const aas_bspnode_t *node = &aasworld.bspNodes[nodenum];
+		if (aasworld.bspPlanes == NULL || node->planenum < 0 ||
+			node->planenum >= aasworld.numBspPlanes)
+		{
+			continue;
+		}
+
+		int sides = AAS_BoxOnPlaneSide(absmins,
+		                               absmaxs,
+		                               &aasworld.bspPlanes[node->planenum]);
+		if ((sides & 2) != 0)
+		{
+			if (stacktop >= AAS_AREA_STACK_SIZE)
+			{
+				AAS_UnlinkEntityFromBSPLeaves(entity);
+				return BLERR_INVALIDENTITYNUMBER;
+			}
+			stack[stacktop++] = node->children[1];
+		}
+		if ((sides & 1) != 0)
+		{
+			if (stacktop >= AAS_AREA_STACK_SIZE)
+			{
+				AAS_UnlinkEntityFromBSPLeaves(entity);
+				return BLERR_INVALIDENTITYNUMBER;
+			}
+			stack[stacktop++] = node->children[0];
+		}
+	}
+
+	return BLERR_NOERROR;
 }
 
 static qboolean AAS_BoxIntersectsArea(const vec3_t absmins, const vec3_t absmaxs, const aas_area_t *area)
@@ -8459,6 +9349,13 @@ static void AAS_ClampMinsMaxs(vec3_t mins, vec3_t maxs)
     }
 }
 
+/*
+=============
+AAS_LinkEntityToComputedAreas
+
+Link a changed entity to every AAS leaf touched by its absolute bounds.
+=============
+*/
 static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs)
 {
     if (entity == NULL)
@@ -8496,17 +9393,19 @@ static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absm
 	}
 
 	int occupied = AAS_BBoxAreas(absmins, absmaxs, areas, maxareas);
+	int linked = 0;
 	for (int index = 0; index < occupied; ++index)
 	{
 		int areanum = areas[index];
 		status = AAS_LinkEntityToArea(entity, areanum);
 		if (status != BLERR_NOERROR)
 		{
-			free(areas);
-			return status;
+			occupied = linked;
+			break;
 		}
 
 		AAS_SetEntityAreaBit(entity, areanum);
+		linked++;
 	}
 	free(areas);
 
@@ -8553,6 +9452,7 @@ int AAS_UpdateEntity(int ent, const AASEntityFrame *state)
     if (state == NULL)
     {
         AAS_UnlinkEntityFromAreas(entity);
+		AAS_UnlinkEntityFromBSPLeaves(entity);
         AAS_ResetEntityBitset(entity);
         entity->inuse = qfalse;
         entity->outsideAllAreas = qtrue;
@@ -8601,6 +9501,12 @@ int AAS_UpdateEntity(int ent, const AASEntityFrame *state)
         {
             return linkStatus;
         }
+
+		linkStatus = AAS_LinkEntityToBSPLeaves(entity, absmins, absmaxs);
+		if (linkStatus != BLERR_NOERROR)
+		{
+			return linkStatus;
+		}
     }
 
 	if (ent > 0 && state->origin_dirty && entity->solid == SOLID_BSP)

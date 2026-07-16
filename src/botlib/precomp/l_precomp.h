@@ -65,8 +65,8 @@ typedef struct pc_diagnostic_s {
     struct pc_diagnostic_s *next;
 } pc_diagnostic_t;
 
-// Creates the global tables that map punctuation sequences to token subtypes
-// and registers the built-in defines used by the Quake III AI scripts.
+// Resets the global define state used by subsequent source loads. Retail
+// built-in macro definitions remain opt-in through PC_AddBuiltinDefines.
 void PC_InitLexer(void);
 
 // Releases all cached sources and diagnostic chains.
@@ -83,6 +83,9 @@ pc_source_t *PC_LoadSourceFile(const char *path);
 pc_source_t *PC_LoadSourceMemory(const char *name,
                                   const char *buffer,
                                   size_t buffer_size);
+
+// Installs the opt-in built-in macro definitions on an existing source.
+void PC_AddBuiltinDefines(pc_source_t *source);
 
 // Releases a source handle and any diagnostics queued on it.
 void PC_FreeSource(pc_source_t *source);

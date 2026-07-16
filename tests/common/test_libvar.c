@@ -231,7 +231,7 @@ static void test_retail_struct_and_allocation_layout(void)
 =============
 test_create_get_string_and_value_semantics
 
-Pins case-insensitive lookup, default stickiness, and miss return values.
+Pins ASCII case-insensitive lookup, default stickiness, and miss return values.
 =============
 */
 static void test_create_get_string_and_value_semantics(void)
@@ -250,6 +250,11 @@ static void test_create_get_string_and_value_semantics(void)
 	assert(strcmp(LibVarString("mixed", "77"), "12.25") == 0);
 	assert(LibVarValue("mixed", "66") == 12.25f);
 	assert(g_allocator.allocation_count == 2);
+
+	const char high_byte_name_one[] = {'n', (char)0xc0, '\0'};
+	const char high_byte_name_two[] = {'N', (char)0xe0, '\0'};
+	assert(LibVar(high_byte_name_one, "1") != NULL);
+	assert(LibVarGet(high_byte_name_two) == NULL);
 
 	test_finish();
 }

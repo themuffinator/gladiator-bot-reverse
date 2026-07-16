@@ -333,7 +333,7 @@ int EA_EndRegular(int client, float thinktime)
 		return BLERR_INVALIDCLIENTNUMBER;
 	}
 
-	bot_import_t *imports = Q2Bridge_GetImportTable();
+	bot_import_extended_t *imports = Q2Bridge_GetImportTable();
 	if (imports == NULL || imports->BotInput == NULL)
 	{
 		return BLERR_INVALIDIMPORT;
@@ -359,7 +359,7 @@ static void EA_ImportedCommand(int client, const char *command, const char *argu
 		return;
 	}
 
-	bot_import_t *imports = Q2Bridge_GetImportTable();
+	bot_import_extended_t *imports = Q2Bridge_GetImportTable();
 	if (imports == NULL || imports->BotClientCommand == NULL)
 	{
 		return;
@@ -471,7 +471,7 @@ static void EA_DispatchGenericCommand(int client,
 	const char *command,
 	char *arguments[EA_MAX_COMMAND_ARGUMENTS])
 {
-	bot_import_t *imports = Q2Bridge_GetImportTable();
+	bot_import_extended_t *imports = Q2Bridge_GetImportTable();
 	if (imports == NULL || imports->BotClientCommand == NULL)
 	{
 		return;

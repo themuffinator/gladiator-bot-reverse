@@ -358,6 +358,14 @@ static void BotLib_NormalizePakKey(char *buffer, size_t size, const char *path)
     buffer[index] = '\0';
 }
 
+/*
+=============
+BotLib_CreateDirectoryTree
+
+Creates cache parent directories without attempting to create the Windows
+drive designator itself.
+=============
+*/
 static bool BotLib_CreateDirectoryTree(const char *path)
 {
     if (BotLib_IsStringEmpty(path)) {
@@ -373,7 +381,16 @@ static bool BotLib_CreateDirectoryTree(const char *path)
         }
     }
 
-    for (size_t i = 1; i <= length; ++i) {
+    size_t first_separator = 1U;
+#ifdef _WIN32
+	if (length >= 3U && isalpha((unsigned char)scratch[0]) &&
+		scratch[1] == ':' && scratch[2] == '/')
+	{
+		first_separator = 3U;
+	}
+#endif
+
+    for (size_t i = first_separator; i <= length; ++i) {
         if (scratch[i] != '/' && scratch[i] != '\0') {
             continue;
         }

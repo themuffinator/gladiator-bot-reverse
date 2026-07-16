@@ -425,7 +425,7 @@ void BotState_Destroy(int client)
 =============
 BotState_Move
 
-Transfers a bot state from one client slot to another.
+Moves the backing-slot ownership without changing copied client state.
 =============
 */
 void BotState_Move(int old_client, int new_client)
@@ -441,20 +441,6 @@ void BotState_Move(int old_client, int new_client)
 	bot_client_state_t *state = g_bot_state_table[old_client];
 	g_bot_state_table[new_client] = state;
 	g_bot_state_table[old_client] = NULL;
-
-	if (state != NULL) {
-		state->client_number = new_client;
-		state->entity_number = new_client + 1;
-		memcpy(&state->client_settings,
-			&g_bot_client_settings[new_client],
-			sizeof(state->client_settings));
-		if (state->chat_state != NULL) {
-			BotSetChatName(state->chat_state, BotChatName(state->chat_state), new_client);
-		}
-		if (state->dm_state != NULL) {
-			AI_DMState_SetClient(state->dm_state, new_client);
-		}
-	}
 }
 
 /*
@@ -767,12 +753,14 @@ Returns the live presentation name stored for a client slot.
 */
 const char *BotState_ClientName(int client)
 {
-	const bot_clientsettings_t *settings = BotState_ClientSettings(client);
-	if (settings == NULL) {
+	if (!BotState_ClientInRange(client)) {
+		BotLib_Print(PRT_WARNING,
+			"ClientName: client %d out of range\n",
+			client);
 		return "";
 	}
 
-	return settings->netname;
+	return g_bot_client_settings[client].netname;
 }
 
 /*
@@ -784,12 +772,14 @@ Returns the live presentation skin stored for a client slot.
 */
 const char *BotState_ClientSkin(int client)
 {
-	const bot_clientsettings_t *settings = BotState_ClientSettings(client);
-	if (settings == NULL) {
+	if (!BotState_ClientInRange(client)) {
+		BotLib_Print(PRT_WARNING,
+			"ClientSkin: client %d out of range\n",
+			client);
 		return "";
 	}
 
-	return settings->skin;
+	return g_bot_client_settings[client].skin;
 }
 
 /*

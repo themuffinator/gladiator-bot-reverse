@@ -12,6 +12,7 @@
 
 static int g_last_botlib_message_type = 0;
 static char g_last_botlib_message[1024];
+static char g_botlib_message_history[8192];
 static float g_aas_time = 0.0f;
 typedef struct botlib_test_libvar_s {
         char name[64];
@@ -160,6 +161,56 @@ void BotLib_TestResetLastMessage(void) {
 
 /*
 =============
+BotLib_TestResetMessageHistory
+
+Clears the ordered Print and LogWrite stream captured by the chat test stub.
+=============
+*/
+void BotLib_TestResetMessageHistory(void)
+{
+	g_botlib_message_history[0] = '\0';
+}
+
+/*
+=============
+BotLib_TestGetMessageHistory
+
+Returns the ordered Print and LogWrite stream captured by the chat test stub.
+=============
+*/
+const char *BotLib_TestGetMessageHistory(void)
+{
+	return g_botlib_message_history;
+}
+
+/*
+=============
+BotLib_TestAppendMessageHistory
+
+Appends one formatted botlib message while preserving the test stub's bounds.
+=============
+*/
+static void BotLib_TestAppendMessageHistory(const char *message)
+{
+	if (message == NULL)
+	{
+		return;
+	}
+
+	const size_t used = strlen(g_botlib_message_history);
+	if (used >= sizeof(g_botlib_message_history) - 1U)
+	{
+		return;
+	}
+
+	(void)snprintf(g_botlib_message_history + used,
+		sizeof(g_botlib_message_history) - used,
+		"%s",
+		message);
+}
+
+/*
+=============
 BotLib_TestGetLastMessage
 
 Returns the cached BotLib_Print message text.
@@ -199,6 +250,7 @@ void BotLib_Print(int type, const char *fmt, ...) {
 	va_copy(copy, args);
 	vsnprintf(g_last_botlib_message, sizeof(g_last_botlib_message), fmt, copy);
 	va_end(copy);
+	BotLib_TestAppendMessageHistory(g_last_botlib_message);
 
 	vfprintf(stderr, fmt, args);
 	va_end(args);
@@ -212,6 +264,12 @@ BotLib_LogWrite
 void BotLib_LogWrite(const char *fmt, ...) {
 	va_list args;
 	va_start(args, fmt);
+	char message[1024];
+	va_list copy;
+	va_copy(copy, args);
+	vsnprintf(message, sizeof(message), fmt, copy);
+	va_end(copy);
+	BotLib_TestAppendMessageHistory(message);
 	vfprintf(stderr, fmt, args);
 	va_end(args);
 }

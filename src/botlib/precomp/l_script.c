@@ -40,6 +40,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "shared/q_platform.h"
 
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "l_precomp.h"
@@ -2064,6 +2065,7 @@ pc_script_t *LoadScriptFile(const char *filename)
         return NULL;
     }
 
+    CRC_RegisterSourceData(filename, script->buffer, (int)raw_length);
     script->length = COM_Compress(script->buffer);
     return script;
 } //end of the function LoadScriptFile

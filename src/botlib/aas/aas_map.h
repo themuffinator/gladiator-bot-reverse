@@ -126,9 +126,12 @@ int AAS_NextEntity(int entnum);
 void AAS_EntityInfo(int entnum, aas_entityinfo_t *info);
 void AAS_EntityOrigin(int entnum, vec3_t origin);
 int AAS_EntityModelindex(int entnum);
+int AAS_EntityRenderFX(int entnum);
 int AAS_EntityModelNum(int entnum);
 void AAS_EntitySize(int entnum, vec3_t mins, vec3_t maxs);
 int AAS_OriginOfMoverWithModelNum(int modelnum, vec3_t origin);
+int AAS_NearestEntity(const vec3_t origin, int modelindex);
+int AAS_BestReachableEntityArea(int entnum);
 void AAS_BSPModelMinsMaxsOrigin(int modelnum,
                                 const vec3_t angles,
                                 vec3_t mins,

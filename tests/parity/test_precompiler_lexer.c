@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <cmocka.h>
 
+#include "botlib/common/l_crc.h"
+#include "botlib/common/l_memory.h"
 #include "botlib/precomp/l_precomp.h"
 #include "botlib/precomp/l_script.h"
 
@@ -204,12 +206,12 @@ static void expect_tokens_match_fixture(pc_source_t *source,
 
 /*
 =============
-test_pc_merges_numeric_tokens_with_matching_subtype
+test_pc_rejects_numeric_token_pasting
 
-Ensures the token pasting operator concatenates numeric tokens that share a subtype.
+Pins the retail token-pasting failure for two numeric tokens.
 =============
 */
-static void test_pc_merges_numeric_tokens_with_matching_subtype(void **state)
+static void test_pc_rejects_numeric_token_pasting(void **state)
 {
 	(void)state;
 
@@ -220,13 +222,131 @@ static void test_pc_merges_numeric_tokens_with_matching_subtype(void **state)
 	assert_non_null(source);
 
 	pc_token_t token;
-	assert_int_equal(1, PC_ReadToken(source, &token));
-	assert_int_equal(TT_NUMBER, token.type);
-	assert_true((token.subtype & TT_DECIMAL) != 0);
-	assert_true((token.subtype & TT_INTEGER) != 0);
-	assert_string_equal("1234", token.string);
-	assert_int_equal(1234, (int)token.intvalue);
+	assert_int_equal(0, PC_ReadToken(source, &token));
 
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_pc_stringizes_macro_tokens_without_whitespace
+
+Pins the retail stringizer's direct token-text concatenation at 0x10039a70.
+=============
+*/
+static void test_pc_stringizes_macro_tokens_without_whitespace(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "#define AS_TEXT(value) # value\nAS_TEXT(foo + bar)\n";
+	pc_source_t *source = PC_LoadSourceMemory("stringize_tokens", script,
+		strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_STRING, token.type);
+	assert_string_equal("\"foo+bar\"", token.string);
+	assert_null(token.whitespace_p);
+	assert_null(token.endwhitespace_p);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_pc_builtin_macros_preserve_name_token_metadata
+
+Pins retail expansion's text-only update for the built-in macro token copy.
+=============
+*/
+static void test_pc_builtin_macros_preserve_name_token_metadata(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "__LINE__\n__FILE__\n";
+	pc_source_t *source = PC_LoadSourceMemory("builtin_metadata", script,
+		strlen(script));
+	assert_non_null(source);
+	PC_AddBuiltinDefines(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NAME, token.type);
+	assert_int_equal(8, token.subtype);
+	assert_string_equal("1", token.string);
+
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NAME, token.type);
+	assert_int_equal(8, token.subtype);
+	assert_string_equal("builtin_metadata", token.string);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_pc_keeps_macro_adjacent_quoted_strings_separate
+
+Pins retail PC_ReadToken, which does not join strings across a macro expansion.
+=============
+*/
+static void test_pc_keeps_macro_adjacent_quoted_strings_separate(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "#define FIRST \"first\"\nFIRST \"second\"";
+	pc_source_t *source = PC_LoadSourceMemory("macro_adjacent_strings", script,
+		strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_STRING, token.type);
+	assert_string_equal("\"first\"", token.string);
+
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_STRING, token.type);
+	assert_string_equal("\"second\"", token.string);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_pc_concatenates_physical_adjacent_quoted_strings
+
+Pins retail PS_ReadString, which combines adjacent source string literals.
+=============
+*/
+static void test_pc_concatenates_physical_adjacent_quoted_strings(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "\"first\" \"second\"";
+	pc_source_t *source = PC_LoadSourceMemory("physical_adjacent_strings", script,
+		strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_STRING, token.type);
+	assert_string_equal("\"firstsecond\"", token.string);
 	assert_int_equal(0, PC_ReadToken(source, &token));
 
 	PC_FreeSource(source);
@@ -319,6 +439,51 @@ static void test_pc_preserves_memory_block_comment_token_boundary(void **state)
 	assert_int_equal(5, token.subtype);
 	assert_string_equal("right", token.string);
 
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_pc_dollar_evaluators_preserve_retail_token_caches
+
+Pins the raw $eval emitters: integer results retain their evaluated cache, and
+negative float results are emitted as a separate minus token plus an
+absolute-text number whose caches retain the negative value.
+=============
+*/
+static void test_pc_dollar_evaluators_preserve_retail_token_caches(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "$evalint(2 + 3)\n$evalfloat(-1.25)\n";
+	pc_source_t *source = PC_LoadSourceMemory("dollar_eval_tokens", script,
+		strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_int_equal(TT_INTEGER | TT_LONG | TT_DECIMAL, token.subtype);
+	assert_string_equal("5", token.string);
+	assert_int_equal(5, (int)token.intvalue);
+	assert_float_equal(5.0f, token.floatvalue, 0.0f);
+
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_PUNCTUATION, token.type);
+	assert_int_equal(P_SUB, token.subtype);
+	assert_string_equal("-", token.string);
+
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_int_equal(TT_FLOAT | TT_LONG | TT_DECIMAL, token.subtype);
+	assert_string_equal("1.25", token.string);
+	assert_int_equal(-1, (int)token.intvalue);
+	assert_float_equal(-1.25f, token.floatvalue, 0.0f);
 	assert_int_equal(0, PC_ReadToken(source, &token));
 
 	PC_FreeSource(source);
@@ -425,8 +590,55 @@ static void test_pc_peek_and_unread_mirror_hlil_behaviour(void **state)
     assert_non_null(second);
     assert_token_matches(0, &g_fw_items_token_expectations[0], second);
 
-    PC_FreeSource(source);
-    PC_ShutdownLexer();
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_load_script_file_registers_uncompressed_source_checksum
+
+Pins the raw-file checksum taken before LoadScriptFile applies COM_Compress.
+=============
+*/
+static void test_load_script_file_registers_uncompressed_source_checksum(
+	void **state)
+{
+	(void)state;
+	static const char path[] = "__gladiator_raw_source_crc.c";
+	static const char source[] =
+		"// Preserve raw bytes before compression.\r\n"
+		"first /* comment */ second\r\n";
+
+	remove(path);
+	CRC_ResetSourceChecksums();
+	assert_true(BotMemory_Init(BOT_MEMORY_DEFAULT_HEAP_SIZE));
+	PS_SetBaseFolder(NULL);
+
+	FILE *file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_int_equal(fwrite(source, 1U, sizeof(source) - 1U, file),
+		sizeof(source) - 1U);
+	assert_int_equal(fclose(file), 0);
+
+	pc_script_t *script = LoadScriptFile(path);
+	assert_non_null(script);
+	assert_true(script->length < (int)(sizeof(source) - 1U));
+	assert_int_equal(CRC_SourceChecksumCount(), 1U);
+
+	uint16_t checksum = 0;
+	char name[64];
+	assert_true(CRC_SourceChecksumAt(0U,
+		&checksum,
+		name,
+		sizeof(name)));
+	assert_int_equal(checksum, 0xA41C);
+	assert_string_equal(name, path);
+
+	FreeScript(script);
+	CRC_ResetSourceChecksums();
+	BotMemory_Shutdown();
+	assert_int_equal(remove(path), 0);
 }
 
 int main(void)
@@ -434,12 +646,18 @@ int main(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_pc_loads_fw_items_and_matches_hlil_tokens),
         cmocka_unit_test(test_pc_loads_synonyms_and_matches_hlil_tokens),
-        cmocka_unit_test(test_pc_peek_and_unread_mirror_hlil_behaviour),
-        cmocka_unit_test(test_pc_merges_numeric_tokens_with_matching_subtype),
+		cmocka_unit_test(test_pc_peek_and_unread_mirror_hlil_behaviour),
+		cmocka_unit_test(test_pc_rejects_numeric_token_pasting),
+		cmocka_unit_test(test_pc_stringizes_macro_tokens_without_whitespace),
+		cmocka_unit_test(test_pc_builtin_macros_preserve_name_token_metadata),
+		cmocka_unit_test(test_pc_keeps_macro_adjacent_quoted_strings_separate),
+		cmocka_unit_test(test_pc_concatenates_physical_adjacent_quoted_strings),
 		cmocka_unit_test(test_pc_expands_chat_named_define),
 		cmocka_unit_test(test_pc_reports_full_quoted_string_subtype),
 		cmocka_unit_test(test_pc_preserves_memory_block_comment_token_boundary),
-    };
+		cmocka_unit_test(test_pc_dollar_evaluators_preserve_retail_token_caches),
+		cmocka_unit_test(test_load_script_file_registers_uncompressed_source_checksum),
+	};
 
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

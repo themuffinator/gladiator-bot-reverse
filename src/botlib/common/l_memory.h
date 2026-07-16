@@ -36,6 +36,7 @@ size_t MemoryByteSize(const void *ptr);
 int AvailableMemory(void);
 
 size_t BotMemory_TotalAllocated(void);
+size_t BotMemory_BlockCount(void);
 size_t BotMemory_HeapCapacity(void);
 
 #ifdef __cplusplus

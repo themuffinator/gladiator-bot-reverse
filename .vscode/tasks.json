@@ -45,7 +45,7 @@
       "problemMatcher": "$msCompile"
     },
     {
-      "label": "Install gladiator.dll to C:\\q2Clean\\gladiator",
+      "label": "Install gladiator.dll to E:\\Games\\q2Clean\\gladiator",
       "type": "process",
       "command": "pwsh",
       "args": [

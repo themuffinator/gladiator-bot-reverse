@@ -45,31 +45,146 @@ static void stub_emit_punctuation(pc_source_t *source, const char *punc, int lin
     stub_push_token(source, &token);
 }
 
-static bool stub_parse_number(const char *lexeme, pc_token_t *token) {
-    char *end = NULL;
-    long value = strtol(lexeme, &end, 0);
-    if (end != NULL && *end == '\0') {
-        stub_token_clear(token);
-        token->type = TT_NUMBER;
-        token->subtype = TT_INTEGER;
-        token->intvalue = (unsigned long)value;
-        token->floatvalue = (long double)value;
-        strncpy(token->string, lexeme, sizeof(token->string) - 1);
-        return true;
-    }
+/*
+=============
+stub_parse_number
 
-    double float_value = strtod(lexeme, &end);
-    if (end != NULL && *end == '\0') {
-        stub_token_clear(token);
-        token->type = TT_NUMBER;
-        token->subtype = TT_FLOAT;
-        token->intvalue = (unsigned long)float_value;
-        token->floatvalue = (long double)float_value;
-        strncpy(token->string, lexeme, sizeof(token->string) - 1);
-        return true;
-    }
+Mirrors the retail token-value cache used by the structure reader tests.
+=============
+*/
+static bool stub_parse_number(const char *lexeme, pc_token_t *token)
+{
+	if (lexeme == NULL || token == NULL || lexeme[0] == '\0')
+	{
+		return false;
+	}
 
-    return false;
+	const char *cursor = lexeme;
+	unsigned long intvalue = 0;
+	long double floatvalue = 0.0;
+	int subtype = 0;
+	bool has_digits = false;
+
+	if (cursor[0] == '0' && (cursor[1] == 'x' || cursor[1] == 'X'))
+	{
+		subtype = TT_HEX;
+		cursor += 2;
+		while (*cursor != '\0')
+		{
+			unsigned int digit;
+			if (*cursor >= '0' && *cursor <= '9')
+			{
+				digit = (unsigned int)(*cursor - '0');
+			}
+			else if (*cursor >= 'a' && *cursor <= 'f')
+			{
+				digit = (unsigned int)(*cursor - 'a' + 10);
+			}
+			else if (*cursor == 'A')
+			{
+				digit = 10;
+			}
+			else
+			{
+				return false;
+			}
+			intvalue = (intvalue << 4) + digit;
+			has_digits = true;
+			++cursor;
+		}
+		floatvalue = (long double)intvalue;
+	}
+	else if (cursor[0] == '0' && (cursor[1] == 'b' || cursor[1] == 'B'))
+	{
+		subtype = TT_BINARY;
+		cursor += 2;
+		while (*cursor != '\0')
+		{
+			if (*cursor != '0' && *cursor != '1')
+			{
+				return false;
+			}
+			intvalue = (intvalue << 1) + (unsigned long)(*cursor - '0');
+			has_digits = true;
+			++cursor;
+		}
+		floatvalue = (long double)intvalue;
+	}
+	else
+	{
+		bool octal = cursor[0] == '0';
+		bool floating = false;
+		unsigned long divisor = 0;
+		while (*cursor != '\0')
+		{
+			if (*cursor == '.')
+			{
+				if (floating)
+				{
+					return false;
+				}
+				floating = true;
+				divisor = 10;
+				++cursor;
+				continue;
+			}
+			if (*cursor < '0' || *cursor > '9')
+			{
+				return false;
+			}
+			if (*cursor == '8' || *cursor == '9')
+			{
+				octal = false;
+			}
+			if (floating)
+			{
+				floatvalue += (long double)(*cursor - '0') / divisor;
+				divisor *= 10;
+			}
+			else
+			{
+				floatvalue = floatvalue * 10.0 + (*cursor - '0');
+			}
+			has_digits = true;
+			++cursor;
+		}
+
+		if (floating)
+		{
+			subtype = (octal ? TT_OCTAL : TT_DECIMAL) | TT_FLOAT;
+			intvalue = (unsigned long)floatvalue;
+		}
+		else
+		{
+			subtype = octal ? TT_OCTAL : TT_DECIMAL;
+			const char *digits = lexeme + (octal ? 1 : 0);
+			while (*digits != '\0')
+			{
+				intvalue = octal ?
+					((intvalue << 3) + (unsigned long)(*digits - '0')) :
+					(intvalue * 10 + (unsigned long)(*digits - '0'));
+				++digits;
+			}
+			floatvalue = (long double)intvalue;
+		}
+	}
+
+	if (!has_digits)
+	{
+		return false;
+	}
+
+	stub_token_clear(token);
+	token->type = TT_NUMBER;
+	token->subtype = subtype;
+	if ((subtype & TT_FLOAT) == 0)
+	{
+		token->subtype |= TT_INTEGER;
+	}
+	token->intvalue = intvalue;
+	token->floatvalue = floatvalue;
+	strncpy(token->string, lexeme, sizeof(token->string) - 1);
+	return true;
 }
 
 static void stub_parse_script(pc_source_t *source, const char *script) {

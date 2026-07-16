@@ -17,6 +17,7 @@ target_compile_features(bspc_filesystem_tests PRIVATE cxx_std_17)
 target_compile_definitions(bspc_filesystem_tests PRIVATE PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
 add_test(NAME bspc_filesystem COMMAND bspc_filesystem_tests)
+set_tests_properties(bspc_filesystem PROPERTIES SKIP_RETURN_CODE 125)
 
 if(Python3_Interpreter_FOUND)
     add_test(
@@ -31,5 +32,6 @@ if(Python3_Interpreter_FOUND)
         bspc_cli_modes
         PROPERTIES
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+            SKIP_RETURN_CODE 125
     )
 endif()

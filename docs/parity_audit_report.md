@@ -17,8 +17,8 @@ Based on the detailed analysis of the parity matrix:
 | Move      | 12          | 0         | 0       | 12    | 100.0%   |
 | Weapon    | 5           | 0         | 0       | 5     | 100.0%   |
 | Character | 4           | 0         | 0       | 4     | 100.0%   |
-| Chat      | 14          | 1         | 0       | 15    | 93.3%    |
-| **Total** | **66**      | **1**     | **0**   | **67**| **98.5%**|
+| Chat      | 15          | 1         | 0       | 16    | 93.8%    |
+| **Total** | **67**      | **1**     | **0**   | **68**| **98.5%**|
 
 *Note: "Divergent" items are considered not fully implemented for the purpose of strict parity calculation.*
 
@@ -34,9 +34,19 @@ number must not be presented as overall `gladiator.dll` parity.
 
 The previously divergent goal-module items have been closed:
 
-1.  `BotInitLevelItems` now performs item-def loading and BSP entity-lump parsing for level items, map locations, and camp spots.
-2.  `BotItemGoalInVisButNotVisible` now follows the retail stale-entity visibility gate logic.
-3.  `BotGetMapLocationGoal` now resolves parsed `target_location` records with retail-style bounds.
+1.  `BotInitLevelItems` now performs item-def loading and BSP entity-lump parsing for level items, map locations, and camp spots. Its item loader now owns the retail dynamic `max_iteminfo` table (default 256), resets negative values, and rejects overflow atomically rather than accepting a truncated item config; its level-item pool also follows `max_levelitems` (default 512), its retail exhaustion diagnostic, non-clearing free-list lifecycle, and the retail head-inserted active-list order used by `BotGetLevelItemGoal`. The primary itemconfig pass now canonicalises its quoted classname/name/model values and only falls back to the raw reader after a parse failure, so it does not duplicate definitions.
+2.  `BotLoadItemWeights` now creates its fuzzy-weight index table over the complete `iteminfo` config in source order, as in `sub_1002f100`; a missing config entry retains the exact index/classname warning even when that item has no level instance.
+3.  `BotItemGoalInVisButNotVisible` now follows the retail stale-entity visibility gate logic.
+4.  `BotGetMapLocationGoal` now resolves parsed `target_location` records with retail-style bounds.
+
+The raw LTG/NBG selector was also re-audited against `sub_1002feb0` and
+`sub_10030260`: it rejects a missing or unreachable start area without Q3's
+last-area fallback, admits raw unlinked records, ignores the bridge-only
+respawn marker, adds the recovered `+20` timed-item score after travel scaling,
+pushes an item-only goal, preserves nonzero negative respawn values, and arms
+avoidance before a possibly overflowing goal-stack push. Its start-area query
+also derives ground-test mode from the two-units-below fluid mask rather than
+from the active client number.
 
 This round also promoted the chat subsystem into the tracked matrix and closed
 the global setup/shutdown gap. The chat work now covers sibling
@@ -76,8 +86,17 @@ conventions. Reply suppression is tied to `nochat`, rather than the adjacent
 `teamplay` libvar.
 Reply selection now uses retail's single setup-owned global list whenever chat
 setup exists; state-local reply parsing remains only for direct callers that
-bypass setup. Remaining chat gaps are the safe constructor handling around
-unchecked retail buffer and pointer failures, native pointer widths replacing
+bypass setup. The constructor additionally preserves the raw signed-byte
+arithmetic for malformed variable references when it reaches a diagnosable
+out-of-range index. Remaining chat gaps are restricted to retail's
+non-deterministic unchecked-memory paths: null/foreign constructor pointers,
+an overlong random identifier overflowing its 0x98-byte stack buffer, and
+negative or wrapped variable indices dereferenced without a lower-bound check.
+Initial-chat, reply-chat, and setup-owned reply loading now also run the raw
+post-parse integrity scans: escaped random references are checked against the
+setup `rnd.c` tables, each missing identifier is logged once per load pass, and
+invalid escape bytes retain their non-fatal diagnostic.
+Native pointer widths replace
 x86 node pointers, and the literal-template matcher retrying normalized source
 text when CTF synonym canonicalization would otherwise hide `rush base`. The
 reconstructed node scheduler now owns the stand-state transition rather than
@@ -93,10 +112,49 @@ nearby-item lease.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L25197-L25231】�
 Whole-DLL auditing has additionally confirmed mismatches outside this matrix,
 including export return conventions, entity/client guards, allocator and
 libvar bookkeeping, import-table ownership, and map-refresh behavior. The
+allocator now distinguishes the two retail paths: `GetMemory` mirrors
+`sub_10038f90`'s tracked non-clearing allocation, while `GetClearedMemory`
+mirrors `sub_10039000` by zeroing exactly the requested payload after the
+tracked header is built. The exported setup path now also opens `botlib.log` before its banner
+when `log` is enabled, while core shutdown closes that same log before the
+library state is cleared.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L43434-L43480】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L44091-L44156】【F:src/botlib/interface/bot_interface.c】【F:src/botlib/interface/botlib_interface.c】【F:tests/parity/test_bot_interface.c】
+Client setup also preserves the retail fatal character-load diagnostic,
+including its character-name/file ordering, rather than emitting an adapter
+error.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32494-L32507】【F:src/botlib/interface/bot_interface.c】【F:tests/parity/test_bot_interface.c】
+The common CRC subsystem now restores the retail ordered source-checksum list:
+raw parser file loads record their uncompressed bytes, and each client setup
+records the loaded BSP entity lump under the current map name. The retained
+list uses the DLL's 16-bit CRC, the embedded 92-value checksum suppression
+catalogue, name-only duplicate suppression, and diagnostic-log dump
+form.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L8881-L8884】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L43234-L43352】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L50651-L50656】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L75453-L75477】【F:src/botlib/common/l_crc.c】【F:src/botlib/precomp/l_script.c】【F:src/botlib/aas/aas_map.c】【F:tests/common/test_bot_common.c】
+The AAS loader and generated-world paths now use that same retail allocator:
+every retained AAS/BSP lump, the optimizer's compact geometry and index maps,
+the 65,536-entry temporary reachability heap, flattened reachability data, and
+the 65,536-entry cluster tables are acquired with `GetClearedMemory` and released
+with `FreeMemory`. This matches `sub_1000c670`, `sub_10010c10`,
+`sub_10010f60`, and `sub_100096e0`, making map-lifetime allocations visible to
+the retail `showmemoryusage`/`memorydump` bookkeeping. The synthetic BSP
+texinfo fixture now asserts both allocation tracking during load and exact
+release on shutdown. The fixed setup-time entity table likewise now follows
+`sub_1000edc0`'s `maxentities × 0x84` tracked allocation and release contract;
+the host-only dynamic fallback copies through a new tracked block instead of
+using `realloc`. A self-contained entity-link regression proves the fallback
+returns its allocation to the tracker. The persistent sound metadata pool now
+uses the raw 0xb0-byte `name[80]`/scalar/`string[80]` record layout and the
+cleared path, while the raw 0x34-byte sound free-list pool uses tracked
+non-clearing storage before its link fields are explicitly initialised. The
+independent point-light free list uses the same 0x34-byte allocation shape,
+but only if its otherwise-unconnected raw initializer is invoked. The
+sound-index map is likewise now the DLL's cleared tracked
+pointer table: it borrows engine-owned asset names and maps only exact
+`strcmp` matches to sound-info records, rather than retaining compatibility
+copies or normalized lookup strings.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L11382-L11500】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L9693-L9710】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L13042-L13054】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L14213-L14318】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L23970-L24100】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L24437-L24481】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L44261-L44281】【F:src/botlib/aas/aas_map.c】【F:src/botlib/aas/aas_cluster.c】【F:src/botlib/aas/aas_optimize.c】【F:src/botlib/aas/aas_reach.c】【F:src/botlib/aas/aas_sound.c】【F:tests/aas/test_aas_map.c】【F:tests/parity/test_aas_debug.c】
+The
 original import/export prefixes and `bot_input_t.actionflags` slot are now
 enforced by runtime ABI tests. `GetBotAPI` now bounds its read to the exact
-ten-callback retail prefix, while `GetBotAPIEx` explicitly owns the optional
-tail. Named map loads register their asset tables before discovery, empty map
+ten-callback retail prefix; the DLL export directory now exposes that one
+retail entry only, while non-exported `GetBotAPIEx` explicitly owns the
+optional tail for in-repo integration tests. Named map loads register their asset tables before discovery, empty map
 names follow the retail `maps\.bsp` lookup, and BSP/AAS discovery and header
 failures use the recovered fatal messages and `BLERR` codes. Named BSP lump
 failures now distinguish odd size, seek, and read paths; AAS lumps preserve
@@ -186,7 +244,7 @@ refreshes the retained enemy inventory and runs general item use before direct
 movement setup; active Battle NBG and Retreat run that general item-use pass
 immediately before their own movement setup, while Retreat's no-goal idle
 turn emits no general item use. It then
-clears the ordinary nearby-goal deadline on failure and runs the recovered
+clears the retained LTG deadline on failure and runs the recovered
 post-result `BotAIBlocked` handoff before using result movement/swim view flags
 or the fixed 300-unit route lookahead,
 but preserves an explicitly mover-set EA view and skips the private accelerated
@@ -205,7 +263,7 @@ distinct no-rocket-jump travel mask, promotes a flag carrier to LTG 5 (Rush
 Base) by clearing its away clock and setting its 120-second team-goal deadline
 before resolving and directly moving to the home flag, and otherwise
 selects/directly moves its retained LTG,
-clears the ordinary nearby-goal deadline on mover failure, runs the same
+clears the retained LTG deadline on mover failure, runs the same
 blocked handoff, and preserves its movement-view versus
 low-skill-lookahead versus weapon-aware-aim branch before checking attack.
 Seek LTG now also runs the retail autonomous CTF selector before resolving a
@@ -267,10 +325,11 @@ retained private turn without refreshing the move state. The normal item branch 
 the complete item reach/absence/vertical-overlap predicate, and empties the
 goal stack before clearing both avoid layers if every replacement remains
 avoided; failed movement immediately expires that item lease. Direct blocked
-movement now follows retail `BotAIBlocked`: it maps a blocked static BSP model
-to `func_door`, `func_door_secret`, `func_button`, `trigger_multiple`, or
-`trigger_once`; doors and shootable buttons use Blaster while aiming at the
-recovered brush face, and reachable activators enter the single ten-second
+movement now follows retail `BotAIBlocked`: its `BotEntityToActivate` helper
+first resolves the blocked inline model and walks reverse `target` links through
+up to ten `trigger_counter` / `trigger_relay` entities to find the actual
+button or trigger. Shootable doors and buttons use Blaster while aiming at the
+resolved brush face, and reachable activators enter the single ten-second
 Activate goal. Other blocks retry perpendicularly, toggling their direction
 only after the first direct move fails and expiring the active Seek-NBG/LTG
 lease. Camp arrival retains retail's random idle view, crouch-time hold,
@@ -296,9 +355,10 @@ linear projectile lead, square-roots Rocket Launcher accuracy, and reproduces
 the target jitter, Railgun direction perturbation, and vertical/horizontal
 spread call order. Radial aim now follows the retail ground-target trace order
 and preserves the strict shooter-distance, vertical-impact, and target-impact
-boundaries. `BotCheckAttack` uses the recovered bounding-box center/bottom/top
-FOV and PVS samples, medium-aware mask and direction adjustment, translucent-
-fluid continuation, boxed weapon sweep, teammate and splash checks, window
+boundaries. `BotCheckAttack` delegates the recovered bounding-box center/bottom/
+top FOV/PVS samples, medium-aware mask and direction adjustment, and translucent-
+fluid continuation to retail `AAS_EntityVisible`, then performs its boxed weapon
+sweep, teammate and splash checks, window
 follow-up, and fire-on-release latch. The PVS path retains and decodes the Quake
 II BSP dvis lump, including compressed zero rows and its all-visible fallback.
 Thirty focused state/action tests plus a direct dvis regression cover that
@@ -333,10 +393,11 @@ the zero-based client slot at bot-state offset `+4` and the one-based AAS entity
 number at `+8`. World-facing visibility, trace `passent`, attack sweeps,
 movement-state initialization, same-team tests, console-death enemy matching,
 and client-backed help/camp goals use the entity number; EA, chat, settings,
-and input APIs retain the client slot. The host `BotMoveClient` lifecycle still
-rewrites both identities for the destination slot rather than preserving the
-copied embedded values observed in retail, and `ltg_teammate` remains a
-zero-based internal adapter before conversion at AAS boundaries.
+and input APIs retain the client slot. `BotMoveClient` now mirrors the raw
+whole-record copy, so moving the backing slot preserves those embedded client
+and entity values (and nested DM/chat client fields) even when the external
+slot changes; `ltg_teammate` remains a zero-based internal adapter before
+conversion at AAS boundaries.
 【F:dev_tools/gladiator.dll.bndb_hlil.txt†L10934-L11035】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27133-L27165】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L27171-L27189】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28010-L28088】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28100-L28129】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28276-L28509】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L28732-L29298】【F:src/botlib/aas/aas_map.c】【F:src/botlib/interface/bot_interface.c】【F:tests/parity/test_bot_interface.c】【F:src/botlib/ai/ai_dm.c】【F:tests/aas/test_aas_map.c】【F:tests/ai/test_ai_dm.c】
 
 The low-level movement predictor now matches several previously observable
@@ -405,4 +466,48 @@ commits the setup flag before AAS/AI/EA, deliberately ignores the AAS setup
 return that retail overwrites with zero, retains the flag and initialized AAS
 state when later AI setup fails, and allows shutdown to clean that partial
 state. The relative retail shutdown order remains AI, AAS, then EA; local
-compatibility utilities and sound cleanup are layered around those calls.
+compatibility utilities are layered around those calls. The raw sound teardown
+helper is a no-op: AAS's final global-state clear discards sound references,
+then the common tracked allocator releases their storage at library shutdown.
+
+The sensory sound path now mirrors the retail fixed 0x34-byte heap instead of
+using a frame-local FIFO. `sub_1001ce20` writes delayed start/end times from the
+mapped soundinfo duration; `sub_1001cfa0` expires active sounds at `end <=
+frame`, then promotes only queued sounds whose `start < frame`, replacing the
+active matching entity/sound pair. Pool exhaustion emits the raw `empty sound
+heap` diagnostic and retains queued records. `BotUpdateSound` now delegates its
+sound-index range check to that leaf, preserving fatal `sound index ... out of
+range` output and code 32 instead of a host wrapper warning; it also no longer
+mutates the AAS entity sound field. Focused fixture-free coverage pins raw field
+offsets, end-time ordering, equal-boundary behavior, negative-offset
+replacement, and the wrapper diagnostic/status.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L24089-L24408】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L43650-L43658】【F:src/botlib/aas/aas_sound.c】【F:src/botlib/interface/bot_interface.c】【F:tests/aas/test_aas_pointlight.c】【F:tests/parity/test_bot_interface.c】
+
+Sound setup now has the recovered no-argument retail shape: it reads
+`max_aassounds` and `max_soundinfo` directly from libvars, validates their
+respective `0..65536` and `0..65535` ranges, writes the raw `256` fallback on
+failure, and supplies `LibVarString("soundconfig", "sounds.c")` to the
+metadata loader. A zero sound-info capacity therefore remains a real,
+zero-sized metadata pool and config parse rather than taking a host-only
+disabled shortcut. The separate `max_aaslights` heap is recovered at
+`sub_1000d340`, but has no retail `BotSetup` caller: normal library setup
+therefore leaves `BotAddPointLight` on its raw empty-heap warning path. Its
+explicit reconstruction-only initializer remains available for isolated heap
+coverage.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L11861-L11917】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L24487-L24497】【F:src/botlib/aas/aas_sound.c】【F:src/botlib/interface/botlib_interface.c】【F:tests/aas/test_aas_pointlight.c】【F:tests/parity/test_bot_interface.c】
+
+That metadata loader now opens `soundconfig` through the retail precompiler
+and accepts only top-level `soundinfo` names. Each record is cleared/defaulted
+then read through the shared generic `ReadStructure` field table, preserving
+macro expansion, source diagnostics, and the raw zero-capacity `more than 0
+sound infos defined` failure. Missing sources and parse failures leave the
+already-created sensory pools intact, matching the raw zero-result path rather
+than rolling the subsystem back.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L23970-L24080】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L51056-L51145】【F:src/botlib/aas/aas_sound.c】【F:src/botlib/common/l_struct.c】【F:tests/aas/test_aas_pointlight.c】
+
+`BotStartFrame` now follows the retail `sub_1000e010` order. It marks entity
+snapshots invalid without an invented stale-link sweep, advances sound and
+light queues, continues AAS initialization, resets only the per-frame routing
+cache-population counter, and consumes the one-shot `showcacheupdates`,
+`showmemoryusage`, and `memorydump` libvars. The latter two emit the raw
+tracked-byte/block summaries through the botlib print import. Fixture-free
+coverage verifies the retained entity link, absent compatibility route/reach
+passes, counter reset, output, libvar reset, and the same shared AAS clock
+used by exported avoid-goal expiry queries.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L12448-L12483】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L22117-L22122】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L37497-L37535】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L44331-L44346】【F:src/botlib/aas/aas_main.c】【F:src/botlib/aas/aas_route.c】【F:src/botlib/interface/bot_interface.c】【F:tests/parity/test_bot_interface.c】

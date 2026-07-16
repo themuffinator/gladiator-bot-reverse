@@ -251,7 +251,7 @@ void BotlibLog(int level, const char *fmt, ...)
     va_list args;
     va_start(args, fmt);
 
-    bot_import_t *imports = Q2Bridge_GetImportTable();
+    bot_import_extended_t *imports = Q2Bridge_GetImportTable();
     if (imports != NULL && imports->Print != NULL)
     {
         va_list args_copy;

@@ -568,7 +568,7 @@ static void test_bridge_bot_client_command(int client, char *fmt, ...)
     g_command_count += 1;
 }
 
-static bot_import_t g_test_bridge_imports = {
+static bot_import_extended_t g_test_bridge_imports = {
     .BotInput = test_bridge_bot_input,
     .BotClientCommand = test_bridge_bot_client_command,
     .Print = test_bridge_print,

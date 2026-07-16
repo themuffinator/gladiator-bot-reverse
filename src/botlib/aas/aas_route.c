@@ -691,6 +691,18 @@ int AAS_RetailFrameRoutingUpdateCount(void)
 
 /*
 =============
+AAS_BeginFrameRouting
+
+Reset the retail per-frame routing-cache population counter.
+=============
+*/
+void AAS_BeginFrameRouting(void)
+{
+	g_retail_frame_routing_updates = 0;
+}
+
+/*
+=============
 AAS_GetRetailAreaRoutingCache
 
 Find or insert the travel-flags cache in one cluster-area table slot.
@@ -3422,7 +3434,7 @@ Begin a routing frame and perform the compatibility cache maintenance pass.
 */
 void AAS_RouteFrameUpdate(void)
 {
-	g_retail_frame_routing_updates = 0;
+	AAS_BeginFrameRouting();
     int budget = AAS_ReadIntLibVar(Bridge_FrameReachability());
     g_route_frame_state.last_budget = budget;
     g_route_frame_state.forcewrite_active = AAS_LibVarEnabled(Bridge_ForceWrite());

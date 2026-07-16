@@ -85,6 +85,7 @@ when finished so resource leaks are easy to spot. The existing coverage includes
 | `test_reply_chat_rejects_unquoted_botname_list_entry` | Ensures `<...>` bot-name key lists require quoted string entries. |
 | `test_setup_chat_ai_match_string_alternatives_capture_variables` | Verifies setup-loaded `match.c` string alternatives flow through `BotFindMatch` and preserve public match-variable spans. |
 | `test_reply_chat_unknown_random_string_context_logs_error` | Validates that unknown random string identifiers surface a `BotConstructChat` error and leave the console queue untouched. |
+| `test_chat_loader_reports_unique_missing_randoms` | Verifies the retail initial/reply post-parse integrity scans log each unknown escaped random table once per load pass without rejecting the chat file. |
 | `test_include_path_too_long_is_rejected` | Bypasses the chat layer and exercises the precompiler diagnostics for oversized `#include` fragments. |
 
 A small helper, `drain_console`, clears any queued chat messages between steps so
@@ -96,8 +97,9 @@ The stub translation unit provides the bare minimum implementation surface area
 expected by the linked botlib sources:
 
 - `BotLib_Print`, `BotLib_LogWrite`, and `BotLib_Error` record messages to an
-  in-memory buffer and mirror them to `stderr`. The getters allow tests to assert
-  on the latest log entry without depending on stdout capture.
+  in-memory buffer and mirror them to `stderr`. The getters expose the latest
+  print plus an ordered Print/LogWrite history, allowing tests to assert on
+  loader diagnostics without depending on stdout capture.
 - On Windows, the harness routes debug CRT asserts to `stderr` so failing tests
   terminate through CTest instead of opening a modal runtime dialog.
 - Memory helpers (`GetMemory`, `GetClearedMemory`, `FreeMemory`) forward to the

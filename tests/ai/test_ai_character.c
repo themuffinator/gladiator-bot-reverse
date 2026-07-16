@@ -20,8 +20,10 @@
 
 #include "botlib/ai_character/bot_character.h"
 #include "botlib/ai_chat/ai_chat.h"
+#include "botlib/ai/ai_dm.h"
 #include "botlib/ai_weapon/bot_weapon.h"
 #include "botlib/ai_weight/bot_weight.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/ea/ea_local.h"
@@ -72,7 +74,7 @@ typedef struct test_environment_s {
     bool library_setup;
     bool client_active;
     ai_weapon_library_t *weapon_library;
-    bot_export_t *exports;
+    bot_export_extended_t *exports;
 } test_environment_t;
 
 static struct {
@@ -271,7 +273,7 @@ static const botlib_import_table_t g_test_imports = {
     .BotLibVarSet = test_libvar_set,
 };
 
-static bot_import_t g_test_bot_import = {
+static bot_import_extended_t g_test_bot_import = {
     .BotInput = test_bot_input,
     .BotClientCommand = test_bot_client_command,
     .Print = test_capture_import_print,
@@ -345,8 +347,9 @@ static int character_profile_teardown(void **state)
         env->libvar_initialised = false;
     }
 
-    if (env->memory_initialised) {
-        BotMemory_Shutdown();
+	if (env->memory_initialised) {
+		CRC_ResetSourceChecksums();
+		BotMemory_Shutdown();
         env->memory_initialised = false;
     }
 
@@ -382,7 +385,7 @@ static int bot_setup_client_setup(void **state)
     LibVar_Init();
     env->libvar_initialised = true;
 
-    env->exports = GetBotAPI(&g_test_bot_import);
+    env->exports = GetBotAPIEx(&g_test_bot_import, sizeof(g_test_bot_import));
     assert_non_null(env->exports);
 
     *state = env;
@@ -1208,10 +1211,10 @@ static void test_bot_setup_client_exposes_profile(void **state)
 	assert_null(BotState_Get(0));
 	state_slot = BotState_Get(1);
 	assert_non_null(state_slot);
-	assert_int_equal(state_slot->client_number, 1);
-	assert_int_equal(state_slot->entity_number, 2);
-	assert_string_equal(state_slot->client_settings.netname, "Moved Babe");
-	assert_string_equal(state_slot->client_settings.skin, "female/phoenix");
+	assert_int_equal(state_slot->client_number, 0);
+	assert_int_equal(state_slot->entity_number, 1);
+	assert_string_equal(state_slot->client_settings.netname, "Epsilon");
+	assert_string_equal(state_slot->client_settings.skin, "female/venus");
 	assert_string_equal(BotState_ClientName(1), "Moved Babe");
 	assert_string_equal(BotState_ClientSkin(1), "female/phoenix");
 	assert_int_equal(BotState_FindClientByName("Moved Babe"), 1);
@@ -1219,7 +1222,10 @@ static void test_bot_setup_client_exposes_profile(void **state)
 	assert_non_null(profile);
 	assert_non_null(profile->chat_state);
 	assert_string_equal(BotChatName((bot_chatstate_t *)profile->chat_state), "babe");
-	assert_int_equal(BotChatClient((bot_chatstate_t *)profile->chat_state), 1);
+	assert_int_equal(BotChatClient((bot_chatstate_t *)profile->chat_state), 0);
+	ai_dm_metrics_t moved_metrics;
+	AI_DMState_GetMetrics(state_slot->dm_state, &moved_metrics);
+	assert_int_equal(moved_metrics.client_number, 0);
 
 	status = env->exports->BotShutdownClient(1);
 	assert_int_equal(status, BLERR_NOERROR);

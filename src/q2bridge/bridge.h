@@ -16,7 +16,7 @@ extern "C" {
 /**
  * @brief Stores the bot import table for subsequent bridge calls.
  */
-void Q2Bridge_SetImportTable(bot_import_t *imports);
+void Q2Bridge_SetImportTable(bot_import_extended_t *imports);
 
 /**
  * @brief Clears the cached bot import table.
@@ -26,9 +26,9 @@ void Q2Bridge_ClearImportTable(void);
 /**
  * @brief Fetches the cached bot import table.
  */
-bot_import_t *Q2Bridge_GetImportTable(void);
+bot_import_extended_t *Q2Bridge_GetImportTable(void);
 
-static inline bot_import_t *Q2Bridge_GetImportsChecked(void)
+static inline bot_import_extended_t *Q2Bridge_GetImportsChecked(void)
 {
     return Q2Bridge_GetImportTable();
 }

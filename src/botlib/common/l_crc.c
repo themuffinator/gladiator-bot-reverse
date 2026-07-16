@@ -2,6 +2,49 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+#include "l_log.h"
+#include "l_memory.h"
+
+/*
+ * Retail stores these records as a 0x98-byte checksum/name/next chain.  The
+ * native representation keeps its pointer host-sized while preserving the
+ * CRC, 144-byte filename field, duplicate behavior, and lexical ordering.
+ */
+typedef struct crc_source_checksum_s
+{
+	uint16_t checksum;
+	char name[CRC_SOURCE_NAME_MAX];
+	struct crc_source_checksum_s *next;
+} crc_source_checksum_t;
+
+static crc_source_checksum_t *g_crc_source_checksums;
+
+/*
+ * The DLL suppresses registration for this embedded 92-record checksum
+ * catalogue before it checks source names or allocates a list node.  Although
+ * each record carries an adjacent category word in the original data table,
+ * sub_100377e0 compares only this 16-bit first field.
+ */
+static const uint16_t g_crc_embedded_source_checksums[] = {
+	0xA991U, 0xA757U, 0x7267U, 0x7A0DU, 0x937CU, 0xCF9BU,
+	0xC661U, 0xAAA3U, 0x9795U, 0x9C59U, 0x2528U, 0x55B2U,
+	0x879DU, 0xAE75U, 0xE512U, 0x218BU, 0x8E97U, 0x7437U,
+	0x0AE2U, 0x07C1U, 0x5CADU, 0x74D6U, 0x694AU, 0x0E67U,
+	0xF2C4U, 0xEB92U, 0x6322U, 0xB8A5U, 0xE1CCU, 0x4E75U,
+	0x2BB0U, 0xC54FU, 0xCDD2U, 0xDD83U, 0x0CA7U, 0x107EU,
+	0x2874U, 0xCE27U, 0xDADCU, 0x97A9U, 0xA84BU, 0x36FCU,
+	0x90DAU, 0x5214U, 0xD714U, 0x9384U, 0x6490U, 0x1617U,
+	0x7113U, 0xCEFEU, 0x60E6U, 0x1F50U, 0xC7F8U, 0x568BU,
+	0x7CF6U, 0x0A17U, 0x5491U, 0x2920U, 0xC438U, 0xB379U,
+	0x3418U, 0xAC0BU, 0x35FBU, 0x5FC8U, 0xA486U, 0x9AAFU,
+	0x20C2U, 0xFB60U, 0x4FDEU, 0xF0ABU, 0xA9D4U, 0xDF88U,
+	0xE5CCU, 0x0ED6U, 0x8BE0U, 0xA236U, 0x0BCBU, 0xCC7CU,
+	0x3E22U, 0x0E04U, 0x4578U, 0x343FU, 0xFE11U, 0x8C2EU,
+	0xC665U, 0x8AC0U, 0xB1B7U, 0x6A8EU, 0x8DF3U, 0xBC7DU,
+	0xE488U, 0x0000U
+};
 
 /* Precomputed 16-bit CCITT CRC table generated from polynomial 0x1021. */
 static const uint16_t g_crc_table[257] = {
@@ -38,6 +81,29 @@ static const uint16_t g_crc_table[257] = {
     0xef1f, 0xff3e, 0xcf5d, 0xdf7c, 0xaf9b, 0xbfba, 0x8fd9, 0x9ff8,
     0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0
 };
+
+/*
+=============
+CRC_IsEmbeddedSourceChecksum
+
+Matches the retail filter which suppresses checksum-catalogue entries.
+=============
+*/
+static int CRC_IsEmbeddedSourceChecksum(uint16_t checksum)
+{
+	for (size_t index = 0;
+		index < sizeof(g_crc_embedded_source_checksums) /
+			sizeof(g_crc_embedded_source_checksums[0]);
+		++index)
+	{
+		if (g_crc_embedded_source_checksums[index] == checksum)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
 
 /*
 =============
@@ -144,5 +210,169 @@ void CRC_ContinueProcessString(uint16_t *crc, char *data, int length)
 	{
 		int table_index = (*crc >> 8) ^ data[index];
 		*crc = (uint16_t)((*crc << 8) ^ g_crc_table[table_index]);
+	}
+}
+
+/*
+=============
+CRC_ResetSourceChecksums
+
+Drops the retail source-checksum list before its tracked allocator is reset.
+=============
+*/
+void CRC_ResetSourceChecksums(void)
+{
+	g_crc_source_checksums = NULL;
+}
+
+/*
+=============
+CRC_RegisterSourceChecksum
+
+Adds one retail source checksum unless the source name was already recorded.
+=============
+*/
+void CRC_RegisterSourceChecksum(const char *name, uint16_t checksum)
+{
+	if (name == NULL)
+	{
+		return;
+	}
+	if (CRC_IsEmbeddedSourceChecksum(checksum))
+	{
+		return;
+	}
+
+	crc_source_checksum_t *previous = NULL;
+	crc_source_checksum_t *current = g_crc_source_checksums;
+	while (current != NULL)
+	{
+		int comparison = strcmp(current->name, name);
+		if (comparison == 0)
+		{
+			return;
+		}
+		if (comparison > 0)
+		{
+			break;
+		}
+		previous = current;
+		current = current->next;
+	}
+
+	crc_source_checksum_t *entry = GetMemory(sizeof(*entry));
+	if (entry == NULL)
+	{
+		return;
+	}
+
+	entry->checksum = checksum;
+	size_t name_length = strlen(name);
+	if (name_length >= sizeof(entry->name))
+	{
+		name_length = sizeof(entry->name) - 1U;
+	}
+	memcpy(entry->name, name, name_length);
+	entry->name[name_length] = '\0';
+
+	entry->next = current;
+	if (previous == NULL)
+	{
+		g_crc_source_checksums = entry;
+	}
+	else
+	{
+		previous->next = entry;
+	}
+}
+
+/*
+=============
+CRC_RegisterSourceData
+
+Calculates and records the retail checksum of one raw parser source buffer.
+=============
+*/
+void CRC_RegisterSourceData(const char *name, const void *data, int length)
+{
+	CRC_RegisterSourceChecksum(name,
+		CRC_ProcessString((uint8_t *)data, length));
+}
+
+/*
+=============
+CRC_SourceChecksumCount
+
+Returns the number of registered retail source checksum records.
+=============
+*/
+size_t CRC_SourceChecksumCount(void)
+{
+	size_t count = 0;
+	for (const crc_source_checksum_t *entry = g_crc_source_checksums;
+		entry != NULL;
+		entry = entry->next)
+	{
+		count += 1U;
+	}
+	return count;
+}
+
+/*
+=============
+CRC_SourceChecksumAt
+
+Copies one ordered retail source checksum record for diagnostics or tests.
+=============
+*/
+int CRC_SourceChecksumAt(size_t index,
+	uint16_t *checksum,
+	char *name,
+	size_t name_size)
+{
+	const crc_source_checksum_t *entry = g_crc_source_checksums;
+	while (entry != NULL && index > 0U)
+	{
+		entry = entry->next;
+		index -= 1U;
+	}
+
+	if (entry == NULL)
+	{
+		return 0;
+	}
+
+	if (checksum != NULL)
+	{
+		*checksum = entry->checksum;
+	}
+	if (name != NULL && name_size > 0U)
+	{
+		size_t name_length = strlen(entry->name);
+		if (name_length >= name_size)
+		{
+			name_length = name_size - 1U;
+		}
+		memcpy(name, entry->name, name_length);
+		name[name_length] = '\0';
+	}
+
+	return 1;
+}
+
+/*
+=============
+CRC_DumpSourceChecksums
+
+Writes the retail checksum-list initializer records to the diagnostic log.
+=============
+*/
+void CRC_DumpSourceChecksums(void)
+{
+	for (const crc_source_checksum_t *entry = g_crc_source_checksums;
+		entry != NULL;
+		entry = entry->next)
+	{
+		BotLib_LogWrite("\t{0x%04X, 1}, //%s", entry->checksum, entry->name);
 	}
 }

@@ -174,6 +174,50 @@ set_tests_properties(
         LABELS "Parity"
 )
 
+if(WIN32 AND EXISTS "${CMAKE_OBJDUMP}")
+    set(_retail_export_script "${CMAKE_CURRENT_BINARY_DIR}/verify_retail_exports.cmake")
+    file(WRITE "${_retail_export_script}" [=[
+if(NOT DEFINED OBJDUMP OR NOT DEFINED GLADIATOR_DLL)
+    message(FATAL_ERROR "OBJDUMP and GLADIATOR_DLL are required")
+endif()
+
+execute_process(
+    COMMAND "${OBJDUMP}" -p "${GLADIATOR_DLL}"
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _output
+    ERROR_VARIABLE _error
+)
+if(NOT _result EQUAL 0)
+    message(FATAL_ERROR "Could not inspect ${GLADIATOR_DLL}: ${_error}")
+endif()
+
+string(REGEX MATCH
+    "Ordinal +RVA +Name[^\r\n]*[\r\n]+[ \t]*1[ \t]+0x[0-9A-Fa-f]+[ \t]+GetBotAPI[\r\n]"
+    _retail_export
+    "${_output}"
+)
+if(NOT _retail_export)
+    message(FATAL_ERROR "gladiator.dll must export GetBotAPI as ordinal 1")
+endif()
+
+string(REGEX MATCH
+    "GetBotAPI[\r\n]+[ \t]*[0-9]+[ \t]+0x[0-9A-Fa-f]+[ \t]+[^\r\n]+"
+    _additional_export
+    "${_output}"
+)
+if(_additional_export)
+    message(FATAL_ERROR "gladiator.dll has an export after GetBotAPI: ${_additional_export}")
+endif()
+]=])
+    add_test(
+        NAME gladiator_retail_export_surface
+        COMMAND ${CMAKE_COMMAND}
+            "-DOBJDUMP=${CMAKE_OBJDUMP}"
+            "-DGLADIATOR_DLL=$<TARGET_FILE:gladiator>"
+            -P "${_retail_export_script}"
+    )
+endif()
+
 if(Python3_Interpreter_FOUND)
     add_test(
         NAME be_ai_parity_matrix

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "botlib/common/l_log.h"
+#include "botlib/common/l_memory.h"
 #include "q2bridge/bridge_config.h"
 
 #define AAS_MAX_PORTALS 65536
@@ -54,7 +55,7 @@ static int AAS_UpdatePortal(int areanum, int clusternum)
 
 	if (portalnum == aasworld.numPortals)
 	{
-		BotLib_Print(PRT_ERROR, "AAS_UpdatePortal: no portal of area %d\n", areanum);
+		BotLib_Print(PRT_ERROR, "no portal of area %d\n", areanum);
 		return qtrue;
 	}
 
@@ -82,7 +83,7 @@ static int AAS_UpdatePortal(int areanum, int clusternum)
 
 	if (aasworld.portalIndexSize >= AAS_MAX_PORTALINDEXSIZE)
 	{
-		BotLib_Print(PRT_ERROR, "AAS_UpdatePortal: AAS_MAX_PORTALINDEXSIZE\n");
+		BotLib_Print(PRT_ERROR, "AAS_MAX_PORTALINDEXSIZE\n");
 		return qtrue;
 	}
 
@@ -116,12 +117,10 @@ Flood a retail cluster through shared area faces and outgoing reachabilities.
 */
 static int AAS_FloodClusterAreas(int areanum, int clusternum)
 {
-	if (areanum <= 0 || areanum >= aasworld.numAreas ||
-		areanum >= aasworld.numAreaSettings)
+	if (areanum <= 0 || areanum >= aasworld.numAreas)
 	{
 		BotLib_Print(PRT_ERROR,
-			"AAS_FloodClusterAreas: area number %d out of range\n",
-			areanum);
+			"AAS_FloodClusterAreas_r: areanum out of range\n");
 		return qfalse;
 	}
 
@@ -317,7 +316,7 @@ static int AAS_FindClusters(void)
 
 		if (aasworld.numClusters >= AAS_MAX_CLUSTERS)
 		{
-			BotLib_Print(PRT_ERROR, "AAS_FindClusters: AAS_MAX_CLUSTERS\n");
+			BotLib_Print(PRT_ERROR, "AAS_MAX_CLUSTERS\n");
 			return qfalse;
 		}
 
@@ -363,7 +362,7 @@ static void AAS_CreatePortals(void)
 
 		if (aasworld.numPortals >= AAS_MAX_PORTALS)
 		{
-			BotLib_Print(PRT_ERROR, "AAS_CreatePortals: AAS_MAX_PORTALS\n");
+			BotLib_Print(PRT_ERROR, "AAS_MAX_PORTALS\n");
 			return;
 		}
 
@@ -485,8 +484,7 @@ static int AAS_GetAdjacentAreasWithLessPresenceTypes(int *areanums,
 {
 	if (numareas >= MAX_PORTALAREAS)
 	{
-		BotLib_Print(PRT_ERROR,
-			"AAS_GetAdjacentAreasWithLessPresenceTypes: MAX_PORTALAREAS\n");
+		BotLib_Print(PRT_ERROR, "MAX_PORTALAREAS\n");
 		return numareas;
 	}
 
@@ -545,8 +543,7 @@ static int AAS_GetAdjacentAreasWithLessPresenceTypes(int *areanums,
 
 		if (numareas >= MAX_PORTALAREAS)
 		{
-			BotLib_Print(PRT_ERROR,
-				"AAS_GetAdjacentAreasWithLessPresenceTypes: MAX_PORTALAREAS\n");
+			BotLib_Print(PRT_ERROR, "MAX_PORTALAREAS\n");
 			return numareas;
 		}
 		numareas = AAS_GetAdjacentAreasWithLessPresenceTypes(areanums,
@@ -868,22 +865,23 @@ void AAS_InitClustering(void)
 	AAS_RemoveClusterAreas();
 	AAS_FindPossiblePortals();
 
-	free(aasworld.portals);
-	free(aasworld.portalIndex);
-	free(aasworld.clusters);
-	aasworld.portals = (aas_portal_t *)calloc(AAS_MAX_PORTALS,
-		sizeof(aas_portal_t));
-	aasworld.portalIndex = (int *)calloc(AAS_MAX_PORTALINDEXSIZE, sizeof(int));
-	aasworld.clusters = (aas_cluster_t *)calloc(AAS_MAX_CLUSTERS,
-		sizeof(aas_cluster_t));
+	FreeMemory(aasworld.portals);
+	FreeMemory(aasworld.portalIndex);
+	FreeMemory(aasworld.clusters);
+	aasworld.portals = (aas_portal_t *)GetClearedMemory(
+		AAS_MAX_PORTALS * sizeof(aas_portal_t));
+	aasworld.portalIndex = (int *)GetClearedMemory(
+		AAS_MAX_PORTALINDEXSIZE * sizeof(int));
+	aasworld.clusters = (aas_cluster_t *)GetClearedMemory(
+		AAS_MAX_CLUSTERS * sizeof(aas_cluster_t));
 	if (aasworld.portals == NULL || aasworld.portalIndex == NULL ||
 		aasworld.clusters == NULL)
 	{
 		BotLib_Print(PRT_ERROR,
 			"AAS_InitClustering: unable to allocate cluster data\n");
-		free(aasworld.portals);
-		free(aasworld.portalIndex);
-		free(aasworld.clusters);
+		FreeMemory(aasworld.portals);
+		FreeMemory(aasworld.portalIndex);
+		FreeMemory(aasworld.clusters);
 		aasworld.portals = NULL;
 		aasworld.portalIndex = NULL;
 		aasworld.clusters = NULL;

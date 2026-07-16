@@ -32,7 +32,7 @@ typedef struct captured_print_s
 
 typedef struct bridge_import_mock_s
 {
-    bot_import_t table;
+    bot_import_extended_t table;
     captured_print_t prints[32];
     size_t print_count;
 

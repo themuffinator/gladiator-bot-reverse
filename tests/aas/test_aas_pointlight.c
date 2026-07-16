@@ -21,8 +21,11 @@
 #include "botlib/aas/aas_local.h"
 #include "botlib/aas/aas_map.h"
 #include "botlib/aas/aas_sound.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
+#include "botlib/precomp/l_precomp.h"
 
 #ifndef PROJECT_SOURCE_DIR
 #error "PROJECT_SOURCE_DIR must be defined for the point-light sound fixture."
@@ -227,6 +230,26 @@ static void test_clear_pointlight_world(void)
 
 /*
 =============
+test_set_sound_libvars
+
+Configure the three raw sound setup variables before entering the no-argument
+retail initialiser.
+=============
+*/
+static void test_set_sound_libvars(int max_soundinfo,
+	int max_aassounds,
+	const char *soundconfig)
+{
+	char value[32];
+	snprintf(value, sizeof(value), "%d", max_soundinfo);
+	LibVarSet("max_soundinfo", value);
+	snprintf(value, sizeof(value), "%d", max_aassounds);
+	LibVarSet("max_aassounds", value);
+	LibVarSet("soundconfig", soundconfig);
+}
+
+/*
+=============
 test_init_sound_heap
 
 Initialise the sensory subsystem with a selected retail max_aaslights heap.
@@ -240,15 +263,11 @@ static void test_init_sound_heap(int capacity)
 	snprintf(capacity_text, sizeof(capacity_text), "%d", capacity);
 	LibVarSet("max_aaslights", capacity_text);
 
-	botlib_library_variables_t variables;
-	memset(&variables, 0, sizeof(variables));
-	variables.max_soundinfo = 64;
-	variables.max_aassounds = 4;
-	snprintf(variables.soundconfig,
-		sizeof(variables.soundconfig),
-		"%s/dev_tools/assets/sounds.c",
-		PROJECT_SOURCE_DIR);
-	assert_int_equal(AAS_SoundSubsystem_Init(&variables), BLERR_NOERROR);
+	test_set_sound_libvars(64,
+		4,
+		PROJECT_SOURCE_DIR "/dev_tools/assets/sounds.c");
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	AAS_SoundSubsystem_InitPointLightHeap();
 	AAS_SoundSubsystem_SetFrameTime(0.0f);
 }
 
@@ -256,13 +275,17 @@ static void test_init_sound_heap(int capacity)
 =============
 test_shutdown_sound_heap
 
-Release sensory and libvar state after an isolated heap test.
+Mirror the process-lifetime ownership used by retail shutdown after an
+isolated heap test.
 =============
 */
 static void test_shutdown_sound_heap(void)
 {
-	AAS_SoundSubsystem_Shutdown();
+	AAS_SoundSubsystem_ResetState();
+	PC_ShutdownLexer();
 	LibVar_Shutdown();
+	CRC_ResetSourceChecksums();
+	BotMemory_Shutdown();
 	BotInterface_SetImportTable(NULL);
 }
 
@@ -406,9 +429,6 @@ static void test_dynamic_pointlight_heap_lifecycle(void **state)
 		3.0f,
 		2.0f,
 		999.0f));
-	assert_float_equal(first_origin[0], 0.0f, 0.0f);
-	assert_float_equal(first_origin[1], 0.0f, 0.0f);
-	assert_float_equal(first_origin[2], 0.0f, 0.0f);
 	const aas_pointlight_event_t *first = AAS_SoundSubsystem_PointLight(0);
 	assert_non_null(first);
 	assert_int_equal(first->ent, 11);
@@ -470,10 +490,147 @@ static void test_dynamic_pointlight_heap_lifecycle(void **state)
 
 /*
 =============
+test_sound_heap_schedules_activates_and_expires_retail_records
+
+Pin sub_1001cbe0 through sub_1001cfa0: the 0x34-byte pool, strict delayed
+activation, end-time order, inclusive expiry, fixed-capacity diagnostic, and
+negative-offset replacement of an active entity/sound pair.
+=============
+*/
+static void test_sound_heap_schedules_activates_and_expires_retail_records(
+	void **state)
+{
+	(void)state;
+	assert_int_equal(sizeof(aas_soundinfo_t), 0xb0);
+	assert_int_equal(offsetof(aas_soundinfo_t, name), 0x00);
+	assert_int_equal(offsetof(aas_soundinfo_t, volume), 0x50);
+	assert_int_equal(offsetof(aas_soundinfo_t, duration), 0x54);
+	assert_int_equal(offsetof(aas_soundinfo_t, type), 0x58);
+	assert_int_equal(offsetof(aas_soundinfo_t, recognition), 0x5c);
+	assert_int_equal(offsetof(aas_soundinfo_t, string), 0x60);
+	assert_int_equal(sizeof(aas_sound_event_t), 0x34);
+	assert_int_equal(offsetof(aas_sound_event_t, start), 0x00);
+	assert_int_equal(offsetof(aas_sound_event_t, end), 0x04);
+	assert_int_equal(offsetof(aas_sound_event_t, origin), 0x08);
+	assert_int_equal(offsetof(aas_sound_event_t, zero), 0x14);
+	assert_int_equal(offsetof(aas_sound_event_t, ent), 0x18);
+	assert_int_equal(offsetof(aas_sound_event_t, channel), 0x1c);
+	assert_int_equal(offsetof(aas_sound_event_t, soundindex), 0x20);
+	assert_int_equal(offsetof(aas_sound_event_t, volume), 0x24);
+	assert_int_equal(offsetof(aas_sound_event_t, attenuation), 0x28);
+	assert_int_equal(offsetof(aas_sound_event_t, next_index), 0x2c);
+	assert_int_equal(offsetof(aas_sound_event_t, prev_index), 0x30);
+
+	test_init_sound_heap(2);
+	char *assets[] = {"player/step1.wav", "weapons/blastf1a.wav"};
+	assert_true(AAS_SoundSubsystem_RegisterMapAssets(2, assets));
+	int blaster_info_index =
+		AAS_SoundSubsystem_FindInfoIndex("weapons/blastf1a.wav");
+	assert_true(blaster_info_index >= 0);
+	const aas_soundinfo_t *blaster_info =
+		AAS_SoundSubsystem_Info((size_t)blaster_info_index);
+	assert_non_null(blaster_info);
+	assert_string_equal(blaster_info->string, "Blaster");
+
+	vec3_t origin = {1.0f, 2.0f, 3.0f};
+	test_reset_print_capture();
+	assert_int_equal(AAS_SoundSubsystem_UpdateSound(origin,
+		10,
+		1,
+		2,
+		0.25f,
+		0.5f,
+		0.0f), BLERR_INVALIDSOUNDINDEX);
+	assert_int_equal(g_print_count, 1);
+	assert_int_equal(g_print_priority, PRT_FATAL);
+	assert_string_equal(g_print_message, "sound index 2 out of range [0, 2]\n");
+	assert_true(AAS_SoundSubsystem_RecordSound(origin,
+		10,
+		1,
+		0,
+		0.25f,
+		0.5f,
+		0.0f));
+	assert_true(AAS_SoundSubsystem_RecordSound(origin,
+		11,
+		2,
+		1,
+		0.75f,
+		1.0f,
+		0.0f));
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
+
+	AAS_SoundSubsystem_SetFrameTime(0.0f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
+	AAS_SoundSubsystem_SetFrameTime(0.001f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 2);
+	const aas_sound_event_t *first = AAS_SoundSubsystem_SoundEvent(0);
+	const aas_sound_event_t *second = AAS_SoundSubsystem_SoundEvent(1);
+	assert_non_null(first);
+	assert_non_null(second);
+	assert_int_equal(first->soundindex, 0);
+	assert_int_equal(second->soundindex, 1);
+	assert_float_equal(first->start, 0.0f, 0.0001f);
+	assert_float_equal(first->end, 0.2f, 0.0001f);
+	assert_float_equal(second->end, 0.47f, 0.0001f);
+	assert_int_equal(first->zero, 0);
+
+	AAS_SoundSubsystem_SetFrameTime(0.2f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
+	AAS_SoundSubsystem_SetFrameTime(0.47f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
+
+	AAS_SoundSubsystem_SetFrameTime(1.0f);
+	for (int index = 0; index < 4; ++index)
+	{
+		assert_true(AAS_SoundSubsystem_RecordSound(origin,
+			44,
+			0,
+			0,
+			1.0f,
+			1.0f,
+			1.0f));
+	}
+	test_reset_print_capture();
+	assert_true(AAS_SoundSubsystem_RecordSound(origin,
+		45,
+		0,
+		0,
+		1.0f,
+		1.0f,
+		1.0f));
+	assert_int_equal(g_print_count, 1);
+	assert_int_equal(g_print_priority, PRT_ERROR);
+	assert_string_equal(g_print_message, "empty sound heap\n");
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
+
+	AAS_SoundSubsystem_SetFrameTime(3.0f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
+	assert_int_equal(AAS_SoundSubsystem_SoundEvent(0)->ent, 44);
+	assert_true(AAS_SoundSubsystem_RecordSound(origin,
+		44,
+		0,
+		0,
+		1.0f,
+		1.0f,
+		-0.1f));
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
+	AAS_SoundSubsystem_SetFrameTime(3.0f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
+	assert_float_equal(AAS_SoundSubsystem_SoundEvent(0)->start, 2.9f, 0.0001f);
+	float final_end = AAS_SoundSubsystem_SoundEvent(0)->end;
+	AAS_SoundSubsystem_SetFrameTime(final_end);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
+
+	test_shutdown_sound_heap();
+}
+
+/*
+=============
 test_dynamic_pointlight_fractional_capacity_and_sound_independence
 
 Pin __ftol-before-range-check capacity handling and prove point-light setup is
-independent when max_soundinfo disables the sound metadata subsystem.
+independent when a zero sound-metadata capacity rejects the first record.
 =============
 */
 static void test_dynamic_pointlight_fractional_capacity_and_sound_independence(
@@ -482,13 +639,17 @@ static void test_dynamic_pointlight_fractional_capacity_and_sound_independence(
 	(void)state;
 	BotInterface_SetImportTable(&g_imports);
 	LibVar_Init();
-	botlib_library_variables_t variables;
-	memset(&variables, 0, sizeof(variables));
-
 	LibVarSet("max_aaslights", "-0.9");
+	test_set_sound_libvars(0,
+		0,
+		PROJECT_SOURCE_DIR "/dev_tools/assets/sounds.c");
 	test_reset_print_capture();
-	assert_int_equal(AAS_SoundSubsystem_Init(&variables), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	AAS_SoundSubsystem_InitPointLightHeap();
 	assert_false(g_saw_max_lights_range_error);
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 0);
+	assert_non_null(strstr(g_print_message,
+		"more than 0 sound infos defined"));
 	vec3_t origin = {1.0f, 2.0f, 3.0f};
 	test_reset_print_capture();
 	assert_true(AAS_SoundSubsystem_RecordPointLight(origin,
@@ -502,10 +663,10 @@ static void test_dynamic_pointlight_fractional_capacity_and_sound_independence(
 	assert_int_equal(AAS_SoundSubsystem_PointLightCount(), 0);
 	assert_string_equal(g_print_message, "WARNING: empty light heap\n");
 
-	AAS_SoundSubsystem_Shutdown();
 	LibVarSet("max_aaslights", "65536.9");
 	test_reset_print_capture();
-	assert_int_equal(AAS_SoundSubsystem_Init(&variables), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	AAS_SoundSubsystem_InitPointLightHeap();
 	assert_false(g_saw_max_lights_range_error);
 	assert_true(AAS_SoundSubsystem_RecordPointLight(origin,
 		2,
@@ -535,16 +696,12 @@ static void test_dynamic_pointlight_capacity_range_fallback(void **state)
 	LibVar_Init();
 	LibVarSet("max_aaslights", "70000");
 
-	botlib_library_variables_t variables;
-	memset(&variables, 0, sizeof(variables));
-	variables.max_soundinfo = 1024;
-	variables.max_aassounds = 4;
-	snprintf(variables.soundconfig,
-		sizeof(variables.soundconfig),
-		"%s/dev_tools/assets/sounds.c",
-		PROJECT_SOURCE_DIR);
+	test_set_sound_libvars(1024,
+		4,
+		PROJECT_SOURCE_DIR "/dev_tools/assets/sounds.c");
 	test_reset_print_capture();
-	assert_int_equal(AAS_SoundSubsystem_Init(&variables), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	AAS_SoundSubsystem_InitPointLightHeap();
 	assert_true(g_saw_max_lights_range_error);
 
 	vec3_t origin = {0.0f, 0.0f, 0.0f};
@@ -804,7 +961,7 @@ static void test_bsp_pointlight_lumps_load_and_validate(void **state)
 	for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
 	{
 		assert_int_equal(aasworld.entities[entnum].number, entnum);
-		assert_false(aasworld.entities[entnum].inuse);
+		assert_int_equal(aasworld.entities[entnum].inuse, entnum == 1);
 	}
 	assert_int_equal(aasworld.numBspVertexes, 4);
 	assert_int_equal(aasworld.numBspEdges, 4);
@@ -837,6 +994,9 @@ static void test_bsp_pointlight_lumps_load_and_validate(void **state)
 
 	AAS_Shutdown();
 	LibVar_Shutdown();
+	PC_ShutdownLexer();
+	CRC_ResetSourceChecksums();
+	BotMemory_Shutdown();
 	BotInterface_SetImportTable(NULL);
 	free(bsp_data);
 	unlink(bsp_path);
@@ -845,6 +1005,151 @@ static void test_bsp_pointlight_lumps_load_and_validate(void **state)
 	{
 		rmdir("maps");
 	}
+}
+
+/*
+=============
+test_sensory_heaps_use_tracked_allocator_paths
+
+Pin the raw cleared metadata pool and both non-clearing 0x34-byte sensory
+heaps to the shared tracked allocator, including retail's no-op sound teardown
+and process-lifetime release.
+=============
+*/
+static void test_sensory_heaps_use_tracked_allocator_paths(void **state)
+{
+	(void)state;
+	BotInterface_SetImportTable(&g_imports);
+	LibVar_Init();
+	LibVarSet("max_aaslights", "2");
+	test_set_sound_libvars(2,
+		2,
+		PROJECT_SOURCE_DIR "/missing_sensory_config.c");
+
+	const size_t baseline_bytes = BotMemory_TotalAllocated();
+	const size_t baseline_blocks = BotMemory_BlockCount();
+
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	const size_t sound_blocks = BotMemory_BlockCount();
+	assert_true(sound_blocks >= baseline_blocks + 2U);
+	AAS_SoundSubsystem_InitPointLightHeap();
+	assert_true(BotMemory_TotalAllocated() > baseline_bytes);
+	assert_int_equal(BotMemory_BlockCount(), sound_blocks + 1U);
+
+	const size_t live_bytes = BotMemory_TotalAllocated();
+	const size_t live_blocks = BotMemory_BlockCount();
+	AAS_SoundSubsystem_Shutdown();
+	assert_int_equal(BotMemory_TotalAllocated(), live_bytes);
+	assert_int_equal(BotMemory_BlockCount(), live_blocks);
+
+	AAS_SoundSubsystem_ResetState();
+	PC_ShutdownLexer();
+	LibVar_Shutdown();
+	CRC_ResetSourceChecksums();
+	BotMemory_Shutdown();
+	assert_int_equal(BotMemory_TotalAllocated(), 0U);
+	assert_int_equal(BotMemory_BlockCount(), 0U);
+	BotInterface_SetImportTable(NULL);
+}
+
+/*
+=============
+test_soundinfo_defaults_follow_retail_field_table
+
+Load a minimal record and pin the defaults encoded beside the raw 0xb0-byte
+field table: volume 80, duration 10, type 0, recognition 1, and an empty
+trailing string.
+=============
+*/
+static void test_soundinfo_defaults_follow_retail_field_table(void **state)
+{
+	(void)state;
+	const char *config_path =
+		PROJECT_SOURCE_DIR "/aas_soundinfo_defaults_test.c";
+	FILE *config = fopen(config_path, "wb");
+	assert_non_null(config);
+	assert_true(fputs("#define TEST_DURATION 3.25\n"
+		"#define TEST_TYPE 17\n"
+		"soundinfo\n"
+		"{\n"
+		"\tname \"defaults.wav\"\n"
+		"\tduration TEST_DURATION\n"
+		"\ttype TEST_TYPE\n"
+		"}\n", config) >= 0);
+	assert_int_equal(fclose(config), 0);
+
+	BotInterface_SetImportTable(&g_imports);
+	LibVar_Init();
+	test_set_sound_libvars(2, 2, config_path);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+
+	int info_index = AAS_SoundSubsystem_FindInfoIndex("defaults.wav");
+	assert_true(info_index >= 0);
+	const aas_soundinfo_t *info =
+		AAS_SoundSubsystem_Info((size_t)info_index);
+	assert_non_null(info);
+	assert_float_equal(info->volume, 80.0f, 0.0001f);
+	assert_float_equal(info->duration, 3.25f, 0.0001f);
+	assert_int_equal(info->type, 17);
+	assert_float_equal(info->recognition, 1.0f, 0.0001f);
+	assert_string_equal(info->string, "");
+
+	test_shutdown_sound_heap();
+	assert_int_equal(unlink(config_path), 0);
+}
+
+/*
+=============
+test_sound_capacity_libvars_follow_retail_ranges
+
+Pin the two raw sound-pool range checks and their fallback writebacks. Sound
+setup must consult its own libvars, not a bridge-cached variables structure.
+=============
+*/
+static void test_sound_capacity_libvars_follow_retail_ranges(void **state)
+{
+	(void)state;
+	BotInterface_SetImportTable(&g_imports);
+	LibVar_Init();
+	LibVarSet("max_aaslights", "0");
+	LibVarSet("max_soundinfo", "65536");
+	LibVarSet("max_aassounds", "65537");
+	LibVarSet("soundconfig", PROJECT_SOURCE_DIR "/dev_tools/assets/sounds.c");
+
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	assert_string_equal(LibVarGetString("max_soundinfo"), "256");
+	assert_string_equal(LibVarGetString("max_aassounds"), "256");
+
+	test_shutdown_sound_heap();
+}
+
+/*
+=============
+test_soundindex_table_borrows_assets_and_matches_exact_names
+
+Pin the raw sound-index pointer table: it is tracked, maps exact names only,
+and borrows the engine-owned asset string slots rather than copying them.
+=============
+*/
+static void test_soundindex_table_borrows_assets_and_matches_exact_names(
+	void **state)
+{
+	(void)state;
+	test_init_sound_heap(2);
+	const size_t baseline_blocks = BotMemory_BlockCount();
+	char first_asset[] = "weapons/blastf1a.wav";
+	char second_asset[] = "WEAPONS/BLASTF1A.WAV";
+	char *assets[] = {first_asset, second_asset};
+	assert_true(AAS_SoundSubsystem_RegisterMapAssets(2, assets));
+	assert_int_equal(BotMemory_BlockCount(), baseline_blocks + 1U);
+	assert_ptr_equal(AAS_SoundSubsystem_AssetName(0), first_asset);
+	assert_ptr_equal(AAS_SoundSubsystem_AssetName(1), second_asset);
+	assert_non_null(AAS_SoundSubsystem_InfoForSoundIndex(0));
+	assert_null(AAS_SoundSubsystem_InfoForSoundIndex(1));
+
+	AAS_SoundSubsystem_ClearMapAssets();
+	assert_int_equal(BotMemory_BlockCount(), baseline_blocks);
+	test_shutdown_sound_heap();
 }
 
 /*
@@ -859,11 +1164,17 @@ int main(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_static_pointlight_sampling_contract),
 		cmocka_unit_test(test_dynamic_pointlight_heap_lifecycle),
+		cmocka_unit_test(test_sound_heap_schedules_activates_and_expires_retail_records),
 		cmocka_unit_test(
 			test_dynamic_pointlight_fractional_capacity_and_sound_independence),
 		cmocka_unit_test(test_dynamic_pointlight_capacity_range_fallback),
 		cmocka_unit_test(test_dynamic_pointlight_uses_static_hit_point),
 		cmocka_unit_test(test_bsp_pointlight_lumps_load_and_validate),
+		cmocka_unit_test(test_sensory_heaps_use_tracked_allocator_paths),
+		cmocka_unit_test(test_soundinfo_defaults_follow_retail_field_table),
+		cmocka_unit_test(test_sound_capacity_libvars_follow_retail_ranges),
+		cmocka_unit_test(
+			test_soundindex_table_borrows_assets_and_matches_exact_names),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

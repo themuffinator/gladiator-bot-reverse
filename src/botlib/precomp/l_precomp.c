@@ -970,72 +970,7 @@ int PC_MergeTokens(pc_token_t *t1, pc_token_t *t2)
 		strcat(t1->string, &t2->string[1]);
 		return qtrue;
 	} //end if
-	//merging of two number of the same sub type
-	if (t1->type == TT_NUMBER && t2->type == TT_NUMBER && t1->subtype == t2->subtype)
-	{
-		size_t required = strlen(t1->string) + strlen(t2->string) + 1;
-		if (required > sizeof(t1->string))
-		{
-			return qfalse;
-		} //end if
-
-		strcat(t1->string, t2->string);
-		if (t1->subtype & TT_FLOAT)
-		{
-			char *end = NULL;
-			t1->floatvalue = strtold(t1->string, &end);
-			if (end == NULL || *end != '\0')
-			{
-				return qfalse;
-			} //end if
-			t1->intvalue = (unsigned long int) t1->floatvalue;
-			return qtrue;
-		} //end if
-
-		const char *number = t1->string;
-		int base = 10;
-		if (t1->subtype & TT_HEX)
-		{
-			base = 16;
-			number += 2;
-		} //end if
-		else if (t1->subtype & TT_OCTAL)
-		{
-			base = 8;
-			number += 1;
-		} //end else if
-		else if (t1->subtype & TT_BINARY)
-		{
-			base = 2;
-			number += 2;
-		} //end else if
-
-		unsigned long int value = 0;
-		if (base == 2)
-		{
-			for (const char *cursor = number; *cursor; cursor++)
-			{
-				if (*cursor != '0' && *cursor != '1')
-				{
-					return qfalse;
-				} //end if
-				value = (value << 1) + (unsigned long int)(*cursor - '0');
-			} //end for
-		} //end if
-		else
-		{
-			char *end = NULL;
-			value = strtoul(number, &end, base);
-			if (end == NULL || *end != '\0')
-			{
-				return qfalse;
-			} //end if
-		} //end else
-
-		t1->intvalue = value;
-		t1->floatvalue = (long double) value;
-		return qtrue;
-	} //end if
+	// Retail does not support token-pasting two numeric tokens.
 	return qfalse;
 } //end of the function PC_MergeTokens
 //============================================================================
@@ -1252,12 +1187,6 @@ int PC_ExpandBuiltinDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_
 		case BUILTIN_LINE:
 		{
 			sprintf(token->string, "%d", deftoken->line);
-#ifdef NUMBERVALUE
-			token->intvalue = deftoken->line;
-			token->floatvalue = deftoken->line;
-#endif //NUMBERVALUE
-			token->type = TT_NUMBER;
-			token->subtype = TT_DECIMAL | TT_INTEGER;
 			*firsttoken = token;
 			*lasttoken = token;
 			break;
@@ -1265,8 +1194,6 @@ int PC_ExpandBuiltinDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_
 		case BUILTIN_FILE:
 		{
 			strcpy(token->string, source->scriptstack->filename);
-			token->type = TT_NAME;
-			token->subtype = strlen(token->string);
 			*firsttoken = token;
 			*lasttoken = token;
 			break;
@@ -1285,8 +1212,6 @@ int PC_ExpandBuiltinDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_
 			strncat(token->string, curtime + 4, 7);
 			strncat(token->string + 7, curtime + 20, 4);
 			strcat(token->string, "\"");
-			token->type = TT_NAME;
-			token->subtype = strlen(token->string);
 			*firsttoken = token;
 			*lasttoken = token;
 			break;
@@ -1304,8 +1229,6 @@ int PC_ExpandBuiltinDefine(pc_source_t *source, pc_token_t *deftoken, pc_define_
 			strcpy(token->string, "\"");
 			strncat(token->string, curtime + 11, 8);
 			strcat(token->string, "\"");
-			token->type = TT_NAME;
-			token->subtype = strlen(token->string);
 			*firsttoken = token;
 			*lasttoken = token;
 			break;
@@ -3363,28 +3286,6 @@ int PC_ReadToken(pc_source_t *source, pc_token_t *token)
 				if (!PC_ReadDollarDirective(source)) return qfalse;
 				continue;
 			} //end if
-		} //end if
-		// recursively concatenate strings that are behind each other still resolving defines
-		if (token->type == TT_STRING)
-		{
-			pc_token_t newtoken;
-			if (PC_ReadToken(source, &newtoken))
-			{
-				if (newtoken.type == TT_STRING)
-				{
-					token->string[strlen(token->string)-1] = '\0';
-					if (strlen(token->string) + strlen(newtoken.string+1) + 1 >= MAX_TOKEN)
-					{
-						SourceError(source, "string longer than MAX_TOKEN %d\n", MAX_TOKEN);
-						return qfalse;
-					}
-					strcat(token->string, newtoken.string+1);
-				}
-				else
-				{
-					PC_UnreadToken(source, &newtoken);
-				}
-			}
 		} //end if
 		//if skipping source because of conditional compilation
 		if (source->skip) continue;

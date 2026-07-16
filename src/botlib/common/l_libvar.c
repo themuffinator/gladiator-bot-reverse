@@ -1,6 +1,5 @@
 #include "l_libvar.h"
 
-#include <ctype.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -65,9 +64,26 @@ float LibVarStringValue(const char *string)
 
 /*
 =============
+LibVar_ToLowerAscii
+
+Folds only the ASCII upper-case range used by retail's comparison helper.
+=============
+*/
+static unsigned char LibVar_ToLowerAscii(unsigned char character)
+{
+	if (character >= 'A' && character <= 'Z')
+	{
+		return (unsigned char)(character + ('a' - 'A'));
+	}
+
+	return character;
+}
+
+/*
+=============
 LibVar_NameEquals
 
-Performs the case-insensitive name comparison used by the retail list scan.
+Performs the ASCII case-insensitive name comparison used by the retail list scan.
 =============
 */
 static bool LibVar_NameEquals(const char *lhs, const char *rhs)
@@ -81,7 +97,7 @@ static bool LibVar_NameEquals(const char *lhs, const char *rhs)
 	{
 		unsigned char left = (unsigned char)*lhs++;
 		unsigned char right = (unsigned char)*rhs++;
-		if (tolower(left) != tolower(right))
+		if (LibVar_ToLowerAscii(left) != LibVar_ToLowerAscii(right))
 		{
 			return false;
 		}

@@ -574,9 +574,9 @@ typedef struct aas_world_s
 	qboolean saveFile;      /* mirrors data_100667e8 */
 	int numReachabilityAreas;
 	float time;             /* mirrors data_100667ec */
-	int numFrames;          /* frame counter updated each BotStartFrame */
 	int bspChecksum;        /* checksum recorded during AAS_LoadMap */
 	int aasChecksum;        /* checksum of the loaded .aas file */
+	uint16_t bspEntityChecksum; /* retail parser-source CRC for the BSP entity lump */
 
     char aasFilePath[MAX_FILEPATH];
     char mapName[MAX_FILEPATH];
@@ -679,6 +679,9 @@ typedef struct aas_world_s
     size_t areaEntityListCount;  /* number of heads in areaEntityLists */
     aas_link_t **areaEntityLists; /* entities linked per area */
 
+    size_t bspLeafEntityListCount; /* number of heads in bspLeafEntityLists */
+    bsp_link_t **bspLeafEntityLists; /* entities linked per Quake II BSP leaf */
+
     int travelflagfortype[MAX_TRAVELTYPES];
 
     size_t routingCacheTableSize;
@@ -735,9 +738,11 @@ int AAS_PointContents(const vec3_t point);
 void AAS_EntityInfo(int entnum, aas_entityinfo_t *info);
 void AAS_EntityOrigin(int entnum, vec3_t origin);
 int AAS_EntityModelindex(int entnum);
+int AAS_EntityRenderFX(int entnum);
 int AAS_EntityModelNum(int entnum);
 void AAS_EntitySize(int entnum, vec3_t mins, vec3_t maxs);
 int AAS_OriginOfMoverWithModelNum(int modelnum, vec3_t origin);
+int AAS_NearestEntity(const vec3_t origin, int modelindex);
 void AAS_BSPModelMinsMaxsOrigin(int modelnum,
                                 const vec3_t angles,
                                 vec3_t mins,
@@ -783,6 +788,7 @@ void AAS_ClearReachabilityData(void);
 int AAS_PrepareReachability(void);
 int AAS_AreaReachability(int areanum);
 int AAS_BestReachableLinkArea(aas_link_t *areas);
+int AAS_BestReachableEntityArea(int entnum);
 int AAS_BestReachableArea(const vec3_t origin,
 	const vec3_t mins,
 	const vec3_t maxs,
@@ -879,10 +885,22 @@ void AAS_AgeRetailRoutingCaches(void);
 int AAS_RetailAreaCacheUpdateCount(void);
 int AAS_RetailPortalCacheUpdateCount(void);
 int AAS_RetailFrameRoutingUpdateCount(void);
+void AAS_BeginFrameRouting(void);
 void AAS_ContinueInit(float time);
 void AAS_UnlinkInvalidEntities(void);
+void AAS_ResetEntityLinks(void);
+void AAS_InitAASLinkHeap(void);
+void AAS_FreeAASLinkHeap(void);
+aas_link_t *AAS_AllocAASLink(void);
+void AAS_FreeAASLink(aas_link_t *link);
+void AAS_InitBSPLinkHeap(void);
+void AAS_FreeBSPLinkHeap(void);
+bsp_link_t *AAS_AllocBSPLink(void);
+void AAS_FreeBSPLink(bsp_link_t *link);
+void AAS_UnlinkEntityFromBSPLeaves(aas_entity_t *entity);
 void AAS_InvalidateEntities(void);
 void AAS_FrameSynchronise(float time);
+void AAS_RunFrameDiagnostics(void);
 unsigned short AAS_AreaTravelTime(int areanum, const vec3_t start, const vec3_t end);
 int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, int travelflags);
 int AAS_AreaReachabilityToGoalArea(int areanum, vec3_t origin, int goalareanum, int travelflags);

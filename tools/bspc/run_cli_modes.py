@@ -317,7 +317,8 @@ def main(argv: list[str]) -> int:
         raise FileNotFoundError(f"MAP asset missing: {map_asset}")
     bsp_asset = repo_root / "dev_tools" / "assets" / "maps" / "2box4.bsp"
     if not bsp_asset.exists():
-        raise FileNotFoundError(f"BSP asset missing: {bsp_asset}")
+        print(f"bspc CLI parity skipped: BSP asset missing: {bsp_asset}")
+        return 125
     golden_root = repo_root / "tests" / "support" / "assets" / "bspc" / "golden"
     if not golden_root.exists():
         raise FileNotFoundError(f"Golden asset directory missing: {golden_root}")

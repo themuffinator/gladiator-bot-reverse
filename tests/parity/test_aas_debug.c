@@ -11,6 +11,7 @@
 #include "botlib/aas/aas_debug.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib/aas/aas_map.h"
+#include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 
@@ -28,7 +29,7 @@ typedef struct captured_print_s
 typedef struct aas_debug_test_context_s
 {
     botlib_import_table_t imports;
-    bot_import_t bridge_imports;
+    bot_import_extended_t bridge_imports;
     captured_print_t prints[64];
     size_t print_count;
     bsp_trace_t bridge_trace_result;
@@ -330,6 +331,10 @@ static void BuildMockMap(aas_debug_test_context_t *context)
 	aasworld.reachabilityFromArea[1] = 1;
 	aasworld.reachabilityFromArea[2] = 2;
 
+	/* Successful retail map loads initialise both fixed entity-link pools. */
+	AAS_InitBSPLinkHeap();
+	AAS_InitAASLinkHeap();
+
     aasworld.numPlanes = 2;
     context->planes = (aas_plane_t *)calloc((size_t)aasworld.numPlanes, sizeof(aas_plane_t));
     assert_non_null(context->planes);
@@ -544,18 +549,19 @@ static void ConfigureBSPBrushModelFixture(aas_debug_test_context_t *context)
 	context->bspModels = (aas_bspmodel_t *)calloc((size_t)aasworld.numBspModels, sizeof(aas_bspmodel_t));
 	assert_non_null(context->bspModels);
 	aasworld.bspModels = context->bspModels;
+	context->bspModels[0].headnode = -1;
 	VectorSet(context->bspModels[1].mins, -4.0f, -12.0f, -8.0f);
 	VectorSet(context->bspModels[1].maxs, 4.0f, 12.0f, 8.0f);
 	VectorClear(context->bspModels[1].origin);
-	context->bspModels[1].headnode = -1;
+	context->bspModels[1].headnode = -2;
 
-	aasworld.numBspLeaves = 1;
+	aasworld.numBspLeaves = 2;
 	context->bspLeaves = (aas_bspleaf_t *)calloc((size_t)aasworld.numBspLeaves, sizeof(aas_bspleaf_t));
 	assert_non_null(context->bspLeaves);
 	aasworld.bspLeaves = context->bspLeaves;
-	context->bspLeaves[0].contents = CONTENTS_SOLID;
-	context->bspLeaves[0].firstleafbrush = 0;
-	context->bspLeaves[0].numleafbrushes = 1;
+	context->bspLeaves[1].contents = CONTENTS_SOLID;
+	context->bspLeaves[1].firstleafbrush = 0;
+	context->bspLeaves[1].numleafbrushes = 1;
 
 	aasworld.bspLeafBrushIndexSize = 1;
 	context->bspLeafBrushes =
@@ -1271,9 +1277,8 @@ static void test_aas_sample_helpers_use_loaded_planes_and_area_settings(void **s
     assert_float_equal(context->bridge_trace_end[0], 100.0f, 0.001f);
 
     context->bridge_point_contents_result = CONTENTS_WATER | CONTENTS_SLIME;
-    assert_int_equal(AAS_PointContents(front_point), CONTENTS_WATER | CONTENTS_SLIME);
-    assert_int_equal(context->bridge_point_contents_count, 1);
-    assert_float_equal(context->bridge_point_contents_point[0], 100.0f, 0.001f);
+	assert_int_equal(AAS_PointContents(front_point), 0);
+	assert_int_equal(context->bridge_point_contents_count, 0);
 
     int bbox_areas[4];
     vec3_t bbox_mins = { 40.0f, -8.0f, -8.0f };
@@ -1935,7 +1940,9 @@ static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
     VectorSet(entity.mins, -4.0f, -8.0f, -8.0f);
     VectorSet(entity.maxs, 4.0f, 8.0f, 8.0f);
 
+	size_t tracked_before = BotMemory_TotalAllocated();
     assert_int_equal(AAS_UpdateEntity(4, &entity), BLERR_NOERROR);
+    assert_true(BotMemory_TotalAllocated() > tracked_before);
     assert_non_null(aasworld.entities);
     assert_true(aasworld.areaEntityListCount > 2U);
     assert_non_null(aasworld.areaEntityLists[2]);
@@ -1960,7 +1967,34 @@ static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
     assert_float_equal(entity_trace.fraction, 0.56f, 0.001f);
     assert_float_equal(entity_trace.endpos[0], 56.0f, 0.001f);
     assert_float_equal(entity_trace.plane.normal[0], -1.0f, 0.001f);
+	assert_float_equal(entity_trace.plane.dist, -71.0f, 0.001f);
+	assert_int_equal(entity_trace.plane.type, 0);
+	assert_int_equal(entity_trace.plane.signbits, 0);
+	assert_float_equal(entity_trace.exp_dist, 15.0f, 0.001f);
+	assert_int_equal(entity_trace.sidenum, -1);
+	assert_int_equal(entity_trace.contents, 0);
     assert_int_equal(entity_trace.ent, 4);
+
+	bsp_trace_t reverse_entity_trace;
+	memset(&reverse_entity_trace, 0, sizeof(reverse_entity_trace));
+	reverse_entity_trace.fraction = 1.0f;
+	assert_true(AAS_EntityCollision(4,
+	                                end,
+	                                boxmins,
+	                                boxmaxs,
+	                                start,
+	                                CONTENTS_SOLID | CONTENTS_PLAYERCLIP,
+	                                &reverse_entity_trace));
+	assert_false(reverse_entity_trace.startsolid);
+	assert_float_equal(reverse_entity_trace.fraction, 0.06f, 0.001f);
+	assert_float_equal(reverse_entity_trace.endpos[0], 94.0f, 0.001f);
+	assert_float_equal(reverse_entity_trace.plane.normal[0], 1.0f, 0.001f);
+	assert_float_equal(reverse_entity_trace.plane.dist, 79.0f, 0.001f);
+	assert_int_equal(reverse_entity_trace.plane.signbits, 0);
+	assert_float_equal(reverse_entity_trace.exp_dist, 15.0f, 0.001f);
+	assert_int_equal(reverse_entity_trace.sidenum, -1);
+	assert_int_equal(reverse_entity_trace.contents, 0);
+	assert_int_equal(reverse_entity_trace.ent, 4);
 
     aas_trace_t hit = AAS_TraceClientBBox(start, end, PRESENCE_CROUCH, 99);
     assert_false(hit.startsolid);
@@ -1978,6 +2012,60 @@ static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
     assert_int_equal(passentity.lastarea, 2);
 
     vec3_t inside = { 60.0f, 0.0f, 0.0f };
+
+	bsp_trace_t inside_entity_trace;
+	memset(&inside_entity_trace, 0, sizeof(inside_entity_trace));
+	inside_entity_trace.fraction = 1.0f;
+	assert_true(AAS_EntityCollision(4,
+	                                inside,
+	                                boxmins,
+	                                boxmaxs,
+	                                end,
+	                                CONTENTS_SOLID | CONTENTS_PLAYERCLIP,
+	                                &inside_entity_trace));
+	assert_true(inside_entity_trace.startsolid);
+	assert_true(inside_entity_trace.allsolid);
+	assert_float_equal(inside_entity_trace.fraction, 0.0f, 0.001f);
+	assert_float_equal(inside_entity_trace.endpos[0], 60.0f, 0.001f);
+	assert_int_equal(inside_entity_trace.sidenum, -1);
+	assert_int_equal(inside_entity_trace.contents, 0);
+
+	/*
+	 * The retail SOLID_BBOX start-inside writer replaces an existing trace,
+	 * even when that trace is already a zero-fraction startsolid result.
+	 */
+	bsp_trace_t bbox_priority_trace;
+	memset(&bbox_priority_trace, 0, sizeof(bbox_priority_trace));
+	bbox_priority_trace.fraction = 0.0f;
+	bbox_priority_trace.startsolid = qtrue;
+	bbox_priority_trace.ent = 99;
+	assert_true(AAS_EntityCollision(4,
+	                                inside,
+	                                boxmins,
+	                                boxmaxs,
+	                                end,
+	                                CONTENTS_SOLID | CONTENTS_PLAYERCLIP,
+	                                &bbox_priority_trace));
+	assert_true(bbox_priority_trace.startsolid);
+	assert_true(bbox_priority_trace.allsolid);
+	assert_int_equal(bbox_priority_trace.ent, 4);
+
+	vec3_t inside_margin = { 94.25f, 0.0f, 0.0f };
+	bsp_trace_t margin_entity_trace;
+	memset(&margin_entity_trace, 0, sizeof(margin_entity_trace));
+	margin_entity_trace.fraction = 1.0f;
+	assert_true(AAS_EntityCollision(4,
+	                                inside_margin,
+	                                boxmins,
+	                                boxmaxs,
+	                                end,
+	                                CONTENTS_SOLID | CONTENTS_PLAYERCLIP,
+	                                &margin_entity_trace));
+	assert_true(margin_entity_trace.startsolid);
+	assert_true(margin_entity_trace.allsolid);
+	assert_float_equal(margin_entity_trace.fraction, 0.0f, 0.001f);
+	assert_float_equal(margin_entity_trace.endpos[0], 94.25f, 0.001f);
+
     aas_trace_t startsolid = AAS_TraceClientBBox(inside, end, PRESENCE_CROUCH, 99);
     assert_true(startsolid.startsolid);
     assert_float_equal(startsolid.fraction, 0.0f, 0.001f);
@@ -2035,7 +2123,9 @@ static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
     AAS_EntityOrigin(5, mover_origin);
     assert_float_equal(mover_origin[1], 80.0f, 0.001f);
     assert_int_equal(AAS_EntityModelindex(5), 8);
-    assert_int_equal(AAS_EntityModelNum(5), 8);
+	assert_int_equal(AAS_EntityRenderFX(5), 15);
+	/* sub_1000ade0 exposes the stored one-based index as a zero-based model. */
+	assert_int_equal(AAS_EntityModelNum(5), 7);
     assert_int_equal(AAS_ModelNumForEntity(5), 7);
 
     vec3_t mover_mins;
@@ -2047,12 +2137,22 @@ static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
     VectorClear(mover_origin);
     assert_true(AAS_OriginOfMoverWithModelNum(7, mover_origin));
     assert_float_equal(mover_origin[0], 25.0f, 0.001f);
+	/* sub_1000ae30 scans raw entity slots, without live or mover filtering. */
+	aasworld.entities[5].inuse = qfalse;
+	aasworld.entities[5].isMover = qfalse;
+	VectorClear(mover_origin);
+	assert_true(AAS_OriginOfMoverWithModelNum(7, mover_origin));
+	assert_float_equal(mover_origin[0], 25.0f, 0.001f);
+	vec3_t nearest_origin = {25.0f, 80.0f, 4.0f};
+	assert_int_equal(AAS_NearestEntity(nearest_origin, 8), 5);
+	assert_int_equal(AAS_NearestEntity(nearest_origin, 99), 0);
     assert_false(AAS_OriginOfMoverWithModelNum(99, mover_origin));
 
     assert_int_equal(AAS_UpdateEntity(5, NULL), BLERR_NOERROR);
     assert_int_equal(AAS_UpdateEntity(4, NULL), BLERR_NOERROR);
-    free(aasworld.entities);
-    free(aasworld.areaEntityLists);
+    FreeMemory(aasworld.entities);
+    FreeMemory(aasworld.areaEntityLists);
+	assert_int_equal(BotMemory_TotalAllocated(), tracked_before);
     aasworld.entities = NULL;
     aasworld.maxEntities = 0;
     aasworld.areaEntityLists = NULL;
@@ -2063,6 +2163,19 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 {
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	Mock_Reset(context);
+	vec3_t unavailable_mins = { 11.0f, 12.0f, 13.0f };
+	vec3_t unavailable_maxs = { 21.0f, 22.0f, 23.0f };
+	vec3_t unavailable_origin = { 31.0f, 32.0f, 33.0f };
+	vec3_t unavailable_angles = { 0.0f, 0.0f, 0.0f };
+	/* Retail sub_10005e60 leaves all outputs untouched before a BSP load. */
+	AAS_BSPModelMinsMaxsOrigin(0,
+							 unavailable_angles,
+							 unavailable_mins,
+							 unavailable_maxs,
+							 unavailable_origin);
+	assert_float_equal(unavailable_mins[0], 11.0f, 0.001f);
+	assert_float_equal(unavailable_maxs[1], 22.0f, 0.001f);
+	assert_float_equal(unavailable_origin[2], 33.0f, 0.001f);
 	ConfigureBSPBrushModelFixture(context);
 
 	vec3_t zero;
@@ -2085,6 +2198,16 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 	assert_float_equal(mins[1], -4.0f, 0.001f);
 	assert_float_equal(maxs[1], 4.0f, 0.001f);
 
+	vec3_t min_only = { 100.0f, 100.0f, 100.0f };
+	vec3_t max_only = { 200.0f, 200.0f, 200.0f };
+	/* Retail sub_10005e60 computes either optional rotated-bound output alone. */
+	AAS_BSPModelMinsMaxsOrigin(1, yaw90, min_only, NULL, NULL);
+	AAS_BSPModelMinsMaxsOrigin(1, yaw90, NULL, max_only, NULL);
+	assert_float_equal(min_only[0], -12.0f, 0.001f);
+	assert_float_equal(min_only[1], -4.0f, 0.001f);
+	assert_float_equal(max_only[0], 12.0f, 0.001f);
+	assert_float_equal(max_only[1], 4.0f, 0.001f);
+
 	vec3_t start = { -40.0f, 0.0f, 0.0f };
 	vec3_t end = { 40.0f, 0.0f, 0.0f };
 	bsp_trace_t model_trace = AAS_TraceBSPModel(1,
@@ -2099,14 +2222,169 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 	assert_float_equal(model_trace.fraction, 0.3749375f, 0.0001f);
 	assert_float_equal(model_trace.endpos[0], -10.005f, 0.001f);
 	assert_float_equal(model_trace.plane.normal[0], -1.0f, 0.001f);
+	assert_int_equal(model_trace.plane.signbits, 0);
 	assert_int_equal(model_trace.contents, CONTENTS_SOLID);
+
+	/*
+	 * Collision uses a transformed world plane, but sub_10004310 copies the
+	 * selected model-local cplane back out of the BSP plane table unchanged.
+	 */
+	vec3_t rotated_start = { 0.0f, -40.0f, 0.0f };
+	vec3_t rotated_end = { 0.0f, 40.0f, 0.0f };
+	bsp_trace_t rotated_model_trace = AAS_TraceBSPModel(1,
+		                                                   yaw90,
+		                                                   zero,
+		                                                   rotated_start,
+		                                                   zero,
+		                                                   zero,
+		                                                   rotated_end,
+		                                                   CONTENTS_SOLID);
+	assert_false(rotated_model_trace.startsolid);
+	assert_float_equal(rotated_model_trace.fraction, 0.3749375f, 0.0001f);
+	assert_float_equal(rotated_model_trace.endpos[1], -10.005f, 0.001f);
+	assert_float_equal(rotated_model_trace.plane.normal[0], -1.0f, 0.001f);
+	assert_float_equal(rotated_model_trace.plane.normal[1], 0.0f, 0.001f);
+	assert_int_equal(rotated_model_trace.plane.signbits, 0);
+
+	/*
+	 * sub_100044f0 rotates each model plane into world space before selecting
+	 * the axial trace box's support extent. Transforming endpoints alone would
+	 * incorrectly apply the world X extent as local X here and hit at -7.005.
+	 */
+	vec3_t asymmetric_mins = { -3.0f, -1.0f, 0.0f };
+	vec3_t asymmetric_maxs = { 3.0f, 1.0f, 0.0f };
+	bsp_trace_t asymmetric_rotated_trace = AAS_TraceBSPModel(1,
+		                                                     yaw90,
+		                                                     zero,
+		                                                     rotated_start,
+		                                                     asymmetric_mins,
+		                                                     asymmetric_maxs,
+		                                                     rotated_end,
+		                                                     CONTENTS_SOLID);
+	assert_false(asymmetric_rotated_trace.startsolid);
+	assert_float_equal(asymmetric_rotated_trace.fraction, 0.3874375f, 0.0001f);
+	assert_float_equal(asymmetric_rotated_trace.endpos[1], -9.005f, 0.001f);
+	assert_float_equal(asymmetric_rotated_trace.plane.normal[0], -1.0f, 0.001f);
+
+	/*
+	 * The same raw cplane copy is retained for a translated, unrotated model:
+	 * collision occurs at the world-space offset, but the reported distance is
+	 * still the selected local BSP plane's 10.0 value.
+	 */
+	vec3_t translated_origin = { 25.0f, 0.0f, 0.0f };
+	vec3_t translated_start = { 0.0f, 0.0f, 0.0f };
+	vec3_t translated_end = { 60.0f, 0.0f, 0.0f };
+	bsp_trace_t translated_model_trace = AAS_TraceBSPModel(1,
+		                                                    zero,
+		                                                    translated_origin,
+		                                                    translated_start,
+		                                                    zero,
+		                                                    zero,
+		                                                    translated_end,
+		                                                    CONTENTS_SOLID);
+	assert_false(translated_model_trace.startsolid);
+	assert_float_equal(translated_model_trace.fraction, 0.2499167f, 0.0001f);
+	assert_float_equal(translated_model_trace.endpos[0], 14.995f, 0.001f);
+	assert_float_equal(translated_model_trace.plane.normal[0], -1.0f, 0.001f);
+	assert_float_equal(translated_model_trace.plane.dist, 10.0f, 0.001f);
+
+	/*
+	 * The retail BSP walker treats a start 0.003 units in front of a split
+	 * plane as back-side-only when its endpoint is behind that plane.  It must
+	 * not visit the front leaf's brush just because the segment crosses zero.
+	 */
+	context->bspNodes = (aas_bspnode_t *)calloc(1U, sizeof(aas_bspnode_t));
+	assert_non_null(context->bspNodes);
+	aasworld.bspNodes = context->bspNodes;
+	aasworld.numBspNodes = 1;
+	context->bspNodes[0].planenum = 0;
+	context->bspNodes[0].children[0] = -2;
+	context->bspNodes[0].children[1] = -1;
+	context->bspModels[1].headnode = 0;
+	vec3_t near_plane_start = {10.003f, 0.0f, 0.0f};
+	vec3_t near_plane_end = {-20.0f, 0.0f, 0.0f};
+	bsp_trace_t near_plane_trace = AAS_TraceBSPModel(1,
+		zero,
+		zero,
+		near_plane_start,
+		zero,
+		zero,
+		near_plane_end,
+		CONTENTS_SOLID);
+	assert_false(near_plane_trace.startsolid);
+	assert_float_equal(near_plane_trace.fraction, 1.0f, 0.0001f);
+	assert_float_equal(near_plane_trace.endpos[0], -20.0f, 0.001f);
+	assert_int_equal(near_plane_trace.contents, 0);
+
+	/*
+	 * The front-child fast path is strictly greater than -0.005.  At the
+	 * exact negative boundary retail instead routes to child 1, leaving this
+	 * leaf-0 brush untouched.
+	 */
+	vec3_t exact_negative_epsilon = {
+		context->bspPlanes[0].dist - 0.005f, 0.0f, 0.0f
+	};
+	bsp_trace_t exact_negative_epsilon_trace = AAS_TraceBSPModel(1,
+		zero,
+		zero,
+		exact_negative_epsilon,
+		zero,
+		zero,
+		exact_negative_epsilon,
+		CONTENTS_SOLID);
+	assert_false(exact_negative_epsilon_trace.startsolid);
+	assert_float_equal(exact_negative_epsilon_trace.fraction, 1.0f, 0.0001f);
+	assert_int_equal(exact_negative_epsilon_trace.contents, 0);
+	context->bspModels[1].headnode = -2;
+	free(context->bspNodes);
+	context->bspNodes = NULL;
+	aasworld.bspNodes = NULL;
+	aasworld.numBspNodes = 0;
+
+	vec3_t inside_model = { 0.0f, 0.0f, 0.0f };
+	bsp_trace_t inside_model_trace = AAS_TraceBSPModel(1,
+	                                                   zero,
+	                                                   zero,
+	                                                   inside_model,
+	                                                   zero,
+	                                                   zero,
+	                                                   end,
+	                                                   CONTENTS_SOLID);
+	assert_true(inside_model_trace.startsolid);
+	assert_true(inside_model_trace.allsolid);
+	assert_float_equal(inside_model_trace.fraction, 0.0f, 0.001f);
+	assert_float_equal(inside_model_trace.endpos[0], 0.0f, 0.001f);
+
+	/*
+	 * A nested SOLID_BSP start-inside trace is not a priority override: the
+	 * raw outer collision path copies it only when its fraction is strictly
+	 * lower than the caller's current result.
+	 */
+	bsp_trace_t model_priority_trace;
+	memset(&model_priority_trace, 0, sizeof(model_priority_trace));
+	model_priority_trace.fraction = 0.0f;
+	model_priority_trace.startsolid = qtrue;
+	model_priority_trace.ent = 99;
+	assert_false(AAS_EntityCollision(6,
+	                                 inside_model,
+	                                 zero,
+	                                 zero,
+	                                 end,
+	                                 CONTENTS_SOLID,
+	                                 &model_priority_trace));
+	assert_true(model_priority_trace.startsolid);
+	assert_int_equal(model_priority_trace.ent, 99);
 
 	AASEntityFrame mover;
 	memset(&mover, 0, sizeof(mover));
 	mover.solid = SOLID_BSP;
 	mover.modelindex = 2;
+	mover.bounds_dirty = true;
+	mover.origin_dirty = true;
 	VectorSet(mover.origin, 25.0f, 0.0f, 0.0f);
 	VectorSet(mover.previous_origin, 25.0f, 0.0f, 0.0f);
+	VectorSet(mover.mins, -10.0f, -10.0f, -10.0f);
+	VectorSet(mover.maxs, 10.0f, 10.0f, 10.0f);
 	assert_int_equal(AAS_UpdateEntity(6, &mover), BLERR_NOERROR);
 
 	vec3_t entity_start = { 0.0f, 0.0f, 0.0f };
@@ -2128,13 +2406,66 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 	assert_int_equal(entity_trace.ent, 6);
 	assert_int_equal(context->bridge_trace_count, 0);
 
+	vec3_t mover_contents_point = { 25.0f, 0.0f, 0.0f };
+	assert_int_equal(AAS_PointContents(mover_contents_point), CONTENTS_SOLID);
+
+	AASEntityFrame bbox;
+	memset(&bbox, 0, sizeof(bbox));
+	bbox.solid = SOLID_BBOX;
+	bbox.bounds_dirty = true;
+	bbox.origin_dirty = true;
+	VectorSet(bbox.origin, 50.0f, 0.0f, 0.0f);
+	VectorSet(bbox.previous_origin, 50.0f, 0.0f, 0.0f);
+	VectorSet(bbox.mins, -2.0f, -2.0f, -2.0f);
+	VectorSet(bbox.maxs, 2.0f, 2.0f, 2.0f);
+	assert_int_equal(AAS_UpdateEntity(7, &bbox), BLERR_NOERROR);
+	vec3_t bbox_contents_point = { 50.0f, 0.0f, 0.0f };
+	assert_int_equal(AAS_PointContents(bbox_contents_point), CONTENTS_MONSTER);
+
+	/*
+	 * The BBOX path in sub_10003680 does not inspect the content mask; unlike
+	 * a SOLID_BSP brush trace it remains a collision even when that mask is 0.
+	 */
+	bsp_trace_t bbox_mask_zero_trace;
+	memset(&bbox_mask_zero_trace, 0, sizeof(bbox_mask_zero_trace));
+	bbox_mask_zero_trace.fraction = 1.0f;
+	vec3_t bbox_trace_start = { 40.0f, 0.0f, 0.0f };
+	vec3_t bbox_trace_end = { 60.0f, 0.0f, 0.0f };
+	assert_true(AAS_EntityCollision(7,
+		bbox_trace_start,
+		zero,
+		zero,
+		bbox_trace_end,
+		0,
+		&bbox_mask_zero_trace));
+	assert_float_equal(bbox_mask_zero_trace.fraction, 0.4f, 0.0001f);
+	assert_int_equal(bbox_mask_zero_trace.ent, 7);
+	assert_int_equal(bbox_mask_zero_trace.contents, 0);
+
+	context->bspPlanes[1].dist = 0.0f;
+	mover.angles_dirty = true;
+	VectorSet(mover.angles, 0.0f, 90.0f, 0.0f);
+	assert_int_equal(AAS_UpdateEntity(6, &mover), BLERR_NOERROR);
+	/*
+	 * sub_100057a0 applies the -angles matrix directly. With yaw +90 this
+	 * maps the +Y world offset to the brush's positive local X half-space;
+	 * using a transpose of that already-inverted matrix would choose -X.
+	 */
+	vec3_t rotated_mover_contents_point = { 25.0f, 5.0f, 0.0f };
+	assert_int_equal(AAS_PointContents(rotated_mover_contents_point),
+		CONTENTS_SOLID);
+
 	assert_int_equal(AAS_UpdateEntity(6, NULL), BLERR_NOERROR);
-	free(aasworld.entities);
-	free(aasworld.areaEntityLists);
+	assert_int_equal(AAS_UpdateEntity(7, NULL), BLERR_NOERROR);
+	FreeMemory(aasworld.entities);
+	FreeMemory(aasworld.areaEntityLists);
+	free(aasworld.bspLeafEntityLists);
 	aasworld.entities = NULL;
 	aasworld.maxEntities = 0;
 	aasworld.areaEntityLists = NULL;
 	aasworld.areaEntityListCount = 0U;
+	aasworld.bspLeafEntityLists = NULL;
+	aasworld.bspLeafEntityListCount = 0U;
 }
 
 /*
@@ -2885,8 +3216,10 @@ Give an entity the non-null retail area-link gate used by VisibleEntities.
 */
 static void VisibilityLinkEntity(int entnum)
 {
-	aas_link_t *link = (aas_link_t *)calloc(1U, sizeof(*link));
+	AAS_InitAASLinkHeap();
+	aas_link_t *link = AAS_AllocAASLink();
 	assert_non_null(link);
+	memset(link, 0, sizeof(*link));
 	link->entnum = entnum;
 	aasworld.entities[entnum].areas = link;
 }
@@ -3045,9 +3378,6 @@ static void test_retail_entity_visibility_three_sample_order(void **state)
 	assert_false(AAS_EntityVisible(0, eye, viewangles, 360.0f, 1));
 	assert_int_equal(context->bridge_trace_count, 3);
 	assert_int_equal(context->bridge_point_contents_count, 6);
-	assert_float_equal(context->bridge_trace_ends[0][2], 10.0f, 0.001f);
-	assert_float_equal(context->bridge_trace_ends[1][2], 0.0f, 0.001f);
-	assert_float_equal(context->bridge_trace_ends[2][2], 40.0f, 0.001f);
 	assert_float_equal(context->bridge_point_contents_points[0][2],
 		10.0f,
 		0.001f);
@@ -3066,6 +3396,9 @@ static void test_retail_entity_visibility_three_sample_order(void **state)
 	assert_memory_equal(context->bridge_point_contents_points[5],
 		eye,
 		sizeof(vec3_t));
+	assert_float_equal(context->bridge_trace_ends[0][2], 10.0f, 0.001f);
+	assert_float_equal(context->bridge_trace_ends[1][2], 0.0f, 0.001f);
+	assert_float_equal(context->bridge_trace_ends[2][2], 40.0f, 0.001f);
 
 	VisibilityReleaseEntities();
 }

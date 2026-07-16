@@ -33,5 +33,6 @@ target_include_directories(botlib_aas
 
 target_link_libraries(botlib_aas
     PUBLIC
+        botlib_precomp
         gladiator_shared_headers
 )

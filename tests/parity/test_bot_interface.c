@@ -22,6 +22,7 @@
 #include "botlib/ai/goal_move_orchestrator.h"
 #include "botlib/ai_goal/bot_goal.h"
 #include "botlib/common/l_log.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_struct.h"
@@ -103,7 +104,7 @@ typedef struct captured_print_s
 
 typedef struct mock_bot_import_s
 {
-	bot_import_t table;
+	bot_import_extended_t table;
 	captured_print_t prints[128];
 	size_t print_count;
 	bot_input_t inputs[64];
@@ -162,12 +163,6 @@ static const import_field_descriptor_t g_import_field_layout[] = {
 	{ "DebugLineCreate", offsetof(bot_import_t, DebugLineCreate) },
 	{ "DebugLineDelete", offsetof(bot_import_t, DebugLineDelete) },
 	{ "DebugLineShow", offsetof(bot_import_t, DebugLineShow) },
-	{ "CvarGet", offsetof(bot_import_t, CvarGet) },
-	{ "Error", offsetof(bot_import_t, Error) },
-	{ "AddCommand", offsetof(bot_import_t, AddCommand) },
-	{ "RemoveCommand", offsetof(bot_import_t, RemoveCommand) },
-	{ "CmdArgc", offsetof(bot_import_t, CmdArgc) },
-	{ "CmdArgv", offsetof(bot_import_t, CmdArgv) },
 };
 
 static const import_field_descriptor_t g_retail_export_layout[] = {
@@ -197,7 +192,7 @@ typedef struct bot_interface_test_context_s
 {
     asset_env_t assets;
     mock_bot_import_t mock;
-    bot_export_t *api;
+    bot_export_extended_t *api;
     botlib_contract_catalogue_t catalogue;
     bool libvar_initialised;
 } bot_interface_test_context_t;
@@ -215,6 +210,8 @@ static mock_bot_import_t *g_active_mock = NULL;
 static int g_mock_import_libvar_set_status = BLERR_NOERROR;
 static int g_mock_import_libvar_set_count = 0;
 static bool ensure_map_fixture(const asset_env_t *assets, const char *stem);
+const aas_bspentity_t *BotAI_EntityToActivate(const aas_bspentity_t *entities,
+	int modelindex);
 static allocator_callback_capture_t g_primary_allocator_capture;
 static allocator_callback_capture_t g_alternate_allocator_capture;
 
@@ -933,11 +930,21 @@ Confirms BotSetupLibrary registers the console helpers and teardown clears them.
 static void test_console_commands_register(void **state)
 {
 	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+	const char *log_path = "botlib.log";
+	FILE *existing_log = fopen(log_path, "rb");
+	if (existing_log != NULL)
+	{
+		fclose(existing_log);
+		cmocka_skip();
+	}
+	LibVarSet("log", "1");
 
 	Mock_Reset(&context->mock);
 
 	int status = context->api->BotSetupLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
+	assert_non_null(BotLib_LogFile());
+	assert_non_null(Mock_FindPrint(&context->mock, "Opened log botlib.log\n"));
 
 	assert_int_equal(context->mock.command_count, 3);
 	assert_string_equal(context->mock.commands[0].name, "bot_test");
@@ -948,6 +955,8 @@ static void test_console_commands_register(void **state)
 
 	context->api->BotShutdownLibrary();
 	assert_int_equal(context->mock.command_count, 0);
+	assert_null(BotLib_LogFile());
+	assert_int_equal(remove(log_path), 0);
 }
 
 /*
@@ -1228,10 +1237,24 @@ static void test_get_bot_api_bounds_retail_import_prefix(void **state)
 		(bot_interface_test_context_t *)*state;
 	assert_int_equal(BOT_IMPORT_RETAIL_SIZE,
 		10U * sizeof(void (*)(void)));
+	assert_int_equal(sizeof(bot_import_t),
+		offsetof(bot_import_t, DebugLineShow) +
+		sizeof(context->mock.table.DebugLineShow));
+	assert_int_equal(offsetof(bot_import_extended_t, DebugLineShow),
+		offsetof(bot_import_t, DebugLineShow));
+	assert_true(sizeof(bot_import_extended_t) > sizeof(bot_import_t));
 
-	bot_export_t *retail_api = GetBotAPI(&context->mock.table);
+	bot_import_t retail_import;
+	memcpy(&retail_import, &context->mock.table, sizeof(retail_import));
+	bot_export_t *retail_api = GetBotAPI(&retail_import);
 	assert_non_null(retail_api);
-	const bot_import_t *copied = Q2Bridge_GetImportTable();
+	assert_int_equal(sizeof(bot_export_t),
+		offsetof(bot_export_t, Test) + sizeof(retail_api->Test));
+	assert_int_equal(offsetof(bot_export_extended_t, Test),
+		offsetof(bot_export_t, Test));
+	assert_true(sizeof(bot_export_extended_t) > sizeof(bot_export_t));
+	assert_ptr_not_equal(retail_api, context->api);
+	const bot_import_extended_t *copied = Q2Bridge_GetImportTable();
 	assert_non_null(copied);
 	assert_ptr_equal(copied->BotInput, context->mock.table.BotInput);
 	assert_ptr_equal(copied->DebugLineShow,
@@ -1334,9 +1357,15 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 	vec3_t origin = {0.0f, 0.0f, 0.0f};
 	status = context->api->BotAddSound(origin, 0, 0, 0, 1.0f, 1.0f, 0.0f);
 	assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
 	status = context->api->BotAddSound(origin, 0, 0, 1, 1.0f, 1.0f, 0.0f);
 	assert_int_equal(status, BLERR_INVALIDSOUNDINDEX);
+	const captured_print_t *invalid_sound =
+		Mock_FindPrintEntry(&context->mock, "sound index 1 out of range");
+	assert_non_null(invalid_sound);
+	assert_int_equal(invalid_sound->type, PRT_FATAL);
+	assert_string_equal(invalid_sound->message,
+		"sound index 1 out of range [0, 1]\n");
 
 	char *refreshed_models[] = {
 		"maps/retained.bsp",
@@ -1368,7 +1397,7 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 	assert_float_equal(client_state->last_client_update.origin[0], 123.0f, 0.0001f);
 	assert_float_equal(client_state->last_update_time, 17.0f, 0.0001f);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
-	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
 	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/replacement.wav");
 	assert_string_equal(AAS_SoundSubsystem_AssetName(1), "sound/new-index.wav");
 
@@ -1378,7 +1407,7 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 
 	status = context->api->BotAddSound(origin, 0, 0, 1, 1.0f, 1.0f, 0.0f);
 	assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 2);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
 
 	char *ignored_sounds[] = {"sound/ignored.wav"};
 	Mock_ClearPrints(&context->mock);
@@ -1712,6 +1741,32 @@ static void test_bot_setup_client_preserves_retail_boolean_abi(void **state)
 		"BotSetupClient: invalid client",
 		PRT_ERROR);
 
+	bot_settings_t missing_settings;
+	memset(&missing_settings, 0, sizeof(missing_settings));
+	snprintf(missing_settings.characterfile,
+		sizeof(missing_settings.characterfile),
+		"bots/missing_character.c");
+	snprintf(missing_settings.charactername,
+		sizeof(missing_settings.charactername),
+		"missing");
+	Mock_ClearPrints(&context->mock);
+	status = context->api->BotSetupClient(1, &missing_settings);
+	assert_false(status);
+	assert_null(BotState_Get(1));
+	qboolean found_retail_client_diagnostic = qfalse;
+	for (size_t index = 0; index < context->mock.print_count; ++index)
+	{
+		const captured_print_t *entry = &context->mock.prints[index];
+		if (entry->type == PRT_FATAL &&
+			strcmp(entry->message,
+				"couldn't load bot character missing from bots/missing_character.c\n") == 0)
+		{
+			found_retail_client_diagnostic = qtrue;
+			break;
+		}
+	}
+	assert_true(found_retail_client_diagnostic);
+
 	status = context->api->BotSetupClient(1, &settings);
 	assert_true(status);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
@@ -1719,11 +1774,34 @@ static void test_bot_setup_client_preserves_retail_boolean_abi(void **state)
 	bot_client_state_t *active_state = BotState_Get(1);
 	assert_non_null(active_state);
 
+	size_t source_count_before_duplicate = CRC_SourceChecksumCount();
+	snprintf(aasworld.mapName, sizeof(aasworld.mapName),
+		"__gladiator_client_setup_map");
+	aasworld.bspEntityChecksum = 0xD218U;
 	Mock_ClearPrints(&context->mock);
 	status = context->api->BotSetupClient(1, &settings);
 	assert_false(status);
 	assert_ptr_equal(BotState_Get(1), active_state);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
+	assert_int_equal(CRC_SourceChecksumCount(),
+		source_count_before_duplicate + 1U);
+	uint16_t source_checksum = 0;
+	char source_name[64];
+	qboolean found_map_checksum = qfalse;
+	for (size_t index = 0; index < CRC_SourceChecksumCount(); ++index)
+	{
+		assert_true(CRC_SourceChecksumAt(index,
+			&source_checksum,
+			source_name,
+			sizeof(source_name)));
+		if (strcmp(source_name, "__gladiator_client_setup_map") == 0)
+		{
+			assert_int_equal(source_checksum, 0xD218U);
+			found_map_checksum = qtrue;
+			break;
+		}
+	}
+	assert_true(found_map_checksum);
 	Mock_AssertPrintContains(&context->mock,
 		"client 1 already setup\n",
 		PRT_FATAL);
@@ -1731,6 +1809,8 @@ static void test_bot_setup_client_preserves_retail_boolean_abi(void **state)
 	Mock_ClearPrints(&context->mock);
 	status = context->api->BotSetupClient(1, NULL);
 	assert_false(status);
+	assert_int_equal(CRC_SourceChecksumCount(),
+		source_count_before_duplicate + 1U);
 	Mock_AssertSinglePrint(&context->mock,
 		PRT_FATAL,
 		"client 1 already setup\n");
@@ -2455,6 +2535,18 @@ static void test_bot_client_capacity_uses_setup_maxclients(void **state)
 		"BotClientSettings: invalid client number 3, [0, 2]\n");
 	assert_null(BotState_ClientSettings(3));
 
+	Mock_ClearPrints(&context->mock);
+	assert_string_equal(BotState_ClientName(-1), "");
+	Mock_AssertSinglePrint(&context->mock,
+		PRT_WARNING,
+		"ClientName: client -1 out of range\n");
+
+	Mock_ClearPrints(&context->mock);
+	assert_string_equal(BotState_ClientSkin(3), "");
+	Mock_AssertSinglePrint(&context->mock,
+		PRT_WARNING,
+		"ClientSkin: client 3 out of range\n");
+
 	bot_settings_t setup_settings;
 	memset(&setup_settings, 0, sizeof(setup_settings));
 	snprintf(setup_settings.characterfile, sizeof(setup_settings.characterfile), "bots/babe_c.c");
@@ -2690,13 +2782,13 @@ static void test_bot_test_export_is_retail_noop(void **state)
 
 /*
 =============
-test_pointlight_heap_is_independent_of_soundinfo
+test_pointlight_heap_is_not_initialised_by_library_setup
 
-Pin max_aaslights setup when sound metadata is disabled and ensure an empty
-heap emits only retail's raw handled warning, never a wrapper capacity warning.
+Pin the uncalled retail max_aaslights initializer: BotSetup configures sound
+pools but leaves point-light storage empty, regardless of its libvar value.
 =============
 */
-static void test_pointlight_heap_is_independent_of_soundinfo(void **state)
+static void test_pointlight_heap_is_not_initialised_by_library_setup(void **state)
 {
 	bot_interface_test_context_t *context =
 		(bot_interface_test_context_t *)*state;
@@ -2708,7 +2800,7 @@ static void test_pointlight_heap_is_independent_of_soundinfo(void **state)
 	assert_int_equal(context->api->BotLibVarSet("max_aaslights", "1"),
 		BLERR_NOERROR);
 	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
-	assert_non_null(Mock_FindPrint(&context->mock,
+	assert_null(Mock_FindPrint(&context->mock,
 		"AAS_Sound: max_soundinfo disabled"));
 
 	Mock_Reset(&context->mock);
@@ -2722,8 +2814,8 @@ static void test_pointlight_heap_is_independent_of_soundinfo(void **state)
 		0.0f,
 		0.5f),
 		BLERR_NOERROR);
-	assert_int_equal(AAS_SoundSubsystem_PointLightCount(), 1);
-	assert_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
+	assert_int_equal(AAS_SoundSubsystem_PointLightCount(), 0);
+	assert_non_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
 	assert_null(Mock_FindPrint(&context->mock,
 		"BotAddPointLight: point light queue capacity exceeded"));
 	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
@@ -2807,6 +2899,8 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     status = context->api->BotAddSound(origin, 3, 1, 1, 0.5f, 0.7f, 0.0f);
     assert_int_equal(status, BLERR_NOERROR);
 
+	assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 0);
+	assert_int_equal(context->api->BotStartFrame(0.001f), BLERR_NOERROR);
     assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 1);
     const aas_sound_event_t *event = AAS_SoundSubsystem_SoundEvent(0);
     assert_non_null(event);
@@ -2837,19 +2931,13 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 
     status = context->api->BotAddPointLight(origin, 5, 128.0f, 1.0f, 0.3f, 0.2f, 0.0f, 0.25f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal((int)AAS_SoundSubsystem_PointLightCount(), 1);
+    assert_int_equal((int)AAS_SoundSubsystem_PointLightCount(), 0);
+	assert_non_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
 
     const aas_pointlight_event_summary_t *light_summaries = NULL;
     size_t light_summary_count = AAS_SoundSubsystem_PointLightSummaries(&light_summaries);
-    assert_int_equal(light_summary_count, 1);
-    assert_non_null(light_summaries);
-    const aas_pointlight_event_summary_t *light_summary = &light_summaries[0];
-    assert_non_null(light_summary);
-    assert_non_null(light_summary->event);
-    assert_ptr_equal(light_summary->event, AAS_SoundSubsystem_PointLight(0));
-    assert_true(light_summary->has_expiry);
-    assert_float_equal(light_summary->expiry_time, 0.25f, 0.0001f);
-    assert_false(light_summary->expired);
+    assert_int_equal(light_summary_count, 0);
+    assert_null(light_summaries);
 
     bot_settings_t settings;
     memset(&settings, 0, sizeof(settings));
@@ -2969,8 +3057,8 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 
     status = context->api->BotAddPointLight(origin, 7, 64.0f, 0.1f, 0.2f, 0.3f, 0.0f, 0.5f);
     assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(AAS_SoundSubsystem_PointLightCount(), 1);
-	assert_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
+	assert_int_equal(AAS_SoundSubsystem_PointLightCount(), 0);
+	assert_non_null(Mock_FindPrint(&context->mock, "WARNING: empty light heap"));
 	assert_null(Mock_FindPrint(&context->mock,
 		"BotAddPointLight: point light queue capacity exceeded"));
 
@@ -3599,8 +3687,9 @@ static void setup_console_command_aas_world(void)
 	aasworld.initialized = qtrue;
 	aasworld.numAreas = 2;
 	aasworld.numAreaSettings = 2;
-	aasworld.areas = calloc((size_t)aasworld.numAreas, sizeof(*aasworld.areas));
-	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings,
+	aasworld.areas = GetClearedMemory((size_t)aasworld.numAreas *
+		sizeof(*aasworld.areas));
+	aasworld.areasettings = GetClearedMemory((size_t)aasworld.numAreaSettings *
 		sizeof(*aasworld.areasettings));
 	assert_non_null(aasworld.areas);
 	assert_non_null(aasworld.areasettings);
@@ -5228,12 +5317,14 @@ static void bot_mover_fixture_init(bot_mover_fixture_t *fixture)
     aasworld.numReachability = 3;
     aasworld.maxEntities = 8;
 
-    fixture->areas = (aas_area_t *)calloc((size_t)(aasworld.numAreas + 1), sizeof(aas_area_t));
-    fixture->area_settings =
-        (aas_areasettings_t *)calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
-    fixture->reachability =
-        (aas_reachability_t *)calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
-    fixture->entities = (aas_entity_t *)calloc((size_t)aasworld.maxEntities, sizeof(aas_entity_t));
+    fixture->areas = (aas_area_t *)GetClearedMemory(
+        (size_t)(aasworld.numAreas + 1) * sizeof(aas_area_t));
+    fixture->area_settings = (aas_areasettings_t *)GetClearedMemory(
+        (size_t)aasworld.numAreaSettings * sizeof(aas_areasettings_t));
+    fixture->reachability = (aas_reachability_t *)GetClearedMemory(
+        (size_t)aasworld.numReachability * sizeof(aas_reachability_t));
+    fixture->entities = (aas_entity_t *)GetClearedMemory(
+        (size_t)aasworld.maxEntities * sizeof(aas_entity_t));
 
     assert_non_null(fixture->areas);
     assert_non_null(fixture->area_settings);
@@ -5244,6 +5335,9 @@ static void bot_mover_fixture_init(bot_mover_fixture_t *fixture)
     aasworld.areasettings = fixture->area_settings;
     aasworld.reachability = fixture->reachability;
     aasworld.entities = fixture->entities;
+
+    /* The fixture exercises AAS-area links; no BSP leaves are installed. */
+    AAS_InitAASLinkHeap();
     TranslateEntity_SetWorldLoaded(qtrue);
 
     VectorSet(aasworld.areas[1].mins, -64.0f, -64.0f, 0.0f);
@@ -5683,6 +5777,56 @@ static void test_ai_battle_nbg_records_enemy_location(void **state)
 	assert_int_equal(context->api->BotShutdownClient(1), BLERR_NOERROR);
 	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
 	bot_mover_fixture_shutdown(&fixture);
+}
+
+/*
+=============
+test_ai_entity_to_activate_follows_trigger_target_chain
+
+Pins retail BotEntityToActivate's reverse target traversal: an unshootable
+blocked door resolves through trigger_counter and trigger_relay to the button
+that activates it. The fixture stays in memory so it never writes assets under
+dev_tools.
+=============
+*/
+static void test_ai_entity_to_activate_follows_trigger_target_chain(void **state)
+{
+	(void)state;
+	static const char entity_lump[] =
+		"{\n"
+		"\"classname\" \"worldspawn\"\n"
+		"}\n"
+		"{\n"
+		"\"classname\" \"func_door\"\n"
+		"\"model\" \"*1\"\n"
+		"\"targetname\" \"door_signal\"\n"
+		"}\n"
+		"{\n"
+		"\"classname\" \"trigger_counter\"\n"
+		"\"target\" \"door_signal\"\n"
+		"\"targetname\" \"counter_signal\"\n"
+		"}\n"
+		"{\n"
+		"\"classname\" \"trigger_relay\"\n"
+		"\"target\" \"counter_signal\"\n"
+		"\"targetname\" \"relay_signal\"\n"
+		"}\n"
+		"{\n"
+		"\"classname\" \"func_button\"\n"
+		"\"model\" \"*2\"\n"
+		"\"target\" \"relay_signal\"\n"
+		"\"health\" \"10\"\n"
+		"}\n";
+
+	aas_bspentity_t *entities = AAS_ParseBSPEntities(entity_lump,
+		strlen(entity_lump));
+	assert_non_null(entities);
+	const aas_bspentity_t *activation = BotAI_EntityToActivate(entities, 1);
+	assert_non_null(activation);
+	assert_string_equal(AAS_ValueForBSPEpairKey(activation, "classname"),
+		"func_button");
+	assert_string_equal(AAS_ValueForBSPEpairKey(activation, "model"), "*2");
+	AAS_FreeBSPEntities(entities);
 }
 
 /*
@@ -10330,45 +10474,30 @@ static void test_bot_bridge_tracks_mover_entity_updates(void **state)
     context->api->BotShutdownClient(1);
 }
 
+/*
+=============
+test_bot_start_frame_entity_lifecycle
+
+Pins retail frame invalidation without an invented stale-link sweep.
+=============
+*/
 static void test_bot_start_frame_entity_lifecycle(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
-
-	if (!ensure_map_fixture(&context->assets, "test2"))
-	{
-		cmocka_skip();
-	}
 
     Mock_Reset(&context->mock);
 
     int status = context->api->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
 
-    status = context->api->BotLoadMap("maps/test2.bsp", 0, NULL, 0, NULL, 0, NULL);
-    assert_int_equal(status, BLERR_NOERROR);
-    assert_true(aasworld.loaded);
-
-    status = context->api->BotStartFrame(0.0f);
-    assert_int_equal(status, BLERR_NOERROR);
-
-    bot_updateentity_t entity;
-    memset(&entity, 0, sizeof(entity));
-    entity.solid = 31;
-    entity.modelindex = 2;
-    VectorSet(entity.origin, 32.0f, 24.0f, 40.0f);
-    VectorCopy(entity.origin, entity.old_origin);
-    VectorSet(entity.mins, -16.0f, -16.0f, -16.0f);
-    VectorSet(entity.maxs, 16.0f, 16.0f, 16.0f);
-
     const int entityNum = 7;
-    status = context->api->BotUpdateEntity(entityNum, &entity);
-    assert_int_equal(status, BLERR_NOERROR);
-    assert_true(aasworld.entitiesValid);
     assert_non_null(aasworld.entities);
-    assert_true(aasworld.entities[entityNum].inuse);
-
-    const aas_entity_t *tracked = &aasworld.entities[entityNum];
-    assert_non_null(tracked->areas);
+	AAS_InitAASLinkHeap();
+	aas_link_t *link = AAS_AllocAASLink();
+    assert_non_null(link);
+	memset(link, 0, sizeof(*link));
+    aasworld.entities[entityNum].areas = link;
+    aasworld.entities[entityNum].inuse = qtrue;
 
     status = context->api->BotStartFrame(0.1f);
     assert_int_equal(status, BLERR_NOERROR);
@@ -10378,31 +10507,30 @@ static void test_bot_start_frame_entity_lifecycle(void **state)
 
     status = context->api->BotStartFrame(0.2f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_null(aasworld.entities[entityNum].areas);
-    assert_true(aasworld.entities[entityNum].outsideAllAreas);
+    assert_non_null(aasworld.entities[entityNum].areas);
     assert_false(aasworld.entitiesValid);
-    assert_int_equal(aasworld.numFrames, 3);
+
+    AAS_ResetEntityLinks();
+    assert_null(aasworld.entities[entityNum].areas);
 
     context->api->BotShutdownLibrary();
 }
 
-static void test_bot_start_frame_updates_routing_diagnostics(void **state)
+/*
+=============
+test_bot_start_frame_matches_retail_frame_sequence
+
+Pins the raw frame order, routing counter reset, and one-shot diagnostics.
+=============
+*/
+static void test_bot_start_frame_matches_retail_frame_sequence(void **state)
 {
     bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
-
-	if (!ensure_map_fixture(&context->assets, "test2"))
-	{
-		cmocka_skip();
-	}
 
     Mock_Reset(&context->mock);
 
     int status = context->api->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
-
-    status = context->api->BotLoadMap("maps/test2.bsp", 0, NULL, 0, NULL, 0, NULL);
-    assert_int_equal(status, BLERR_NOERROR);
-    assert_true(aasworld.loaded);
 
     AAS_RouteFrameResetDiagnostics();
     AAS_ReachabilityFrameResetDiagnostics();
@@ -10418,14 +10546,15 @@ static void test_bot_start_frame_updates_routing_diagnostics(void **state)
 
     status = context->api->BotStartFrame(0.0f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(AAS_RouteFrameSkipCounter(), 1);
+    assert_int_equal(AAS_RouteFrameSkipCounter(), 0);
     assert_int_equal(AAS_RouteFrameWorkCounter(), 0);
     assert_int_equal(AAS_RouteFrameLastBudget(), 0);
     assert_false(AAS_RouteFrameForceWriteActive());
-    assert_int_equal(AAS_ReachabilityFrameSkipCounter(), 1);
+    assert_int_equal(AAS_ReachabilityFrameSkipCounter(), 0);
     assert_int_equal(AAS_ReachabilityFrameWorkCounter(), 0);
     assert_false(AAS_ReachabilityForceReachabilityActive());
     assert_false(AAS_ReachabilityForceClusteringActive());
+    assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 0);
 
     status = context->api->BotLibVarSet("framereachability", "16");
     assert_int_equal(status, BLERR_NOERROR);
@@ -10438,16 +10567,73 @@ static void test_bot_start_frame_updates_routing_diagnostics(void **state)
 
     status = context->api->BotStartFrame(0.2f);
     assert_int_equal(status, BLERR_NOERROR);
-    assert_int_equal(AAS_RouteFrameSkipCounter(), 1);
-    assert_int_equal(AAS_RouteFrameWorkCounter(), 1);
-    assert_int_equal(AAS_RouteFrameLastBudget(), 16);
-    assert_true(AAS_RouteFrameForceWriteActive());
-    assert_int_equal(AAS_ReachabilityFrameSkipCounter(), 1);
-    assert_int_equal(AAS_ReachabilityFrameWorkCounter(), 1);
-    assert_true(AAS_ReachabilityForceReachabilityActive());
-    assert_true(AAS_ReachabilityForceClusteringActive());
+    assert_int_equal(AAS_RouteFrameSkipCounter(), 0);
+    assert_int_equal(AAS_RouteFrameWorkCounter(), 0);
+    assert_int_equal(AAS_RouteFrameLastBudget(), 0);
+    assert_false(AAS_RouteFrameForceWriteActive());
+    assert_int_equal(AAS_ReachabilityFrameSkipCounter(), 0);
+    assert_int_equal(AAS_ReachabilityFrameWorkCounter(), 0);
+    assert_false(AAS_ReachabilityForceReachabilityActive());
+    assert_false(AAS_ReachabilityForceClusteringActive());
+    assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 0);
+
+    AAS_RouteFrameResetDiagnostics();
+    Mock_ClearPrints(&context->mock);
+    status = context->api->BotLibVarSet("showcacheupdates", "1");
+    assert_int_equal(status, BLERR_NOERROR);
+    status = context->api->BotLibVarSet("showmemoryusage", "1");
+    assert_int_equal(status, BLERR_NOERROR);
+    status = context->api->BotLibVarSet("memorydump", "1");
+    assert_int_equal(status, BLERR_NOERROR);
+
+    status = context->api->BotStartFrame(0.4f);
+    assert_int_equal(status, BLERR_NOERROR);
+    assert_float_equal(LibVarValue("showcacheupdates", "0"), 0.0f, 0.0001f);
+    assert_float_equal(LibVarValue("showmemoryusage", "0"), 0.0f, 0.0001f);
+    assert_float_equal(LibVarValue("memorydump", "0"), 0.0f, 0.0001f);
+    assert_non_null(Mock_FindPrint(&context->mock, "0 area cache updates\n"));
+    assert_non_null(Mock_FindPrint(&context->mock, "0 portal cache updates\n"));
+    assert_non_null(Mock_FindPrint(&context->mock, "total botlib memory:"));
+    assert_non_null(Mock_FindPrint(&context->mock, "total memory blocks:"));
 
     context->api->BotShutdownLibrary();
+}
+
+/*
+=============
+test_bot_start_frame_updates_goal_time
+
+Pins the shared AAS clock used by the retail avoid-goal expiration helpers.
+=============
+*/
+static void test_bot_start_frame_updates_goal_time(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	int handle = context->api->BotAllocGoalState(1);
+	assert_true(handle > 0);
+
+	status = context->api->BotStartFrame(100.0f);
+	assert_int_equal(status, BLERR_NOERROR);
+	context->api->BotAddAvoidGoal(handle, 77, 4.0f);
+	assert_float_equal(context->api->BotAvoidGoalTime(handle, 77),
+		4.0f,
+		0.0001f);
+
+	status = context->api->BotStartFrame(102.5f);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_float_equal(context->api->BotAvoidGoalTime(handle, 77),
+		1.5f,
+		0.0001f);
+
+	context->api->BotFreeGoalState(handle);
+	context->api->BotShutdownLibrary();
 }
 
 /*
@@ -10590,7 +10776,7 @@ int main(void)
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(
-			test_pointlight_heap_is_independent_of_soundinfo,
+			test_pointlight_heap_is_not_initialised_by_library_setup,
 			setup_bot_interface,
 			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
@@ -10883,13 +11069,20 @@ int main(void)
 			test_ai_battle_chase_arrival_area_expires_deadline,
 			setup_bot_interface,
 			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_entity_to_activate_follows_trigger_target_chain,
+			setup_bot_interface,
+			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_ai_battle_chase_handles_blocked_move,
 			setup_bot_interface,
 			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_start_frame_entity_lifecycle,
 							setup_bot_interface,
 							teardown_bot_interface),
-		cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_routing_diagnostics,
+		cmocka_unit_test_setup_teardown(test_bot_start_frame_matches_retail_frame_sequence,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_goal_time,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_add_avoid_spot_export_wires_move_state,

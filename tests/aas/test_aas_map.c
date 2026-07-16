@@ -488,7 +488,7 @@ static const botlib_import_table_t g_test_imports = {
     .BotLibVarSet = test_libvar_set,
 };
 
-static bot_import_t g_test_q2_imports = {
+static bot_import_extended_t g_test_q2_imports = {
 	.Trace = test_gap_trace,
 	.PointContents = test_point_contents,
 };
@@ -1225,11 +1225,19 @@ static void test_bsp_texinfo_payload_load_and_retail_trace_boundary(void **state
 	memset(&bsp_header, 0, sizeof(bsp_header));
 	bsp_header.ident = Q2_BSP_IDENT;
 	bsp_header.version = Q2_BSP_VERSION;
-	unsigned char bsp_data[sizeof(bsp_header) + sizeof(bsp_planes) +
+	static const char entity_data[] =
+		"{\n\"classname\" \"worldspawn\"\n}\n";
+	unsigned char bsp_data[sizeof(bsp_header) + sizeof(entity_data) - 1U +
+		sizeof(bsp_planes) +
 		sizeof(bsp_texinfo) + sizeof(bsp_leaf) + sizeof(bsp_leafbrush) +
 		sizeof(bsp_model) + sizeof(bsp_brushsides) + sizeof(bsp_brush)];
 	size_t bsp_offset = sizeof(bsp_header);
 
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].offset = (int32_t)bsp_offset;
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].length =
+		(int32_t)(sizeof(entity_data) - 1U);
+	memcpy(bsp_data + bsp_offset, entity_data, sizeof(entity_data) - 1U);
+	bsp_offset += sizeof(entity_data) - 1U;
 	bsp_header.lumps[Q2_BSP_LUMP_PLANES].offset = (int32_t)bsp_offset;
 	bsp_header.lumps[Q2_BSP_LUMP_PLANES].length = (int32_t)sizeof(bsp_planes);
 	memcpy(bsp_data + bsp_offset, bsp_planes, sizeof(bsp_planes));
@@ -1273,9 +1281,12 @@ static void test_bsp_texinfo_payload_load_and_retail_trace_boundary(void **state
 	BotInterface_SetImportTable(&g_test_imports);
 	memset(&aasworld, 0, sizeof(aasworld));
 	test_reset_print_capture();
+	size_t tracked_before = BotMemory_TotalAllocated();
 	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_true(aasworld.loaded);
+	assert_true(BotMemory_TotalAllocated() > tracked_before);
+	assert_int_equal(aasworld.bspEntityChecksum, 0xd218);
 	assert_int_equal(aasworld.numBspTexInfo, 2);
 	assert_non_null(aasworld.bspTexInfo);
 	assert_float_equal(aasworld.bspTexInfo[1].vecs[0][0], 0.25f, 0.00001f);
@@ -1306,6 +1317,7 @@ static void test_bsp_texinfo_payload_load_and_retail_trace_boundary(void **state
 	assert_float_equal(trace.endpos[0], 0.995f, 0.0001f);
 	assert_float_equal(trace.plane.normal[0], -1.0f, 0.00001f);
 	assert_float_equal(trace.plane.dist, 0.0f, 0.00001f);
+	assert_int_equal(trace.plane.signbits, 0);
 	assert_float_equal(trace.exp_dist, -1.0f, 0.00001f);
 	assert_int_equal(trace.sidenum, 0);
 	assert_int_equal(trace.contents, CONTENTS_SOLID);
@@ -1335,6 +1347,7 @@ static void test_bsp_texinfo_payload_load_and_retail_trace_boundary(void **state
 		sizeof(empty_surface));
 
 	AAS_Shutdown();
+	assert_int_equal(BotMemory_TotalAllocated(), tracked_before);
 	assert_int_equal(aasworld.numBspTexInfo, 0);
 	assert_null(aasworld.bspTexInfo);
 	BotInterface_SetImportTable(NULL);
@@ -2409,6 +2422,357 @@ static void test_aas_entity_relinks_on_bsp_angle_change(void **state)
 	AAS_Shutdown();
 }
 
+/*
+=============
+aas_link_heap_setup
+
+Prepare the minimal import, libvar, and memory state used by link-heap tests.
+=============
+*/
+static int aas_link_heap_setup(void **state)
+{
+	(void)state;
+	test_reset_print_capture();
+	BotInterface_SetImportTable(&g_test_imports);
+	LibVar_Init();
+	if (!BotMemory_Init(TEST_BOTLIB_HEAP_SIZE))
+	{
+		LibVar_Shutdown();
+		BotInterface_SetImportTable(NULL);
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
+=============
+aas_link_heap_teardown
+
+Release the minimal link-heap test state without requiring map assets.
+=============
+*/
+static int aas_link_heap_teardown(void **state)
+{
+	(void)state;
+	AAS_Shutdown();
+	LibVar_Shutdown();
+	BotMemory_Shutdown();
+	BotInterface_SetImportTable(NULL);
+	return 0;
+}
+
+/*
+=============
+test_retail_map_load_keeps_configured_entity_storage
+
+Retail map loading resets the configured entity records' link heads without
+reallocating the fixed setup-time entity table, even if discovery fails.
+=============
+*/
+static void test_retail_map_load_keeps_configured_entity_storage(void **state)
+{
+	(void)state;
+	assert_int_equal(AAS_ConfigureEntityLimits(2, 1), BLERR_NOERROR);
+	assert_non_null(aasworld.entities);
+
+	aas_entity_t *entities = aasworld.entities;
+	aas_link_t area_link = {0};
+	bsp_link_t leaf_link = {0};
+	aasworld.entities[1].inuse = qtrue;
+	aasworld.entities[1].number = 91;
+	aasworld.entities[1].areas = &area_link;
+	aasworld.entities[1].leaves = &leaf_link;
+
+	assert_int_equal(AAS_LoadMap("", 0, NULL, 0, NULL, 0, NULL),
+		BLERR_NOBSPFILE);
+	assert_ptr_equal(aasworld.entities, entities);
+	assert_int_equal(aasworld.maxEntities, 2);
+	assert_int_equal(aasworld.maxClients, 1);
+	assert_true(aasworld.entities[1].inuse);
+	assert_int_equal(aasworld.entities[1].number, 91);
+	assert_null(aasworld.entities[1].areas);
+	assert_null(aasworld.entities[1].leaves);
+}
+
+/*
+=============
+test_retail_entity_configuration_initialises_sound_state
+
+Retail configuration rebuilds the ordinary sound heap and soundinfo table
+before it invalidates entity records.
+=============
+*/
+static void test_retail_entity_configuration_initialises_sound_state(void **state)
+{
+	(void)state;
+	LibVarSet("max_soundinfo", "64");
+	LibVarSet("max_aassounds", "4");
+	LibVarSet("soundconfig", PROJECT_SOURCE_DIR "/dev_tools/assets/sounds.c");
+
+	assert_int_equal(AAS_ConfigureEntityLimits(2, 1), BLERR_NOERROR);
+	assert_true(AAS_SoundSubsystem_InfoCount() > 0U);
+
+	char *sound_indexes[] = {"player/step1.wav"};
+	assert_int_equal(AAS_LoadMap(NULL, 0, NULL, 1, sound_indexes, 0, NULL),
+		BLERR_NOERROR);
+	vec3_t origin = {0.0f, 0.0f, 0.0f};
+	assert_int_equal(AAS_SoundSubsystem_UpdateSound(origin,
+		1,
+		0,
+		0,
+		1.0f,
+		1.0f,
+		0.0f),
+		BLERR_NOERROR);
+	AAS_SoundSubsystem_SetFrameTime(1.0f);
+	assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 1);
+
+	assert_int_equal(AAS_ConfigureEntityLimits(2, 1), BLERR_NOERROR);
+	assert_true(AAS_SoundSubsystem_InfoCount() > 0U);
+	assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 0);
+}
+
+/*
+=============
+test_retail_missing_bsp_preserves_navigation_and_bsp_storage
+
+Retail does not enter either loader when BSP discovery fails: it only clears
+the loaded flag and entity link heads.
+=============
+*/
+static void test_retail_missing_bsp_preserves_navigation_and_bsp_storage(void **state)
+{
+	(void)state;
+	aas_bspmodel_t *bsp_models =
+		(aas_bspmodel_t *)GetClearedMemory(sizeof(*bsp_models));
+	aas_area_t *areas = (aas_area_t *)GetClearedMemory(sizeof(*areas));
+	assert_non_null(bsp_models);
+	assert_non_null(areas);
+
+	aasworld.loaded = qtrue;
+	aasworld.numBspModels = 1;
+	aasworld.bspModels = bsp_models;
+	aasworld.numAreas = 1;
+	aasworld.areas = areas;
+
+	assert_int_equal(AAS_LoadMap("__gladiator_missing_bsp_lifetime",
+		0,
+		NULL,
+		0,
+		NULL,
+		0,
+		NULL),
+		BLERR_NOBSPFILE);
+	assert_false(aasworld.loaded);
+	assert_ptr_equal(aasworld.bspModels, bsp_models);
+	assert_int_equal(aasworld.numBspModels, 1);
+	assert_ptr_equal(aasworld.areas, areas);
+	assert_int_equal(aasworld.numAreas, 1);
+}
+
+/*
+=============
+test_retail_missing_aas_releases_only_bsp_storage
+
+Once retail discovers a BSP it clears the prior BSP domain. It does not clear
+the prior AAS domain until an AAS candidate itself is found.
+=============
+*/
+static void test_retail_missing_aas_releases_only_bsp_storage(void **state)
+{
+	(void)state;
+	const char *map_name = "__gladiator_missing_aas_lifetime";
+	const char *bsp_path = "maps/__gladiator_missing_aas_lifetime.bsp";
+	const char *root_aas_path = "__gladiator_missing_aas_lifetime.aas";
+	const char *aas_path = "maps/__gladiator_missing_aas_lifetime.aas";
+	unlink(root_aas_path);
+	unlink(aas_path);
+	unlink(bsp_path);
+	errno = 0;
+	int directory_status = test_make_directory("maps");
+	qboolean remove_directory = directory_status == 0;
+	assert_true(remove_directory || errno == EEXIST);
+
+	q2_bsp_header_t bsp_header = {0};
+	bsp_header.ident = Q2_BSP_IDENT;
+	bsp_header.version = Q2_BSP_VERSION;
+	assert_true(test_write_fixture(bsp_path, &bsp_header, sizeof(bsp_header)));
+
+	aas_bspmodel_t *bsp_models =
+		(aas_bspmodel_t *)GetClearedMemory(sizeof(*bsp_models));
+	aas_area_t *areas = (aas_area_t *)GetClearedMemory(sizeof(*areas));
+	assert_non_null(bsp_models);
+	assert_non_null(areas);
+	aasworld.loaded = qtrue;
+	aasworld.numBspModels = 1;
+	aasworld.bspModels = bsp_models;
+	aasworld.numAreas = 1;
+	aasworld.areas = areas;
+
+	assert_int_equal(AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL),
+		BLERR_NOAASFILE);
+	assert_false(aasworld.loaded);
+	assert_null(aasworld.bspModels);
+	assert_int_equal(aasworld.numBspModels, 0);
+	assert_ptr_equal(aasworld.areas, areas);
+	assert_int_equal(aasworld.numAreas, 1);
+
+	unlink(bsp_path);
+	if (remove_directory)
+	{
+		rmdir("maps");
+	}
+}
+
+/*
+=============
+test_retail_entity_link_heaps_are_fixed_and_reused
+
+Pins the fixed AAS and BSP link heaps, their retail exhaustion diagnostics,
+and head-first reuse after a link is returned.
+=============
+*/
+static void test_retail_entity_link_heaps_are_fixed_and_reused(void **state)
+{
+	(void)state;
+	AAS_FreeAASLinkHeap();
+	AAS_FreeBSPLinkHeap();
+	LibVarSet("max_aaslinks", "1");
+	LibVarSet("max_bsplinks", "1");
+
+	test_reset_print_capture();
+	AAS_InitAASLinkHeap();
+	aas_link_t *aas_link = AAS_AllocAASLink();
+	assert_non_null(aas_link);
+	assert_null(AAS_AllocAASLink());
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message, "empty aas link heap\n");
+	AAS_FreeAASLink(aas_link);
+	assert_ptr_equal(AAS_AllocAASLink(), aas_link);
+	AAS_FreeAASLink(aas_link);
+
+	test_reset_print_capture();
+	AAS_InitBSPLinkHeap();
+	bsp_link_t *bsp_link = AAS_AllocBSPLink();
+	assert_non_null(bsp_link);
+	assert_null(AAS_AllocBSPLink());
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message, "empty bsp link heap\n");
+	AAS_FreeBSPLink(bsp_link);
+	assert_ptr_equal(AAS_AllocBSPLink(), bsp_link);
+	AAS_FreeBSPLink(bsp_link);
+
+	/* Reinitialization rebuilds retail's free list without reallocating either heap. */
+	AAS_FreeAASLinkHeap();
+	AAS_FreeBSPLinkHeap();
+	LibVarSet("max_aaslinks", "2");
+	LibVarSet("max_bsplinks", "2");
+	AAS_InitAASLinkHeap();
+	AAS_InitBSPLinkHeap();
+	aas_link_t *first_aas_link = AAS_AllocAASLink();
+	aas_link_t *second_aas_link = AAS_AllocAASLink();
+	bsp_link_t *first_bsp_link = AAS_AllocBSPLink();
+	bsp_link_t *second_bsp_link = AAS_AllocBSPLink();
+	assert_non_null(first_aas_link);
+	assert_non_null(second_aas_link);
+	assert_non_null(first_bsp_link);
+	assert_non_null(second_bsp_link);
+	first_aas_link->next_area = second_aas_link;
+	first_aas_link->prev_area = second_aas_link;
+	first_bsp_link->next_leaf = second_bsp_link;
+	first_bsp_link->prev_leaf = second_bsp_link;
+	AAS_InitAASLinkHeap();
+	AAS_InitBSPLinkHeap();
+	assert_ptr_equal(AAS_AllocAASLink(), first_aas_link);
+	assert_ptr_equal(AAS_AllocAASLink(), second_aas_link);
+	assert_ptr_equal(AAS_AllocBSPLink(), first_bsp_link);
+	assert_ptr_equal(AAS_AllocBSPLink(), second_bsp_link);
+	assert_ptr_equal(first_aas_link->next_area, second_aas_link);
+	assert_ptr_equal(first_aas_link->prev_area, second_aas_link);
+	assert_ptr_equal(first_bsp_link->next_leaf, second_bsp_link);
+	assert_ptr_equal(first_bsp_link->prev_leaf, second_bsp_link);
+	AAS_FreeAASLinkHeap();
+	AAS_FreeBSPLinkHeap();
+	LibVarSet("max_aaslinks", "1");
+	LibVarSet("max_bsplinks", "1");
+	AAS_InitAASLinkHeap();
+	AAS_InitBSPLinkHeap();
+
+	/* sub_1000a920 keeps an AAS entity update successful with a partial list. */
+	aas_area_t areas[3] = {0};
+	aas_node_t nodes[2] = {0};
+	aas_plane_t planes[1] = {0};
+	nodes[1].planenum = 0;
+	nodes[1].children[0] = -1;
+	nodes[1].children[1] = -2;
+	planes[0].normal[0] = 1.0f;
+	aasworld.loaded = qtrue;
+	aasworld.numAreas = 2;
+	aasworld.areas = areas;
+	aasworld.numNodes = 2;
+	aasworld.nodes = nodes;
+	aasworld.numPlanes = 1;
+	aasworld.planes = planes;
+
+	AASEntityFrame frame = {0};
+	frame.bounds_dirty = true;
+	VectorSet(frame.mins, -1.0f, -1.0f, -1.0f);
+	VectorSet(frame.maxs, 1.0f, 1.0f, 1.0f);
+	test_reset_print_capture();
+	assert_int_equal(AAS_UpdateEntity(1, &frame), BLERR_NOERROR);
+	assert_int_equal(aasworld.areaEntityListCount, 2U);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message, "empty aas link heap\n");
+	assert_non_null(aasworld.entities[1].areas);
+	assert_int_equal(aasworld.entities[1].areaOccupancyCount, 1);
+	assert_int_equal(aasworld.entities[1].areas->areanum, 1);
+	assert_int_equal(AAS_UpdateEntity(1, NULL), BLERR_NOERROR);
+	free(aasworld.entities[1].areaOccupancyBits);
+	FreeMemory(aasworld.entities);
+	FreeMemory(aasworld.areaEntityLists);
+	memset(&aasworld, 0, sizeof(aasworld));
+
+	/* sub_10006210 also preserves its partial BSP leaf list on exhaustion. */
+	aas_bspmodel_t bsp_models[1] = {0};
+	aas_bspnode_t bsp_nodes[1] = {0};
+	aas_bspleaf_t bsp_leaves[2] = {0};
+	aas_plane_t bsp_planes[1] = {0};
+	bsp_models[0].headnode = 0;
+	bsp_nodes[0].planenum = 0;
+	bsp_nodes[0].children[0] = -1;
+	bsp_nodes[0].children[1] = -2;
+	bsp_planes[0].normal[0] = 1.0f;
+	aasworld.loaded = qtrue;
+	aasworld.numBspModels = 1;
+	aasworld.bspModels = bsp_models;
+	aasworld.numBspNodes = 1;
+	aasworld.bspNodes = bsp_nodes;
+	aasworld.numBspLeaves = 2;
+	aasworld.bspLeaves = bsp_leaves;
+	aasworld.numBspPlanes = 1;
+	aasworld.bspPlanes = bsp_planes;
+	test_reset_print_capture();
+	assert_int_equal(AAS_UpdateEntity(1, &frame), BLERR_NOERROR);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message, "empty bsp link heap\n");
+	assert_non_null(aasworld.entities[1].leaves);
+	assert_int_equal(aasworld.entities[1].leaves->leafnum, 0);
+	assert_int_equal(AAS_UpdateEntity(1, NULL), BLERR_NOERROR);
+	FreeMemory(aasworld.entities);
+	free(aasworld.bspLeafEntityLists);
+	memset(&aasworld, 0, sizeof(aasworld));
+
+	AAS_FreeAASLinkHeap();
+	AAS_FreeBSPLinkHeap();
+	LibVarSet("max_aaslinks", "4096");
+	LibVarSet("max_bsplinks", "4096");
+}
+
 static void test_routing_frame_respects_framereachability(void **state)
 {
     (void)state;
@@ -2628,6 +2992,85 @@ static void test_reachability_area_and_link_helpers(void **state)
 	assert_int_equal(AAS_BestReachableLinkArea(&first), 2);
 	first.next_area = NULL;
 	assert_int_equal(AAS_BestReachableLinkArea(&first), 1);
+	aas_entity_t entity_slots[1] = {0};
+	entity_slots[0].areas = &first;
+	aasworld.entities = entity_slots;
+	aasworld.maxEntities = 1;
+	assert_int_equal(AAS_BestReachableEntityArea(0), 1);
+	assert_int_equal(AAS_BestReachableEntityArea(1), 0);
+	aasworld.entities = NULL;
+	aasworld.maxEntities = 0;
+
+	/* Retail's reset helper only nulls each entity's link ownership fields. */
+	AAS_InitAASLinkHeap();
+	AAS_InitBSPLinkHeap();
+	aas_link_t *area_link = AAS_AllocAASLink();
+	bsp_link_t *leaf_link = AAS_AllocBSPLink();
+	assert_non_null(area_link);
+	assert_non_null(leaf_link);
+	memset(area_link, 0, sizeof(*area_link));
+	memset(leaf_link, 0, sizeof(*leaf_link));
+	aas_link_t *area_heads[1] = {area_link};
+	bsp_link_t *leaf_heads[1] = {leaf_link};
+	entity_slots[0].areas = area_link;
+	entity_slots[0].leaves = leaf_link;
+	area_link->areanum = 0;
+	leaf_link->leafnum = 0;
+	aasworld.entities = entity_slots;
+	aasworld.maxEntities = 1;
+	aasworld.areaEntityLists = area_heads;
+	aasworld.areaEntityListCount = 1U;
+	aasworld.bspLeafEntityLists = leaf_heads;
+	aasworld.bspLeafEntityListCount = 1U;
+	AAS_ResetEntityLinks();
+	assert_null(entity_slots[0].areas);
+	assert_null(entity_slots[0].leaves);
+	assert_ptr_equal(area_heads[0], area_link);
+	assert_ptr_equal(leaf_heads[0], leaf_link);
+	aasworld.entities = NULL;
+	aasworld.maxEntities = 0;
+	aasworld.areaEntityLists = NULL;
+	aasworld.areaEntityListCount = 0U;
+	aasworld.bspLeafEntityLists = NULL;
+	aasworld.bspLeafEntityListCount = 0U;
+	AAS_FreeAASLinkHeap();
+	AAS_FreeBSPLinkHeap();
+
+	/*
+	 * sub_1000b300 uses a temporary AAS entity-link list for the bbox
+	 * fallback.  sub_1001c460 prepends each visited leaf, so two grounded
+	 * leaves choose the second traversal leaf first.
+	 */
+	aas_node_t nodes[3] = {0};
+	aas_plane_t link_planes[2] = {0};
+	link_planes[0].normal[0] = 1.0f;
+	link_planes[1].normal[1] = 1.0f;
+	nodes[1].planenum = 0;
+	nodes[1].children[0] = 2;
+	nodes[1].children[1] = 0;
+	nodes[2].planenum = 1;
+	nodes[2].children[0] = -1;
+	nodes[2].children[1] = -2;
+	aasworld.nodes = nodes;
+	aasworld.numNodes = 3;
+	aasworld.planes = link_planes;
+	aasworld.numPlanes = 2;
+	settings[1].areaflags = AAS_AREA_GROUNDED;
+	settings[2].areaflags = AAS_AREA_GROUNDED;
+	vec3_t unlinked_origin = {-64.0f, 0.0f, 0.0f};
+	vec3_t unlinked_mins = {-128.0f, -8.0f, -8.0f};
+	vec3_t unlinked_maxs = {128.0f, 8.0f, 8.0f};
+	vec3_t best_goal_origin;
+	assert_int_equal(AAS_BestReachableArea(unlinked_origin,
+		unlinked_mins,
+		unlinked_maxs,
+		best_goal_origin),
+		2);
+	assert_float_equal(best_goal_origin[0], -64.0f, 0.001f);
+	aasworld.nodes = NULL;
+	aasworld.numNodes = 0;
+	aasworld.planes = NULL;
+	aasworld.numPlanes = 0;
 
 	vec3_t start = {0.0f, 0.0f, 0.0f};
 	vec3_t end = {10.0f, 0.0f, 0.0f};
@@ -2699,8 +3142,6 @@ static void test_reachability_swim_generation_and_storage(void **state)
 {
 	(void)state;
 	memset(&aasworld, 0, sizeof(aasworld));
-	Q2Bridge_SetImportTable(&g_test_q2_imports);
-	g_test_point_contents = CONTENTS_WATER;
 
 	aas_area_t areas[3] = {0};
 	aas_areasettings_t settings[3] = {0};
@@ -2714,6 +3155,12 @@ static void test_reachability_swim_generation_and_storage(void **state)
 	aas_face_t faces[2] = {0};
 	int face_index[2] = {1, -1};
 	aas_plane_t planes[2] = {0};
+	aas_bspmodel_t bsp_models[1] = {0};
+	aas_bspleaf_t bsp_leaves[1] = {0};
+	unsigned short bsp_leaf_brushes[1] = {0};
+	aas_plane_t bsp_planes[6] = {0};
+	aas_bspbrushside_t bsp_brush_sides[6] = {0};
+	aas_bspbrush_t bsp_brushes[1] = {0};
 
 	areas[1].areanum = 1;
 	areas[1].numfaces = 1;
@@ -2736,6 +3183,28 @@ static void test_reachability_swim_generation_and_storage(void **state)
 	faces[1].backarea = 1;
 	planes[0].normal[0] = 1.0f;
 	planes[1].normal[0] = -1.0f;
+	bsp_models[0].headnode = -1;
+	bsp_leaves[0].firstleafbrush = 0;
+	bsp_leaves[0].numleafbrushes = 1;
+	VectorSet(bsp_planes[0].normal, 1.0f, 0.0f, 0.0f);
+	bsp_planes[0].dist = 100.0f;
+	VectorSet(bsp_planes[1].normal, -1.0f, 0.0f, 0.0f);
+	bsp_planes[1].dist = 100.0f;
+	VectorSet(bsp_planes[2].normal, 0.0f, 1.0f, 0.0f);
+	bsp_planes[2].dist = 100.0f;
+	VectorSet(bsp_planes[3].normal, 0.0f, -1.0f, 0.0f);
+	bsp_planes[3].dist = 100.0f;
+	VectorSet(bsp_planes[4].normal, 0.0f, 0.0f, 1.0f);
+	bsp_planes[4].dist = 100.0f;
+	VectorSet(bsp_planes[5].normal, 0.0f, 0.0f, -1.0f);
+	bsp_planes[5].dist = 100.0f;
+	for (int side = 0; side < 6; ++side)
+	{
+		bsp_brush_sides[side].planenum = (unsigned short)side;
+	}
+	bsp_brushes[0].firstside = 0;
+	bsp_brushes[0].numsides = 6;
+	bsp_brushes[0].contents = CONTENTS_WATER;
 
 	aasworld.loaded = qtrue;
 	aasworld.numAreas = 3;
@@ -2754,8 +3223,21 @@ static void test_reachability_swim_generation_and_storage(void **state)
 	aasworld.faceIndex = face_index;
 	aasworld.numPlanes = 2;
 	aasworld.planes = planes;
+	aasworld.numBspModels = 1;
+	aasworld.bspModels = bsp_models;
+	aasworld.numBspLeaves = 1;
+	aasworld.bspLeaves = bsp_leaves;
+	aasworld.bspLeafBrushIndexSize = 1;
+	aasworld.bspLeafBrushes = bsp_leaf_brushes;
+	aasworld.numBspPlanes = 6;
+	aasworld.bspPlanes = bsp_planes;
+	aasworld.numBspBrushSides = 6;
+	aasworld.bspBrushSides = bsp_brush_sides;
+	aasworld.numBspBrushes = 1;
+	aasworld.bspBrushes = bsp_brushes;
 
 	AAS_InitReachability();
+	assert_int_equal(AAS_PointContents(vertexes[0]), CONTENTS_WATER);
 	assert_true(AAS_Reachability_Swim(1, 2));
 	assert_true(AAS_ReachabilityExists(1, 2));
 	AAS_StoreReachability();
@@ -2771,9 +3253,7 @@ static void test_reachability_swim_generation_and_storage(void **state)
 
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
-	g_test_point_contents = 0;
-	Q2Bridge_SetImportTable(NULL);
+	FreeMemory(aasworld.reachability);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -2867,7 +3347,7 @@ static void test_reachability_equal_floor_generation_and_storage(void **state)
 
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
+	FreeMemory(aasworld.reachability);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -2984,7 +3464,7 @@ static void test_reachability_adjacent_edge_travel_branches(void **state)
 
 		AAS_ShutDownReachabilityHeap();
 		AAS_ClearReachabilityData();
-		free(aasworld.reachability);
+		FreeMemory(aasworld.reachability);
 		memset(&aasworld, 0, sizeof(aasworld));
 	}
 }
@@ -3077,7 +3557,7 @@ static void test_reachability_jump_generation_and_rejections(void **state)
 
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
+	FreeMemory(aasworld.reachability);
 	aasworld.reachability = NULL;
 	aasworld.numReachability = 0;
 	settings[2].presencetype = PRESENCE_CROUCH;
@@ -3188,7 +3668,7 @@ static void test_reachability_ladder_shared_edge_generation(void **state)
 
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
+	FreeMemory(aasworld.reachability);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -3283,7 +3763,7 @@ static void test_reachability_retail_teleporter_generation(void **state)
 	AAS_FreeBSPEntities(entities);
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
+	FreeMemory(aasworld.reachability);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -3359,7 +3839,7 @@ static void test_reachability_retail_elevator_generation(void **state)
 	AAS_FreeBSPEntities(entities);
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
+	FreeMemory(aasworld.reachability);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -3475,7 +3955,7 @@ static void test_reachability_retail_grapple_generation(void **state)
 
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
+	FreeMemory(aasworld.reachability);
 	g_test_grapple_trace_enabled = qfalse;
 	Q2Bridge_SetImportTable(NULL);
 	memset(&aasworld, 0, sizeof(aasworld));
@@ -3624,7 +4104,7 @@ static void test_reachability_retail_weapon_jump_generation(void **state)
 	AAS_FreeBSPEntities(entities);
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
+	FreeMemory(aasworld.reachability);
 	g_test_gap_trace_enabled = qfalse;
 	g_test_destination_ground_height = 0.0f;
 	Q2Bridge_SetImportTable(NULL);
@@ -3755,7 +4235,7 @@ static void test_reachability_retail_secondary_walkoff_generation(void **state)
 
 		AAS_ShutDownReachabilityHeap();
 		AAS_ClearReachabilityData();
-		free(aasworld.reachability);
+		FreeMemory(aasworld.reachability);
 		memset(&aasworld, 0, sizeof(aasworld));
 	}
 }
@@ -3797,10 +4277,10 @@ static void test_reachability_retail_incremental_lifecycle(void **state)
 	assert_int_equal(aasworld.numClusters, 2);
 	assert_int_equal(aasworld.clusters[1].numareas, 1);
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
-	free(aasworld.portals);
-	free(aasworld.portalIndex);
-	free(aasworld.clusters);
+	FreeMemory(aasworld.reachability);
+	FreeMemory(aasworld.portals);
+	FreeMemory(aasworld.portalIndex);
+	FreeMemory(aasworld.clusters);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -3887,9 +4367,58 @@ static void test_retail_cluster_portal_rebuild(void **state)
 	assert_int_equal(aasworld.portalIndex[0], 1);
 	assert_int_equal(aasworld.portalIndex[1], 1);
 
-	free(aasworld.portals);
-	free(aasworld.portalIndex);
-	free(aasworld.clusters);
+	FreeMemory(aasworld.portals);
+	FreeMemory(aasworld.portalIndex);
+	FreeMemory(aasworld.clusters);
+	memset(&aasworld, 0, sizeof(aasworld));
+}
+
+/*
+=============
+test_retail_cluster_flood_invalid_area_diagnostic
+
+Pins the retail recursive-cluster-flood diagnostic when a reachability points
+outside the one-based area table.
+=============
+*/
+static void test_retail_cluster_flood_invalid_area_diagnostic(void **state)
+{
+	(void)state;
+	memset(&aasworld, 0, sizeof(aasworld));
+
+	aas_area_t areas[2] = {0};
+	aas_areasettings_t settings[2] = {0};
+	aas_reachability_t reachability[2] = {0};
+	settings[1].firstreachablearea = 1;
+	settings[1].numreachableareas = 1;
+	reachability[1].areanum = 2;
+
+	aasworld.loaded = qtrue;
+	aasworld.numAreas = 2;
+	aasworld.areas = areas;
+	aasworld.numAreaSettings = 2;
+	aasworld.areasettings = settings;
+	aasworld.numReachability = 2;
+	aasworld.reachability = reachability;
+
+	test_reset_print_capture();
+	BotInterface_SetImportTable(&g_test_imports);
+	AAS_InitClustering();
+	assert_int_equal(g_test_print_count, 5);
+	for (int index = 1; index <= 3; ++index)
+	{
+		assert_int_equal(g_test_print_priority_history[index], PRT_ERROR);
+		assert_string_equal(g_test_print_message_history[index],
+			"AAS_FloodClusterAreas_r: areanum out of range\n");
+	}
+	assert_int_equal(g_test_print_priority_history[4], PRT_ERROR);
+	assert_string_equal(g_test_print_message_history[4],
+		"AAS_InitClustering: cluster rebuild did not converge\n");
+	BotInterface_SetImportTable(NULL);
+
+	FreeMemory(aasworld.portals);
+	FreeMemory(aasworld.portalIndex);
+	FreeMemory(aasworld.clusters);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -3907,20 +4436,20 @@ static void test_retail_aas_geometry_optimization(void **state)
 	memset(&aasworld, 0, sizeof(aasworld));
 
 	aasworld.numVertexes = 4;
-	aasworld.vertexes = (aas_vertex_t *)calloc(4, sizeof(aas_vertex_t));
+	aasworld.vertexes = (aas_vertex_t *)GetClearedMemory(4U * sizeof(aas_vertex_t));
 	aasworld.numEdges = 4;
-	aasworld.edges = (aas_edge_t *)calloc(4, sizeof(aas_edge_t));
+	aasworld.edges = (aas_edge_t *)GetClearedMemory(4U * sizeof(aas_edge_t));
 	aasworld.edgeIndexSize = 3;
-	aasworld.edgeIndex = (int *)calloc(3, sizeof(int));
+	aasworld.edgeIndex = (int *)GetClearedMemory(3U * sizeof(int));
 	aasworld.numFaces = 3;
-	aasworld.faces = (aas_face_t *)calloc(3, sizeof(aas_face_t));
+	aasworld.faces = (aas_face_t *)GetClearedMemory(3U * sizeof(aas_face_t));
 	aasworld.faceIndexSize = 3;
-	aasworld.faceIndex = (int *)calloc(3, sizeof(int));
+	aasworld.faceIndex = (int *)GetClearedMemory(3U * sizeof(int));
 	aasworld.numAreas = 3;
-	aasworld.areas = (aas_area_t *)calloc(3, sizeof(aas_area_t));
+	aasworld.areas = (aas_area_t *)GetClearedMemory(3U * sizeof(aas_area_t));
 	aasworld.numReachability = 4;
-	aasworld.reachability = (aas_reachability_t *)calloc(4,
-		sizeof(aas_reachability_t));
+	aasworld.reachability = (aas_reachability_t *)GetClearedMemory(
+		4U * sizeof(aas_reachability_t));
 	assert_non_null(aasworld.vertexes);
 	assert_non_null(aasworld.edges);
 	assert_non_null(aasworld.edgeIndex);
@@ -3993,13 +4522,13 @@ static void test_retail_aas_geometry_optimization(void **state)
 	assert_int_equal(aasworld.reachability[3].facenum, 77);
 	assert_int_equal(aasworld.reachability[3].edgenum, 88);
 
-	free(aasworld.vertexes);
-	free(aasworld.edges);
-	free(aasworld.edgeIndex);
-	free(aasworld.faces);
-	free(aasworld.faceIndex);
-	free(aasworld.areas);
-	free(aasworld.reachability);
+	FreeMemory(aasworld.vertexes);
+	FreeMemory(aasworld.edges);
+	FreeMemory(aasworld.edgeIndex);
+	FreeMemory(aasworld.faces);
+	FreeMemory(aasworld.faceIndex);
+	FreeMemory(aasworld.areas);
+	FreeMemory(aasworld.reachability);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -4092,6 +4621,21 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_aas_entity_relinks_on_bsp_angle_change,
                                         aas_environment_setup,
                                         aas_environment_teardown),
+		cmocka_unit_test_setup_teardown(test_retail_entity_link_heaps_are_fixed_and_reused,
+			aas_link_heap_setup,
+			aas_link_heap_teardown),
+		cmocka_unit_test_setup_teardown(test_retail_map_load_keeps_configured_entity_storage,
+			aas_link_heap_setup,
+			aas_link_heap_teardown),
+		cmocka_unit_test_setup_teardown(test_retail_entity_configuration_initialises_sound_state,
+			aas_link_heap_setup,
+			aas_link_heap_teardown),
+		cmocka_unit_test_setup_teardown(test_retail_missing_bsp_preserves_navigation_and_bsp_storage,
+			aas_link_heap_setup,
+			aas_link_heap_teardown),
+		cmocka_unit_test_setup_teardown(test_retail_missing_aas_releases_only_bsp_storage,
+			aas_link_heap_setup,
+			aas_link_heap_teardown),
         cmocka_unit_test_setup_teardown(test_routing_frame_respects_framereachability,
                                         aas_environment_setup,
                                         aas_environment_teardown),
@@ -4119,6 +4663,7 @@ int main(void)
 		cmocka_unit_test(test_reachability_retail_secondary_walkoff_generation),
 		cmocka_unit_test(test_reachability_retail_incremental_lifecycle),
 		cmocka_unit_test(test_retail_cluster_portal_rebuild),
+		cmocka_unit_test(test_retail_cluster_flood_invalid_area_diagnostic),
 		cmocka_unit_test(test_retail_aas_geometry_optimization),
 		cmocka_unit_test(test_retail_routing_intra_area_travel_cost),
     };

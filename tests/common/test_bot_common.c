@@ -100,6 +100,10 @@ static void *test_memory_allocate_a(int size)
 	g_test_memory_allocator_a.allocation_count += 1;
 	g_test_memory_allocator_a.last_request_size = size;
 	g_test_memory_allocator_a.last_allocated_header = malloc((size_t)size);
+	if (g_test_memory_allocator_a.last_allocated_header != NULL)
+	{
+		memset(g_test_memory_allocator_a.last_allocated_header, 0xa5, (size_t)size);
+	}
 	return g_test_memory_allocator_a.last_allocated_header;
 }
 
@@ -234,8 +238,12 @@ static void test_memory_import_callback_contract(void)
 	assert(BotMemory_HeapCapacity() == SIZE_MAX);
 
 	const size_t payload_size = 37;
-	void *payload = GetMemory(payload_size);
+	unsigned char *payload = (unsigned char *)GetMemory(payload_size);
 	assert(payload != NULL);
+	for (size_t i = 0; i < payload_size; ++i)
+	{
+		assert(payload[i] == 0xa5);
+	}
 	assert(g_test_memory_allocator_a.allocation_count == 1);
 	assert(g_test_memory_allocator_b.allocation_count == 0);
 	const size_t total_size = MemoryByteSize(payload);
@@ -248,6 +256,15 @@ static void test_memory_import_callback_contract(void)
 	assert(g_test_memory_allocator_a.free_count == 1);
 	assert(g_test_memory_allocator_a.last_freed_header == header);
 	assert(g_test_memory_allocator_b.free_count == 0);
+
+	unsigned char *cleared_payload =
+		(unsigned char *)GetClearedMemory(payload_size);
+	assert(cleared_payload != NULL);
+	for (size_t i = 0; i < payload_size; ++i)
+	{
+		assert(cleared_payload[i] == 0);
+	}
+	FreeMemory(cleared_payload);
 
 	void *zero_payload = GetMemory(0);
 	assert(zero_payload != NULL);
@@ -337,6 +354,69 @@ static void test_crc_matches_reference(void)
 	assert(running == crc);
 }
 
+/*
+=============
+test_crc_source_checksum_registry
+
+Pins raw source-buffer CRC registration, duplicate retention, and name order.
+=============
+*/
+static void test_crc_source_checksum_registry(void)
+{
+	BotMemory_Shutdown();
+	CRC_ResetSourceChecksums();
+	assert(BotMemory_Init(4096));
+
+	CRC_RegisterSourceChecksum("zeta.c", 0x1234U);
+	CRC_RegisterSourceChecksum("alpha.c", 0xABCDU);
+	CRC_RegisterSourceChecksum("zeta.c", 0xBEEFU);
+	CRC_RegisterSourceChecksum("embedded.c", 0xA991U);
+	CRC_RegisterSourceChecksum("zero.c", 0x0000U);
+	CRC_RegisterSourceData("babe.c", "gladiator", 9);
+
+	assert(CRC_SourceChecksumCount() == 3U);
+	char name[CRC_SOURCE_NAME_MAX];
+	uint16_t checksum = 0;
+	assert(CRC_SourceChecksumAt(0U, &checksum, name, sizeof(name)));
+	assert(checksum == 0xABCDU);
+	assert(strcmp(name, "alpha.c") == 0);
+	assert(CRC_SourceChecksumAt(1U, &checksum, name, sizeof(name)));
+	assert(checksum == 0x40FEU);
+	assert(strcmp(name, "babe.c") == 0);
+	assert(CRC_SourceChecksumAt(2U, &checksum, name, sizeof(name)));
+	assert(checksum == 0x1234U);
+	assert(strcmp(name, "zeta.c") == 0);
+	assert(!CRC_SourceChecksumAt(3U, &checksum, name, sizeof(name)));
+
+	const char *dump_path = "bot_common_checksum_dump.log";
+	test_unlink(dump_path);
+	BotLib_LogShutdown();
+	LibVar_Shutdown();
+	LibVar_Init();
+	LibVarSet("log", "1");
+	BotLib_LogOpen(dump_path);
+	assert(BotLib_LogFile() != NULL);
+	CRC_DumpSourceChecksums();
+	BotLib_LogClose();
+
+	FILE *file = fopen(dump_path, "rb");
+	assert(file != NULL);
+	char dump[256];
+	size_t dump_length = fread(dump, 1, sizeof(dump) - 1U, file);
+	assert(fclose(file) == 0);
+	dump[dump_length] = '\0';
+	assert(strcmp(dump,
+		"\t{0xABCD, 1}, //alpha.c\r\n"
+		"\t{0x40FE, 1}, //babe.c\r\n"
+		"\t{0x1234, 1}, //zeta.c\r\n") == 0);
+	BotLib_LogShutdown();
+	LibVar_Shutdown();
+	assert(test_unlink(dump_path) == 0);
+
+	CRC_ResetSourceChecksums();
+	BotMemory_Shutdown();
+}
+
 typedef struct test_sample_s {
     int integer;
     float real;
@@ -409,7 +489,31 @@ static void test_read_structure_parses_basic_types(void) {
     assert(sample.flags[2] == 4);
 
     PC_FreeSource(source);
-    PC_ShutdownLexer();
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_struct_retail_numeric_cache
+
+Pins ReadNumber's signed x86 intermediate value rather than reparsing token
+text at the host integer width.
+=============
+*/
+static void test_struct_retail_numeric_cache(void)
+{
+	const char script[] = "0x80000000";
+	const fielddef_t field = {"value", 0, FT_FLOAT, 0, 0.0f, 0.0f, NULL};
+	float value = 0.0f;
+
+	PC_InitLexer();
+	pc_source_t *source = PC_LoadSourceMemory("retail_numeric_cache", script,
+		strlen(script));
+	assert(source != NULL);
+	assert(ReadNumber(source, &field, &value));
+	assert(value == -2147483648.0f);
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
 }
 
 /*
@@ -1059,6 +1163,7 @@ int main(int argc, char **argv)
 	if (argc == 2 && strcmp(argv[1], "--crc-only") == 0)
 	{
 		test_crc_matches_reference();
+		test_crc_source_checksum_registry();
 		printf("bot_common_tests: CRC checks passed\n");
 		return 0;
 	}
@@ -1078,6 +1183,7 @@ int main(int argc, char **argv)
 	if (argc == 2 && strcmp(argv[1], "--struct-only") == 0)
 	{
 		test_read_structure_parses_basic_types();
+		test_struct_retail_numeric_cache();
 		test_struct_retail_nested_and_array_quirks();
 		printf("bot_common_tests: structure checks passed\n");
 		return 0;
@@ -1087,7 +1193,9 @@ int main(int argc, char **argv)
 	test_struct_initialisation_flags();
 	test_case_insensitive_compare_helpers();
 	test_crc_matches_reference();
+	test_crc_source_checksum_registry();
 	test_read_structure_parses_basic_types();
+	test_struct_retail_numeric_cache();
 	test_struct_retail_nested_and_array_quirks();
 	test_vector2angles_and_angle_helpers();
 	test_path_helpers();

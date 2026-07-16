@@ -76,8 +76,12 @@ extern "C" {
 #define ACTION_MOVEFORWARD 32
 #define ACTION_MOVEBACK    64
 #define ACTION_MOVELEFT    128
-#define ACTION_MOVERIGHT   256
-#define ACTION_DELAYEDJUMP 512
+/*
+ * Gladiator's elementary-action writer aliases these two helpers onto the
+ * native attack/use bits; they are not successor-only independent flags.
+ */
+#define ACTION_MOVERIGHT   1
+#define ACTION_DELAYEDJUMP 2
 
 // Botlib error codes
 #define BLERR_NOERROR                    0
@@ -216,7 +220,13 @@ typedef struct bot_updateentity_s {
     int    event;
 } bot_updateentity_t;
 
-// Bot library exported functions
+/*
+ * Bot library exported functions.
+ *
+ * This is the exact 20-pointer Gladiator 0.96 table returned by the retail
+ * GetBotAPI export.  It must terminate at Test: sub_10038480 writes precisely
+ * these 0x50 bytes in the x86 DLL before returning data_10063f80.
+ */
 typedef struct bot_export_s {
     char *(*BotVersion)(void);
     int (*BotSetupLibrary)(void);
@@ -228,6 +238,39 @@ typedef struct bot_export_s {
                       int soundindexes, char *soundindex[],
                       int imageindexes, char *imageindex[]);
     /* Unlike adjacent exports, BotSetupClient is boolean: non-zero on success. */
+    int (*BotSetupClient)(int client, bot_settings_t *settings);
+    int (*BotShutdownClient)(int client);
+    int (*BotMoveClient)(int oldclnum, int newclnum);
+    int (*BotClientSettings)(int client, bot_clientsettings_t *settings);
+    int (*BotSettings)(int client, bot_settings_t *settings);
+    int (*BotStartFrame)(float time);
+    int (*BotUpdateClient)(int client, bot_updateclient_t *buc);
+    int (*BotUpdateEntity)(int ent, bot_updateentity_t *bue);
+    int (*BotAddSound)(vec3_t origin, int ent, int channel, int soundindex,
+                       float volume, float attenuation, float timeofs);
+    int (*BotAddPointLight)(vec3_t origin, int ent, float radius,
+                            float r, float g, float b, float time, float decay);
+    int (*BotAI)(int client, float thinktime);
+    int (*BotConsoleMessage)(int client, int type, char *message);
+    int (*Test)(int parm0, char *parm1, vec3_t parm2, vec3_t parm3);
+} bot_export_t;
+
+/*
+ * Reconstruction-only API for in-repo callers that exercise successor-era
+ * subsystems.  It is never returned by the exported GetBotAPI entry point.
+ * Keep the retail table duplicated as its prefix so callers of GetBotAPIEx
+ * retain the same field names without widening the retail ABI.
+ */
+typedef struct bot_export_extended_s {
+    char *(*BotVersion)(void);
+    int (*BotSetupLibrary)(void);
+    int (*BotShutdownLibrary)(void);
+    int (*BotLibraryInitialized)(void);
+    int (*BotLibVarSet)(char *var_name, char *value);
+    int (*BotDefine)(char *string);
+    int (*BotLoadMap)(char *mapname, int modelindexes, char *modelindex[],
+                      int soundindexes, char *soundindex[],
+                      int imageindexes, char *imageindex[]);
     int (*BotSetupClient)(int client, bot_settings_t *settings);
     int (*BotShutdownClient)(int client);
     int (*BotMoveClient)(int oldclnum, int newclnum);
@@ -348,14 +391,25 @@ typedef struct bot_export_s {
     void (*BotInterbreedGoalFuzzyLogic)(int parent1, int parent2, int child);
     void (*BotSaveGoalFuzzyLogic)(int goalstate, char *filename);
     void (*BotMutateGoalFuzzyLogic)(int goalstate, float range);
-} bot_export_t;
+} bot_export_extended_t;
 
-/*
- * Bot library imported functions. The first ten callbacks are the immutable
- * Gladiator 0.96 ABI; reconstruction-only bridge callbacks must remain after
- * DebugLineShow so retail callers retain their original prefix layout.
- */
+/* Exact ten-callback Gladiator 0.96 input table consumed by GetBotAPI. */
 typedef struct bot_import_s {
+    void (*BotInput)(int client, bot_input_t *bi);
+    void (*BotClientCommand)(int client, char *str, ...);
+    void (*Print)(int type, char *fmt, ...);
+    bsp_trace_t (*Trace)(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end,
+                         int passent, int contentmask);
+    int  (*PointContents)(vec3_t point);
+    void *(*GetMemory)(int size);
+    void (*FreeMemory)(void *ptr);
+    int  (*DebugLineCreate)(void);
+    void (*DebugLineDelete)(int line);
+    void (*DebugLineShow)(int line, vec3_t start, vec3_t end, int color);
+} bot_import_t;
+
+/* In-repo bridge input; never read past the retail table by GetBotAPI. */
+typedef struct bot_import_extended_s {
     void (*BotInput)(int client, bot_input_t *bi);
     void (*BotClientCommand)(int client, char *str, ...);
     void (*Print)(int type, char *fmt, ...);
@@ -373,12 +427,18 @@ typedef struct bot_import_s {
     void (*RemoveCommand)(const char *name);
     int (*CmdArgc)(void);
     const char *(*CmdArgv)(int index);
-} bot_import_t;
+} bot_import_extended_t;
 
-#define BOT_IMPORT_RETAIL_SIZE offsetof(bot_import_t, CvarGet)
+#define BOT_IMPORT_RETAIL_SIZE sizeof(bot_import_t)
 
 GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import);
-GLADIATOR_API bot_export_t *GetBotAPIEx(bot_import_t *import,
+
+/*
+ * In-repo compatibility helper.  The retail gladiator.dll export directory
+ * contains GetBotAPI only, so this intentionally has no GLADIATOR_API marker
+ * and returns the separately typed non-retail extension table.
+ */
+bot_export_extended_t *GetBotAPIEx(bot_import_extended_t *import,
 	size_t import_size);
 
 #ifdef __cplusplus

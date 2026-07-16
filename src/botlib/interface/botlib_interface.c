@@ -15,6 +15,7 @@
 #include "botlib/ai_weapon/bot_weapon.h"
 #include "botlib/ai_weight/bot_weight.h"
 #include "botlib/common/l_assets.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_struct.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
@@ -139,7 +140,8 @@ static int Botlib_SetupAASSubsystem(void)
 		return status;
 	}
 
-    g_subsystem_state.aas_initialised = true;
+	g_subsystem_state.aas_initialised = true;
+	g_subsystem_state.sound_initialised = true;
     return BLERR_NOERROR;
 }
 
@@ -206,16 +208,7 @@ static int Botlib_SetupAISubsystem(void)
 
 static int Botlib_SetupSoundSubsystem(void)
 {
-    if (g_subsystem_state.sound_initialised) {
-        return BLERR_NOERROR;
-    }
-
-    int status = AAS_SoundSubsystem_Init(&g_library_variables);
-    if (status != BLERR_NOERROR) {
-        return status;
-    }
-
-    g_subsystem_state.sound_initialised = true;
+    /* Retail BotSetup has no separate sound setup call after sub_1000edc0. */
     return BLERR_NOERROR;
 }
 
@@ -296,7 +289,7 @@ static void Botlib_ShutdownSoundSubsystem(void)
         return;
     }
 
-    AAS_SoundSubsystem_Shutdown();
+    /* Retail sub_1001d290 is a no-op; AAS shutdown clears the global state. */
     g_subsystem_state.sound_initialised = false;
 }
 
@@ -381,7 +374,7 @@ int BotSetupLibrary(void)
 	Botlib_ResetSubsystemState();
 	Botlib_ResetLibraryVariables();
 	LibVar_ResetCache();
-	BotLib_LogShutdown();
+	CRC_ResetSourceChecksums();
 
 	int status = Botlib_SetupUtilities();
 	if (status != BLERR_NOERROR)
@@ -389,6 +382,7 @@ int BotSetupLibrary(void)
 		Botlib_ResetLibraryVariables();
 		Botlib_ResetSubsystemState();
 		LibVar_Shutdown();
+		CRC_ResetSourceChecksums();
 		BotMemory_Shutdown();
 		return status;
 	}
@@ -448,10 +442,12 @@ int BotShutdownLibrary(void)
 	Botlib_ShutdownAASSubsystem();
 	Botlib_ShutdownEASubsystem();
 	Botlib_ShutdownUtilities();
+	BotLib_LogShutdown();
 
 	Botlib_ResetLibraryVariables();
 	Botlib_ResetSubsystemState();
 	LibVar_Shutdown();
+	CRC_ResetSourceChecksums();
 
 	g_library_initialised = false;
 

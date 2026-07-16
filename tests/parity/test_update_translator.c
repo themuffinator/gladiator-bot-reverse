@@ -30,7 +30,7 @@ typedef struct captured_print_s
 
 typedef struct translator_test_context_s
 {
-    bot_import_t imports;
+    bot_import_extended_t imports;
     captured_print_t prints[32];
     size_t print_count;
     botlib_contract_catalogue_t catalogue;

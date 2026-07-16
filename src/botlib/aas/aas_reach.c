@@ -9,6 +9,7 @@
 
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_memory.h"
 #include "q2bridge/bridge_config.h"
 
 #define MAX_REACHABILITYPASSAREAS 32
@@ -132,10 +133,10 @@ Release the temporary retail reachability heap and per-area link heads.
 */
 static void AAS_ResetReachabilityGenerator(void)
 {
-	free(reachabilityheap);
+	FreeMemory(reachabilityheap);
 	reachabilityheap = NULL;
 	nextreachability = NULL;
-	free(areareachability);
+	FreeMemory(areareachability);
 	areareachability = NULL;
 	numlreachabilities = 0;
 	reachabilityareacount = 0;
@@ -164,7 +165,8 @@ Allocate and chain the retail 65,536-entry temporary reachability heap.
 void AAS_SetupReachabilityHeap(void)
 {
 	AAS_ResetReachabilityGenerator();
-	reachabilityheap = calloc(AAS_MAX_REACHABILITYSIZE, sizeof(*reachabilityheap));
+	reachabilityheap = (aas_lreachability_t *)GetClearedMemory(
+		AAS_MAX_REACHABILITYSIZE * sizeof(*reachabilityheap));
 	if (reachabilityheap == NULL)
 	{
 		BotLib_Print(PRT_FATAL, "AAS_SetupReachabilityHeap: out of memory\n");
@@ -275,8 +277,8 @@ void AAS_InitReachability(void)
 	}
 
 	reachabilityareacount = aasworld.numAreaSettings;
-	areareachability = calloc((size_t)reachabilityareacount,
-		sizeof(*areareachability));
+	areareachability = (aas_lreachability_t **)GetClearedMemory(
+		(size_t)reachabilityareacount * sizeof(*areareachability));
 	if (areareachability == NULL)
 	{
 		BotLib_Print(PRT_FATAL, "AAS_InitReachability: out of memory\n");
@@ -1074,6 +1076,25 @@ int AAS_BestReachableLinkArea(aas_link_t *areas)
 
 /*
 =============
+AAS_BestReachableEntityArea
+
+Return the best reachable area from a live entity slot's existing area links.
+=============
+*/
+int AAS_BestReachableEntityArea(int entnum)
+{
+	if (aasworld.entities == NULL ||
+		entnum < 0 ||
+		entnum >= aasworld.maxEntities)
+	{
+		return 0;
+	}
+
+	return AAS_BestReachableLinkArea(aasworld.entities[entnum].areas);
+}
+
+/*
+=============
 AAS_BestReachableArea
 
 Find the retail reachable AAS area for an item origin, including the small
@@ -1167,7 +1188,13 @@ int AAS_BestReachableArea(const vec3_t origin,
 		areas,
 		aasworld.numAreas);
 	areanum = 0;
-	for (int index = 0; index < numareas; ++index)
+	/*
+	 * sub_1001c460 prepends each temporary leaf link before
+	 * sub_1000b130 chooses its first grounded/swimming area.  BBoxAreas
+	 * returns leaf visits in traversal order, so consume it backwards to
+	 * preserve the temporary link-list order.
+	 */
+	for (int index = numareas - 1; index >= 0; --index)
 	{
 		if (AAS_AreaGrounded(areas[index]) || AAS_AreaSwim(areas[index]))
 		{
@@ -1177,7 +1204,7 @@ int AAS_BestReachableArea(const vec3_t origin,
 	}
 	if (areanum == 0)
 	{
-		for (int index = 0; index < numareas; ++index)
+		for (int index = numareas - 1; index >= 0; --index)
 		{
 			if (areas[index] != 0)
 			{
@@ -1388,7 +1415,8 @@ void AAS_StoreReachability(void)
 		return;
 	}
 
-	aas_reachability_t *stored = calloc(reachability_count + 1U, sizeof(*stored));
+	aas_reachability_t *stored = (aas_reachability_t *)GetClearedMemory(
+		(reachability_count + 1U) * sizeof(*stored));
 	if (stored == NULL)
 	{
 		BotLib_Print(PRT_FATAL, "AAS_StoreReachability: out of memory\n");
@@ -1423,7 +1451,7 @@ void AAS_StoreReachability(void)
 	}
 
 	AAS_ClearReachabilityData();
-	free(aasworld.reachability);
+	FreeMemory(aasworld.reachability);
 	aasworld.reachability = stored;
 	aasworld.numReachability = stored_index;
 	if (AAS_PrepareReachability() != BLERR_NOERROR)
