@@ -187,6 +187,14 @@ void Q2_BotInput(int client, bot_input_t *input)
     imports->BotInput(client, input);
 }
 
+/*
+=============
+Q2_BotClientCommand
+
+Formats the compatibility command as one token and terminates the retail
+variadic import list explicitly.
+=============
+*/
 void Q2_BotClientCommand(int client, const char *command, ...)
 {
     bot_import_extended_t *imports = Q2Bridge_GetImportsInternal();
@@ -215,7 +223,7 @@ void Q2_BotClientCommand(int client, const char *command, ...)
         return;
     }
 
-    imports->BotClientCommand(client, buffer);
+    imports->BotClientCommand(client, buffer, NULL);
     free(buffer);
 }
 

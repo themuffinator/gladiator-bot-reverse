@@ -236,7 +236,8 @@ bot_status_t TranslateEntityUpdate(int ent_num,
 	dst->origin_dirty = CopyIfChanged(src->origin, dst->origin);
 
 	/* Reconstruction-only movement metadata; it never drives retail relinking. */
-	dst->is_mover = BotMove_MoverCatalogueIsModelMover(src->modelindex);
+	dst->is_mover = src->modelindex > 0 &&
+		BotMove_MoverCatalogueIsModelMover(src->modelindex - 1);
 
 	return BLERR_NOERROR;
 }

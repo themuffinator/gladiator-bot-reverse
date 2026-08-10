@@ -37,20 +37,24 @@ typedef struct bot_console_message_node_s {
 #define CHAT_GENDERMALE 2
 #endif
 
-/**
- * Allocates a chat state that owns parsed chat templates, reply tables,
- * random-string tables, cooldown state, and its linked console-message queue.
- */
+/** Host adapter for retail's embedded bot_chatstate_t. */
 bot_chatstate_t *BotAllocChatState(void);
 
-/** Releases the resources owned by the chat state, including loaded scripts. */
-void BotFreeChatState(bot_chatstate_t *state);
+/** Preallocated, non-failing retail client sidecar acquisition. */
+bot_chatstate_t *BotAllocRetailChatState(void);
+
+/** Frees retail-owned initial-chat and queue data without freeing the state. */
+int BotFreeChatState(bot_chatstate_t *state);
+
+/** Host ownership adapter that destroys a BotAllocChatState allocation. */
+void BotDestroyChatState(bot_chatstate_t *state);
 
 /**
- * Loads a chat script through the precompiler wrappers, including retail named
- * initial-chat blocks and sibling random/synonym/match assets when present.
+ * Loads only the named initial-chat block. Shared chat assets are owned by
+ * BotSetupChatAI, matching retail Gladiator.
+ * Returns BLERR_NOERROR on success or BLERR_CANNOTLOADICHAT on failure.
  */
-int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *chatname);
+int BotLoadChatFile(bot_chatstate_t *state, char *chatfile, char *chatname);
 
 /** Loads the shared retail chat AI assets selected by chat-related libvars. */
 int BotSetupChatAI(void);
@@ -58,49 +62,51 @@ int BotSetupChatAI(void);
 /** Releases shared chat AI setup assets. */
 void BotShutdownChatAI(void);
 
-/** Unloads the active chat file without destroying the chat state. */
-void BotFreeChatFile(bot_chatstate_t *state);
+/** Drains remaining per-state adapters during whole-library shutdown. */
+void BotShutdownChatStateAdapters(void);
+
+/** Forgets static retail sidecars after arena ownership has been released. */
+void BotForgetRetailChatStates(void);
+
+/** Unloads the active initial-chat tree and returns zero. */
+int BotFreeChatFile(bot_chatstate_t *state);
 
 /**
  * Enqueues an incoming console message in the shared retail max_messages pool.
- * Gladiator copies at most 150 payload bytes; this compatibility surface adds
- * a terminating NUL immediately after that retail payload boundary.
+ * Gladiator copies exactly 150 payload bytes and leaves the final two storage
+ * bytes untouched. On success the retail return is the low 32 bits of the
+ * chat-state pointer.
  */
-void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message);
+int BotQueueConsoleMessage(bot_chatstate_t *state, int type, char *message);
 
-/**
- * Peeks at the oldest retail console-message node without removing it. The
- * returned identity remains valid until that node is removed or the shared
- * message heap is shut down. Gladiator's reader uses the timestamp to defer a
- * recent CMS_CHAT message while fewer than ten messages are queued when
- * `time > AAS_Time() - (1 + (rand() & 0x7fff) / 32767.0f)`.
- */
-const bot_console_message_node_t *BotNextConsoleMessageNode(
-	const bot_chatstate_t *state);
+/** Peeks at the oldest queued node without removing it. */
+bot_console_message_node_t *BotNextConsoleMessage(bot_chatstate_t *state);
 
 /**
  * Removes the exact retail node identity and returns the remaining queue
  * count. Unknown identities are ignored by this safe native adaptation.
  */
-int BotRemoveConsoleMessageNode(bot_chatstate_t *state,
-	const bot_console_message_node_t *message);
+int BotRemoveConsoleMessage(bot_chatstate_t *state,
+	bot_console_message_node_t *message);
 
 /**
  * Pops the oldest queued message. Returns 1 when a message is copied into the
- * caller supplied buffers and 0 when no messages are pending. This established
- * bridge compatibility wrapper is intentionally destructive; node-level retail
- * callers use BotNextConsoleMessageNode and BotRemoveConsoleMessageNode.
+ * caller supplied buffers and 0 when no messages are pending. This host
+ * compatibility wrapper is intentionally destructive.
  */
-int BotNextConsoleMessage(bot_chatstate_t *state, int *type, char *buffer, size_t buffer_size);
+int BotNextConsoleMessageCopy(bot_chatstate_t *state,
+	int *type,
+	char *buffer,
+	size_t buffer_size);
 
 /**
  * Removes the first message of the requested type. This established bridge
  * compatibility wrapper remains separate from retail identity removal.
  */
-int BotRemoveConsoleMessage(bot_chatstate_t *state, int type);
+int BotRemoveConsoleMessageType(bot_chatstate_t *state, int type);
 
 /** Returns the number of queued console messages regardless of type. */
-size_t BotNumConsoleMessages(const bot_chatstate_t *state);
+int BotNumConsoleMessages(bot_chatstate_t *state);
 
 /**
  * Overrides the synthetic clock used for chat cooldowns. Passing a negative
@@ -110,20 +116,27 @@ void BotChat_SetTime(bot_chatstate_t *state, double now_seconds);
 
 /** Configures the cooldown duration for the supplied context identifier. */
 void BotChat_SetContextCooldown(bot_chatstate_t *state,
-unsigned long context,
-double cooldown_seconds);
+	unsigned long context,
+	double cooldown_seconds);
 
-/** Builds and dispatches the MSG_ENTERGAME chat event for the supplied client. */
-void BotEnterChat(bot_chatstate_t *state, int client, int sendto);
+/** Sends and clears the already constructed retail chat message. */
+char BotEnterChat(bot_chatstate_t *state, int client, int sendto);
 
 /** Returns the number of loaded retail initial chats for a type name. */
 int BotNumInitialChats(const bot_chatstate_t *state, const char *type);
+
+/** Q3-shaped host adapter accepting successor initial-chat type aliases. */
+int BotNumInitialChatsWithAliases(const bot_chatstate_t *state,
+	const char *type);
 
 /**
  * Constructs one retail initial chat line for a type name. Variable arguments
  * are optional string replacements and must end with NULL.
  */
-int BotInitialChat(bot_chatstate_t *state,
+void BotInitialChat(bot_chatstate_t *state, char *type, ...);
+
+/** Q3-shaped host adapter retaining an explicit message context. */
+int BotInitialChatWithContext(bot_chatstate_t *state,
 	const char *type,
 	unsigned long context,
 	...);
@@ -145,7 +158,12 @@ int BotChat_Praise(bot_chatstate_t *state, int client, int sendto);
  * A non-zero return means a response was selected; later construction
  * diagnostics do not change the retail selection result.
  */
-int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context);
+int BotReplyChat(bot_chatstate_t *state, const char *message);
+
+/** Compatibility adapter; Gladiator ignores the supplied context. */
+int BotReplyChatWithContext(bot_chatstate_t *state,
+	const char *message,
+	unsigned long int context);
 
 /**
  * Constructs a scripted reply with the Quake III split between message and
@@ -165,16 +183,21 @@ int BotReplyChatWithContexts(bot_chatstate_t *state,
 	const char *var7);
 
 /** Returns the length of the currently constructed pending chat message. */
-int BotChatLength(const bot_chatstate_t *state);
+unsigned int BotChatLength(bot_chatstate_t *state);
 
-/** Copies and clears the currently constructed pending chat message. */
+/** Compatibility extension: copies and clears the pending chat message. */
 void BotGetChatMessage(bot_chatstate_t *state, char *buffer, int buffer_size);
 
 /** Sets the chat state's gender metadata for reply-key matching. */
 void BotSetChatGender(bot_chatstate_t *state, int gender);
 
-/** Sets the chat state's name metadata and owning client. */
-void BotSetChatName(bot_chatstate_t *state, const char *name, int client);
+/** Stores the retail 15-byte chat name. */
+char *BotSetChatName(bot_chatstate_t *state, char *name);
+
+/** Host adapter retaining Quake III's owning-client metadata. */
+void BotSetChatNameWithClient(bot_chatstate_t *state,
+	const char *name,
+	int client);
 
 /** Returns the chat persona name used by reply-key matching. */
 const char *BotChatName(const bot_chatstate_t *state);
@@ -182,20 +205,41 @@ const char *BotChatName(const bot_chatstate_t *state);
 /** Returns the owning client used for chat commands, or -1 when unset. */
 int BotChatClient(const bot_chatstate_t *state);
 
-/** Returns the substring index using the retail case-sensitivity flag. */
-int StringContains(const char *str1, const char *str2, int casesensitive);
+/** Returns the first matching substring, or NULL. */
+const char *StringContains(const char *str1, const char *str2,
+	int casesensitive);
+
+/** Returns the first space-delimited word match, or NULL. */
+const char *StringContainsWord(const char *str1, const char *str2,
+	int casesensitive);
+
+/** Replaces literal-space-delimited words using retail overlap semantics. */
+void StringReplaceWords(const char *string, const char *synonym,
+	const char *replacement);
+
+/** Compatibility adapter returning an index or -1. */
+int StringContainsIndex(const char *str1, const char *str2, int casesensitive);
 
 /** Collapses retail whitespace runs in place. */
-void UnifyWhiteSpaces(char *string);
+void UnifyWhiteSpaces(void *string);
 
 /** Replaces synonyms in place using the shared setup synonym cache. */
 void BotReplaceSynonyms(char *string, unsigned long int context);
 
 /** Finds a setup match template and fills the retail match result. */
-int BotFindMatch(const char *str, bot_match_t *match, unsigned long int context);
+int BotFindMatch(char *str, bot_match_t *match, int context);
 
-/** Copies one captured match variable to the caller buffer. */
-void BotMatchVariable(const bot_match_t *match, int variable, char *buffer, int buffer_size);
+/** Copies one captured match variable and returns buffer. */
+char *BotMatchVariable(bot_match_t *match, int variable, char *buffer);
+
+/** Bounds-checked host adapter for callers that supply a buffer size. */
+void BotMatchVariableSized(const bot_match_t *match,
+	int variable,
+	char *buffer,
+	int buffer_size);
+
+/** Clears every shared reply-chat recent-use timestamp. */
+void BotResetChatAI(void);
 
 /** Returns 1 when the supplied phrase is registered for the synonym context. */
 int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_name, const char *phrase);

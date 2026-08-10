@@ -7,7 +7,6 @@ set(BOTLIB_AI_SOURCES
     ../ai_character/bot_character.c
     ../ai_goal/ai_goal.c
     ../ai_goal/bot_goal.c
-    ../ai_move/ai_move.c
     ../ai_move/bot_move.c
     ../ai_move/mover_catalogue.c
     ../ai_weight/ai_weight.c
@@ -30,5 +29,6 @@ target_include_directories(botlib_ai
 
 target_link_libraries(botlib_ai
     PUBLIC
+        botlib_ea
         gladiator_shared_headers
 )

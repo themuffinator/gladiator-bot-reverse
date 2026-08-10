@@ -2,12 +2,24 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <cmocka.h>
 
+#if defined(_WIN32)
+#include <direct.h>
+#define TEST_MKDIR(path) _mkdir(path)
+#define TEST_RMDIR(path) _rmdir(path)
+#else
+#include <unistd.h>
+#define TEST_MKDIR(path) mkdir((path), 0777)
+#define TEST_RMDIR(path) rmdir(path)
+#endif
+
 #include "botlib/common/l_crc.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/precomp/l_precomp.h"
 #include "botlib/precomp/l_script.h"
@@ -594,6 +606,298 @@ static void test_pc_peek_and_unread_mirror_hlil_behaviour(void **state)
 	PC_ShutdownLexer();
 }
 
+typedef struct test_pak_entry_s
+{
+	const char *name;
+	const char *contents;
+	uint32_t offset;
+	uint32_t length;
+} test_pak_entry_t;
+
+/*
+=============
+write_test_pak_u32
+
+Writes one little-endian PAK integer without relying on host endianness.
+=============
+*/
+static void write_test_pak_u32(FILE *file, uint32_t value)
+{
+	unsigned char bytes[4];
+
+	bytes[0] = (unsigned char)(value & 0xffU);
+	bytes[1] = (unsigned char)((value >> 8) & 0xffU);
+	bytes[2] = (unsigned char)((value >> 16) & 0xffU);
+	bytes[3] = (unsigned char)((value >> 24) & 0xffU);
+	assert_int_equal(fwrite(bytes, 1U, sizeof(bytes), file), sizeof(bytes));
+}
+
+/*
+=============
+write_test_pak
+
+Creates the minimal Quake PAK fixture used by the precompiler resolver test.
+=============
+*/
+static void write_test_pak(const char *path,
+	test_pak_entry_t *entries,
+	size_t entry_count)
+{
+	uint32_t data_offset = 12U;
+	uint32_t directory_offset;
+	FILE *file;
+
+	for (size_t i = 0; i < entry_count; ++i)
+	{
+		size_t contents_length = strlen(entries[i].contents);
+		assert_true(contents_length <= UINT32_MAX - data_offset);
+		entries[i].offset = data_offset;
+		entries[i].length = (uint32_t)contents_length;
+		data_offset += entries[i].length;
+	}
+	directory_offset = data_offset;
+	assert_true(entry_count <= UINT32_MAX / 64U);
+
+	file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_int_equal(fwrite("PACK", 1U, 4U, file), 4U);
+	write_test_pak_u32(file, directory_offset);
+	write_test_pak_u32(file, (uint32_t)(entry_count * 64U));
+
+	for (size_t i = 0; i < entry_count; ++i)
+	{
+		assert_int_equal(fwrite(entries[i].contents,
+			1U,
+			entries[i].length,
+			file),
+			entries[i].length);
+	}
+
+	for (size_t i = 0; i < entry_count; ++i)
+	{
+		unsigned char name[56] = { 0 };
+		size_t name_length = strlen(entries[i].name);
+		assert_true(name_length < sizeof(name));
+		memcpy(name, entries[i].name, name_length);
+		assert_int_equal(fwrite(name, 1U, sizeof(name), file), sizeof(name));
+		write_test_pak_u32(file, entries[i].offset);
+		write_test_pak_u32(file, entries[i].length);
+	}
+
+	assert_int_equal(fclose(file), 0);
+}
+
+/*
+=============
+remove_precompiler_pak_fixture
+
+Removes only the known files and directories created by the runtime fixture.
+=============
+*/
+static void remove_precompiler_pak_fixture(void)
+{
+	static const char *files[] = {
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak0/scripts/main.c",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak0/scripts/local_defs.h",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak0/scripts/angle_defs.h",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak0/scripts/choice.c",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak0/root_defs.h",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak1/scripts/choice.c",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak1/scripts/case_only.c",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/PAK1/scripts/choice.c",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/PAK1/scripts/case_only.c",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/custom/scripts/choice.c",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/custom/scripts/custom_only.c",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak10/scripts/pak10_only.c",
+		"__gladiator_pak_precompiler_fixture/pak0.pak",
+		"__gladiator_pak_precompiler_fixture/PAK1.PAK",
+		"__gladiator_pak_precompiler_fixture/custom.pak",
+		"__gladiator_pak_precompiler_fixture/pak10.pak",
+	};
+	static const char *directories[] = {
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak0/scripts",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak0",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak1/scripts",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak1",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/PAK1/scripts",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/PAK1",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/custom/scripts",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/custom",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak10/scripts",
+		"__gladiator_pak_precompiler_fixture/.pak_cache/pak10",
+		"__gladiator_pak_precompiler_fixture/.pak_cache",
+		"__gladiator_pak_precompiler_fixture",
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(files); ++i)
+	{
+		(void)remove(files[i]);
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(directories); ++i)
+	{
+		(void)TEST_RMDIR(directories[i]);
+	}
+}
+
+/*
+=============
+test_pc_loads_pak_source_and_includes_with_logical_checksum_names
+
+Pins PAK-backed top-level, root, quoted-local, and angle-local resolution while
+retaining the directive spellings used by the source checksum cache.
+=============
+*/
+static void test_pc_loads_pak_source_and_includes_with_logical_checksum_names(
+	void **state)
+{
+	(void)state;
+	static const char fixture_root[] = "__gladiator_pak_precompiler_fixture";
+	static const char pak_path[] = "__gladiator_pak_precompiler_fixture/pak0.pak";
+	static const char *expected_tokens[] = { "101", "202", "303" };
+	static const char *expected_checksum_names[] = {
+		"root_defs.h",
+		"scripts/angle_defs.h",
+		"scripts/local_defs.h",
+		"scripts/main.c",
+	};
+	test_pak_entry_t entries[] = {
+		{
+			"scripts/main.c",
+			"#include \"root_defs.h\"\n"
+			"#include \"local_defs.h\"\n"
+			"#include <angle_defs.h>\n"
+			"ROOT_VALUE LOCAL_VALUE ANGLE_VALUE\n",
+			0U,
+			0U,
+		},
+		{ "root_defs.h", "#define ROOT_VALUE 101\n", 0U, 0U },
+		{ "scripts/local_defs.h", "#define LOCAL_VALUE 202\n", 0U, 0U },
+		{ "scripts/angle_defs.h", "#define ANGLE_VALUE 303\n", 0U, 0U },
+	};
+
+	remove_precompiler_pak_fixture();
+	assert_int_equal(TEST_MKDIR(fixture_root), 0);
+	write_test_pak(pak_path, entries, ARRAY_SIZE(entries));
+
+	LibVar_Init();
+	LibVarSet("basedir", fixture_root);
+	LibVarSet("gamedir", "");
+	LibVarSet("cddir", "");
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	CRC_ResetSourceChecksums();
+	PC_InitLexer();
+
+	pc_source_t *source = PC_LoadSourceFile("scripts/main.c");
+	assert_non_null(source);
+	for (size_t i = 0; i < ARRAY_SIZE(expected_tokens); ++i)
+	{
+		pc_token_t token;
+		assert_int_equal(PC_ReadToken(source, &token), 1);
+		assert_int_equal(token.type, TT_NUMBER);
+		assert_string_equal(token.string, expected_tokens[i]);
+	}
+	pc_token_t token;
+	assert_int_equal(PC_ReadToken(source, &token), 0);
+	assert_int_equal(CRC_SourceChecksumCount(), ARRAY_SIZE(expected_checksum_names));
+
+	for (size_t i = 0; i < ARRAY_SIZE(expected_checksum_names); ++i)
+	{
+		uint16_t checksum = 0;
+		char name[CRC_SOURCE_NAME_MAX];
+		assert_true(CRC_SourceChecksumAt(i, &checksum, name, sizeof(name)));
+		assert_string_equal(name, expected_checksum_names[i]);
+	}
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+	CRC_ResetSourceChecksums();
+	LibVar_Shutdown();
+	remove_precompiler_pak_fixture();
+}
+
+/*
+=============
+assert_pak_number_source
+
+Loads one PAK-backed source and verifies its single numeric token.
+=============
+*/
+static void assert_pak_number_source(const char *logical_name,
+	const char *expected_token)
+{
+	pc_source_t *source = PC_LoadSourceFile(logical_name);
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(PC_ReadToken(source, &token), 1);
+	assert_int_equal(token.type, TT_NUMBER);
+	assert_string_equal(token.string, expected_token);
+	assert_int_equal(PC_ReadToken(source, &token), 0);
+
+	PC_FreeSource(source);
+}
+
+/*
+=============
+test_pak_search_uses_retail_numbered_precedence
+
+Pins pak0-before-pak1 lookup, Windows-style case-insensitive numbered names,
+and exclusion of custom and two-digit package names.
+=============
+*/
+static void test_pak_search_uses_retail_numbered_precedence(void **state)
+{
+	(void)state;
+	static const char fixture_root[] = "__gladiator_pak_precompiler_fixture";
+	test_pak_entry_t pak0_entries[] = {
+		{ "scripts/choice.c", "100\n", 0U, 0U },
+	};
+	test_pak_entry_t pak1_entries[] = {
+		{ "scripts/choice.c", "200\n", 0U, 0U },
+		{ "scripts/case_only.c", "201\n", 0U, 0U },
+	};
+	test_pak_entry_t custom_entries[] = {
+		{ "scripts/choice.c", "300\n", 0U, 0U },
+		{ "scripts/custom_only.c", "301\n", 0U, 0U },
+	};
+	test_pak_entry_t pak10_entries[] = {
+		{ "scripts/pak10_only.c", "1000\n", 0U, 0U },
+	};
+
+	remove_precompiler_pak_fixture();
+	assert_int_equal(TEST_MKDIR(fixture_root), 0);
+	write_test_pak("__gladiator_pak_precompiler_fixture/pak0.pak",
+		pak0_entries,
+		ARRAY_SIZE(pak0_entries));
+	write_test_pak("__gladiator_pak_precompiler_fixture/PAK1.PAK",
+		pak1_entries,
+		ARRAY_SIZE(pak1_entries));
+	write_test_pak("__gladiator_pak_precompiler_fixture/custom.pak",
+		custom_entries,
+		ARRAY_SIZE(custom_entries));
+	write_test_pak("__gladiator_pak_precompiler_fixture/pak10.pak",
+		pak10_entries,
+		ARRAY_SIZE(pak10_entries));
+
+	LibVar_Init();
+	LibVarSet("basedir", fixture_root);
+	LibVarSet("gamedir", "");
+	LibVarSet("cddir", "");
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	CRC_ResetSourceChecksums();
+	PC_InitLexer();
+
+	assert_pak_number_source("scripts/choice.c", "100");
+	assert_pak_number_source("scripts/case_only.c", "201");
+	assert_null(PC_LoadSourceFile("scripts/custom_only.c"));
+	assert_null(PC_LoadSourceFile("scripts/pak10_only.c"));
+
+	PC_ShutdownLexer();
+	CRC_ResetSourceChecksums();
+	LibVar_Shutdown();
+	remove_precompiler_pak_fixture();
+}
+
 /*
 =============
 test_load_script_file_registers_uncompressed_source_checksum
@@ -656,6 +960,8 @@ int main(void)
 		cmocka_unit_test(test_pc_reports_full_quoted_string_subtype),
 		cmocka_unit_test(test_pc_preserves_memory_block_comment_token_boundary),
 		cmocka_unit_test(test_pc_dollar_evaluators_preserve_retail_token_caches),
+		cmocka_unit_test(test_pc_loads_pak_source_and_includes_with_logical_checksum_names),
+		cmocka_unit_test(test_pak_search_uses_retail_numbered_precedence),
 		cmocka_unit_test(test_load_script_file_registers_uncompressed_source_checksum),
 	};
 

@@ -4,15 +4,28 @@
 #include <cmocka.h>
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#include <direct.h>
+#define TEST_MKDIR(path) _mkdir(path)
+#define TEST_RMDIR(path) _rmdir(path)
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define TEST_MKDIR(path) mkdir((path), 0777)
+#define TEST_RMDIR(path) rmdir(path)
+#endif
 
 #ifndef cmocka_skip
 #define cmocka_skip(...) skip()
 #endif
 
 #include "botlib/ai_weapon/bot_weapon.h"
+#include "botlib/ai_goal/bot_goal.h"
 #include "botlib/ea/ea_local.h"
 #include "botlib/common/l_crc.h"
 #include "botlib/common/l_libvar.h"
@@ -219,6 +232,199 @@ static void write_weapon_fixture(const char *path, const char *contents)
 	assert_int_equal(fclose(file), 0);
 }
 
+typedef struct test_ai_pak_entry_s
+{
+	const char *name;
+	const char *contents;
+	uint32_t offset;
+	uint32_t length;
+} test_ai_pak_entry_t;
+
+/*
+=============
+write_ai_pak_u32
+
+Writes one portable little-endian integer to a runtime PAK fixture.
+=============
+*/
+static void write_ai_pak_u32(FILE *file, uint32_t value)
+{
+	unsigned char bytes[4];
+
+	bytes[0] = (unsigned char)(value & 0xffU);
+	bytes[1] = (unsigned char)((value >> 8) & 0xffU);
+	bytes[2] = (unsigned char)((value >> 16) & 0xffU);
+	bytes[3] = (unsigned char)((value >> 24) & 0xffU);
+	assert_int_equal(fwrite(bytes, 1U, sizeof(bytes), file), sizeof(bytes));
+}
+
+/*
+=============
+write_ai_pak_fixture
+
+Creates a minimal Quake PAK containing only logical AI configuration assets.
+=============
+*/
+static void write_ai_pak_fixture(const char *path,
+	test_ai_pak_entry_t *entries,
+	size_t entry_count)
+{
+	uint32_t data_offset = 12U;
+	FILE *file;
+
+	for (size_t i = 0; i < entry_count; ++i)
+	{
+		size_t length = strlen(entries[i].contents);
+		assert_true(length <= UINT32_MAX - data_offset);
+		entries[i].offset = data_offset;
+		entries[i].length = (uint32_t)length;
+		data_offset += entries[i].length;
+	}
+	assert_true(entry_count <= UINT32_MAX / 64U);
+
+	file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_int_equal(fwrite("PACK", 1U, 4U, file), 4U);
+	write_ai_pak_u32(file, data_offset);
+	write_ai_pak_u32(file, (uint32_t)(entry_count * 64U));
+
+	for (size_t i = 0; i < entry_count; ++i)
+	{
+		assert_int_equal(fwrite(entries[i].contents,
+			1U,
+			entries[i].length,
+			file),
+			entries[i].length);
+	}
+	for (size_t i = 0; i < entry_count; ++i)
+	{
+		unsigned char name[56] = { 0 };
+		size_t name_length = strlen(entries[i].name);
+		assert_true(name_length < sizeof(name));
+		memcpy(name, entries[i].name, name_length);
+		assert_int_equal(fwrite(name, 1U, sizeof(name), file), sizeof(name));
+		write_ai_pak_u32(file, entries[i].offset);
+		write_ai_pak_u32(file, entries[i].length);
+	}
+	assert_int_equal(fclose(file), 0);
+}
+
+/*
+=============
+remove_ai_pak_fixture
+
+Removes only the known runtime PAK and extracted cache paths from this test.
+=============
+*/
+static void remove_ai_pak_fixture(void)
+{
+	static const char *files[] = {
+		"__gladiator_pak_ai_fixture/.pak_cache/pak0/weapons.c",
+		"__gladiator_pak_ai_fixture/.pak_cache/pak0/weapon_defs.inc",
+		"__gladiator_pak_ai_fixture/.pak_cache/pak0/items.c",
+		"__gladiator_pak_ai_fixture/.pak_cache/pak0/item_defs.inc",
+		"__gladiator_pak_ai_fixture/pak0.pak",
+	};
+	static const char *directories[] = {
+		"__gladiator_pak_ai_fixture/.pak_cache/pak0",
+		"__gladiator_pak_ai_fixture/.pak_cache",
+		"__gladiator_pak_ai_fixture",
+	};
+
+	for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i)
+	{
+		(void)remove(files[i]);
+	}
+	for (size_t i = 0; i < sizeof(directories) / sizeof(directories[0]); ++i)
+	{
+		(void)TEST_RMDIR(directories[i]);
+	}
+}
+
+/*
+=============
+ai_checksum_name_present
+
+Reports whether preprocessing retained one caller-facing logical filename.
+=============
+*/
+static bool ai_checksum_name_present(const char *expected)
+{
+	for (size_t i = 0; i < CRC_SourceChecksumCount(); ++i)
+	{
+		uint16_t checksum = 0;
+		char name[CRC_SOURCE_NAME_MAX];
+		if (!CRC_SourceChecksumAt(i, &checksum, name, sizeof(name)))
+		{
+			continue;
+		}
+		if (strcmp(name, expected) == 0)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+=============
+create_ai_pak_fixture
+
+Creates default-named weapon and item configs whose complete definitions live
+in sibling PAK entries.
+=============
+*/
+static void create_ai_pak_fixture(void)
+{
+	static const char fixture_root[] = "__gladiator_pak_ai_fixture";
+	static const char pak_path[] = "__gladiator_pak_ai_fixture/pak0.pak";
+	test_ai_pak_entry_t entries[] = {
+		{ "weapons.c", "#include \"weapon_defs.inc\"\n", 0U, 0U },
+		{
+			"weapon_defs.inc",
+			"#define PAK_PROJECTILE_DAMAGE 47\n"
+			"projectileinfo\n"
+			"{\n"
+			"name \"pak_projectile\"\n"
+			"model \"models/objects/pak/tris.md2\"\n"
+			"damage PAK_PROJECTILE_DAMAGE\n"
+			"}\n"
+			"weaponinfo\n"
+			"{\n"
+			"name \"PAK Sibling Weapon\"\n"
+			"model \"models/weapons/pak/tris.md2\"\n"
+			"weaponindex 17\n"
+			"projectile \"pak_projectile\"\n"
+			"numprojectiles 1\n"
+			"ammoindex 23\n"
+			"}\n",
+			0U,
+			0U,
+		},
+		{ "items.c", "#include \"item_defs.inc\"\n", 0U, 0U },
+		{
+			"item_defs.inc",
+			"iteminfo \"pak_sibling_item\"\n"
+			"{\n"
+			"name \"PAK Sibling Item\"\n"
+			"model \"models/items/pak/tris.md2\"\n"
+			"type 9\n"
+			"index 77\n"
+			"respawntime 30\n"
+			"mins {-1,-2,-3}\n"
+			"maxs {1,2,3}\n"
+			"}\n",
+			0U,
+			0U,
+		},
+	};
+
+	remove_ai_pak_fixture();
+	assert_int_equal(TEST_MKDIR(fixture_root), 0);
+	write_ai_pak_fixture(pak_path, entries, sizeof(entries) / sizeof(entries[0]));
+}
+
 static int weapon_index_by_name(const bot_weapon_config_t *config, const char *name)
 {
     if (config == NULL || name == NULL) {
@@ -232,6 +438,90 @@ static int weapon_index_by_name(const bot_weapon_config_t *config, const char *n
     }
 
     return -1;
+}
+
+/*
+=============
+test_pak_only_weapon_config_resolves_sibling_include
+
+Exercises logical-name preprocessing through AI_LoadWeaponLibrary when neither
+the default-named config nor its complete definition sibling exists loose.
+=============
+*/
+static void test_pak_only_weapon_config_resolves_sibling_include(void **state)
+{
+	(void)state;
+	static const char fixture_root[] = "__gladiator_pak_ai_fixture";
+	create_ai_pak_fixture();
+
+	setup_botlib_environment();
+	LibVarSet("basedir", fixture_root);
+	LibVarSet("gamedir", "");
+	LibVarSet("cddir", "");
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	CRC_ResetSourceChecksums();
+
+	ai_weapon_library_t *library = AI_LoadWeaponLibrary("weapons.c");
+	const bot_weapon_config_t *config = AI_GetWeaponConfig(library);
+	bool source_is_pak = library != NULL && strstr(library->source_path,
+		"__gladiator_pak_ai_fixture/.pak_cache/pak0/weapons.c") != NULL;
+	int projectile_count = config != NULL ? config->num_projectiles : -1;
+	int weapon_count = config != NULL ? config->num_weapons : -1;
+	bool projectile_matches = config != NULL && projectile_count == 1
+		&& strcmp(config->projectiles[0].name, "pak_projectile") == 0
+		&& config->projectiles[0].damage == 47;
+	bool weapon_matches = config != NULL && weapon_count == 1
+		&& strcmp(config->weapons[0].name, "PAK Sibling Weapon") == 0
+		&& config->weapons[0].projectileinfo == &config->projectiles[0];
+	bool main_key_present = ai_checksum_name_present("weapons.c");
+	bool sibling_key_present = ai_checksum_name_present("weapon_defs.inc");
+
+	AI_UnloadWeaponLibrary(library);
+	teardown_botlib_environment();
+	remove_ai_pak_fixture();
+
+	assert_true(source_is_pak);
+	assert_int_equal(projectile_count, 1);
+	assert_int_equal(weapon_count, 1);
+	assert_true(projectile_matches);
+	assert_true(weapon_matches);
+	assert_true(main_key_present);
+	assert_true(sibling_key_present);
+}
+
+/*
+=============
+test_pak_only_itemconfig_resolves_sibling_include
+
+Exercises logical-name preprocessing through BotSetupGoalAI with the retail
+default itemconfig name and a PAK-only sibling definition.
+=============
+*/
+static void test_pak_only_itemconfig_resolves_sibling_include(void **state)
+{
+	(void)state;
+	static const char fixture_root[] = "__gladiator_pak_ai_fixture";
+	create_ai_pak_fixture();
+
+	setup_botlib_environment();
+	LibVarSet("basedir", fixture_root);
+	LibVarSet("gamedir", "");
+	LibVarSet("cddir", "");
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	LibVarSet("itemconfig", "items.c");
+	CRC_ResetSourceChecksums();
+
+	int setup_status = BotSetupGoalAI();
+	bool main_key_present = ai_checksum_name_present("items.c");
+	bool sibling_key_present = ai_checksum_name_present("item_defs.inc");
+
+	BotShutdownGoalAI();
+	teardown_botlib_environment();
+	remove_ai_pak_fixture();
+
+	assert_int_equal(setup_status, BLERR_NOERROR);
+	assert_true(main_key_present);
+	assert_true(sibling_key_present);
 }
 
 /*
@@ -956,6 +1246,8 @@ int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_weapon_struct_layout_matches_hlil_offsets),
+		cmocka_unit_test(test_pak_only_weapon_config_resolves_sibling_include),
+		cmocka_unit_test(test_pak_only_itemconfig_resolves_sibling_include),
         cmocka_unit_test(test_weapon_library_reports_expected_counts),
         cmocka_unit_test(test_weapon_weights_align_with_reference_values),
         cmocka_unit_test(test_weapon_weights_cache_uses_caller_filename),

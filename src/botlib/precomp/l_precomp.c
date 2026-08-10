@@ -105,6 +105,11 @@ pc_source_t *LoadSourceMemory(char *ptr, int length, char *name);
 void FreeSource(pc_source_t *source);
 int PC_CheckTokenString(pc_source_t *source, char *string);
 void PC_SetIncludePath(pc_source_t *source, char *path);
+static void PC_SplitPath(const char *path,
+	char *directory,
+	size_t directory_size,
+	char *leaf,
+	size_t leaf_size);
 
 typedef struct pc_define_s {
     char *name;
@@ -196,6 +201,7 @@ static qboolean PC_AppendBoundedText(char *buffer,
 struct pc_source_s {
     char filename[MAX_PATH];
     char includepath[MAX_PATH];
+	char assetincludepath[MAX_PATH];
     pc_punctuation_t *punctuations;
     pc_script_t *scriptstack;
     pc_token_t *tokens;
@@ -332,6 +338,186 @@ static void PC_NormalizeSlashes(char *path)
             path[i] = '/';
         }
     }
+}
+
+/*
+=============
+PC_BuildResolvedBaseFolder
+
+Derives the physical base folder that lets the lexer open a resolved asset
+while continuing to register the caller's logical filename as its cache key.
+=============
+*/
+static qboolean PC_BuildResolvedBaseFolder(const char *resolved_path,
+	const char *logical_name,
+	char *base_folder,
+	size_t base_folder_size)
+{
+	char normalized_path[BOTLIB_ASSET_MAX_PATH];
+	char normalized_name[BOTLIB_ASSET_MAX_PATH];
+	size_t path_length;
+	size_t name_length;
+	size_t prefix_length;
+
+	if (base_folder == NULL || base_folder_size == 0)
+	{
+		return qfalse;
+	}
+	base_folder[0] = '\0';
+
+	if (!PC_CopyBoundedText(normalized_path, sizeof(normalized_path), resolved_path)
+		|| !PC_CopyBoundedText(normalized_name, sizeof(normalized_name), logical_name))
+	{
+		return qfalse;
+	}
+
+	PC_NormalizeSlashes(normalized_path);
+	PC_NormalizeSlashes(normalized_name);
+	path_length = strlen(normalized_path);
+	name_length = strlen(normalized_name);
+	if (name_length == 0 || name_length > path_length)
+	{
+		return qfalse;
+	}
+
+	prefix_length = path_length - name_length;
+	for (size_t i = 0; i < name_length; ++i)
+	{
+		unsigned char path_character = (unsigned char)normalized_path[prefix_length + i];
+		unsigned char name_character = (unsigned char)normalized_name[i];
+		if (tolower(path_character) != tolower(name_character))
+		{
+			return qfalse;
+		}
+	}
+	if (prefix_length > 0 && normalized_path[prefix_length - 1] != '/')
+	{
+		return qfalse;
+	}
+
+	while (prefix_length > 0 && normalized_path[prefix_length - 1] == '/')
+	{
+		--prefix_length;
+	}
+	if (prefix_length >= base_folder_size)
+	{
+		return qfalse;
+	}
+
+	memcpy(base_folder, normalized_path, prefix_length);
+	base_folder[prefix_length] = '\0';
+	return qtrue;
+}
+
+/*
+=============
+PC_LoadResolvedScriptFile
+
+Resolves loose or package-backed include data and loads it under the logical
+include spelling used by the precompiler checksum cache.
+=============
+*/
+static pc_script_t *PC_LoadResolvedScriptFile(const char *requested,
+	const char *preferred_subdir,
+	const char *logical_name)
+{
+	char resolved_path[BOTLIB_ASSET_MAX_PATH];
+	char base_folder[BOTLIB_ASSET_MAX_PATH];
+
+	if (!BotLib_ResolveAssetPath(requested,
+		preferred_subdir,
+		resolved_path,
+		sizeof(resolved_path)))
+	{
+		return NULL;
+	}
+	if (!PC_BuildResolvedBaseFolder(resolved_path,
+		logical_name,
+		base_folder,
+		sizeof(base_folder)))
+	{
+		return NULL;
+	}
+
+	PS_SetBaseFolder(base_folder);
+	return LoadScriptFile(logical_name);
+}
+
+/*
+=============
+PC_SetSourceAssetIncludePath
+
+Remembers the package-relative directory of the top-level source so failed
+physical include probes can be retried through the shared asset resolver.
+=============
+*/
+static void PC_SetSourceAssetIncludePath(pc_source_t *source, const char *logical_name)
+{
+	char normalized[BOTLIB_ASSET_MAX_PATH];
+	char directory[BOTLIB_ASSET_MAX_PATH];
+	char leaf[BOTLIB_ASSET_MAX_PATH];
+
+	if (source == NULL)
+	{
+		return;
+	}
+	source->assetincludepath[0] = '\0';
+	if (logical_name == NULL || logical_name[0] == '\0' || PC_PathIsAbsolute(logical_name))
+	{
+		return;
+	}
+	if (!PC_CopyBoundedText(normalized, sizeof(normalized), logical_name))
+	{
+		return;
+	}
+
+	PC_NormalizeSlashes(normalized);
+	PC_SplitPath(normalized, directory, sizeof(directory), leaf, sizeof(leaf));
+	(void)leaf;
+	PC_CopyBoundedText(source->assetincludepath,
+		sizeof(source->assetincludepath),
+		directory);
+}
+
+/*
+=============
+PC_BuildAssetIncludeRequest
+
+Builds a package-relative include request from the source directory and the
+spelling supplied by the directive.
+=============
+*/
+static qboolean PC_BuildAssetIncludeRequest(const pc_source_t *source,
+	const char *include_name,
+	char *request,
+	size_t request_size)
+{
+	int written;
+
+	if (source == NULL || include_name == NULL || include_name[0] == '\0'
+		|| request == NULL || request_size == 0)
+	{
+		return qfalse;
+	}
+
+	if (source->assetincludepath[0] == '\0')
+	{
+		return PC_CopyBoundedText(request, request_size, include_name);
+	}
+
+	written = snprintf(request,
+		request_size,
+		"%s/%s",
+		source->assetincludepath,
+		include_name);
+	if (written < 0 || (size_t)written >= request_size)
+	{
+		request[0] = '\0';
+		return qfalse;
+	}
+
+	PC_NormalizeSlashes(request);
+	return qtrue;
 }
 
 static void PC_SplitPath(const char *path,
@@ -1439,14 +1625,19 @@ void PC_ConvertPath(char *path)
 //============================================================================
 int PC_Directive_include(pc_source_t *source)
 {
-        pc_script_t *script;
+	pc_script_t *script = NULL;
         pc_token_t token;
         char path[MAX_PATH];
+	char include_name[MAX_PATH];
+	char asset_request[BOTLIB_ASSET_MAX_PATH];
         qboolean path_overflow;
 #ifdef QUAKE
         pc_foundfile_t file;
 #endif //QUAKE
 
+	path[0] = '\0';
+	include_name[0] = '\0';
+	asset_request[0] = '\0';
 	if (source->skip > 0) return qtrue;
 	//
 	if (!PC_ReadSourceToken(source, &token))
@@ -1493,20 +1684,28 @@ int PC_Directive_include(pc_source_t *source)
                         }
 
                         script = LoadScriptFile(path);
-                        if (!script)
-                        {
-                                char asset_root[BOTLIB_ASSET_MAX_PATH];
-                                if (BotLib_LocateAssetRoot(asset_root, sizeof(asset_root)))
-                                {
-                                        PS_SetBaseFolder(asset_root);
-                                        script = LoadScriptFile(token.string);
-                                }
-                        }
+			if (!script)
+			{
+				script = PC_LoadResolvedScriptFile(token.string,
+					NULL,
+					token.string);
+			}
+			if (!script && source->assetincludepath[0] != '\0'
+				&& PC_BuildAssetIncludeRequest(source,
+					token.string,
+					asset_request,
+					sizeof(asset_request)))
+			{
+				script = PC_LoadResolvedScriptFile(asset_request,
+					NULL,
+					asset_request);
+			}
                 } //end if
         } //end if
         else if (token.type == TT_PUNCTUATION && *token.string == '<')
         {
                 size_t length = 0;
+		size_t include_offset = 0;
                 path_overflow = qfalse;
                 if (!PC_CopyBoundedText(path, sizeof(path), source->includepath))
                 {
@@ -1515,6 +1714,7 @@ int PC_Directive_include(pc_source_t *source)
                 else
                 {
                         length = strlen(path);
+			include_offset = length;
                 }
 
                 while(PC_ReadSourceToken(source, &token))
@@ -1552,8 +1752,27 @@ int PC_Directive_include(pc_source_t *source)
                         SourceError(source, "#include without file name between < >");
                         return qfalse;
                 } //end if
+		if (!PC_CopyBoundedText(include_name,
+			sizeof(include_name),
+			path + include_offset))
+		{
+			SourceError(source,
+				"#include path too long (max %d characters)",
+				MAX_PATH - 1);
+			return qfalse;
+		}
 		PC_ConvertPath(path);
 		script = LoadScriptFile(path);
+		if (!script
+			&& PC_BuildAssetIncludeRequest(source,
+				include_name,
+				asset_request,
+				sizeof(asset_request)))
+		{
+			script = PC_LoadResolvedScriptFile(asset_request,
+				NULL,
+				asset_request);
+		}
 	} //end if
 	else
 	{
@@ -3576,12 +3795,14 @@ pc_source_t *PC_LoadSourceFile(const char *filename)
         char asset_root[BOTLIB_ASSET_MAX_PATH];
         char relative[BOTLIB_ASSET_MAX_PATH];
         char absolute[BOTLIB_ASSET_MAX_PATH];
+	char resolved[BOTLIB_ASSET_MAX_PATH];
         char base_folder[BOTLIB_ASSET_MAX_PATH];
         char directory[BOTLIB_ASSET_MAX_PATH];
         char leaf[BOTLIB_ASSET_MAX_PATH];
         pc_source_t *source;
         const char *load_name;
         qboolean have_asset_root;
+	qboolean have_resolved;
 
         if (filename == NULL || filename[0] == '\0')
         {
@@ -3591,11 +3812,16 @@ pc_source_t *PC_LoadSourceFile(const char *filename)
         asset_root[0] = '\0';
         relative[0] = '\0';
         absolute[0] = '\0';
+	resolved[0] = '\0';
         base_folder[0] = '\0';
         directory[0] = '\0';
         leaf[0] = '\0';
         load_name = filename;
 
+	have_resolved = BotLib_ResolveAssetPath(filename,
+		NULL,
+		resolved,
+		sizeof(resolved));
         have_asset_root = BotLib_LocateAssetRoot(asset_root, sizeof(asset_root));
 
         if (have_asset_root && PC_PathIsAbsolute(filename) &&
@@ -3605,17 +3831,6 @@ pc_source_t *PC_LoadSourceFile(const char *filename)
                                                 sizeof(relative),
                                                 absolute,
                                                 sizeof(absolute)))
-        {
-                snprintf(base_folder, sizeof(base_folder), "%s", asset_root);
-                load_name = relative;
-        }
-        else if (have_asset_root && !PC_PathIsAbsolute(filename) &&
-            PC_BuildAssetRelativePath(filename,
-                                      asset_root,
-                                      relative,
-                                      sizeof(relative),
-                                      absolute,
-                                      sizeof(absolute)))
         {
                 snprintf(base_folder, sizeof(base_folder), "%s", asset_root);
                 load_name = relative;
@@ -3633,6 +3848,26 @@ pc_source_t *PC_LoadSourceFile(const char *filename)
                         load_name = leaf;
                 }
                 snprintf(absolute, sizeof(absolute), "%s", filename);
+        }
+	else if (have_resolved
+		&& PC_BuildResolvedBaseFolder(resolved,
+			filename,
+			base_folder,
+			sizeof(base_folder)))
+	{
+		snprintf(absolute, sizeof(absolute), "%s", resolved);
+		load_name = filename;
+	}
+        else if (have_asset_root && !PC_PathIsAbsolute(filename) &&
+            PC_BuildAssetRelativePath(filename,
+                                      asset_root,
+                                      relative,
+                                      sizeof(relative),
+                                      absolute,
+                                      sizeof(absolute)))
+        {
+                snprintf(base_folder, sizeof(base_folder), "%s", asset_root);
+                load_name = relative;
         }
         else if (have_asset_root)
         {
@@ -3688,6 +3923,8 @@ pc_source_t *PC_LoadSourceFile(const char *filename)
                 strncpy(source->filename, filename, MAX_PATH - 1);
                 source->filename[MAX_PATH - 1] = '\0';
         }
+
+	PC_SetSourceAssetIncludePath(source, load_name);
 
         return source;
 }

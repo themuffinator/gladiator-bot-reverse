@@ -8,6 +8,7 @@
 #include "botlib/precomp/l_script.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +17,17 @@
 #define WEIGHT_TYPE_BALANCE BOTLIB_WEIGHT_TYPE_BALANCE
 #define BOT_WEIGHT_MAX_CACHE_FILES 128
 
-static bot_weight_config_t *g_weight_file_list[BOT_WEIGHT_MAX_CACHE_FILES];
+typedef struct bot_weight_cache_entry_s {
+	bot_weight_config_t *config;
+	char source_file[260];
+} bot_weight_cache_entry_t;
+
+static bot_weight_cache_entry_t g_weight_file_list[BOT_WEIGHT_MAX_CACHE_FILES];
+
+#if UINTPTR_MAX == UINT32_MAX
+_Static_assert(sizeof(bot_weight_config_t) == 0x404,
+	"retail weight config size");
+#endif
 
 // -----------------------------------------------------------------------------
 //  Forward declarations for precompiler helpers that have not been surfaced
@@ -64,6 +75,10 @@ static bool BotWeight_ReadValue(pc_source_t *source, float *value);
 static bool BotWeight_ReadFuzzyWeight(pc_source_t *source, bot_fuzzy_seperator_t *fs);
 static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source);
 static bool BotWeight_ParseWeights(pc_source_t *source, bot_weight_config_t *config);
+static bot_weight_config_t *BotWeight_ReadConfig(const char *filename,
+	const char *const *global_defines,
+	size_t global_define_count,
+	bool allow_cache);
 
 /*
 =============
@@ -153,11 +168,11 @@ static int BotWeight_FindCachedSlot(const char *source_file)
 	}
 
 	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
-		const bot_weight_config_t *config = g_weight_file_list[i];
-		if (config == NULL) {
+		const bot_weight_cache_entry_t *entry = &g_weight_file_list[i];
+		if (entry->config == NULL) {
 			continue;
 		}
-		if (strcmp(config->source_file, source_file) == 0) {
+		if (strcmp(entry->source_file, source_file) == 0) {
 			return i;
 		}
 	}
@@ -175,7 +190,7 @@ Finds the first unused retail weight cache slot.
 static int BotWeight_FindFreeCachedSlot(void)
 {
 	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
-		if (g_weight_file_list[i] == NULL) {
+		if (g_weight_file_list[i].config == NULL) {
 			return i;
 		}
 	}
@@ -197,7 +212,7 @@ static bot_weight_config_t *BotWeight_FindCachedConfig(const char *source_file)
 		return NULL;
 	}
 
-	return g_weight_file_list[slot];
+	return g_weight_file_list[slot].config;
 }
 
 /*
@@ -214,7 +229,7 @@ static bool BotWeight_ConfigIsCached(const bot_weight_config_t *config)
 	}
 
 	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
-		if (g_weight_file_list[i] == config) {
+		if (g_weight_file_list[i].config == config) {
 			return true;
 		}
 	}
@@ -236,8 +251,8 @@ static void BotWeight_RemoveCachedConfig(const bot_weight_config_t *config)
 	}
 
 	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
-		if (g_weight_file_list[i] == config) {
-			g_weight_file_list[i] = NULL;
+		if (g_weight_file_list[i].config == config) {
+			memset(&g_weight_file_list[i], 0, sizeof(g_weight_file_list[i]));
 		}
 	}
 }
@@ -266,7 +281,12 @@ static bool BotWeight_CacheConfig(bot_weight_config_t *config, const char *sourc
 		return false;
 	}
 
-	g_weight_file_list[slot] = config;
+	g_weight_file_list[slot].config = config;
+	strncpy(g_weight_file_list[slot].source_file,
+		source_file,
+		sizeof(g_weight_file_list[slot].source_file) - 1U);
+	g_weight_file_list[slot].source_file[
+		sizeof(g_weight_file_list[slot].source_file) - 1U] = '\0';
 	return true;
 }
 
@@ -782,18 +802,24 @@ static bool BotWeight_ParseWeights(pc_source_t *source, bot_weight_config_t *con
 
 /*
 =============
-ReadWeightConfigWithDefines
+BotWeight_ReadConfig
+
+Loads and parses a weight config, optionally participating in the Q3 cache.
 =============
 */
-bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
+static bot_weight_config_t *BotWeight_ReadConfig(const char *filename,
 	const char *const *global_defines,
-	size_t global_define_count)
+	size_t global_define_count,
+	bool allow_cache)
 {
 	if (filename == NULL) {
 		return NULL;
 	}
 
-	bool cacheable = global_define_count == 0 && global_defines == NULL && !BotWeight_ShouldReloadCharacters();
+	bool cacheable = allow_cache &&
+		global_define_count == 0 &&
+		global_defines == NULL &&
+		!BotWeight_ShouldReloadCharacters();
 	if (cacheable) {
 		bot_weight_config_t *cached_config = BotWeight_FindCachedConfig(filename);
 		if (cached_config != NULL) {
@@ -819,7 +845,7 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
 		return NULL;
 	}
 
-	pc_source_t *source = PC_LoadSourceFile(resolved_path);
+	pc_source_t *source = PC_LoadSourceFile(filename);
 	BotWeight_PopGlobalDefines(&define_scope);
 	if (source == NULL) {
 		BotLib_Print(PRT_ERROR, "counldn't load %s\n", resolved_path);
@@ -831,9 +857,6 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
 		PC_FreeSource(source);
 		return NULL;
 	}
-
-	strncpy(config->source_file, filename, sizeof(config->source_file) - 1);
-	config->source_file[sizeof(config->source_file) - 1] = '\0';
 
 	bool parsed = BotWeight_ParseWeights(source, config);
 
@@ -856,12 +879,39 @@ bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
 
 /*
 =============
+ReadWeightConfigWithDefines
+=============
+*/
+bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
+	const char *const *global_defines,
+	size_t global_define_count)
+{
+	return BotWeight_ReadConfig(filename,
+		global_defines,
+		global_define_count,
+		true);
+}
+
+/*
+=============
 ReadWeightConfig
 =============
 */
 bot_weight_config_t *ReadWeightConfig(const char *filename)
 {
 	return ReadWeightConfigWithDefines(filename, NULL, 0);
+}
+
+/*
+=============
+ReadWeightConfigUncached
+
+Loads a distinct retail-owned config regardless of bot_reloadcharacters.
+=============
+*/
+bot_weight_config_t *ReadWeightConfigUncached(const char *filename)
+{
+	return BotWeight_ReadConfig(filename, NULL, 0, false);
 }
 
 /*
@@ -905,12 +955,12 @@ BotWeight_ShutdownCachedConfigs
 void BotWeight_ShutdownCachedConfigs(void)
 {
 	for (int i = 0; i < BOT_WEIGHT_MAX_CACHE_FILES; ++i) {
-		bot_weight_config_t *config = g_weight_file_list[i];
+		bot_weight_config_t *config = g_weight_file_list[i].config;
 		if (config == NULL) {
 			continue;
 		}
 
-		g_weight_file_list[i] = NULL;
+		memset(&g_weight_file_list[i], 0, sizeof(g_weight_file_list[i]));
 		BotWeight_FreeConfig(config);
 	}
 }

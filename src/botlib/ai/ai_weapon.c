@@ -131,7 +131,7 @@ static pc_source_t *AI_Weapon_OpenSource(const char *requested,
 		return NULL;
 	}
 
-	pc_source_t *source = PC_LoadSourceFile(candidate);
+	pc_source_t *source = PC_LoadSourceFile(requested);
 	if (resolved_path != NULL && resolved_size > 0)
 	{
 		strncpy(resolved_path, candidate, resolved_size - 1);
@@ -678,46 +678,12 @@ size_t AI_WeaponWeightsIndexByteSize(const ai_weapon_weights_t *weights)
 
 /*
 =============
-AI_LoadWeaponWeights
+AI_FreeWeaponWeightsInternal
+
+Releases a weapon-weight wrapper using its caller-selected ownership mode.
 =============
 */
-ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
-{
-	if (filename == NULL || filename[0] == '\0')
-	{
-		return NULL;
-	}
-
-	bot_weight_config_t *config = ReadWeightConfig(filename);
-	if (config == NULL)
-	{
-		return NULL;
-	}
-
-	const bot_weapon_config_t *definitions = AI_GetActiveWeaponConfig();
-	ai_weapon_weights_t *weights = (ai_weapon_weights_t *)GetClearedMemory(sizeof(*weights));
-	if (weights == NULL)
-	{
-		FreeWeightConfig(config);
-		return NULL;
-	}
-
-	weights->config = config;
-	if (!AI_WeaponWeightsBindConfig(weights, definitions))
-	{
-		AI_FreeWeaponWeights(weights);
-		return NULL;
-	}
-
-	return weights;
-}
-
-/*
-=============
-AI_FreeWeaponWeights
-=============
-*/
-void AI_FreeWeaponWeights(ai_weapon_weights_t *weights)
+static void AI_FreeWeaponWeightsInternal(ai_weapon_weights_t *weights, bool fresh)
 {
 	if (weights == NULL)
 	{
@@ -732,13 +698,119 @@ void AI_FreeWeaponWeights(ai_weapon_weights_t *weights)
 
 	if (weights->config != NULL)
 	{
-		FreeWeightConfig(weights->config);
+		if (fresh)
+		{
+			FreeWeightConfig2(weights->config);
+		}
+		else
+		{
+			FreeWeightConfig(weights->config);
+		}
 		weights->config = NULL;
 	}
 
 	weights->definitions = NULL;
 	weights->index_count = 0;
 	FreeMemory(weights);
+}
+
+/*
+=============
+AI_LoadWeaponWeightsInternal
+
+Loads either a cached Q3 config or a distinct retail-owned config.
+=============
+*/
+static ai_weapon_weights_t *AI_LoadWeaponWeightsInternal(const char *filename,
+	bool fresh)
+{
+	if (filename == NULL)
+	{
+		if (!fresh)
+		{
+			return NULL;
+		}
+		filename = "";
+	}
+	if (!fresh && filename[0] == '\0')
+	{
+		return NULL;
+	}
+
+	bot_weight_config_t *config = fresh ?
+		ReadWeightConfigUncached(filename) : ReadWeightConfig(filename);
+	if (config == NULL)
+	{
+		return NULL;
+	}
+
+	const bot_weapon_config_t *definitions = AI_GetActiveWeaponConfig();
+	ai_weapon_weights_t *weights = (ai_weapon_weights_t *)GetClearedMemory(sizeof(*weights));
+	if (weights == NULL)
+	{
+		if (fresh)
+		{
+			FreeWeightConfig2(config);
+		}
+		else
+		{
+			FreeWeightConfig(config);
+		}
+		return NULL;
+	}
+
+	weights->config = config;
+	if (!AI_WeaponWeightsBindConfig(weights, definitions))
+	{
+		AI_FreeWeaponWeightsInternal(weights, fresh);
+		return NULL;
+	}
+
+	return weights;
+}
+
+/*
+=============
+AI_LoadWeaponWeights
+=============
+*/
+ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename)
+{
+	return AI_LoadWeaponWeightsInternal(filename, false);
+}
+
+/*
+=============
+AI_LoadWeaponWeightsFresh
+
+Loads a distinct retail-owned weapon-weight config for one client.
+=============
+*/
+ai_weapon_weights_t *AI_LoadWeaponWeightsFresh(const char *filename)
+{
+	return AI_LoadWeaponWeightsInternal(filename, true);
+}
+
+/*
+=============
+AI_FreeWeaponWeights
+=============
+*/
+void AI_FreeWeaponWeights(ai_weapon_weights_t *weights)
+{
+	AI_FreeWeaponWeightsInternal(weights, false);
+}
+
+/*
+=============
+AI_FreeWeaponWeightsFresh
+
+Unconditionally releases a distinct retail-owned weapon-weight config.
+=============
+*/
+void AI_FreeWeaponWeightsFresh(ai_weapon_weights_t *weights)
+{
+	AI_FreeWeaponWeightsInternal(weights, true);
 }
 
 /*

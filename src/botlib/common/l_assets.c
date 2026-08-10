@@ -19,7 +19,7 @@
 #endif
 
 #define BOTLIB_PAK_NAME_FIELD 56
-#define BOTLIB_MAX_PAK_FILES 32
+#define BOTLIB_MAX_PAK_FILES 10
 
 #ifdef _WIN32
 #define BotLib_PlatformMkdir(path) _mkdir(path)
@@ -246,21 +246,6 @@ static size_t BotLib_BuildSearchRoots(const char **roots,
     return root_count;
 }
 
-static bool BotLib_StringEndsWith(const char *text, const char *suffix)
-{
-    if (text == NULL || suffix == NULL) {
-        return false;
-    }
-
-    size_t text_length = strlen(text);
-    size_t suffix_length = strlen(suffix);
-    if (suffix_length > text_length) {
-        return false;
-    }
-
-    return strncmp(text + text_length - suffix_length, suffix, suffix_length) == 0;
-}
-
 static const char *BotLib_FindLastSeparator(const char *path)
 {
     if (path == NULL) {
@@ -411,103 +396,145 @@ static bool BotLib_CreateDirectoryTree(const char *path)
     return true;
 }
 
+/*
+=============
+BotLib_EnsureDirectory
+
+Creates the parent directory tree required by a resolved cache path.
+=============
+*/
 static bool BotLib_EnsureDirectory(const char *path)
 {
-    if (BotLib_IsStringEmpty(path)) {
-        return false;
-    }
+	if (BotLib_IsStringEmpty(path)) {
+		return false;
+	}
 
-    char directory[BOTLIB_ASSET_MAX_PATH];
-    BotLib_PathSplit(path, directory, sizeof(directory), NULL, 0);
-    if (BotLib_IsStringEmpty(directory)) {
-        return true;
-    }
+	char directory[BOTLIB_ASSET_MAX_PATH];
+	BotLib_PathSplit(path, directory, sizeof(directory), NULL, 0);
+	if (BotLib_IsStringEmpty(directory)) {
+		return true;
+	}
 
-    return BotLib_CreateDirectoryTree(directory);
+	return BotLib_CreateDirectoryTree(directory);
 }
 
-static int BotLib_ComparePakPaths(const void *lhs, const void *rhs)
+#ifndef _WIN32
+/*
+=============
+BotLib_PakNameEquals
+
+Matches package basenames with the case-insensitive filesystem semantics used
+by the retail Windows build.
+=============
+*/
+static bool BotLib_PakNameEquals(const char *lhs, const char *rhs)
 {
-    const BotLib_PakPath *a = (const BotLib_PakPath *)lhs;
-    const BotLib_PakPath *b = (const BotLib_PakPath *)rhs;
+	if (lhs == NULL || rhs == NULL)
+	{
+		return false;
+	}
 
-    const char *a_base = BotLib_FindLastSeparator(a->path);
-    const char *b_base = BotLib_FindLastSeparator(b->path);
-    a_base = (a_base != NULL) ? a_base + 1 : a->path;
-    b_base = (b_base != NULL) ? b_base + 1 : b->path;
+	while (*lhs != '\0' && *rhs != '\0')
+	{
+		if (tolower((unsigned char)*lhs) != tolower((unsigned char)*rhs))
+		{
+			return false;
+		}
+		++lhs;
+		++rhs;
+	}
 
-    return strcmp(b_base, a_base);
+	return *lhs == *rhs;
 }
-
-static size_t BotLib_CollectPakFiles(const char *root, BotLib_PakPath *paths, size_t max_paths)
-{
-    if (BotLib_IsStringEmpty(root) || paths == NULL || max_paths == 0) {
-        return 0;
-    }
-
-    size_t count = 0;
-
-#ifdef _WIN32
-    char pattern[BOTLIB_ASSET_MAX_PATH];
-    int written = snprintf(pattern, sizeof(pattern), "%s\\*.pak", root);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        return 0;
-    }
-
-    struct _finddata_t data;
-    intptr_t handle = _findfirst(pattern, &data);
-    if (handle == -1) {
-        return 0;
-    }
-
-    do {
-        if (count >= max_paths) {
-            break;
-        }
-        if ((data.attrib & _A_SUBDIR) != 0) {
-            continue;
-        }
-
-        int full_written = snprintf(paths[count].path, sizeof(paths[count].path), "%s/%s", root, data.name);
-        if (full_written < 0 || (size_t)full_written >= sizeof(paths[count].path)) {
-            continue;
-        }
-        ++count;
-    } while (_findnext(handle, &data) == 0);
-
-    _findclose(handle);
-#else
-    DIR *dir = opendir(root);
-    if (dir == NULL) {
-        return 0;
-    }
-
-    struct dirent *entry = NULL;
-    while ((entry = readdir(dir)) != NULL) {
-        if (count >= max_paths) {
-            break;
-        }
-
-        if (entry->d_type != DT_REG && entry->d_type != DT_UNKNOWN) {
-            continue;
-        }
-
-        if (!BotLib_StringEndsWith(entry->d_name, ".pak")) {
-            continue;
-        }
-
-        int written = snprintf(paths[count].path, sizeof(paths[count].path), "%s/%s", root, entry->d_name);
-        if (written < 0 || (size_t)written >= sizeof(paths[count].path)) {
-            continue;
-        }
-        ++count;
-    }
-
-    closedir(dir);
 #endif
 
-    qsort(paths, count, sizeof(paths[0]), BotLib_ComparePakPaths);
-    return count;
+/*
+=============
+BotLib_CollectPakFiles
+
+Probes only retail's pak0.pak through pak9.pak names, in ascending order.
+=============
+*/
+static size_t BotLib_CollectPakFiles(const char *root, BotLib_PakPath *paths, size_t max_paths)
+{
+	if (BotLib_IsStringEmpty(root) || paths == NULL || max_paths == 0)
+	{
+		return 0;
+	}
+
+	size_t count = 0;
+#ifndef _WIN32
+	DIR *directory = opendir(root);
+#endif
+
+	for (unsigned int index = 0;
+		index < BOTLIB_MAX_PAK_FILES && count < max_paths;
+		++index)
+	{
+		char expected_name[16];
+		int name_written = snprintf(expected_name,
+			sizeof(expected_name),
+			"pak%u.pak",
+			index);
+		if (name_written < 0 || (size_t)name_written >= sizeof(expected_name))
+		{
+			continue;
+		}
+
+		int path_written = snprintf(paths[count].path,
+			sizeof(paths[count].path),
+			"%s/%s",
+			root,
+			expected_name);
+		if (path_written < 0 ||
+			(size_t)path_written >= sizeof(paths[count].path))
+		{
+			continue;
+		}
+		if (BotLib_FileExists(paths[count].path))
+		{
+			++count;
+			continue;
+		}
+
+#ifndef _WIN32
+		if (directory == NULL)
+		{
+			continue;
+		}
+
+		rewinddir(directory);
+		struct dirent *entry = NULL;
+		while ((entry = readdir(directory)) != NULL)
+		{
+			if (!BotLib_PakNameEquals(entry->d_name, expected_name))
+			{
+				continue;
+			}
+
+			path_written = snprintf(paths[count].path,
+				sizeof(paths[count].path),
+				"%s/%s",
+				root,
+				entry->d_name);
+			if (path_written >= 0 &&
+				(size_t)path_written < sizeof(paths[count].path) &&
+				BotLib_FileExists(paths[count].path))
+			{
+				++count;
+			}
+			break;
+		}
+#endif
+	}
+
+#ifndef _WIN32
+	if (directory != NULL)
+	{
+		closedir(directory);
+	}
+#endif
+	return count;
 }
 
 static bool BotLib_BuildPakCachePath(const char *pak_file, const char *entry_name, char *buffer, size_t size)
@@ -630,121 +657,191 @@ static bool BotLib_WritePakEntryToCache(FILE *pak,
     return true;
 }
 
+/*
+=============
+BotLib_ExtractPakEntry
+
+Extracts one package entry and reports both its readable cache file and the
+container metadata retained by retail's file-open bookkeeping.
+=============
+*/
 static bool BotLib_ExtractPakEntry(const char *pak_file,
-                                   const char *normalized_target,
-                                   char *resolved,
-                                   size_t resolved_size)
+	const char *normalized_target,
+	char *resolved,
+	size_t resolved_size,
+	char *source_path,
+	size_t source_path_size,
+	int32_t *entry_length_out)
 {
-    if (resolved != NULL && resolved_size > 0) {
-        resolved[0] = '\0';
-    }
+	if (resolved != NULL && resolved_size > 0)
+	{
+		resolved[0] = '\0';
+	}
+	if (source_path != NULL && source_path_size > 0)
+	{
+		source_path[0] = '\0';
+	}
+	if (entry_length_out != NULL)
+	{
+		*entry_length_out = 0;
+	}
 
-    if (BotLib_IsStringEmpty(pak_file) || BotLib_IsStringEmpty(normalized_target)) {
-        return false;
-    }
+	if (BotLib_IsStringEmpty(pak_file) || BotLib_IsStringEmpty(normalized_target))
+	{
+		return false;
+	}
 
-    FILE *pak = fopen(pak_file, "rb");
-    if (pak == NULL) {
-        return false;
-    }
+	FILE *pak = fopen(pak_file, "rb");
+	if (pak == NULL)
+	{
+		return false;
+	}
 
-    char magic[4];
-    if (fread(magic, 1, sizeof(magic), pak) != sizeof(magic) || memcmp(magic, "PACK", sizeof(magic)) != 0) {
-        fclose(pak);
-        return false;
-    }
+	char magic[4];
+	if (fread(magic, 1, sizeof(magic), pak) != sizeof(magic) ||
+		memcmp(magic, "PACK", sizeof(magic)) != 0)
+	{
+		fclose(pak);
+		return false;
+	}
 
-    int32_t directory_offset = 0;
-    int32_t directory_length = 0;
-    if (fread(&directory_offset, sizeof(directory_offset), 1, pak) != 1
-        || fread(&directory_length, sizeof(directory_length), 1, pak) != 1) {
-        fclose(pak);
-        return false;
-    }
+	int32_t directory_offset = 0;
+	int32_t directory_length = 0;
+	if (fread(&directory_offset, sizeof(directory_offset), 1, pak) != 1 ||
+		fread(&directory_length, sizeof(directory_length), 1, pak) != 1)
+	{
+		fclose(pak);
+		return false;
+	}
 
-    if (directory_offset <= 0 || directory_length <= 0) {
-        fclose(pak);
-        return false;
-    }
+	if (directory_offset <= 0 || directory_length <= 0)
+	{
+		fclose(pak);
+		return false;
+	}
 
-    if (fseek(pak, directory_offset, SEEK_SET) != 0) {
-        fclose(pak);
-        return false;
-    }
+	if (fseek(pak, directory_offset, SEEK_SET) != 0)
+	{
+		fclose(pak);
+		return false;
+	}
 
-    size_t entry_count = (size_t)(directory_length / 64);
-    for (size_t i = 0; i < entry_count; ++i) {
-        unsigned char raw_name[BOTLIB_PAK_NAME_FIELD];
-        if (fread(raw_name, 1, sizeof(raw_name), pak) != sizeof(raw_name)) {
-            fclose(pak);
-            return false;
-        }
+	size_t entry_count = (size_t)(directory_length / 64);
+	for (size_t i = 0; i < entry_count; ++i)
+	{
+		unsigned char raw_name[BOTLIB_PAK_NAME_FIELD];
+		if (fread(raw_name, 1, sizeof(raw_name), pak) != sizeof(raw_name))
+		{
+			fclose(pak);
+			return false;
+		}
 
-        char entry_name[BOTLIB_PAK_NAME_FIELD + 1];
-        memcpy(entry_name, raw_name, sizeof(raw_name));
-        entry_name[sizeof(raw_name)] = '\0';
+		char entry_name[BOTLIB_PAK_NAME_FIELD + 1];
+		memcpy(entry_name, raw_name, sizeof(raw_name));
+		entry_name[sizeof(raw_name)] = '\0';
 
-        int32_t entry_offset = 0;
-        int32_t entry_length = 0;
-        if (fread(&entry_offset, sizeof(entry_offset), 1, pak) != 1
-            || fread(&entry_length, sizeof(entry_length), 1, pak) != 1) {
-            fclose(pak);
-            return false;
-        }
+		int32_t entry_offset = 0;
+		int32_t entry_length = 0;
+		if (fread(&entry_offset, sizeof(entry_offset), 1, pak) != 1 ||
+			fread(&entry_length, sizeof(entry_length), 1, pak) != 1)
+		{
+			fclose(pak);
+			return false;
+		}
 
-        char normalised_entry[BOTLIB_ASSET_MAX_PATH];
-        BotLib_NormalizePakKey(normalised_entry, sizeof(normalised_entry), entry_name);
-        if (!BotLib_StringEquals(normalised_entry, normalized_target)) {
-            continue;
-        }
+		char normalised_entry[BOTLIB_ASSET_MAX_PATH];
+		BotLib_NormalizePakKey(normalised_entry, sizeof(normalised_entry), entry_name);
+		if (!BotLib_StringEquals(normalised_entry, normalized_target))
+		{
+			continue;
+		}
 
-        bool result = BotLib_WritePakEntryToCache(pak,
-                                                  pak_file,
-                                                  entry_name,
-                                                  entry_offset,
-                                                  entry_length,
-                                                  resolved,
-                                                  resolved_size);
-        fclose(pak);
-        return result;
-    }
+		bool extracted = BotLib_WritePakEntryToCache(pak,
+			pak_file,
+			entry_name,
+			entry_offset,
+			entry_length,
+			resolved,
+			resolved_size);
+		if (extracted)
+		{
+			BotLib_CopyPath(source_path, source_path_size, pak_file);
+			if (entry_length_out != NULL)
+			{
+				*entry_length_out = entry_length;
+			}
+		}
+		fclose(pak);
+		return extracted;
+	}
 
-    fclose(pak);
-    return false;
+	fclose(pak);
+	return false;
 }
 
+/*
+=============
+BotLib_SearchPakForAsset
+
+Searches packages in retail precedence order while retaining the winning
+container and directory-entry length.
+=============
+*/
 static bool BotLib_SearchPakForAsset(const char *root,
-                                     const char *relative,
-                                     char *resolved,
-                                     size_t resolved_size)
+	const char *relative,
+	char *resolved,
+	size_t resolved_size,
+	char *source_path,
+	size_t source_path_size,
+	int32_t *entry_length_out)
 {
-    if (resolved != NULL && resolved_size > 0) {
-        resolved[0] = '\0';
-    }
+	if (resolved != NULL && resolved_size > 0)
+	{
+		resolved[0] = '\0';
+	}
+	if (source_path != NULL && source_path_size > 0)
+	{
+		source_path[0] = '\0';
+	}
+	if (entry_length_out != NULL)
+	{
+		*entry_length_out = 0;
+	}
 
-    if (BotLib_IsStringEmpty(root) || BotLib_IsStringEmpty(relative)) {
-        return false;
-    }
+	if (BotLib_IsStringEmpty(root) || BotLib_IsStringEmpty(relative))
+	{
+		return false;
+	}
 
-    char target[BOTLIB_ASSET_MAX_PATH];
-    BotLib_NormalizePakKey(target, sizeof(target), relative);
-    if (BotLib_IsStringEmpty(target) || BotLib_PathHasParentTraversal(target)) {
-        return false;
-    }
+	char target[BOTLIB_ASSET_MAX_PATH];
+	BotLib_NormalizePakKey(target, sizeof(target), relative);
+	if (BotLib_IsStringEmpty(target) || BotLib_PathHasParentTraversal(target))
+	{
+		return false;
+	}
 
-    BotLib_PakPath pak_files[BOTLIB_MAX_PAK_FILES];
-    size_t pak_count = BotLib_CollectPakFiles(root, pak_files, BOTLIB_MAX_PAK_FILES);
-    if (pak_count == 0) {
-        return false;
-    }
+	BotLib_PakPath pak_files[BOTLIB_MAX_PAK_FILES];
+	size_t pak_count = BotLib_CollectPakFiles(root, pak_files, BOTLIB_MAX_PAK_FILES);
+	if (pak_count == 0)
+	{
+		return false;
+	}
 
-    for (size_t i = 0; i < pak_count; ++i) {
-        if (BotLib_ExtractPakEntry(pak_files[i].path, target, resolved, resolved_size)) {
-            return true;
-        }
-    }
+	for (size_t i = 0; i < pak_count; ++i)
+	{
+		if (BotLib_ExtractPakEntry(pak_files[i].path,
+			target,
+			resolved,
+			resolved_size,
+			source_path,
+			source_path_size,
+			entry_length_out))
+		{
+			return true;
+		}
+	}
 
-    return false;
+	return false;
 }
 
 static bool BotLib_CheckFilesystemPaths(const char *root,
@@ -785,37 +882,63 @@ static bool BotLib_CheckFilesystemPaths(const char *root,
     return false;
 }
 
+/*
+=============
+BotLib_CheckPakPaths
+
+Checks preferred and direct package-relative spellings and forwards the
+winning package provenance.
+=============
+*/
 static bool BotLib_CheckPakPaths(const char *root,
-                                 const char *requested,
-                                 bool bare_name,
-                                 const char *preferred_subdir,
-                                 char *resolved,
-                                 size_t resolved_size,
-                                 char *last_candidate,
-                                 size_t last_size)
+	const char *requested,
+	bool bare_name,
+	const char *preferred_subdir,
+	char *resolved,
+	size_t resolved_size,
+	char *source_path,
+	size_t source_path_size,
+	int32_t *entry_length_out,
+	char *last_candidate,
+	size_t last_size)
 {
-    if (BotLib_IsStringEmpty(root) || BotLib_IsStringEmpty(requested)) {
-        return false;
-    }
+	if (BotLib_IsStringEmpty(root) || BotLib_IsStringEmpty(requested))
+	{
+		return false;
+	}
 
-    char relative[BOTLIB_ASSET_MAX_PATH];
+	char relative[BOTLIB_ASSET_MAX_PATH];
 
-    if (bare_name && !BotLib_IsStringEmpty(preferred_subdir)) {
-        int written = snprintf(relative, sizeof(relative), "%s/%s", preferred_subdir, requested);
-        if (written >= 0 && (size_t)written < sizeof(relative)) {
-            if (BotLib_SearchPakForAsset(root, relative, resolved, resolved_size)) {
-                BotLib_CopyPath(last_candidate, last_size, resolved);
-                return true;
-            }
-        }
-    }
+	if (bare_name && !BotLib_IsStringEmpty(preferred_subdir))
+	{
+		int written = snprintf(relative, sizeof(relative), "%s/%s", preferred_subdir, requested);
+		if (written >= 0 && (size_t)written < sizeof(relative) &&
+			BotLib_SearchPakForAsset(root,
+				relative,
+				resolved,
+				resolved_size,
+				source_path,
+				source_path_size,
+				entry_length_out))
+		{
+			BotLib_CopyPath(last_candidate, last_size, resolved);
+			return true;
+		}
+	}
 
-    if (BotLib_SearchPakForAsset(root, requested, resolved, resolved_size)) {
-        BotLib_CopyPath(last_candidate, last_size, resolved);
-        return true;
-    }
+	if (BotLib_SearchPakForAsset(root,
+		requested,
+		resolved,
+		resolved_size,
+		source_path,
+		source_path_size,
+		entry_length_out))
+	{
+		BotLib_CopyPath(last_candidate, last_size, resolved);
+		return true;
+	}
 
-    return false;
+	return false;
 }
 
 bool BotLib_LocateAssetRoot(char *buffer, size_t size)
@@ -851,116 +974,166 @@ bool BotLib_LocateAssetRoot(char *buffer, size_t size)
 
 /*
 =============
-BotLib_ResolveAssetPath
+BotLib_ResolveAssetPathDetailed
+
+Resolves an asset to a readable file while retaining its loose source or PAK
+container provenance. Failed lookups retain the same last-candidate spelling
+returned by the legacy resolver.
 =============
 */
-bool BotLib_ResolveAssetPath(const char *requested,
-                             const char *preferred_subdir,
-                             char *buffer,
-                             size_t size)
+bool BotLib_ResolveAssetPathDetailed(const char *requested,
+	const char *preferred_subdir,
+	botlib_asset_resolution_t *resolution)
 {
-    if (buffer != NULL && size > 0) {
-        buffer[0] = '\0';
-    }
+	if (resolution == NULL)
+	{
+		return false;
+	}
+	memset(resolution, 0, sizeof(*resolution));
 
-    if (requested == NULL || requested[0] == '\0') {
-        return false;
-    }
+	if (requested == NULL || requested[0] == '\0')
+	{
+		return false;
+	}
 
 	const bool bare_name = (strchr(requested, '/') == NULL && strchr(requested, '\\') == NULL);
-
-	if (!bare_name && BotLib_FileExists(requested)) {
-		BotLib_CopyPath(buffer, size, requested);
+	if (!bare_name && BotLib_FileExists(requested))
+	{
+		BotLib_CopyPath(resolution->resolved_path,
+			sizeof(resolution->resolved_path),
+			requested);
+		BotLib_CopyPath(resolution->source_path,
+			sizeof(resolution->source_path),
+			requested);
 		return true;
 	}
 
-    char last_candidate[BOTLIB_ASSET_MAX_PATH];
-    last_candidate[0] = '\0';
+	char last_candidate[BOTLIB_ASSET_MAX_PATH];
+	char resolved_path[BOTLIB_ASSET_MAX_PATH];
+	char source_path[BOTLIB_ASSET_MAX_PATH];
+	int32_t pak_entry_length = 0;
+	last_candidate[0] = '\0';
+	resolved_path[0] = '\0';
+	source_path[0] = '\0';
 
-    const char *roots[16];
-    bool override_flags[sizeof(roots) / sizeof(roots[0])];
-    char legacy_storage[4][BOTLIB_ASSET_MAX_PATH];
-    size_t root_count = BotLib_BuildSearchRoots(roots,
-                                               override_flags,
-                                               sizeof(roots) / sizeof(roots[0]),
-                                               legacy_storage,
-                                               sizeof(legacy_storage) / sizeof(legacy_storage[0]));
+	const char *roots[16];
+	bool override_flags[sizeof(roots) / sizeof(roots[0])];
+	char legacy_storage[4][BOTLIB_ASSET_MAX_PATH];
+	size_t root_count = BotLib_BuildSearchRoots(roots,
+		override_flags,
+		sizeof(roots) / sizeof(roots[0]),
+		legacy_storage,
+		sizeof(legacy_storage) / sizeof(legacy_storage[0]));
 
-    char resolved_from_pak[BOTLIB_ASSET_MAX_PATH];
+	for (size_t i = 0; i < root_count; ++i)
+	{
+		if (!override_flags[i])
+		{
+			continue;
+		}
 
-    for (size_t i = 0; i < root_count; ++i) {
-        if (!override_flags[i]) {
-            continue;
-        }
+		const char *root = roots[i];
+		if (BotLib_IsStringEmpty(root))
+		{
+			continue;
+		}
 
-        const char *root = roots[i];
-        if (root == NULL || root[0] == '\0') {
-            continue;
-        }
+		if (BotLib_CheckFilesystemPaths(root,
+			requested,
+			bare_name,
+			preferred_subdir,
+			resolved_path,
+			sizeof(resolved_path),
+			last_candidate,
+			sizeof(last_candidate)))
+		{
+			BotLib_CopyPath(resolution->resolved_path,
+				sizeof(resolution->resolved_path),
+				resolved_path);
+			BotLib_CopyPath(resolution->source_path,
+				sizeof(resolution->source_path),
+				resolved_path);
+			return true;
+		}
+	}
 
-        if (BotLib_CheckFilesystemPaths(root,
-                                        requested,
-                                        bare_name,
-                                        preferred_subdir,
-                                        buffer,
-                                        size,
-                                        last_candidate,
-                                        sizeof(last_candidate))) {
-            return true;
-        }
-    }
+	for (size_t i = 0; i < root_count; ++i)
+	{
+		const char *root = roots[i];
+		if (BotLib_IsStringEmpty(root))
+		{
+			continue;
+		}
 
-    for (size_t i = 0; i < root_count; ++i) {
-        const char *root = roots[i];
-        if (root == NULL || root[0] == '\0') {
-            continue;
-        }
+		if (!override_flags[i] &&
+			BotLib_CheckFilesystemPaths(root,
+				requested,
+				bare_name,
+				preferred_subdir,
+				resolved_path,
+				sizeof(resolved_path),
+				last_candidate,
+				sizeof(last_candidate)))
+		{
+			BotLib_CopyPath(resolution->resolved_path,
+				sizeof(resolution->resolved_path),
+				resolved_path);
+			BotLib_CopyPath(resolution->source_path,
+				sizeof(resolution->source_path),
+				resolved_path);
+			return true;
+		}
 
-        if (!override_flags[i]) {
-            if (BotLib_CheckFilesystemPaths(root,
-                                            requested,
-                                            bare_name,
-                                            preferred_subdir,
-                                            buffer,
-                                            size,
-                                            last_candidate,
-                                            sizeof(last_candidate))) {
-                return true;
-            }
+		if (BotLib_CheckPakPaths(root,
+			requested,
+			bare_name,
+			preferred_subdir,
+			resolved_path,
+			sizeof(resolved_path),
+			source_path,
+			sizeof(source_path),
+			&pak_entry_length,
+			last_candidate,
+			sizeof(last_candidate)))
+		{
+			BotLib_CopyPath(resolution->resolved_path,
+				sizeof(resolution->resolved_path),
+				resolved_path);
+			BotLib_CopyPath(resolution->source_path,
+				sizeof(resolution->source_path),
+				source_path);
+			resolution->pak_entry_length = pak_entry_length;
+			return true;
+		}
+	}
 
-            if (BotLib_CheckPakPaths(root,
-                                     requested,
-                                     bare_name,
-                                     preferred_subdir,
-                                     resolved_from_pak,
-                                     sizeof(resolved_from_pak),
-                                     last_candidate,
-                                     sizeof(last_candidate))) {
-                BotLib_CopyPath(buffer, size, resolved_from_pak);
-                return true;
-            }
-        } else {
-            if (BotLib_CheckPakPaths(root,
-                                     requested,
-                                     bare_name,
-                                     preferred_subdir,
-                                     resolved_from_pak,
-                                     sizeof(resolved_from_pak),
-                                     last_candidate,
-                                     sizeof(last_candidate))) {
-                BotLib_CopyPath(buffer, size, resolved_from_pak);
-                return true;
-            }
-        }
-    }
+	BotLib_CopyPath(resolution->resolved_path,
+		sizeof(resolution->resolved_path),
+		last_candidate[0] != '\0' ? last_candidate : requested);
+	return false;
+}
 
-    if (buffer != NULL && size > 0) {
-        if (last_candidate[0] != '\0') {
-            BotLib_CopyPath(buffer, size, last_candidate);
-        } else {
-            BotLib_CopyPath(buffer, size, requested);
-        }
-    }
+/*
+=============
+BotLib_ResolveAssetPath
 
-    return false;
+Preserves the original path-only interface over detailed asset resolution.
+=============
+*/
+bool BotLib_ResolveAssetPath(const char *requested,
+	const char *preferred_subdir,
+	char *buffer,
+	size_t size)
+{
+	if (buffer != NULL && size > 0)
+	{
+		buffer[0] = '\0';
+	}
+
+	botlib_asset_resolution_t resolution;
+	bool resolved = BotLib_ResolveAssetPathDetailed(requested,
+		preferred_subdir,
+		&resolution);
+	BotLib_CopyPath(buffer, size, resolution.resolved_path);
+	return resolved;
 }

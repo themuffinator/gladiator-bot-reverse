@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
 #include <stdbool.h>
 
 #include "q2bridge/botlib.h"
@@ -15,6 +17,13 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define BOT_STATE_RETAIL_RECORD_SIZE 0x11d0U
+#define BOT_STATE_RETAIL_CLIENT_SETTINGS_SIZE 0x90U
+#define BOT_STATE_RETAIL_MOVE_OFFSET 0x0b40U
+#define BOT_STATE_RETAIL_GOAL_OFFSET 0x0bc0U
+#define BOT_STATE_RETAIL_CHAT_OFFSET 0x0f8cU
+#define BOT_STATE_RETAIL_WEAPON_OFFSET 0x1048U
 
 typedef struct bot_client_state_s bot_client_state_t;
 
@@ -70,13 +79,45 @@ typedef struct bot_combat_state_s
 
 typedef struct bot_console_waypoint_s
 {
-	char name[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
+	char *name;
 	bot_goal_t goal;
 	struct bot_console_waypoint_s *next;
 	struct bot_console_waypoint_s *prev;
+	char name_storage[];
 } bot_console_waypoint_t;
 
+#if defined(__cplusplus)
+#define BOT_STATE_STATIC_ASSERT(condition, message) static_assert(condition, message)
+#else
+#define BOT_STATE_STATIC_ASSERT(condition, message) _Static_assert(condition, message)
+#endif
+
+BOT_STATE_STATIC_ASSERT(sizeof(bot_goal_t) == 0x38,
+	"retail bot_goal_t must be 56 bytes");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_console_waypoint_t, name) == 0,
+	"retail waypoint name pointer must lead the object");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_console_waypoint_t, goal) == sizeof(void *),
+	"retail waypoint goal must follow the name pointer");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_console_waypoint_t, next) ==
+	sizeof(void *) + sizeof(bot_goal_t),
+	"retail waypoint next link offset mismatch");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_console_waypoint_t, prev) ==
+	2U * sizeof(void *) + sizeof(bot_goal_t),
+	"retail waypoint previous link offset mismatch");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_console_waypoint_t, name_storage) ==
+	3U * sizeof(void *) + sizeof(bot_goal_t),
+	"retail waypoint trailing name offset mismatch");
+
+#if UINTPTR_MAX == UINT32_MAX
+BOT_STATE_STATIC_ASSERT(sizeof(bot_console_waypoint_t) == 0x44,
+	"32-bit retail waypoint header must be 68 bytes");
+#endif
+
 struct bot_client_state_s {
+	union
+	{
+		struct
+		{
     int client_number;
 	int entity_number;
     int team;
@@ -85,14 +126,12 @@ struct bot_client_state_s {
     bot_settings_t settings;
     bot_clientsettings_t client_settings;
 	bool client_commands_pending;
-    int character_handle;
-    ai_character_profile_t *character;
+	bot_character_t *character;
     bot_weight_config_t *item_weights;
     ai_weapon_weights_t *weapon_weights;
     bot_chatstate_t *chat_state;
     ai_goal_state_t *goal_state;
-    ai_move_state_t *move_state;
-    int move_handle;
+	int move_handle;
     ai_dm_state_t *dm_state;
     int weapon_state;
     int current_weapon;
@@ -123,12 +162,9 @@ struct bot_client_state_s {
 	float environmentsuit_time;
 	float stand_time;
 	bool chat_standing;
-	bool stand_chat_pending;
 	float enter_game_time;
-	bool enter_game_chat_attempted;
 	bool respawn_requested;
 	bool respawn_action_sent;
-	bool respawn_chat_pending;
 	float respawn_time;
 	int bot_death_type;
 	int enemy_death_type;
@@ -150,13 +186,46 @@ struct bot_client_state_s {
 	bot_console_waypoint_t *patrol_points;
 	bot_console_waypoint_t *current_patrol_point;
 	int patrol_flags;
+		};
+		struct
+		{
+			unsigned char retail_prefix[BOT_STATE_RETAIL_MOVE_OFFSET];
+			bot_movestate_t retail_move_core;
+			bot_goalstate_t retail_goal_core;
+			unsigned char retail_chat_padding[
+				BOT_STATE_RETAIL_WEAPON_OFFSET -
+				(BOT_STATE_RETAIL_GOAL_OFFSET + sizeof(bot_goalstate_t))];
+			bot_weaponstate_t retail_weapon_core;
+		};
+	};
 };
+
+BOT_STATE_STATIC_ASSERT(sizeof(bot_clientsettings_t) ==
+	BOT_STATE_RETAIL_CLIENT_SETTINGS_SIZE,
+	"retail client settings record must be 144 bytes");
+BOT_STATE_STATIC_ASSERT(sizeof(bot_client_state_t) <= BOT_STATE_RETAIL_RECORD_SIZE,
+	"native bot state adapter must fit the retail 0x11d0-byte slot");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_client_state_t, retail_move_core) ==
+	BOT_STATE_RETAIL_MOVE_OFFSET,
+	"retail move core offset mismatch");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_client_state_t, retail_goal_core) ==
+	BOT_STATE_RETAIL_GOAL_OFFSET,
+	"retail goal core offset mismatch");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_client_state_t, retail_weapon_core) ==
+	BOT_STATE_RETAIL_WEAPON_OFFSET,
+	"retail weapon core offset mismatch");
+BOT_STATE_STATIC_ASSERT(offsetof(bot_client_state_t, patrol_flags) <
+	BOT_STATE_RETAIL_MOVE_OFFSET,
+	"successor semantic adapter overlaps the retail move core");
+
+#undef BOT_STATE_STATIC_ASSERT
 
 bot_client_state_t *BotState_Get(int client);
 bot_client_state_t *BotState_Create(int client);
 void BotState_Destroy(int client);
 void BotState_Move(int old_client, int new_client);
 void BotState_ShutdownAll(void);
+void BotState_ReleaseTables(void);
 void BotState_ResetForNewMap(bot_client_state_t *state);
 void BotState_ResetAllForNewMap(void);
 void BotState_ConfigureClientCapacity(int max_clients);
@@ -170,12 +239,14 @@ void BotState_SetLongTermGoal(bot_client_state_t *state,
 	int goal_number);
 void BotState_FreeConsoleWaypoints(bot_console_waypoint_t *points);
 int BotState_ActiveClientCount(void);
-int BotState_AttachCharacter(bot_client_state_t *state, int character_handle);
+int BotState_AttachCharacter(bot_client_state_t *state, bot_character_t *character);
 void BotState_EmitPendingClientCommands(bot_client_state_t *state);
 int BotState_SetClientSettings(int client, const bot_clientsettings_t *settings);
 const bot_clientsettings_t *BotState_ClientSettings(int client);
 const char *BotState_ClientName(int client);
 const char *BotState_ClientSkin(int client);
+int ClientFromName(const char *name);
+int FindClientByName(char *name);
 int BotState_FindClientByName(const char *name);
 
 #ifdef __cplusplus

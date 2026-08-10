@@ -9,8 +9,6 @@
 
 #include "botlib/aas/aas_local.h"
 #include "botlib/aas/aas_sound.h"
-#include "botlib/ai_move/bot_move.h"
-#include "botlib/ea/ea_local.h"
 #include "botlib/interface/botlib_interface.h"
 
 #define AI_GOAL_SOUND_TAG 0x01000000u
@@ -19,6 +17,9 @@
 #define AI_GOAL_SOUND_LIMIT 16
 #define AI_GOAL_POINTLIGHT_LIMIT 8
 #define AI_GOAL_POINTLIGHT_RADIUS_THRESHOLD 64.0f
+
+static ai_goal_state_t ai_retail_goal_states[MAX_CLIENTS + 1];
+static bool ai_retail_goal_state_used[MAX_CLIENTS + 1];
 
 enum
 {
@@ -439,45 +440,6 @@ static void ai_goal_state_reset(ai_goal_state_t *state)
     memset(&state->avoid_goals, 0, sizeof(state->avoid_goals));
 }
 
-static void ai_move_state_reset(ai_move_state_t *state)
-{
-    if (state == NULL) {
-        return;
-    }
-
-    state->shared_avoid = NULL;
-    state->has_last_input = false;
-    memset(&state->services, 0, sizeof(state->services));
-    memset(&state->last_goal, 0, sizeof(state->last_goal));
-    memset(&state->last_input, 0, sizeof(state->last_input));
-    memset(&state->last_result, 0, sizeof(state->last_result));
-    state->has_last_result = false;
-}
-
-static void ai_move_apply_result(bot_input_t *input, const bot_moveresult_t *result)
-{
-    if (input == NULL || result == NULL) {
-        return;
-    }
-
-    if (result->flags & MOVERESULT_MOVEMENTWEAPON) {
-        input->actionflags |= ACTION_ATTACK;
-    }
-
-    if (result->traveltype == TRAVEL_JUMP || result->traveltype == TRAVEL_ROCKETJUMP ||
-        result->traveltype == TRAVEL_BFGJUMP || result->traveltype == TRAVEL_WATERJUMP) {
-        input->actionflags |= ACTION_JUMP;
-    }
-
-    if (result->traveltype == TRAVEL_CROUCH) {
-        input->actionflags |= ACTION_CROUCH;
-    }
-
-    if (result->flags & MOVERESULT_WAITING) {
-        input->speed = 0.0f;
-    }
-}
-
 static float ai_goal_default_weight(void *ctx, const ai_goal_candidate_t *candidate)
 {
     (void)ctx;
@@ -493,16 +455,6 @@ static float ai_goal_default_travel(void *ctx, int start_area, const ai_goal_can
     (void)start_area;
     (void)candidate;
     return 0.0f;
-}
-
-static void ai_move_default_submit(void *ctx, int client, const bot_input_t *input)
-{
-    (void)ctx;
-    if (input == NULL) {
-        return;
-    }
-
-    EA_SubmitInput(client, input);
 }
 
 ai_goal_state_t *AI_GoalState_Create(void)
@@ -522,13 +474,66 @@ ai_goal_state_t *AI_GoalState_Create(void)
     return state;
 }
 
+/*
+=============
+AI_GoalState_AcquireRetail
+
+Claims a preallocated successor-goal sidecar for one retail client record.
+This compatibility state is host-only and must not add setup allocations.
+=============
+*/
+ai_goal_state_t *AI_GoalState_AcquireRetail(void)
+{
+	for (int index = 0; index <= MAX_CLIENTS; ++index)
+	{
+		if (ai_retail_goal_state_used[index])
+		{
+			continue;
+		}
+
+		ai_goal_state_t *state = &ai_retail_goal_states[index];
+		memset(state, 0, sizeof(*state));
+		ai_retail_goal_state_used[index] = true;
+		state->services.weight_fn = ai_goal_default_weight;
+		state->services.travel_time_fn = ai_goal_default_travel;
+		state->services.avoid_duration = 5.0f;
+		ai_goal_state_reset(state);
+		return state;
+	}
+
+	return NULL;
+}
+
 void AI_GoalState_Destroy(ai_goal_state_t *state)
 {
     if (state == NULL) {
         return;
     }
 
-    free(state);
+	for (int index = 0; index <= MAX_CLIENTS; ++index)
+	{
+		if (state == &ai_retail_goal_states[index])
+		{
+			memset(state, 0, sizeof(*state));
+			ai_retail_goal_state_used[index] = false;
+			return;
+		}
+	}
+
+	free(state);
+}
+
+/*
+=============
+AI_GoalState_ForgetRetail
+
+Forgets every static successor-goal adapter during whole-library teardown.
+=============
+*/
+void AI_GoalState_ForgetRetail(void)
+{
+	memset(ai_retail_goal_states, 0, sizeof(ai_retail_goal_states));
+	memset(ai_retail_goal_state_used, 0, sizeof(ai_retail_goal_state_used));
 }
 
 /*
@@ -782,154 +787,3 @@ int AI_GoalOrchestrator_Refresh(ai_goal_state_t *state, float now, ai_goal_selec
 
     return BLERR_NOERROR;
 }
-
-ai_move_state_t *AI_MoveState_Create(void)
-{
-    ai_move_state_t *state = (ai_move_state_t *)calloc(1, sizeof(*state));
-    if (state == NULL) {
-        return NULL;
-    }
-
-    ai_move_state_reset(state);
-    state->services.submit_fn = ai_move_default_submit;
-    return state;
-}
-
-void AI_MoveState_Destroy(ai_move_state_t *state)
-{
-    if (state == NULL) {
-        return;
-    }
-
-    free(state);
-}
-
-/*
-=============
-AI_MoveState_Reset
-
-Clears transient move orchestration while preserving service callbacks.
-=============
-*/
-void AI_MoveState_Reset(ai_move_state_t *state)
-{
-	if (state == NULL)
-	{
-		return;
-	}
-
-	ai_move_services_t services = state->services;
-	ai_avoid_list_t *shared_avoid = state->shared_avoid;
-	ai_move_state_reset(state);
-	state->services = services;
-	if (state->services.submit_fn == NULL)
-	{
-		state->services.submit_fn = ai_move_default_submit;
-	}
-	state->shared_avoid = shared_avoid;
-}
-
-void AI_MoveState_SetServices(ai_move_state_t *state, const ai_move_services_t *services)
-{
-    if (state == NULL) {
-        return;
-    }
-
-    if (services != NULL) {
-        state->services = *services;
-        if (state->services.submit_fn == NULL) {
-            state->services.submit_fn = ai_move_default_submit;
-        }
-    } else {
-        memset(&state->services, 0, sizeof(state->services));
-        state->services.submit_fn = ai_move_default_submit;
-    }
-}
-
-void AI_MoveState_LinkAvoidList(ai_move_state_t *state, ai_avoid_list_t *avoid)
-{
-    if (state == NULL) {
-        return;
-    }
-
-    state->shared_avoid = avoid;
-}
-
-ai_avoid_list_t *AI_MoveState_GetAvoidList(ai_move_state_t *state)
-{
-    if (state == NULL) {
-        return NULL;
-    }
-
-    return state->shared_avoid;
-}
-
-int AI_MoveOrchestrator_Dispatch(ai_move_state_t *state,
-                                 const ai_goal_selection_t *selection,
-                                 bot_input_t *out_input)
-{
-    if (state == NULL || out_input == NULL) {
-        return BLERR_INVALIDIMPORT;
-    }
-
-    memset(out_input, 0, sizeof(*out_input));
-    state->has_last_input = false;
-    state->has_last_result = false;
-
-    if (selection == NULL || !selection->valid) {
-        state->last_goal = (ai_goal_selection_t){0};
-        state->last_goal.valid = false;
-        return BLERR_NOERROR;
-    }
-
-    state->last_goal = *selection;
-
-    if (state->services.path_fn != NULL) {
-        int status = state->services.path_fn(state->services.userdata,
-                                             selection,
-                                             state->shared_avoid,
-                                             out_input);
-        if (status != BLERR_NOERROR) {
-            return status;
-        }
-    } else {
-        VectorCopy(selection->candidate.origin, out_input->dir);
-        out_input->speed = selection->score;
-    }
-
-    state->last_input = *out_input;
-    state->has_last_input = true;
-    return BLERR_NOERROR;
-}
-
-int AI_MoveOrchestrator_Submit(ai_move_state_t *state, int client, const bot_input_t *input)
-{
-    if (state == NULL) {
-        return BLERR_INVALIDIMPORT;
-    }
-
-    const bot_input_t *command = input;
-    if (command == NULL) {
-        if (!state->has_last_input) {
-            return BLERR_INVALIDIMPORT;
-        }
-        command = &state->last_input;
-    }
-
-    bot_input_t enriched = *command;
-    if (state->has_last_result) {
-        ai_move_apply_result(&enriched, &state->last_result);
-    }
-
-    state->last_input = enriched;
-    state->has_last_input = true;
-
-    if (state->services.submit_fn != NULL) {
-        state->services.submit_fn(state->services.userdata, client, &enriched);
-        return BLERR_NOERROR;
-    }
-
-    int status = EA_SubmitInput(client, &enriched);
-    return status;
-}
-

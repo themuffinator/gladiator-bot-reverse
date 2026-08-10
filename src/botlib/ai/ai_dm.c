@@ -117,6 +117,9 @@ struct ai_dm_state_s
 	bool attack_latched;
 };
 
+static ai_dm_state_t ai_retail_dm_states[MAX_CLIENTS + 1];
+static bool ai_retail_dm_state_used[MAX_CLIENTS + 1];
+
 /*
 =============
 AI_DMVectorNormalise
@@ -325,12 +328,12 @@ Reads a bounded character value with a safe harness fallback.
 */
 static float AI_DMCharacteristic(const bot_client_state_t *client_state, int index, float fallback)
 {
-	if (client_state == NULL || client_state->character_handle <= 0)
+	if (client_state == NULL || client_state->character == NULL)
 	{
 		return fallback;
 	}
 
-	return Characteristic_BFloat(client_state->character_handle, index, 0.0f, 1.0f);
+	return Characteristic_BFloat(client_state->character, index, 0.0f, 1.0f);
 }
 
 /*
@@ -344,12 +347,12 @@ static float AI_DMViewCharacteristic(const bot_client_state_t *client_state,
 	int index,
 	float fallback)
 {
-	if (client_state == NULL || client_state->character_handle <= 0)
+	if (client_state == NULL || client_state->character == NULL)
 	{
 		return fallback;
 	}
 
-	return Characteristic_BFloat(client_state->character_handle,
+	return Characteristic_BFloat(client_state->character,
 		index,
 		0.1f,
 		1800.0f);
@@ -830,7 +833,7 @@ static void AI_DMSetupForMovement(const ai_dm_state_t *state,
 		initmove.or_moveflags |= MFL_WATERJUMP;
 	}
 
-	BotInitMoveState(client_state->move_handle, &initmove);
+	BotInitMoveStateHandle(client_state->move_handle, &initmove);
 }
 
 /*
@@ -845,9 +848,10 @@ static bool AI_DMTryAttackChase(ai_dm_state_t *state,
 	const bot_client_state_t *client_state,
 	float now,
 	float think_time,
-	int travel_flags)
+	int travel_flags,
+	bot_moveresult_t *move_result)
 {
-	if (state->attackchase_time <= now)
+	if (move_result == NULL || state->attackchase_time <= now)
 	{
 		return false;
 	}
@@ -860,8 +864,7 @@ static bool AI_DMTryAttackChase(ai_dm_state_t *state,
 	VectorSet(goal.maxs, 8.0f, 8.0f, 8.0f);
 
 	AI_DMSetupForMovement(state, client_state, think_time);
-	bot_moveresult_t move_result;
-	BotMoveToGoal(&move_result,
+	BotMoveToGoalHandle(move_result,
 		client_state->move_handle,
 		&goal,
 		travel_flags);
@@ -881,8 +884,16 @@ static void AI_DMAttackMove(ai_dm_state_t *state,
 	float distance,
 	float now,
 	float think_time,
-	int travel_flags)
+	int travel_flags,
+	bot_moveresult_t *move_result,
+	bool *attack_chase_active)
 {
+	if (move_result == NULL || attack_chase_active == NULL)
+	{
+		return;
+	}
+	memset(move_result, 0, sizeof(*move_result));
+	*attack_chase_active = false;
 	if (state == NULL || client_state == NULL || forward == NULL)
 	{
 		return;
@@ -891,8 +902,10 @@ static void AI_DMAttackMove(ai_dm_state_t *state,
 		client_state,
 		now,
 		think_time,
-		travel_flags))
+		travel_flags,
+		move_result))
 	{
+		*attack_chase_active = true;
 		return;
 	}
 
@@ -949,11 +962,11 @@ static void AI_DMAttackMove(ai_dm_state_t *state,
 	{
 		if (distance > AI_DM_IDEAL_ATTACK_DISTANCE + AI_DM_ATTACK_DISTANCE_RANGE)
 		{
-			BotMoveInDirection(client_state->move_handle, forward, AI_DM_MAX_CHASE_SPEED, move_type);
+			BotMoveInDirectionHandle(client_state->move_handle, forward, AI_DM_MAX_CHASE_SPEED, move_type);
 		}
 		else if (distance < AI_DM_IDEAL_ATTACK_DISTANCE - AI_DM_ATTACK_DISTANCE_RANGE)
 		{
-			BotMoveInDirection(client_state->move_handle, backward, AI_DM_MAX_CHASE_SPEED, move_type);
+			BotMoveInDirectionHandle(client_state->move_handle, backward, AI_DM_MAX_CHASE_SPEED, move_type);
 		}
 		return;
 	}
@@ -995,7 +1008,7 @@ static void AI_DMAttackMove(ai_dm_state_t *state,
 		}
 
 		AI_DMVectorNormalise(move_dir);
-		if (BotMoveInDirection(client_state->move_handle,
+		if (BotMoveInDirectionHandle(client_state->move_handle,
 			move_dir,
 			AI_DM_MAX_CHASE_SPEED,
 			move_type))
@@ -1103,6 +1116,43 @@ ai_dm_state_t *AI_DMState_Create(int client_number)
 
 /*
 =============
+AI_DMState_AcquireRetail
+
+Claims a preallocated deathmatch compatibility sidecar for a retail client.
+=============
+*/
+ai_dm_state_t *AI_DMState_AcquireRetail(int client_number)
+{
+	for (int index = 0; index <= MAX_CLIENTS; ++index)
+	{
+		if (ai_retail_dm_state_used[index])
+		{
+			continue;
+		}
+
+		ai_dm_state_t *state = &ai_retail_dm_states[index];
+		memset(state, 0, sizeof(*state));
+		ai_retail_dm_state_used[index] = true;
+		state->client_number = client_number;
+		state->attack_cooldown = AI_DM_ATTACK_COOLDOWN;
+		state->avoid_duration = AI_DM_AVOID_DURATION;
+		state->last_avoid_entity = -1;
+		state->reaction_delay = AI_DM_REACTION_DELAY;
+		state->chase_duration = AI_DM_CHASE_DURATION;
+		state->attack_strafe_interval = AI_DM_ATTACK_STRAFE_INTERVAL;
+		state->attack_chase_duration = AI_DM_ATTACK_CHASE_DURATION;
+		state->dmflags = Bridge_DMFlags();
+		state->rocketjump = Bridge_RocketJump();
+		state->usehook = Bridge_UseHook();
+		AI_DMState_Reset(state);
+		return state;
+	}
+
+	return NULL;
+}
+
+/*
+=============
 AI_DMState_Destroy
 
 Releases per-client deathmatch state.
@@ -1115,7 +1165,30 @@ void AI_DMState_Destroy(ai_dm_state_t *state)
 		return;
 	}
 
+	for (int index = 0; index <= MAX_CLIENTS; ++index)
+	{
+		if (state == &ai_retail_dm_states[index])
+		{
+			memset(state, 0, sizeof(*state));
+			ai_retail_dm_state_used[index] = false;
+			return;
+		}
+	}
+
 	free(state);
+}
+
+/*
+=============
+AI_DMState_ForgetRetail
+
+Forgets every static deathmatch compatibility sidecar at library teardown.
+=============
+*/
+void AI_DMState_ForgetRetail(void)
+{
+	memset(ai_retail_dm_states, 0, sizeof(ai_retail_dm_states));
+	memset(ai_retail_dm_state_used, 0, sizeof(ai_retail_dm_state_used));
 }
 
 /*
@@ -1501,14 +1574,19 @@ static bool AI_DMState_ShouldRecordAvoid(const ai_dm_state_t *state, const ai_dm
 
 /*
 =============
-AI_DMState_Update
+AI_DMState_UpdateInternal
 
 Updates reconstructed per-client combat state for one frame.
 =============
 */
-void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_state,
-					   const ai_goal_selection_t *selection, const ai_dm_enemy_info_t *enemy,
-					   const bot_input_t *last_move_command, float now)
+static void AI_DMState_UpdateInternal(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	const ai_goal_selection_t *selection,
+	const ai_dm_enemy_info_t *enemy,
+	const bot_input_t *last_move_command,
+	float now,
+	ai_dm_move_result_handler_t move_result_handler,
+	void *move_result_context)
 {
 	if (state == NULL || client_state == NULL)
 	{
@@ -1607,13 +1685,23 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 		{
 			travel_flags = selection->candidate.travel_flags;
 		}
+		bot_moveresult_t move_result;
+		bool attack_chase_active;
 		AI_DMAttackMove(state,
 			client_state,
 			attack_direction,
 			attack_distance,
 			now,
 			think_time,
-			travel_flags);
+			travel_flags,
+			&move_result,
+			&attack_chase_active);
+		if (move_result_handler != NULL)
+		{
+			move_result_handler(move_result_context,
+				&move_result,
+				attack_chase_active);
+		}
 
 		AI_DMAimAtEnemy(state,
 			client_state,
@@ -1699,4 +1787,54 @@ void AI_DMState_Update(ai_dm_state_t *state, const bot_client_state_t *client_st
 			}
 		}
 	}
+}
+
+/*
+=============
+AI_DMState_Update
+
+Run the combat frame without an intermediate movement-result consumer.
+=============
+*/
+void AI_DMState_Update(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	const ai_goal_selection_t *selection,
+	const ai_dm_enemy_info_t *enemy,
+	const bot_input_t *last_move_command,
+	float now)
+{
+	AI_DMState_UpdateInternal(state,
+		client_state,
+		selection,
+		enemy,
+		last_move_command,
+		now,
+		NULL,
+		NULL);
+}
+
+/*
+=============
+AI_DMState_UpdateWithMoveResult
+
+Run the combat frame while exposing BotAttackMove's result before aim/fire.
+=============
+*/
+void AI_DMState_UpdateWithMoveResult(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	const ai_goal_selection_t *selection,
+	const ai_dm_enemy_info_t *enemy,
+	const bot_input_t *last_move_command,
+	float now,
+	ai_dm_move_result_handler_t move_result_handler,
+	void *move_result_context)
+{
+	AI_DMState_UpdateInternal(state,
+		client_state,
+		selection,
+		enemy,
+		last_move_command,
+		now,
+		move_result_handler,
+		move_result_context);
 }

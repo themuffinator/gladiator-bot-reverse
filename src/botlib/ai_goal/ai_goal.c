@@ -77,6 +77,11 @@ int AI_GoalBotlib_LoadItemWeights(int handle, const char *filename)
 	return BotLoadItemWeights(handle, filename);
 }
 
+/*
+=============
+AI_GoalBotlib_FreeItemWeights
+=============
+*/
 void AI_GoalBotlib_FreeItemWeights(int handle)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
@@ -108,6 +113,11 @@ void AI_GoalBotlib_UpdateEntityItems(void)
 	BotUpdateEntityItems();
 }
 
+/*
+=============
+AI_GoalBotlib_UpdateAvoidGoals
+=============
+*/
 static void AI_GoalBotlib_UpdateAvoidGoals(int handle, const ai_avoid_list_t *list, float now)
 {
 	if (list == NULL)
@@ -124,6 +134,10 @@ static void AI_GoalBotlib_UpdateAvoidGoals(int handle, const ai_avoid_list_t *li
 		}
 		if (remaining > BotAvoidGoalTime(handle, list->entries[i].id))
 		{
+			while (BotAvoidGoalTime(handle, list->entries[i].id) > 0.0f)
+			{
+				BotRemoveFromAvoidGoals(handle, list->entries[i].id);
+			}
 			BotAddToAvoidGoals(handle, list->entries[i].id, remaining);
 		}
 	}
@@ -146,6 +160,11 @@ void AI_GoalBotlib_SynchroniseAvoid(int handle, const ai_goal_state_t *state, fl
 	AI_GoalBotlib_UpdateAvoidGoals(handle, avoid, now);
 }
 
+/*
+=============
+AI_GoalBotlib_PushGoal
+=============
+*/
 int AI_GoalBotlib_PushGoal(int handle, const bot_goal_t *goal)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle) || goal == NULL)
@@ -155,6 +174,11 @@ int AI_GoalBotlib_PushGoal(int handle, const bot_goal_t *goal)
 	return BotPushGoal(handle, goal);
 }
 
+/*
+=============
+AI_GoalBotlib_PopGoal
+=============
+*/
 int AI_GoalBotlib_PopGoal(int handle)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
@@ -178,6 +202,11 @@ void AI_GoalBotlib_EmptyGoalStack(int handle)
 	BotEmptyGoalStack(handle);
 }
 
+/*
+=============
+AI_GoalBotlib_GetTopGoal
+=============
+*/
 int AI_GoalBotlib_GetTopGoal(int handle, bot_goal_t *goal)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
@@ -187,6 +216,11 @@ int AI_GoalBotlib_GetTopGoal(int handle, bot_goal_t *goal)
 	return BotGetTopGoal(handle, goal);
 }
 
+/*
+=============
+AI_GoalBotlib_GetSecondGoal
+=============
+*/
 int AI_GoalBotlib_GetSecondGoal(int handle, bot_goal_t *goal)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
@@ -196,12 +230,17 @@ int AI_GoalBotlib_GetSecondGoal(int handle, bot_goal_t *goal)
 	return BotGetSecondGoal(handle, goal);
 }
 
+/*
+=============
+AI_GoalBotlib_Update
+=============
+*/
 int AI_GoalBotlib_Update(int handle,
-                         vec3_t origin,
-                         int *inventory,
-                         int travelflags,
-                         float now,
-                         float nearby_time)
+	vec3_t origin,
+	int *inventory,
+	int travelflags,
+	float now,
+	float nearby_time)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
 	{
@@ -237,6 +276,11 @@ int AI_GoalBotlib_Update(int handle,
 	return BLERR_NOERROR;
 }
 
+/*
+=============
+AI_GoalBotlib_ResetAvoidGoals
+=============
+*/
 void AI_GoalBotlib_ResetAvoidGoals(int handle)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
@@ -246,6 +290,11 @@ void AI_GoalBotlib_ResetAvoidGoals(int handle)
 	BotResetAvoidGoals(handle);
 }
 
+/*
+=============
+AI_GoalBotlib_AddAvoidGoal
+=============
+*/
 void AI_GoalBotlib_AddAvoidGoal(int handle, int number, float avoidtime)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
@@ -297,21 +346,41 @@ void AI_GoalBotlib_SetAvoidGoalTime(int handle, int number, float avoidtime)
 	BotSetAvoidGoalTime(handle, number, avoidtime);
 }
 
+/*
+=============
+AI_GoalBotlib_RegisterLevelItem
+=============
+*/
 int AI_GoalBotlib_RegisterLevelItem(const bot_levelitem_setup_t *setup)
 {
 	return BotGoal_RegisterLevelItem(setup);
 }
 
+/*
+=============
+AI_GoalBotlib_UnregisterLevelItem
+=============
+*/
 void AI_GoalBotlib_UnregisterLevelItem(int number)
 {
 	BotGoal_UnregisterLevelItem(number);
 }
 
+/*
+=============
+AI_GoalBotlib_MarkItemTaken
+=============
+*/
 void AI_GoalBotlib_MarkItemTaken(int number, float respawn_delay)
 {
 	BotGoal_MarkItemTaken(number, respawn_delay);
 }
 
+/*
+=============
+AI_GoalBotlib_ChooseLTG
+=============
+*/
 int AI_GoalBotlib_ChooseLTG(int handle, vec3_t origin, int *inventory, int travelflags)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
@@ -321,6 +390,11 @@ int AI_GoalBotlib_ChooseLTG(int handle, vec3_t origin, int *inventory, int trave
 	return BotChooseLTGItem(handle, origin, inventory, travelflags);
 }
 
+/*
+=============
+AI_GoalBotlib_ChooseNBG
+=============
+*/
 int AI_GoalBotlib_ChooseNBG(int handle, vec3_t origin, int *inventory, int travelflags, bot_goal_t *ltg, float maxtime)
 {
 	if (!AI_GoalBotlib_ValidateHandle(handle))
@@ -442,6 +516,11 @@ void AI_GoalBotlib_MutateGoalFuzzyLogic(int goalstate, float range)
 	BotMutateGoalFuzzyLogic(goalstate, range);
 }
 
+/*
+=============
+AI_GoalBotlib_DebugPeek
+=============
+*/
 const bot_goalstate_t *AI_GoalBotlib_DebugPeek(int handle)
 {
 	return BotGoalStatePeek(handle);

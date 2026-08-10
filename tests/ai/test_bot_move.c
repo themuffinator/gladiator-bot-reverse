@@ -10,13 +10,48 @@
 #include <cmocka.h>
 
 #include "botlib/ai_move/bot_move.h"
+#include "botlib/ai_move/mover_catalogue.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/common/l_utils.h"
 #include "botlib/ea/ea_local.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/bridge_config.h"
+
+bot_moveresult_t BotTravel_Walk(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_Crouch(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_BarrierJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotFinishTravel_BarrierJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_Swim(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_WaterJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_WalkOffLedge(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotFinishTravel_WalkOffLedge(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_Jump(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotFinishTravel_Jump(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_Ladder(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_Teleport(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_Elevator(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotFinishTravel_Elevator(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotTravel_RocketJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
+bot_moveresult_t BotFinishTravel_WeaponJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach);
 
 #ifndef MAX_TEST_COMMANDS
 #define MAX_TEST_COMMANDS 16
@@ -75,13 +110,20 @@ static int g_debug_event_log[MAX_TEST_DEBUG_EVENTS];
 static int g_bridge_print_count;
 static int g_bridge_print_priority_log[MAX_TEST_PRINTS];
 static char g_bridge_print_log[MAX_TEST_PRINTS][128];
-static aas_area_t g_predict_trace_areas[3];
-static aas_areasettings_t g_predict_trace_settings[3];
-static aas_node_t g_predict_trace_nodes[3];
-static aas_plane_t g_predict_trace_planes[4];
+static aas_area_t g_predict_trace_areas[4];
+static aas_areasettings_t g_predict_trace_settings[4];
+static aas_node_t g_predict_trace_nodes[5];
+static aas_plane_t g_predict_trace_planes[6];
 static aas_entity_t g_predict_trace_entities[4];
 static aas_link_t g_predict_trace_entity_link;
-static aas_link_t *g_predict_trace_area_entities[3];
+static aas_link_t *g_predict_trace_area_entities[4];
+static aas_bspmodel_t g_point_contents_models[1];
+static aas_bspleaf_t g_point_contents_leaves[1];
+static unsigned short g_point_contents_leaf_brushes[1];
+static aas_plane_t g_point_contents_planes[6];
+static aas_bspbrushside_t g_point_contents_brush_sides[6];
+static aas_bspbrush_t g_point_contents_brushes[1];
+static aas_bspmodel_t g_mover_models[10];
 
 #define TEST_AAS_AREAFLAG_GROUNDED 1
 
@@ -205,6 +247,186 @@ static void test_setup_floor_aas_trace_world(float floorheight)
 	g_predict_trace_planes[0].dist = floorheight;
 	VectorSet(g_predict_trace_planes[1].normal, 0.0f, 0.0f, -1.0f);
 	g_predict_trace_planes[1].dist = -floorheight;
+}
+
+/*
+=============
+test_attach_floor_aas_geometry
+
+Attach a single reachable AAS leaf above a floor without replacing test-owned
+area settings, reachabilities, entities, or area-entity links.
+=============
+*/
+static void test_attach_floor_aas_geometry(float floorheight)
+{
+	memset(g_predict_trace_areas, 0, sizeof(g_predict_trace_areas));
+	memset(g_predict_trace_nodes, 0, sizeof(g_predict_trace_nodes));
+	memset(g_predict_trace_planes, 0, sizeof(g_predict_trace_planes));
+
+	aasworld.loaded = qtrue;
+	aasworld.initialized = qtrue;
+	aasworld.areas = g_predict_trace_areas;
+	aasworld.numNodes = 2;
+	aasworld.nodes = g_predict_trace_nodes;
+	aasworld.numPlanes = 2;
+	aasworld.planes = g_predict_trace_planes;
+
+	g_predict_trace_areas[1].areanum = 1;
+	VectorSet(g_predict_trace_areas[1].mins, -4096.0f, -4096.0f, floorheight);
+	VectorSet(g_predict_trace_areas[1].maxs, 4096.0f, 4096.0f, 4096.0f);
+	g_predict_trace_nodes[1].planenum = 0;
+	g_predict_trace_nodes[1].children[0] = -1;
+	g_predict_trace_nodes[1].children[1] = 0;
+	VectorSet(g_predict_trace_planes[0].normal, 0.0f, 0.0f, 1.0f);
+	g_predict_trace_planes[0].dist = floorheight;
+	VectorSet(g_predict_trace_planes[1].normal, 0.0f, 0.0f, -1.0f);
+	g_predict_trace_planes[1].dist = -floorheight;
+
+	if (aasworld.areasettings != NULL && aasworld.numAreaSettings > 1)
+	{
+		aasworld.areasettings[1].presencetype |= PRESENCE_NORMAL | PRESENCE_CROUCH;
+	}
+}
+
+/*
+=============
+test_setup_gap_aas_trace_world
+
+Build level ground on both sides of a finite open gap along the X axis.
+=============
+*/
+static void test_setup_gap_aas_trace_world(float gapstart, float gapend)
+{
+	test_setup_aas_trace_storage(4, 5, 6);
+
+	g_predict_trace_nodes[1].planenum = 0;
+	g_predict_trace_nodes[1].children[0] = 3;
+	g_predict_trace_nodes[1].children[1] = 2;
+	g_predict_trace_nodes[2].planenum = 4;
+	g_predict_trace_nodes[2].children[0] = -1;
+	g_predict_trace_nodes[2].children[1] = 0;
+	g_predict_trace_nodes[3].planenum = 2;
+	g_predict_trace_nodes[3].children[0] = 4;
+	g_predict_trace_nodes[3].children[1] = -2;
+	g_predict_trace_nodes[4].planenum = 4;
+	g_predict_trace_nodes[4].children[0] = -3;
+	g_predict_trace_nodes[4].children[1] = 0;
+
+	VectorSet(g_predict_trace_planes[0].normal, 1.0f, 0.0f, 0.0f);
+	g_predict_trace_planes[0].dist = gapstart;
+	VectorSet(g_predict_trace_planes[1].normal, -1.0f, 0.0f, 0.0f);
+	g_predict_trace_planes[1].dist = -gapstart;
+	VectorSet(g_predict_trace_planes[2].normal, 1.0f, 0.0f, 0.0f);
+	g_predict_trace_planes[2].dist = gapend;
+	VectorSet(g_predict_trace_planes[3].normal, -1.0f, 0.0f, 0.0f);
+	g_predict_trace_planes[3].dist = -gapend;
+	VectorSet(g_predict_trace_planes[4].normal, 0.0f, 0.0f, 1.0f);
+	VectorSet(g_predict_trace_planes[5].normal, 0.0f, 0.0f, -1.0f);
+}
+
+/*
+=============
+test_setup_stacked_aas_trace_world
+
+Build an unreachable upper area over a reachable lower area and solid floor.
+=============
+*/
+static void test_setup_stacked_aas_trace_world(float splitheight)
+{
+	test_setup_aas_trace_storage(3, 3, 4);
+
+	g_predict_trace_nodes[1].planenum = 0;
+	g_predict_trace_nodes[1].children[0] = -2;
+	g_predict_trace_nodes[1].children[1] = 2;
+	g_predict_trace_nodes[2].planenum = 2;
+	g_predict_trace_nodes[2].children[0] = -1;
+	g_predict_trace_nodes[2].children[1] = 0;
+
+	VectorSet(g_predict_trace_planes[0].normal, 0.0f, 0.0f, 1.0f);
+	g_predict_trace_planes[0].dist = splitheight;
+	VectorSet(g_predict_trace_planes[1].normal, 0.0f, 0.0f, -1.0f);
+	g_predict_trace_planes[1].dist = -splitheight;
+	VectorSet(g_predict_trace_planes[2].normal, 0.0f, 0.0f, 1.0f);
+	VectorSet(g_predict_trace_planes[3].normal, 0.0f, 0.0f, -1.0f);
+	g_predict_trace_settings[1].firstreachablearea = 1;
+	g_predict_trace_settings[1].numreachableareas = 1;
+}
+
+/*
+=============
+test_attach_world_contents_box
+
+Attach one world-BSP contents brush for internal AAS_PointContents probes.
+=============
+*/
+static void test_attach_world_contents_box(const vec3_t mins,
+	const vec3_t maxs,
+	int contents)
+{
+	memset(g_point_contents_models, 0, sizeof(g_point_contents_models));
+	memset(g_point_contents_leaves, 0, sizeof(g_point_contents_leaves));
+	memset(g_point_contents_leaf_brushes, 0, sizeof(g_point_contents_leaf_brushes));
+	memset(g_point_contents_planes, 0, sizeof(g_point_contents_planes));
+	memset(g_point_contents_brush_sides, 0, sizeof(g_point_contents_brush_sides));
+	memset(g_point_contents_brushes, 0, sizeof(g_point_contents_brushes));
+
+	g_point_contents_models[0].headnode = -1;
+	g_point_contents_leaves[0].firstleafbrush = 0;
+	g_point_contents_leaves[0].numleafbrushes = 1;
+	g_point_contents_leaf_brushes[0] = 0;
+	VectorSet(g_point_contents_planes[0].normal, 1.0f, 0.0f, 0.0f);
+	g_point_contents_planes[0].dist = maxs[0];
+	VectorSet(g_point_contents_planes[1].normal, -1.0f, 0.0f, 0.0f);
+	g_point_contents_planes[1].dist = -mins[0];
+	VectorSet(g_point_contents_planes[2].normal, 0.0f, 1.0f, 0.0f);
+	g_point_contents_planes[2].dist = maxs[1];
+	VectorSet(g_point_contents_planes[3].normal, 0.0f, -1.0f, 0.0f);
+	g_point_contents_planes[3].dist = -mins[1];
+	VectorSet(g_point_contents_planes[4].normal, 0.0f, 0.0f, 1.0f);
+	g_point_contents_planes[4].dist = maxs[2];
+	VectorSet(g_point_contents_planes[5].normal, 0.0f, 0.0f, -1.0f);
+	g_point_contents_planes[5].dist = -mins[2];
+	for (int side = 0; side < 6; ++side)
+	{
+		g_point_contents_brush_sides[side].planenum = (unsigned short)side;
+	}
+	g_point_contents_brushes[0].firstside = 0;
+	g_point_contents_brushes[0].numsides = 6;
+	g_point_contents_brushes[0].contents = contents;
+
+	aasworld.numBspModels = 1;
+	aasworld.bspModels = g_point_contents_models;
+	aasworld.numBspLeaves = 1;
+	aasworld.bspLeaves = g_point_contents_leaves;
+	aasworld.bspLeafBrushIndexSize = 1;
+	aasworld.bspLeafBrushes = g_point_contents_leaf_brushes;
+	aasworld.numBspPlanes = 6;
+	aasworld.bspPlanes = g_point_contents_planes;
+	aasworld.numBspBrushSides = 6;
+	aasworld.bspBrushSides = g_point_contents_brush_sides;
+	aasworld.numBspBrushes = 1;
+	aasworld.bspBrushes = g_point_contents_brushes;
+}
+
+/*
+=============
+test_attach_mover_bsp_model
+
+Attach deterministic inline-model bounds for mover reachability geometry.
+=============
+*/
+static void test_attach_mover_bsp_model(int modelnum,
+	const vec3_t mins,
+	const vec3_t maxs,
+	const vec3_t origin)
+{
+	assert_true(modelnum >= 0 && modelnum < (int)(sizeof(g_mover_models) / sizeof(g_mover_models[0])));
+	memset(g_mover_models, 0, sizeof(g_mover_models));
+	aasworld.numBspModels = modelnum + 1;
+	aasworld.bspModels = g_mover_models;
+	VectorCopy(mins, g_mover_models[modelnum].mins);
+	VectorCopy(maxs, g_mover_models[modelnum].maxs);
+	VectorCopy(origin, g_mover_models[modelnum].origin);
 }
 
 /*
@@ -443,28 +665,6 @@ static void test_set_trace_result(int index, float fraction, const vec3_t endpos
 	}
 }
 
-/*
-=============
-test_append_no_gap_probe
-
-Append the trace pattern BotMove_GapDistance expects when no gap is present.
-=============
-*/
-static int test_append_no_gap_probe(int index, const vec3_t origin)
-{
-	vec3_t down;
-	VectorCopy(origin, down);
-	down[2] -= 16.0f;
-	test_set_trace_result(index++, 0.5f, down, NULL);
-
-	for (int sample = 0; sample < 12; ++sample)
-	{
-		test_set_trace_result(index++, 0.5f, down, NULL);
-	}
-
-	return index;
-}
-
 static int test_bridge_point_contents(vec3_t point)
 {
 	int index = g_point_contents_call_count;
@@ -630,8 +830,10 @@ static int test_setup(void **state)
     BotInterface_SetImportTable(&g_test_lib_imports);
     LibVar_Init();
     BridgeConfig_Init();
-    LibVarSet("laserhook", "1");
-    LibVarSet("usehook", "1");
+	if (BotSetupMoveAI() == 0)
+	{
+		return -1;
+	}
 	test_reset_debug_visualization_log();
 
     if (EA_Init(1) != BLERR_NOERROR)
@@ -648,6 +850,11 @@ static int test_teardown(void **state)
 {
     (void)state;
 
+	for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
+	{
+		BotFreeMoveStateHandle(handle);
+	}
+	BotShutdownMoveAI();
     EA_Shutdown();
     BridgeConfig_Shutdown();
     LibVar_Shutdown();
@@ -657,6 +864,126 @@ static int test_teardown(void **state)
     return 0;
 }
 
+/*
+=============
+test_bot_move_retail_struct_layout
+
+Pin the public retail movement-result and movement-state ABI.
+=============
+*/
+static void test_bot_move_retail_struct_layout(void **state)
+{
+	(void)state;
+
+	assert_int_equal(sizeof(bot_moveresult_t), 0x30);
+	assert_int_equal(offsetof(bot_moveresult_t, movedir), 0x18);
+	assert_int_equal(offsetof(bot_moveresult_t, ideal_viewangles), 0x24);
+	assert_int_equal(sizeof(bot_movestate_t), 0x80);
+	assert_int_equal(offsetof(bot_movestate_t, areanum), 0x40);
+	assert_int_equal(offsetof(bot_movestate_t, lastreachnum), 0x4c);
+	assert_int_equal(offsetof(bot_movestate_t, moveflags), 0x60);
+	assert_int_equal(offsetof(bot_movestate_t, reachability_time), 0x70);
+}
+
+/*
+=============
+test_bot_clear_move_result_preserves_vector_suffix
+
+Verify retail clears only the six-dword status prefix and returns its argument.
+=============
+*/
+static void test_bot_clear_move_result_preserves_vector_suffix(void **state)
+{
+	(void)state;
+
+	bot_moveresult_t result;
+	memset(&result, 0xa5, sizeof(result));
+	assert_ptr_equal(BotClearMoveResult(&result), &result);
+
+	const unsigned char *bytes = (const unsigned char *)&result;
+	for (size_t offset = 0; offset < sizeof(result); ++offset)
+	{
+		assert_int_equal(bytes[offset], offset < 0x18 ? 0x00 : 0xa5);
+	}
+}
+
+/*
+=============
+test_bot_setup_move_ai_registers_retail_contract
+
+Pin the exact sixteen retail movement libvar names, defaults, and success return.
+=============
+*/
+static void test_bot_setup_move_ai_registers_retail_contract(void **state)
+{
+	(void)state;
+
+	static const struct
+	{
+		const char *name;
+		const char *value;
+	} expected[] = {
+		{"sv_friction", "6"},
+		{"sv_stopspeed", "100"},
+		{"sv_gravity", "800"},
+		{"sv_waterfriction", "1"},
+		{"sv_watergravity", "400"},
+		{"sv_maxvelocity", "300"},
+		{"sv_maxwalkvelocity", "300"},
+		{"sv_maxcrouchvelocity", "100"},
+		{"sv_maxswimvelocity", "150"},
+		{"sv_maxacceleration", "2200"},
+		{"sv_airaccelerate", "0"},
+		{"sv_step", "18"},
+		{"sv_maxbarrier", "50"},
+		{"sv_maxsteepness", "0.7"},
+		{"sv_jumpvel", "224"},
+		{"sv_maxwaterjump", "21"},
+	};
+
+	BotShutdownMoveAI();
+	assert_true(BotSetupMoveAI() != 0);
+	for (size_t index = 0; index < sizeof(expected) / sizeof(expected[0]); ++index)
+	{
+		assert_non_null(LibVarGet(expected[index].name));
+		assert_string_equal(LibVarGetString(expected[index].name), expected[index].value);
+	}
+	assert_null(LibVarGet("sv_maxaccelerate"));
+}
+
+/*
+=============
+test_bot_shutdown_invalidates_handle_registry
+
+Verify shutdown invalidates non-owning handle slots and setup restarts handle
+allocation from the first retail-compatible adapter slot.
+=============
+*/
+static void test_bot_shutdown_invalidates_handle_registry(void **state)
+{
+	(void)state;
+
+	int handle = BotAllocMoveStateHandle();
+	assert_int_equal(handle, 1);
+	assert_non_null(BotMoveStateFromHandle(handle));
+
+	BotShutdownMoveAI();
+	assert_null(BotMoveStateFromHandle(handle));
+	assert_true(BotSetupMoveAI() != 0);
+
+	int replacement = BotAllocMoveStateHandle();
+	assert_int_equal(replacement, 1);
+	assert_non_null(BotMoveStateFromHandle(replacement));
+	BotFreeMoveStateHandle(replacement);
+}
+
+/*
+=============
+test_bot_move_handles_elevator_landing
+
+Verify ground dispatch selects the retail elevator reach and waiting state.
+=============
+*/
 static void test_bot_move_handles_elevator_landing(void **state)
 {
     (void)state;
@@ -680,6 +1007,7 @@ static void test_bot_move_handles_elevator_landing(void **state)
 
     aasworld.travelflagfortype[TRAVEL_WALK] = TFL_WALK;
     aasworld.travelflagfortype[TRAVEL_ELEVATOR] = TFL_ELEVATOR;
+	test_attach_floor_aas_geometry(-1.5f);
 
     aasworld.areaEntityListCount = 3U;
     aasworld.areaEntityLists = calloc(aasworld.areaEntityListCount, sizeof(aas_link_t *));
@@ -723,12 +1051,14 @@ static void test_bot_move_handles_elevator_landing(void **state)
     };
     assert_true(BotMove_MoverCatalogueInsert(&entry));
 
-    int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
     assert_int_not_equal(handle, 0);
     bot_movestate_t *ms = BotMoveStateFromHandle(handle);
     assert_non_null(ms);
     ms->entitynum = 1;
     ms->areanum = 1;
+	ms->presencetype = PRESENCE_NORMAL;
+	ms->moveflags = MFL_ONGROUND;
     VectorClear(ms->origin);
 
     bot_goal_t goal = {0};
@@ -737,17 +1067,16 @@ static void test_bot_move_handles_elevator_landing(void **state)
     bot_moveresult_t result;
     BotClearMoveResult(&result);
 
-    BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	BotMoveToGoalHandle(&result, handle, &goal, TFL_DEFAULT);
 
     assert_false(result.blocked);
-    assert_true(result.flags & MOVERESULT_ONTOPOF_ELEVATOR);
     assert_int_equal(result.type, RESULTTYPE_ELEVATORUP);
     assert_int_equal(ms->lastreachnum, 1);
-    assert_int_equal(ms->reachareanum, 2);
+	assert_int_equal(ms->reachareanum, 1);
     float timeoutDelta = ms->reachability_time - aasworld.time;
-    assert_true(timeoutDelta > 4.9f && timeoutDelta < 5.1f);
+	assert_true(timeoutDelta > 9.9f && timeoutDelta < 10.1f);
 
-    BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
     BotMove_MoverCatalogueReset();
 
     free(botLink);
@@ -808,11 +1137,11 @@ static void test_bot_travel_elevator_waits_when_platform_is_up(void **state)
 	VectorSet(aasworld.entities[3].mins, -16.0f, -16.0f, -16.0f);
 	VectorSet(aasworld.entities[3].maxs, 16.0f, 16.0f, 16.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -824,10 +1153,10 @@ static void test_bot_travel_elevator_waits_when_platform_is_up(void **state)
 	VectorSet(goal.origin, 0.0f, 0.0f, 128.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_Elevator(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_ELEVATOR);
+	assert_int_equal(result.traveltype, 0);
 	assert_int_equal(result.type, RESULTTYPE_ELEVATORUP);
 	assert_true((result.flags & MOVERESULT_WAITING) != 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
@@ -839,7 +1168,7 @@ static void test_bot_travel_elevator_waits_when_platform_is_up(void **state)
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	free(aasworld.entities);
@@ -881,6 +1210,10 @@ static void test_bot_travel_elevator_moves_to_bottom_center_when_down(void **sta
 	VectorSet(aasworld.reachability[1].start, 40.0f, 0.0f, 64.0f);
 	VectorSet(aasworld.reachability[1].end, 40.0f, 0.0f, 128.0f);
 	aasworld.travelflagfortype[TRAVEL_ELEVATOR] = TFL_ELEVATOR;
+	vec3_t modelmins = {-16.0f, -16.0f, -16.0f};
+	vec3_t modelmaxs = {16.0f, 16.0f, 16.0f};
+	vec3_t modelorigin = {0.0f, 0.0f, 0.0f};
+	test_attach_mover_bsp_model(7, modelmins, modelmaxs, modelorigin);
 
 	aasworld.maxEntities = 8;
 	aasworld.entities = calloc((size_t)aasworld.maxEntities, sizeof(aas_entity_t));
@@ -892,11 +1225,11 @@ static void test_bot_travel_elevator_moves_to_bottom_center_when_down(void **sta
 	VectorSet(aasworld.entities[3].mins, -16.0f, -16.0f, -16.0f);
 	VectorSet(aasworld.entities[3].maxs, 16.0f, 16.0f, 16.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -908,10 +1241,10 @@ static void test_bot_travel_elevator_moves_to_bottom_center_when_down(void **sta
 	VectorSet(goal.origin, 40.0f, 0.0f, 128.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_Elevator(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_ELEVATOR);
+	assert_int_equal(result.traveltype, 0);
 	assert_true((result.flags & MOVERESULT_WAITING) == 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
@@ -921,7 +1254,7 @@ static void test_bot_travel_elevator_moves_to_bottom_center_when_down(void **sta
 	assert_float_equal(input.speed, 300.0f, 0.0001f);
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	free(aasworld.entities);
@@ -956,6 +1289,10 @@ static void test_bot_finish_elevator_prefers_closer_vertical_endpoint(void **sta
 	aasworld.reachability[1].facenum = 7;
 	VectorSet(aasworld.reachability[1].start, 0.0f, 0.0f, 0.0f);
 	VectorSet(aasworld.reachability[1].end, 30.0f, 0.0f, 100.0f);
+	vec3_t modelmins = {-16.0f, -16.0f, -16.0f};
+	vec3_t modelmaxs = {16.0f, 16.0f, 16.0f};
+	vec3_t modelorigin = {0.0f, 0.0f, 0.0f};
+	test_attach_mover_bsp_model(7, modelmins, modelmaxs, modelorigin);
 
 	aasworld.maxEntities = 8;
 	aasworld.entities = calloc((size_t)aasworld.maxEntities, sizeof(aas_entity_t));
@@ -967,11 +1304,11 @@ static void test_bot_finish_elevator_prefers_closer_vertical_endpoint(void **sta
 	VectorSet(aasworld.entities[3].mins, -16.0f, -16.0f, -16.0f);
 	VectorSet(aasworld.entities[3].maxs, 16.0f, 16.0f, 16.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -987,12 +1324,10 @@ static void test_bot_finish_elevator_prefers_closer_vertical_endpoint(void **sta
 	VectorSet(goal.origin, 30.0f, 0.0f, 100.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotFinishTravel_Elevator(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_ELEVATOR);
-	assert_float_equal(result.movedir[0], 0.9486833f, 0.0001f);
-	assert_float_equal(result.movedir[2], 0.3162278f, 0.0001f);
+	assert_int_equal(result.traveltype, 0);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
@@ -1000,7 +1335,7 @@ static void test_bot_finish_elevator_prefers_closer_vertical_endpoint(void **sta
 	assert_float_equal(input.dir[0], 0.9486833f, 0.0001f);
 	assert_float_equal(input.dir[2], 0.3162278f, 0.0001f);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	free(aasworld.entities);
@@ -1014,12 +1349,12 @@ static void test_bot_finish_elevator_prefers_closer_vertical_endpoint(void **sta
 
 /*
 =============
-test_bot_travel_funcbob_waits_for_start_position
+test_bot_travel_funcbob_preserves_retail_unsupported_result
 
-Pins the Q3 func_bobbing wait branch retained for successor mover reachability.
+Pins the retail default dispatch for the unsupported func_bobbing travel type.
 =============
 */
-static void test_bot_travel_funcbob_waits_for_start_position(void **state)
+static void test_bot_travel_funcbob_preserves_retail_unsupported_result(void **state)
 {
 	(void)state;
 
@@ -1042,6 +1377,7 @@ static void test_bot_travel_funcbob_waits_for_start_position(void **state)
 	VectorSet(aasworld.reachability[1].start, 0.0f, 0.0f, 0.0f);
 	VectorSet(aasworld.reachability[1].end, 160.0f, 0.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_FUNCBOB] = TFL_FUNCBOB;
+	test_attach_floor_aas_geometry(-1.5f);
 
 	aasworld.maxEntities = 9;
 	aasworld.entities = calloc((size_t)aasworld.maxEntities, sizeof(aas_entity_t));
@@ -1053,14 +1389,16 @@ static void test_bot_travel_funcbob_waits_for_start_position(void **state)
 	VectorSet(aasworld.entities[4].mins, -16.0f, -16.0f, -16.0f);
 	VectorSet(aasworld.entities[4].maxs, 16.0f, 16.0f, 16.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
+	ms->presencetype = PRESENCE_NORMAL;
+	ms->moveflags = MFL_ONGROUND;
 	VectorSet(ms->origin, -80.0f, 0.0f, 0.0f);
 
 	bot_goal_t goal;
@@ -1069,20 +1407,19 @@ static void test_bot_travel_funcbob_waits_for_start_position(void **state)
 	VectorSet(goal.origin, 160.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	BotMoveToGoalHandle(&result, handle, &goal, TFL_DEFAULT);
 
 	assert_false(result.failure);
 	assert_int_equal(result.traveltype, TRAVEL_FUNCBOB);
-	assert_int_equal(result.type, RESULTTYPE_WAITFORFUNCBOBBING);
-	assert_true((result.flags & MOVERESULT_WAITING) != 0);
-	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
+	assert_int_equal(result.type, 0);
+	assert_int_equal(result.flags, 0);
+	assert_float_equal(ms->reachability_time - aasworld.time, 8.0f, 0.0001f);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
-	assert_float_equal(input.speed, 360.0f, 0.0001f);
-	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
+	assert_float_equal(input.speed, 0.0f, 0.0001f);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	free(aasworld.entities);
@@ -1093,48 +1430,6 @@ static void test_bot_travel_funcbob_waits_for_start_position(void **state)
 	aasworld.numAreaSettings = 0;
 	aasworld.numReachability = 0;
 	aasworld.maxEntities = 0;
-}
-
-static void test_bot_travel_grapple_hook_toggles(void **state)
-{
-    (void)state;
-
-    bot_movestate_t ms;
-    memset(&ms, 0, sizeof(ms));
-    ms.client = 0;
-    ms.viewangles[YAW] = 90.0f;
-    ms.viewangles[PITCH] = 0.0f;
-
-    aas_reachability_t reach = {0};
-    reach.traveltype = TRAVEL_GRAPPLEHOOK;
-    VectorSet(reach.start, 0.0f, 0.0f, 0.0f);
-    VectorSet(reach.end, 0.0f, 64.0f, 0.0f);
-
-    aasworld.time = 0.0f;
-
-    bot_moveresult_t result = BotTravel_Grapple(&ms, &reach);
-    assert_false(result.failure);
-    assert_true(result.flags & MOVERESULT_MOVEMENTWEAPON);
-    assert_true(ms.moveflags & MFL_ACTIVEGRAPPLE);
-    assert_float_equal(ms.reachability_time - aasworld.time, 8.0f, 0.0001f);
-
-    bot_input_t input = {0};
-    assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
-    assert_true(input.actionflags & ACTION_ATTACK);
-    assert_int_equal(g_command_count, 2);
-    assert_string_equal(g_command_log[0], "precache models/weapons/grapple/hook/tris.md2");
-    assert_string_equal(g_command_log[1], "hookon");
-
-    test_reset_command_log();
-    aasworld.time = 1.0f;
-
-    bot_moveresult_t release = BotTravel_Grapple(&ms, &reach);
-    assert_false(release.failure);
-    assert_true(release.flags & MOVERESULT_MOVEMENTWEAPON);
-    assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
-    assert_int_equal(g_command_count, 1);
-    assert_string_equal(g_command_log[0], "hookoff");
-    assert_false(ms.moveflags & MFL_ACTIVEGRAPPLE);
 }
 
 /*
@@ -2323,59 +2618,56 @@ static void test_bot_move_in_direction_submits_actions(void **state)
 	(void)state;
 	test_setup_floor_aas_trace_world(0.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 0;
 	ms->moveflags = MFL_ONGROUND;
-
-	vec3_t barrier_end;
-	VectorSet(barrier_end, 0.0f, 0.0f, 0.0f);
-	test_set_trace_result(0, 1.0f, barrier_end, NULL);
-	int trace_index = 1;
-	trace_index = test_append_no_gap_probe(trace_index, barrier_end);
-	trace_index = test_append_no_gap_probe(trace_index, barrier_end);
-	g_trace_result_count = trace_index;
+	ms->thinktime = 0.1f;
 
 	vec3_t dir;
 	VectorSet(dir, 1.0f, 1.0f, 0.0f);
 
-	assert_true(BotMoveInDirection(handle, dir, 280.0f, MOVE_JUMP | MOVE_CROUCH));
+	assert_true(BotMoveInDirectionHandle(handle, dir, 280.0f, MOVE_JUMP | MOVE_CROUCH));
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
 	assert_float_equal(input.speed, 280.0f, 0.0001f);
-	assert_float_equal(input.dir[0], 0.7071067f, 0.0001f);
-	assert_float_equal(input.dir[1], 0.7071067f, 0.0001f);
+	assert_float_equal(input.dir[0], 135.181854f, 0.0001f);
+	assert_float_equal(input.dir[1], 135.181854f, 0.0001f);
 	assert_float_equal(input.dir[2], 0.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) != 0);
 	assert_true((input.actionflags & ACTION_CROUCH) != 0);
-	assert_int_equal(ms->jumpreach, 1);
+	assert_int_equal(ms->jumpreach, 0);
+	assert_int_equal(g_trace_call_count, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 }
 
 /*
 =============
 test_bot_move_in_direction_barrier_jump_uses_retail_probe
 
-Pins the Q3 vertical-forward-down barrier trace sequence for direct walking.
+Pins the retail internal-AAS up-forward-down barrier probe for direct walking.
 =============
 */
 static void test_bot_move_in_direction_barrier_jump_uses_retail_probe(void **state)
 {
 	(void)state;
+	test_setup_step_aas_trace_world();
+	g_predict_trace_planes[2].dist = 24.0f;
+	g_predict_trace_planes[3].dist = -24.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 7;
 	ms->moveflags = MFL_ONGROUND;
@@ -2388,39 +2680,11 @@ static void test_bot_move_in_direction_barrier_jump_uses_retail_probe(void **sta
 	assert_string_equal(Bridge_MaxBarrier()->name, "sv_maxbarrier");
 	LibVarSet("sv_step", "20");
 
-	g_trace_result_count = 3;
-	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
-	g_trace_results[0].fraction = 1.0f;
-	VectorSet(g_trace_results[0].endpos, 0.0f, 0.0f, 50.0f);
-	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
-	g_trace_results[1].fraction = 1.0f;
-	VectorSet(g_trace_results[1].endpos, 10.0f, 0.0f, 50.0f);
-	memset(&g_trace_results[2], 0, sizeof(g_trace_results[2]));
-	g_trace_results[2].fraction = 0.5f;
-	VectorSet(g_trace_results[2].endpos, 10.0f, 0.0f, 24.0f);
-
 	vec3_t dir;
 	VectorSet(dir, 1.0f, 0.0f, 0.0f);
 
-	assert_true(BotMoveInDirection(handle, dir, 200.0f, MOVE_WALK));
-	assert_int_equal(g_trace_call_count, 3);
-	for (int i = 0; i < 3; ++i)
-	{
-		assert_int_equal(g_trace_passent_log[i], 7);
-		assert_int_equal(g_trace_contentmask_log[i], CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-		assert_float_equal(g_trace_mins_log[i][0], -16.0f, 0.0001f);
-		assert_float_equal(g_trace_mins_log[i][1], -16.0f, 0.0001f);
-		assert_float_equal(g_trace_mins_log[i][2], -24.0f, 0.0001f);
-		assert_float_equal(g_trace_maxs_log[i][0], 16.0f, 0.0001f);
-		assert_float_equal(g_trace_maxs_log[i][1], 16.0f, 0.0001f);
-		assert_float_equal(g_trace_maxs_log[i][2], 32.0f, 0.0001f);
-	}
-	assert_float_equal(g_trace_end_log[0][2], 50.0f, 0.0001f);
-	assert_float_equal(g_trace_start_log[1][2], 50.0f, 0.0001f);
-	assert_float_equal(g_trace_end_log[1][0], 10.0f, 0.0001f);
-	assert_float_equal(g_trace_end_log[1][2], 50.0f, 0.0001f);
-	assert_float_equal(g_trace_start_log[2][0], 10.0f, 0.0001f);
-	assert_float_equal(g_trace_end_log[2][2], 0.0f, 0.0001f);
+	assert_true(BotMoveInDirectionHandle(handle, dir, 200.0f, MOVE_WALK));
+	assert_int_equal(g_trace_call_count, 0);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
@@ -2429,9 +2693,9 @@ static void test_bot_move_in_direction_barrier_jump_uses_retail_probe(void **sta
 	assert_float_equal(input.dir[1], 0.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) != 0);
 	assert_true((ms->moveflags & MFL_BARRIERJUMP) != 0);
-	assert_int_equal(ms->jumpreach, 1);
+	assert_int_equal(ms->jumpreach, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 }
 
 /*
@@ -2445,12 +2709,12 @@ static void test_bot_move_in_direction_airborne_barrier_jump_continues_late(void
 {
 	(void)state;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 3;
 	ms->moveflags = MFL_BARRIERJUMP;
@@ -2459,150 +2723,115 @@ static void test_bot_move_in_direction_airborne_barrier_jump_continues_late(void
 	vec3_t dir;
 	VectorSet(dir, 0.0f, 2.0f, 0.0f);
 
-	assert_true(BotMoveInDirection(handle, dir, 150.0f, MOVE_WALK));
+	assert_true(BotMoveInDirectionHandle(handle, dir, 150.0f, MOVE_WALK));
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
 	assert_float_equal(input.speed, 150.0f, 0.0001f);
 	assert_float_equal(input.dir[0], 0.0f, 0.0001f);
-	assert_float_equal(input.dir[1], 1.0f, 0.0001f);
+	assert_float_equal(input.dir[1], 2.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 }
 
 /*
 =============
 test_bot_move_in_direction_gap_probe_forces_jump
 
-Pins Q3's direct-walk gap probe that promotes walking into a jump.
+Pins retail's internal-AAS gap probe that promotes walking into a jump.
 =============
 */
 static void test_bot_move_in_direction_gap_probe_forces_jump(void **state)
 {
 	(void)state;
-	test_setup_floor_aas_trace_world(0.0f);
+	test_setup_gap_aas_trace_world(4.0f, 24.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 9;
 	ms->moveflags = MFL_ONGROUND;
 	ms->thinktime = 0.1f;
 	VectorSet(ms->origin, 0.0f, 0.0f, 0.0f);
 
-	g_trace_result_count = 3;
-	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
-	g_trace_results[0].fraction = 1.0f;
-	VectorSet(g_trace_results[0].endpos, 0.0f, 0.0f, 0.0f);
-	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
-	g_trace_results[1].fraction = 0.5f;
-	VectorSet(g_trace_results[1].endpos, 0.0f, 0.0f, -16.0f);
-	memset(&g_trace_results[2], 0, sizeof(g_trace_results[2]));
-	g_trace_results[2].fraction = 0.5f;
-	VectorSet(g_trace_results[2].endpos, 8.0f, 0.0f, -60.0f);
-
-	int trace_index = 3;
-	trace_index = test_append_no_gap_probe(trace_index, ms->origin);
-	trace_index = test_append_no_gap_probe(trace_index, ms->origin);
-	g_trace_result_count = trace_index;
-
 	vec3_t dir;
 	VectorSet(dir, 1.0f, 0.0f, 0.0f);
 
-	assert_true(BotMoveInDirection(handle, dir, 160.0f, MOVE_WALK));
-	assert_int_equal(g_trace_call_count, trace_index);
+	assert_true(BotMoveInDirectionHandle(handle, dir, 160.0f, MOVE_WALK));
+	assert_int_equal(g_trace_call_count, 0);
 	assert_true(g_point_contents_call_count >= 3);
-	assert_int_equal(g_trace_passent_log[1], 9);
-	assert_int_equal(g_trace_contentmask_log[1], CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	assert_float_equal(g_trace_mins_log[1][0], -15.0f, 0.0001f);
-	assert_float_equal(g_trace_mins_log[1][1], -15.0f, 0.0001f);
-	assert_float_equal(g_trace_mins_log[1][2], -24.0f, 0.0001f);
-	assert_float_equal(g_trace_maxs_log[1][0], 15.0f, 0.0001f);
-	assert_float_equal(g_trace_maxs_log[1][1], 15.0f, 0.0001f);
-	assert_float_equal(g_trace_maxs_log[1][2], 8.0f, 0.0001f);
-	assert_float_equal(g_trace_end_log[1][2], -60.0f, 0.0001f);
-	assert_float_equal(g_trace_start_log[2][0], 8.0f, 0.0001f);
-	assert_float_equal(g_trace_start_log[2][2], 9.0f, 0.0001f);
-	assert_float_equal(g_trace_end_log[2][2], -89.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[1][0], 8.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[1][2], -80.0f, 0.0001f);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
 	assert_float_equal(input.speed, 160.0f, 0.0001f);
-	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
+	assert_float_equal(input.dir[0], 109.224289f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) != 0);
-	assert_int_equal(ms->jumpreach, 1);
+	assert_int_equal(ms->jumpreach, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 }
 
 /*
 =============
 test_bot_move_in_direction_gap_over_water_does_not_jump
 
-Pins Q3's water exception for direct-walk gap probing.
+Pins retail's water exception for direct-walk gap probing.
 =============
 */
 static void test_bot_move_in_direction_gap_over_water_does_not_jump(void **state)
 {
 	(void)state;
-	test_setup_floor_aas_trace_world(0.0f);
+	test_setup_gap_aas_trace_world(4.0f, 12.0f);
+	vec3_t watermins;
+	vec3_t watermaxs;
+	VectorSet(watermins, 4.0f, -100.0f, -200.0f);
+	VectorSet(watermaxs, 12.0f, 100.0f, -1.0f);
+	test_attach_world_contents_box(watermins, watermaxs, CONTENTS_WATER);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 9;
 	ms->moveflags = MFL_ONGROUND;
 	ms->thinktime = 0.1f;
 	VectorSet(ms->origin, 0.0f, 0.0f, 0.0f);
 
-	g_point_contents_result_count = 2;
-	g_point_contents_results[0] = 0;
-	g_point_contents_results[1] = CONTENTS_WATER;
-
-	g_trace_result_count = 3;
-	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
-	g_trace_results[0].fraction = 1.0f;
-	VectorSet(g_trace_results[0].endpos, 0.0f, 0.0f, 0.0f);
-	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
-	g_trace_results[1].fraction = 0.5f;
-	VectorSet(g_trace_results[1].endpos, 0.0f, 0.0f, -16.0f);
-	memset(&g_trace_results[2], 0, sizeof(g_trace_results[2]));
-	g_trace_results[2].fraction = 0.5f;
-	VectorSet(g_trace_results[2].endpos, 8.0f, 0.0f, -60.0f);
+	vec3_t waterprobe;
+	VectorSet(waterprobe, 8.0f, 0.0f, -80.0f);
+	assert_int_equal(AAS_PointContents(waterprobe), CONTENTS_WATER);
+	assert_int_equal(AAS_PointContents(ms->origin), 0);
 
 	vec3_t dir;
 	VectorSet(dir, 1.0f, 0.0f, 0.0f);
 
-	assert_true(BotMoveInDirection(handle, dir, 160.0f, MOVE_WALK));
-	assert_int_equal(g_trace_call_count, 3);
-	assert_true(g_point_contents_call_count >= 6);
+	assert_true(BotMoveInDirectionHandle(handle, dir, 160.0f, MOVE_WALK));
+	assert_int_equal(g_trace_call_count, 0);
+	assert_true(g_point_contents_call_count >= 3);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
 	assert_float_equal(input.speed, 160.0f, 0.0001f);
-	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
+	assert_float_equal(input.dir[0], 16.138197f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 	assert_int_equal(ms->jumpreach, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 }
 
 /*
 =============
 test_bot_move_in_direction_prediction_rejects_lava
 
-Pins Q3's AAS_PredictClientMovement stop-event rejection for direct walking.
+Pins retail AAS predictor stop-event rejection for direct walking into lava.
 =============
 */
 static void test_bot_move_in_direction_prediction_rejects_lava(void **state)
@@ -2610,12 +2839,12 @@ static void test_bot_move_in_direction_prediction_rejects_lava(void **state)
 	(void)state;
 	test_setup_floor_aas_trace_world(0.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 4;
 	ms->moveflags = MFL_ONGROUND;
@@ -2627,18 +2856,11 @@ static void test_bot_move_in_direction_prediction_rejects_lava(void **state)
 	g_point_contents_results[1] = 0;
 	g_point_contents_results[2] = CONTENTS_LAVA;
 
-	vec3_t barrier_end;
-	VectorSet(barrier_end, 0.0f, 0.0f, 0.0f);
-	test_set_trace_result(0, 1.0f, barrier_end, NULL);
-	int trace_index = test_append_no_gap_probe(1, ms->origin);
-
-	g_trace_result_count = trace_index;
-
 	vec3_t dir;
 	VectorSet(dir, 1.0f, 0.0f, 0.0f);
 
-	assert_false(BotMoveInDirection(handle, dir, 160.0f, MOVE_WALK));
-	assert_int_equal(g_trace_call_count, trace_index);
+	assert_false(BotMoveInDirectionHandle(handle, dir, 160.0f, MOVE_WALK));
+	assert_int_equal(g_trace_call_count, 0);
 	assert_int_equal(g_point_contents_call_count, 3);
 
 	bot_input_t input;
@@ -2646,14 +2868,14 @@ static void test_bot_move_in_direction_prediction_rejects_lava(void **state)
 	assert_float_equal(input.speed, 0.0f, 0.0001f);
 	assert_int_equal(input.actionflags, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 }
 
 /*
 =============
 test_bot_move_in_direction_prediction_rejects_short_progress
 
-Pins Q3's predicted-horizontal-progress blockage check.
+Pins retail's predicted-horizontal-progress blockage check.
 =============
 */
 static void test_bot_move_in_direction_prediction_rejects_short_progress(void **state)
@@ -2661,58 +2883,54 @@ static void test_bot_move_in_direction_prediction_rejects_short_progress(void **
 	(void)state;
 	test_setup_floor_aas_trace_world(0.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->moveflags = MFL_ONGROUND;
 	ms->thinktime = 1.0f;
 	VectorSet(ms->origin, 0.0f, 0.0f, 0.0f);
 
-	vec3_t barrier_end;
-	VectorSet(barrier_end, 0.0f, 0.0f, 0.0f);
-	test_set_trace_result(0, 1.0f, barrier_end, NULL);
-	int trace_index = test_append_no_gap_probe(1, ms->origin);
-
-	g_trace_result_count = trace_index;
-
 	vec3_t dir;
 	VectorSet(dir, 1.0f, 0.0f, 0.0f);
 
-	assert_false(BotMoveInDirection(handle, dir, 160.0f, MOVE_WALK));
-	assert_int_equal(g_trace_call_count, trace_index);
+	assert_false(BotMoveInDirectionHandle(handle, dir, 160.0f, MOVE_WALK));
+	assert_int_equal(g_trace_call_count, 0);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
 	assert_float_equal(input.speed, 0.0f, 0.0001f);
 	assert_int_equal(input.actionflags, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 }
 
 /*
 =============
 test_bot_travel_walk_targets_start_and_slows_for_gap
 
-Pins Q3 walk travel's reach-start steering and gap-based speed reduction.
+Pins retail walk travel's reach-start steering and eight-unit gap sampling.
 =============
 */
 static void test_bot_travel_walk_targets_start_and_slows_for_gap(void **state)
 {
 	(void)state;
+	test_setup_gap_aas_trace_world(20.0f, 48.0f);
 
-	aasworld.numAreas = 2;
-	aasworld.numAreaSettings = 3;
+	aasworld.numAreas = 4;
+	aasworld.numAreaSettings = 4;
 	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
 	assert_non_null(aasworld.areasettings);
 	aasworld.areasettings[1].areaflags = TEST_AAS_AREAFLAG_GROUNDED;
+	aasworld.areasettings[1].presencetype = PRESENCE_NORMAL | PRESENCE_CROUCH;
 	aasworld.areasettings[1].firstreachablearea = 1;
 	aasworld.areasettings[1].numreachableareas = 1;
-	aasworld.areasettings[2].presencetype = PRESENCE_NORMAL;
+	aasworld.areasettings[2].presencetype = PRESENCE_NORMAL | PRESENCE_CROUCH;
+	aasworld.areasettings[3].presencetype = PRESENCE_NORMAL | PRESENCE_CROUCH;
 
 	aasworld.numReachability = 2;
 	aasworld.reachability = calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
@@ -2724,21 +2942,11 @@ static void test_bot_travel_walk_targets_start_and_slows_for_gap(void **state)
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_WALK] = TFL_WALK;
 
-	g_trace_result_count = 3;
-	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
-	g_trace_results[0].fraction = 1.0f;
-	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
-	g_trace_results[1].fraction = 0.5f;
-	VectorSet(g_trace_results[1].endpos, 0.0f, 0.0f, -16.0f);
-	memset(&g_trace_results[2], 0, sizeof(g_trace_results[2]));
-	g_trace_results[2].fraction = 0.5f;
-	VectorSet(g_trace_results[2].endpos, 8.0f, 4.0f, -60.0f);
-
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -2750,26 +2958,27 @@ static void test_bot_travel_walk_targets_start_and_slows_for_gap(void **state)
 	VectorSet(goal.origin, 128.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_Walk(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_WALK);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 0.8944272f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.4472136f, 0.0001f);
-	assert_int_equal(g_trace_call_count, 3);
-	assert_float_equal(g_trace_start_log[2][0], 7.1554f, 0.0001f);
-	assert_float_equal(g_trace_start_log[2][1], 3.5777f, 0.0001f);
-	assert_float_equal(g_trace_start_log[2][2], 9.0f, 0.0001f);
-	assert_float_equal(g_trace_end_log[2][2], -89.0f, 0.0001f);
+	assert_int_equal(g_trace_call_count, 1);
+	assert_int_equal(g_trace_passent_log[0], 5);
+	assert_int_equal(g_trace_contentmask_log[0], MASK_PLAYERSOLID);
+	assert_float_equal(g_trace_end_log[0][0], 2.683281f, 0.0001f);
+	assert_float_equal(g_trace_end_log[0][1], 1.341641f, 0.0001f);
+	assert_int_equal(g_point_contents_call_count, 0);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
-	assert_float_equal(input.speed, 56.0f, 0.0001f);
+	assert_float_equal(input.speed, 48.0f, 0.0001f);
 	assert_float_equal(input.dir[0], 0.8944272f, 0.0001f);
 	assert_float_equal(input.dir[1], 0.4472136f, 0.0001f);
 	assert_true((input.actionflags & ACTION_CROUCH) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -2783,18 +2992,20 @@ static void test_bot_travel_walk_targets_start_and_slows_for_gap(void **state)
 =============
 test_bot_travel_walk_switches_to_end_and_crouches_near_crouch_area
 
-Pins Q3 walk travel's near-start end steering and crouch-area action.
+Pins retail walk travel's near-start end steering and crouch-area action.
 =============
 */
 static void test_bot_travel_walk_switches_to_end_and_crouches_near_crouch_area(void **state)
 {
 	(void)state;
+	test_setup_floor_aas_trace_world(0.0f);
 
 	aasworld.numAreas = 2;
 	aasworld.numAreaSettings = 3;
 	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
 	assert_non_null(aasworld.areasettings);
 	aasworld.areasettings[1].areaflags = TEST_AAS_AREAFLAG_GROUNDED;
+	aasworld.areasettings[1].presencetype = PRESENCE_NORMAL | PRESENCE_CROUCH;
 	aasworld.areasettings[1].firstreachablearea = 1;
 	aasworld.areasettings[1].numreachableareas = 1;
 	aasworld.areasettings[2].presencetype = PRESENCE_CROUCH;
@@ -2809,25 +3020,11 @@ static void test_bot_travel_walk_switches_to_end_and_crouches_near_crouch_area(v
 	VectorSet(aasworld.reachability[1].end, 0.0f, 6.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_WALK] = TFL_WALK;
 
-	g_point_contents_result_count = 2;
-	g_point_contents_results[0] = 0;
-	g_point_contents_results[1] = CONTENTS_WATER;
-
-	g_trace_result_count = 3;
-	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
-	g_trace_results[0].fraction = 1.0f;
-	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
-	g_trace_results[1].fraction = 0.5f;
-	VectorSet(g_trace_results[1].endpos, 0.0f, 0.0f, -16.0f);
-	memset(&g_trace_results[2], 0, sizeof(g_trace_results[2]));
-	g_trace_results[2].fraction = 0.5f;
-	VectorSet(g_trace_results[2].endpos, 0.0f, 8.0f, -60.0f);
-
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -2839,12 +3036,13 @@ static void test_bot_travel_walk_switches_to_end_and_crouches_near_crouch_area(v
 	VectorSet(goal.origin, 0.0f, 6.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_Walk(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_WALK);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 0.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 1.0f, 0.0001f);
+	assert_int_equal(g_trace_call_count, 1);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
@@ -2853,7 +3051,7 @@ static void test_bot_travel_walk_switches_to_end_and_crouches_near_crouch_area(v
 	assert_float_equal(input.dir[1], 1.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_CROUCH) != 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -2896,11 +3094,11 @@ static void test_bot_travel_crouch_uses_retail_speed(void **state)
 	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
 	g_trace_results[0].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -2912,10 +3110,10 @@ static void test_bot_travel_crouch_uses_retail_speed(void **state)
 	VectorSet(goal.origin, 30.0f, 40.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_Crouch(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_CROUCH);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 0.6f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.8f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 1);
@@ -2929,7 +3127,7 @@ static void test_bot_travel_crouch_uses_retail_speed(void **state)
 	assert_float_equal(input.dir[1], 0.8f, 0.0001f);
 	assert_true((input.actionflags & ACTION_CROUCH) != 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -2973,11 +3171,11 @@ static void test_bot_travel_barrier_jump_approaches_start_until_close(void **sta
 	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
 	g_trace_results[0].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -2989,10 +3187,10 @@ static void test_bot_travel_barrier_jump_approaches_start_until_close(void **sta
 	VectorSet(goal.origin, 30.0f, 40.0f, 32.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_BarrierJump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_BARRIERJUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 0.6f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.8f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 1);
@@ -3006,7 +3204,7 @@ static void test_bot_travel_barrier_jump_approaches_start_until_close(void **sta
 	assert_true((ms->moveflags & MFL_BARRIERJUMP) == 0);
 	assert_int_equal(ms->jumpreach, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3049,11 +3247,11 @@ static void test_bot_travel_barrier_jump_jumps_when_close(void **state)
 	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
 	g_trace_results[0].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3065,10 +3263,10 @@ static void test_bot_travel_barrier_jump_jumps_when_close(void **state)
 	VectorSet(goal.origin, 6.0f, 0.0f, 32.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_BarrierJump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_BARRIERJUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 1);
@@ -3077,10 +3275,10 @@ static void test_bot_travel_barrier_jump_jumps_when_close(void **state)
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
 	assert_float_equal(input.speed, 0.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) != 0);
-	assert_true((ms->moveflags & MFL_BARRIERJUMP) != 0);
-	assert_int_equal(ms->jumpreach, 1);
+	assert_true((ms->moveflags & MFL_BARRIERJUMP) == 0);
+	assert_int_equal(ms->jumpreach, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3126,11 +3324,11 @@ static void test_bot_travel_walkoffledge_far_uses_endpoint_at_retail_speed(void 
 	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
 	g_trace_results[1].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3142,10 +3340,10 @@ static void test_bot_travel_walkoffledge_far_uses_endpoint_at_retail_speed(void 
 	VectorSet(goal.origin, 128.0f, 0.0f, -32.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_WalkOffLedge(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_WALKOFFLEDGE);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 2);
@@ -3158,7 +3356,7 @@ static void test_bot_travel_walkoffledge_far_uses_endpoint_at_retail_speed(void 
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3204,11 +3402,11 @@ static void test_bot_travel_walkoffledge_uses_jump_fall_velocity(void **state)
 	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
 	g_trace_results[1].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3220,10 +3418,10 @@ static void test_bot_travel_walkoffledge_uses_jump_fall_velocity(void **state)
 	VectorSet(goal.origin, 40.0f, 0.0f, -64.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_WalkOffLedge(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_WALKOFFLEDGE);
+	assert_int_equal(result.traveltype, 0);
 	assert_int_equal(g_trace_call_count, 2);
 
 	bot_input_t input;
@@ -3232,7 +3430,7 @@ static void test_bot_travel_walkoffledge_uses_jump_fall_velocity(void **state)
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 	assert_float_equal(input.dir[1], 0.0f, 0.0001f);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3277,11 +3475,11 @@ static void test_bot_travel_walkoffledge_short_edge_scales_speed(void **state)
 	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
 	g_trace_results[1].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3293,10 +3491,10 @@ static void test_bot_travel_walkoffledge_short_edge_scales_speed(void **state)
 	VectorSet(goal.origin, 10.0f, 0.0f, -32.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_WalkOffLedge(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_WALKOFFLEDGE);
+	assert_int_equal(result.traveltype, 0);
 	assert_int_equal(g_trace_call_count, 2);
 
 	bot_input_t input;
@@ -3304,7 +3502,7 @@ static void test_bot_travel_walkoffledge_short_edge_scales_speed(void **state)
 	assert_float_equal(input.speed, 120.0f, 0.0001f);
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3343,11 +3541,11 @@ static void test_bot_travel_ladder_uses_forward_action_and_view(void **state)
 	VectorSet(aasworld.reachability[1].end, 0.0f, 0.0f, 64.0f);
 	aasworld.travelflagfortype[TRAVEL_LADDER] = TFL_LADDER;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3359,10 +3557,10 @@ static void test_bot_travel_ladder_uses_forward_action_and_view(void **state)
 	VectorSet(goal.origin, 0.0f, 0.0f, 64.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_Ladder(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_LADDER);
+	assert_int_equal(result.traveltype, 0);
 	assert_true((result.flags & MOVERESULT_MOVEMENTVIEW) != 0);
 	assert_float_equal(result.movedir[0], 0.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
@@ -3375,7 +3573,7 @@ static void test_bot_travel_ladder_uses_forward_action_and_view(void **state)
 	assert_float_equal(input.dir[0], 0.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_MOVEFORWARD) != 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3383,6 +3581,44 @@ static void test_bot_travel_ladder_uses_forward_action_and_view(void **state)
 	aasworld.numAreas = 0;
 	aasworld.numAreaSettings = 0;
 	aasworld.numReachability = 0;
+}
+
+/*
+=============
+test_bot_travel_grapple_uses_raw_two_degree_gate
+
+Pin the raw retail angle gate where 16-bit AngleDelta rounds 2.001 degrees
+below the two-degree movement threshold.
+=============
+*/
+static void test_bot_travel_grapple_uses_raw_two_degree_gate(void **state)
+{
+	(void)state;
+
+	bot_movestate_t movestate;
+	memset(&movestate, 0, sizeof(movestate));
+	movestate.client = 0;
+	movestate.entitynum = 5;
+	movestate.presencetype = PRESENCE_NORMAL;
+	movestate.viewangles[1] = -2.001f;
+
+	aas_reachability_t reach;
+	memset(&reach, 0, sizeof(reach));
+	reach.traveltype = TRAVEL_GRAPPLEHOOK;
+	VectorSet(reach.start, 4.0f, 0.0f, 0.0f);
+	VectorSet(reach.end, 100.0f, 0.0f, 0.0f);
+
+	assert_true(AngleDelta(0.0f, movestate.viewangles[1]) < 2.0f);
+	bot_moveresult_t result = BotTravel_Grapple(&movestate, &reach);
+
+	assert_true((result.flags & MOVERESULT_MOVEMENTVIEW) != 0);
+	assert_true((movestate.moveflags & MFL_GRAPPLEATTACHED) == 0);
+	assert_int_equal(g_command_count, 0);
+	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
+
+	bot_input_t input;
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_float_equal(input.speed, 16.0f, 0.0001f);
 }
 
 /*
@@ -3418,11 +3654,11 @@ static void test_bot_travel_swim_targets_start_at_retail_speed(void **state)
 	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
 	g_trace_results[0].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3434,10 +3670,10 @@ static void test_bot_travel_swim_targets_start_at_retail_speed(void **state)
 	VectorSet(goal.origin, 80.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_Swim(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_SWIM);
+	assert_int_equal(result.traveltype, 0);
 	assert_true((result.flags & MOVERESULT_SWIMVIEW) != 0);
 	assert_float_equal(result.movedir[0], 0.5883484f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.7844645f, 0.0001f);
@@ -3453,7 +3689,7 @@ static void test_bot_travel_swim_targets_start_at_retail_speed(void **state)
 	assert_float_equal(input.dir[1], 0.7844645f, 0.0001f);
 	assert_float_equal(input.dir[2], 0.1961161f, 0.0001f);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3493,11 +3729,11 @@ static void test_bot_travel_waterjump_submits_forward_and_up_actions(void **stat
 	VectorSet(aasworld.reachability[1].end, 24.0f, 0.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_WATERJUMP] = TFL_WATERJUMP;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3509,10 +3745,10 @@ static void test_bot_travel_waterjump_submits_forward_and_up_actions(void **stat
 	VectorSet(goal.origin, 24.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_WaterJump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_WATERJUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_true((result.flags & MOVERESULT_MOVEMENTVIEW) != 0);
 	assert_true(result.movedir[0] > 0.4f);
 	assert_int_equal(g_trace_call_count, 0);
@@ -3523,7 +3759,7 @@ static void test_bot_travel_waterjump_submits_forward_and_up_actions(void **stat
 	assert_true((input.actionflags & ACTION_MOVEFORWARD) != 0);
 	assert_true((input.actionflags & ACTION_MOVEUP) != 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3566,11 +3802,11 @@ static void test_bot_travel_teleport_approaches_start_and_slows_near(void **stat
 	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
 	g_trace_results[0].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3582,10 +3818,10 @@ static void test_bot_travel_teleport_approaches_start_and_slows_near(void **stat
 	VectorSet(goal.origin, 128.0f, 0.0f, 32.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotTravel_Teleport(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_TELEPORT);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_float_equal(result.movedir[2], 0.0f, 0.0001f);
@@ -3599,7 +3835,7 @@ static void test_bot_travel_teleport_approaches_start_and_slows_near(void **stat
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 	assert_true((result.flags & MOVERESULT_SWIMVIEW) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3613,7 +3849,7 @@ static void test_bot_travel_teleport_approaches_start_and_slows_near(void **stat
 =============
 test_bot_travel_jump_runs_to_runstart
 
-Pins active jump travel's run-up branch before the bot reaches the launch
+Pins retail jump travel's run-up branch before the bot reaches the launch
 window.
 =============
 */
@@ -3645,14 +3881,15 @@ static void test_bot_travel_jump_runs_to_runstart(void **state)
 	VectorSet(aasworld.reachability[1].end, 160.0f, 0.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_JUMP] = TFL_JUMP;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
+	ms->reachareanum = 1;
 	VectorSet(ms->origin, -40.0f, 0.0f, 0.0f);
 
 	bot_goal_t goal;
@@ -3661,10 +3898,11 @@ static void test_bot_travel_jump_runs_to_runstart(void **state)
 	VectorSet(goal.origin, 160.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	ms->lastreachnum = 1;
+	result = BotTravel_Jump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_JUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 0);
@@ -3677,7 +3915,7 @@ static void test_bot_travel_jump_runs_to_runstart(void **state)
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 	assert_true((input.actionflags & ACTION_DELAYEDJUMP) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areas);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
@@ -3718,16 +3956,15 @@ static void test_bot_travel_jump_runstart_hazard_falls_back_to_start(void **stat
 	VectorSet(aasworld.reachability[1].end, 160.0f, 0.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_JUMP] = TFL_JUMP;
 
-	g_point_contents_result_count = 3;
+	g_point_contents_result_count = 2;
 	g_point_contents_results[0] = 0;
-	g_point_contents_results[1] = 0;
-	g_point_contents_results[2] = CONTENTS_SLIME;
+	g_point_contents_results[1] = CONTENTS_SLIME;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3739,20 +3976,19 @@ static void test_bot_travel_jump_runstart_hazard_falls_back_to_start(void **stat
 	VectorSet(goal.origin, 160.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	ms->lastreachnum = 1;
+	result = BotTravel_Jump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_JUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 0);
-	assert_int_equal(g_point_contents_call_count, 3);
-	assert_float_equal(g_point_contents_log[0][0], -40.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[0][2], 0.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[1][0], 40.0f, 0.0001f);
+	assert_int_equal(g_point_contents_call_count, 2);
+	assert_float_equal(g_point_contents_log[0][0], 40.0f, 0.0001f);
+	assert_float_equal(g_point_contents_log[0][2], 1.0f, 0.0001f);
+	assert_float_equal(g_point_contents_log[1][0], 0.0f, 0.0001f);
 	assert_float_equal(g_point_contents_log[1][2], 1.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[2][0], 0.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[2][2], 1.0f, 0.0001f);
 	assert_int_equal(ms->jumpreach, 0);
 
 	bot_input_t input;
@@ -3762,7 +3998,7 @@ static void test_bot_travel_jump_runstart_hazard_falls_back_to_start(void **stat
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 	assert_true((input.actionflags & ACTION_DELAYEDJUMP) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -3776,7 +4012,7 @@ static void test_bot_travel_jump_runstart_hazard_falls_back_to_start(void **stat
 =============
 test_bot_travel_jump_launches_near_start
 
-Pins active jump travel's close launch branch and immediate jump action.
+Pins retail jump travel's close launch branch and immediate jump action.
 =============
 */
 static void test_bot_travel_jump_launches_near_start(void **state)
@@ -3807,14 +4043,15 @@ static void test_bot_travel_jump_launches_near_start(void **state)
 	VectorSet(aasworld.reachability[1].end, 160.0f, 0.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_JUMP] = TFL_JUMP;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
+	ms->reachareanum = 1;
 	VectorSet(ms->origin, 70.0f, 0.0f, 0.0f);
 
 	bot_goal_t goal;
@@ -3823,10 +4060,11 @@ static void test_bot_travel_jump_launches_near_start(void **state)
 	VectorSet(goal.origin, 160.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	ms->lastreachnum = 1;
+	result = BotTravel_Jump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_JUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 0);
 	assert_int_equal(ms->jumpreach, 1);
@@ -3838,7 +4076,7 @@ static void test_bot_travel_jump_launches_near_start(void **state)
 	assert_true((input.actionflags & ACTION_JUMP) != 0);
 	assert_true((input.actionflags & ACTION_DELAYEDJUMP) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areas);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
@@ -3854,7 +4092,7 @@ static void test_bot_travel_jump_launches_near_start(void **state)
 =============
 test_bot_travel_jump_uses_delayed_jump_window
 
-Pins active jump travel's delayed-jump action window before the immediate launch
+Pins retail jump travel's delayed-jump action window before the immediate launch
 threshold.
 =============
 */
@@ -3886,14 +4124,15 @@ static void test_bot_travel_jump_uses_delayed_jump_window(void **state)
 	VectorSet(aasworld.reachability[1].end, 160.0f, 0.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_JUMP] = TFL_JUMP;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
+	ms->reachareanum = 1;
 	VectorSet(ms->origin, 52.0f, 0.0f, 0.0f);
 
 	bot_goal_t goal;
@@ -3902,10 +4141,11 @@ static void test_bot_travel_jump_uses_delayed_jump_window(void **state)
 	VectorSet(goal.origin, 160.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	ms->lastreachnum = 1;
+	result = BotTravel_Jump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_JUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_int_equal(ms->jumpreach, 1);
 
@@ -3915,7 +4155,7 @@ static void test_bot_travel_jump_uses_delayed_jump_window(void **state)
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 	assert_true((input.actionflags & ACTION_DELAYEDJUMP) != 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areas);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
@@ -3938,8 +4178,6 @@ static void test_bot_travel_rocketjump_approaches_start_with_weapon_view(void **
 {
 	(void)state;
 
-	LibVarSet("weapindex_rocketlauncher", "7");
-
 	aasworld.numAreas = 2;
 	aasworld.numAreaSettings = 3;
 	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
@@ -3958,11 +4196,11 @@ static void test_bot_travel_rocketjump_approaches_start_with_weapon_view(void **
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 64.0f);
 	aasworld.travelflagfortype[TRAVEL_ROCKETJUMP] = TFL_ROCKETJUMP;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
@@ -3974,20 +4212,17 @@ static void test_bot_travel_rocketjump_approaches_start_with_weapon_view(void **
 	VectorSet(goal.origin, 128.0f, 0.0f, 64.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT | TFL_ROCKETJUMP);
+	result = BotTravel_RocketJump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_ROCKETJUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_true((result.flags & MOVERESULT_MOVEMENTVIEWSET) != 0);
-	assert_true((result.flags & MOVERESULT_MOVEMENTWEAPON) != 0);
-	assert_int_equal(result.weapon, 7);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_float_equal(result.movedir[2], 0.0f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 0);
 	assert_int_equal(ms->jumpreach, 0);
-	float timeoutDelta = ms->reachability_time - aasworld.time;
-	assert_true(timeoutDelta > 5.9f && timeoutDelta < 6.1f);
+	assert_float_equal(ms->reachability_time, 0.0f, 0.0001f);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
@@ -3995,11 +4230,13 @@ static void test_bot_travel_rocketjump_approaches_start_with_weapon_view(void **
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 	assert_true((input.actionflags & ACTION_ATTACK) == 0);
-	assert_int_equal(input.weapon, 7);
+	assert_int_equal(input.weapon, 0);
 	assert_float_equal(input.viewangles[PITCH], 90.0f, 0.0001f);
 	assert_float_equal(input.viewangles[YAW], 0.0f, 0.0001f);
+	assert_int_equal(g_command_count, 1);
+	assert_string_equal(g_command_log[0], "use");
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -4020,8 +4257,6 @@ static void test_bot_travel_rocketjump_launches_at_start(void **state)
 {
 	(void)state;
 
-	LibVarSet("weapindex_rocketlauncher", "5");
-
 	aasworld.numAreas = 2;
 	aasworld.numAreaSettings = 3;
 	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
@@ -4040,14 +4275,15 @@ static void test_bot_travel_rocketjump_launches_at_start(void **state)
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 64.0f);
 	aasworld.travelflagfortype[TRAVEL_ROCKETJUMP] = TFL_ROCKETJUMP;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
+	ms->lastreachnum = 1;
 	VectorClear(ms->origin);
 
 	bot_goal_t goal;
@@ -4056,13 +4292,11 @@ static void test_bot_travel_rocketjump_launches_at_start(void **state)
 	VectorSet(goal.origin, 128.0f, 0.0f, 64.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT | TFL_ROCKETJUMP);
+	result = BotTravel_RocketJump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_ROCKETJUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_true((result.flags & MOVERESULT_MOVEMENTVIEWSET) != 0);
-	assert_true((result.flags & MOVERESULT_MOVEMENTWEAPON) != 0);
-	assert_int_equal(result.weapon, 5);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_int_equal(ms->jumpreach, 1);
 
@@ -4073,10 +4307,12 @@ static void test_bot_travel_rocketjump_launches_at_start(void **state)
 	assert_float_equal(input.dir[2], 0.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) != 0);
 	assert_true((input.actionflags & ACTION_ATTACK) != 0);
-	assert_int_equal(input.weapon, 5);
+	assert_int_equal(input.weapon, 0);
 	assert_float_equal(input.viewangles[PITCH], 90.0f, 0.0001f);
+	assert_int_equal(g_command_count, 1);
+	assert_string_equal(g_command_log[0], "use");
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -4088,12 +4324,12 @@ static void test_bot_travel_rocketjump_launches_at_start(void **state)
 
 /*
 =============
-test_bot_travel_jumppad_targets_start_with_block_probe
+test_bot_travel_jumppad_preserves_retail_unsupported_result
 
-Pins Q3/retail jumppad approach steering through active dispatch.
+Pins retail's unsupported active jumppad dispatch and eight-second timeout.
 =============
 */
-static void test_bot_travel_jumppad_targets_start_with_block_probe(void **state)
+static void test_bot_travel_jumppad_preserves_retail_unsupported_result(void **state)
 {
 	(void)state;
 
@@ -4114,19 +4350,22 @@ static void test_bot_travel_jumppad_targets_start_with_block_probe(void **state)
 	VectorSet(aasworld.reachability[1].start, 30.0f, 40.0f, 24.0f);
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 64.0f);
 	aasworld.travelflagfortype[TRAVEL_JUMPPAD] = TFL_JUMPPAD;
+	test_attach_floor_aas_geometry(-1.5f);
 
 	g_trace_result_count = 1;
 	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
 	g_trace_results[0].fraction = 1.0f;
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
+	ms->presencetype = PRESENCE_NORMAL;
+	ms->moveflags = MFL_ONGROUND;
 	VectorClear(ms->origin);
 
 	bot_goal_t goal;
@@ -4135,29 +4374,22 @@ static void test_bot_travel_jumppad_targets_start_with_block_probe(void **state)
 	VectorSet(goal.origin, 128.0f, 0.0f, 64.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	BotMoveToGoalHandle(&result, handle, &goal, TFL_DEFAULT);
 
 	assert_false(result.failure);
 	assert_int_equal(result.traveltype, TRAVEL_JUMPPAD);
-	assert_true((result.flags & MOVERESULT_MOVEMENTVIEW) == 0);
-	assert_float_equal(result.movedir[0], 0.6f, 0.0001f);
-	assert_float_equal(result.movedir[1], 0.8f, 0.0001f);
-	assert_float_equal(result.movedir[2], 0.0f, 0.0001f);
-	assert_int_equal(g_trace_call_count, 1);
-	assert_float_equal(g_trace_end_log[0][0], 1.8f, 0.0001f);
-	assert_float_equal(g_trace_end_log[0][1], 2.4f, 0.0001f);
-	assert_float_equal(g_trace_end_log[0][2], 0.0f, 0.0001f);
+	assert_int_equal(result.type, 0);
+	assert_int_equal(result.flags, 0);
+	assert_int_equal(g_trace_call_count, 0);
 	float timeoutDelta = ms->reachability_time - aasworld.time;
-	assert_true(timeoutDelta > 9.9f && timeoutDelta < 10.1f);
+	assert_true(timeoutDelta > 7.9f && timeoutDelta < 8.1f);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
-	assert_float_equal(input.speed, 400.0f, 0.0001f);
-	assert_float_equal(input.dir[0], 0.6f, 0.0001f);
-	assert_float_equal(input.dir[1], 0.8f, 0.0001f);
-	assert_true((input.actionflags & ACTION_JUMP) == 0);
+	assert_float_equal(input.speed, 0.0f, 0.0001f);
+	assert_int_equal(input.actionflags, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -4195,15 +4427,18 @@ static void test_bot_travel_bfgjump_uses_retail_unsupported_path(void **state)
 	VectorSet(aasworld.reachability[1].start, 2.0f, 0.0f, 16.0f);
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 64.0f);
 	aasworld.travelflagfortype[TRAVEL_BFGJUMP] = TFL_BFGJUMP;
+	test_attach_floor_aas_geometry(-1.5f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 5;
 	ms->areanum = 1;
+	ms->presencetype = PRESENCE_NORMAL;
+	ms->moveflags = MFL_ONGROUND;
 	VectorClear(ms->origin);
 
 	bot_goal_t goal;
@@ -4212,11 +4447,10 @@ static void test_bot_travel_bfgjump_uses_retail_unsupported_path(void **state)
 	VectorSet(goal.origin, 128.0f, 0.0f, 64.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT | TFL_BFGJUMP);
+	BotMoveToGoalHandle(&result, handle, &goal, TFL_DEFAULT | TFL_BFGJUMP);
 
-	assert_true(result.failure);
+	assert_false(result.failure);
 	assert_int_equal(result.traveltype, TRAVEL_BFGJUMP);
-	assert_int_equal(result.flags & MOVERESULT_MOVEMENTWEAPON, 0);
 	assert_int_equal(ms->jumpreach, 0);
 	float timeoutDelta = ms->reachability_time - aasworld.time;
 	assert_true(timeoutDelta > 7.9f && timeoutDelta < 8.1f);
@@ -4227,7 +4461,7 @@ static void test_bot_travel_bfgjump_uses_retail_unsupported_path(void **state)
 	assert_int_equal(input.actionflags, 0);
 	assert_int_equal(input.weapon, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -4249,6 +4483,7 @@ static void test_bot_finish_bfgjump_uses_retail_unsupported_path(void **state)
 	(void)state;
 
 	aasworld.time = 3.0f;
+	aasworld.initialized = qtrue;
 	aasworld.numReachability = 2;
 	aasworld.reachability = calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
 	assert_non_null(aasworld.reachability);
@@ -4257,11 +4492,11 @@ static void test_bot_finish_bfgjump_uses_retail_unsupported_path(void **state)
 	VectorSet(aasworld.reachability[1].start, 64.0f, 0.0f, 0.0f);
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 0.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 0;
 	ms->areanum = 1;
@@ -4277,18 +4512,17 @@ static void test_bot_finish_bfgjump_uses_retail_unsupported_path(void **state)
 	VectorSet(goal.origin, 128.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT | TFL_BFGJUMP);
+	BotMoveToGoalHandle(&result, handle, &goal, TFL_DEFAULT | TFL_BFGJUMP);
 
-	assert_true(result.failure);
+	assert_false(result.failure);
 	assert_int_equal(result.traveltype, TRAVEL_BFGJUMP);
-	assert_int_equal(result.flags & MOVERESULT_MOVEMENTWEAPON, 0);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
 	assert_float_equal(input.speed, 0.0f, 0.0001f);
 	assert_int_equal(input.actionflags, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.reachability);
 	aasworld.reachability = NULL;
 	aasworld.numReachability = 0;
@@ -4314,11 +4548,11 @@ static void test_bot_finish_rocketjump_drives_endpoint_at_retail_speed(void **st
 	VectorSet(aasworld.reachability[1].start, 64.0f, 0.0f, 0.0f);
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 64.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 0;
 	ms->areanum = 1;
@@ -4336,10 +4570,10 @@ static void test_bot_finish_rocketjump_drives_endpoint_at_retail_speed(void **st
 	VectorSet(goal.origin, 128.0f, 0.0f, 64.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT | TFL_ROCKETJUMP);
+	result = BotFinishTravel_WeaponJump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_ROCKETJUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 0.9486833f, 0.0001f);
 	assert_float_equal(result.movedir[1], -0.3162278f, 0.0001f);
 	assert_float_equal(result.movedir[2], 0.0f, 0.0001f);
@@ -4353,7 +4587,7 @@ static void test_bot_finish_rocketjump_drives_endpoint_at_retail_speed(void **st
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 	assert_true((input.actionflags & ACTION_ATTACK) == 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.reachability);
 	aasworld.reachability = NULL;
 	aasworld.numReachability = 0;
@@ -4379,11 +4613,11 @@ static void test_bot_finish_rocketjump_waits_for_launch_state(void **state)
 	VectorSet(aasworld.reachability[1].start, 64.0f, 0.0f, 0.0f);
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 64.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 0;
 	ms->areanum = 1;
@@ -4401,10 +4635,10 @@ static void test_bot_finish_rocketjump_waits_for_launch_state(void **state)
 	VectorSet(goal.origin, 128.0f, 0.0f, 64.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT | TFL_ROCKETJUMP);
+	result = BotFinishTravel_WeaponJump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_ROCKETJUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 0.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_float_equal(result.movedir[2], 0.0f, 0.0001f);
@@ -4414,7 +4648,7 @@ static void test_bot_finish_rocketjump_waits_for_launch_state(void **state)
 	assert_float_equal(input.speed, 0.0f, 0.0001f);
 	assert_int_equal(input.actionflags, 0);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.reachability);
 	aasworld.reachability = NULL;
 	aasworld.numReachability = 0;
@@ -4442,12 +4676,12 @@ static void test_bot_move_airborne_finishes_last_jump_reachability(void **state)
 	VectorSet(aasworld.reachability[1].start, 64.0f, 0.0f, 0.0f);
 	VectorSet(aasworld.reachability[1].end, 128.0f, 0.0f, 0.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->client = 0;
 	ms->entitynum = 0;
 	ms->areanum = 1;
@@ -4465,10 +4699,10 @@ static void test_bot_move_airborne_finishes_last_jump_reachability(void **state)
 	VectorSet(goal.origin, 128.0f, 0.0f, 0.0f);
 
 	bot_moveresult_t result;
-	BotMoveToGoal(&result, handle, &goal, TFL_DEFAULT);
+	result = BotFinishTravel_Jump(ms, &aasworld.reachability[1]);
 
 	assert_false(result.failure);
-	assert_int_equal(result.traveltype, TRAVEL_JUMP);
+	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_float_equal(result.movedir[2], 0.0f, 0.0001f);
@@ -4479,7 +4713,7 @@ static void test_bot_move_airborne_finishes_last_jump_reachability(void **state)
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 	assert_int_equal(ms->lastreachnum, 1);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.reachability);
 	aasworld.reachability = NULL;
 	aasworld.numReachability = 0;
@@ -4487,98 +4721,53 @@ static void test_bot_move_airborne_finishes_last_jump_reachability(void **state)
 
 /*
 =============
-test_bot_reachability_area_world_hit_uses_crouch_bounds
+test_bot_reachability_area_skips_ground_pass_when_disabled
 
-Pins the retail area probe's crouch presence box and world-hit early return.
+Pins retail's first-pass fallback when the optional ground search is disabled.
 =============
 */
-static void test_bot_reachability_area_world_hit_uses_crouch_bounds(void **state)
+static void test_bot_reachability_area_skips_ground_pass_when_disabled(void **state)
 {
 	(void)state;
+	test_setup_stacked_aas_trace_world(32.0f);
 
 	vec3_t origin;
-	VectorSet(origin, 10.0f, 20.0f, 30.0f);
+	VectorSet(origin, 0.0f, 0.0f, 64.0f);
 
-	g_trace_result_count = 1;
-	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
-	g_trace_results[0].fraction = 0.25f;
-	g_trace_results[0].ent = 0;
-	VectorCopy(origin, g_trace_results[0].endpos);
-
-	assert_int_equal(BotReachabilityArea(origin, 7), 0);
-	assert_int_equal(g_trace_call_count, 1);
-	assert_int_equal(g_trace_passent_log[0], 7);
-	assert_int_equal(g_trace_contentmask_log[0], CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	assert_float_equal(g_trace_mins_log[0][0], -15.0f, 0.0001f);
-	assert_float_equal(g_trace_mins_log[0][1], -15.0f, 0.0001f);
-	assert_float_equal(g_trace_mins_log[0][2], -24.0f, 0.0001f);
-	assert_float_equal(g_trace_maxs_log[0][0], 15.0f, 0.0001f);
-	assert_float_equal(g_trace_maxs_log[0][1], 15.0f, 0.0001f);
-	assert_float_equal(g_trace_maxs_log[0][2], 8.0f, 0.0001f);
-	assert_float_equal(g_trace_end_log[0][2], 27.0f, 0.0001f);
+	assert_int_equal(AAS_PointAreaNum(origin), 2);
+	assert_int_equal(AAS_AreaReachability(2), 0);
+	assert_int_equal(BotReachabilityArea(origin, 0), 2);
+	assert_int_equal(g_trace_call_count, 0);
 }
 
 /*
 =============
-test_bot_reachability_area_non_mover_falls_down_unowned
+test_bot_reachability_area_ground_pass_finds_lower_reachable_area
 
-Pins the Q3 fallback that traces down with no pass entity when standing on a
-non-mover entity outside a reachable area.
+Pins retail's crouch-presence ground pass from an unreachable upper area to a
+reachable lower area.
 =============
 */
-static void test_bot_reachability_area_non_mover_falls_down_unowned(void **state)
+static void test_bot_reachability_area_ground_pass_finds_lower_reachable_area(void **state)
 {
 	(void)state;
-
-	aasworld.numAreas = 2; /* retail counts the dummy zero area: one real area */
-	aasworld.numAreaSettings = 2;
-	aasworld.areas = calloc(2, sizeof(aas_area_t));
-	assert_non_null(aasworld.areas);
-	aasworld.areasettings = calloc(2, sizeof(aas_areasettings_t));
-	assert_non_null(aasworld.areasettings);
-
-	aasworld.areas[1].areanum = 1;
-	VectorSet(aasworld.areas[1].mins, -16.0f, -16.0f, -64.0f);
-	VectorSet(aasworld.areas[1].maxs, 16.0f, 16.0f, 0.0f);
-	aasworld.areasettings[1].numreachableareas = 1;
+	test_setup_stacked_aas_trace_world(32.0f);
 
 	vec3_t origin;
-	VectorSet(origin, 128.0f, 0.0f, 64.0f);
-	vec3_t ground;
-	VectorSet(ground, 0.0f, 0.0f, -32.0f);
+	VectorSet(origin, 0.0f, 0.0f, 64.0f);
 
-	g_trace_result_count = 2;
-	memset(&g_trace_results[0], 0, sizeof(g_trace_results[0]));
-	g_trace_results[0].fraction = 0.5f;
-	g_trace_results[0].ent = 2;
-	VectorCopy(origin, g_trace_results[0].endpos);
-	memset(&g_trace_results[1], 0, sizeof(g_trace_results[1]));
-	g_trace_results[1].fraction = 0.5f;
-	g_trace_results[1].ent = 0;
-	VectorCopy(ground, g_trace_results[1].endpos);
-
-	assert_int_equal(BotReachabilityArea(origin, 7), 1);
-	assert_int_equal(g_trace_call_count, 2);
-	assert_int_equal(g_trace_passent_log[0], 7);
-	assert_int_equal(g_trace_passent_log[1], -1);
-	assert_float_equal(g_trace_mins_log[1][0], -15.0f, 0.0001f);
-	assert_float_equal(g_trace_maxs_log[1][2], 8.0f, 0.0001f);
-	assert_float_equal(g_trace_end_log[1][2], -736.0f, 0.0001f);
-
-	free(aasworld.areas);
-	free(aasworld.areasettings);
-	aasworld.areas = NULL;
-	aasworld.areasettings = NULL;
-	aasworld.numAreas = 0;
-	aasworld.numAreaSettings = 0;
+	assert_int_equal(AAS_PointAreaNum(origin), 2);
+	assert_int_equal(AAS_AreaReachability(1), 1);
+	assert_int_equal(BotReachabilityArea(origin, 1), 1);
+	assert_int_equal(g_trace_call_count, 0);
 }
 
 /*
 =============
 test_bot_movement_view_target_uses_retail_route_context
 
-Pins Q3 lookahead routing: continue from the previous reach end while ignoring
-live avoid spots that are only meant to block actual movement choices.
+Pins retail route preview from the previous reach end to the next reach start,
+including the original fifteen-unit vertical target offset.
 =============
 */
 static void test_bot_movement_view_target_uses_retail_route_context(void **state)
@@ -4586,6 +4775,7 @@ static void test_bot_movement_view_target_uses_retail_route_context(void **state
 	(void)state;
 
 	aasworld.time = 4.0f;
+	aasworld.initialized = qtrue;
 	aasworld.numAreas = 3;
 	aasworld.numAreaSettings = 4;
 	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
@@ -4619,22 +4809,17 @@ static void test_bot_movement_view_target_uses_retail_route_context(void **state
 	VectorSet(aasworld.reachability[3].start, 96.0f, 0.0f, 0.0f);
 	VectorSet(aasworld.reachability[3].end, 128.0f, 0.0f, 0.0f);
 
-	int handle = BotAllocMoveState();
+	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 	ms->areanum = 1;
 	ms->lastareanum = 1;
 	ms->lastgoalareanum = 3;
 	ms->lastreachnum = 1;
 	VectorSet(ms->origin, 0.0f, 0.0f, 0.0f);
-	VectorSet(ms->avoidspots[0].origin, 96.0f, 0.0f, 0.0f);
-	ms->avoidspots[0].radius = 48.0f;
-	ms->avoidspots[0].type = AVOID_ALWAYS;
-	ms->numavoidspots = 1;
-
 	bot_goal_t goal;
 	memset(&goal, 0, sizeof(goal));
 	goal.areanum = 3;
@@ -4642,12 +4827,12 @@ static void test_bot_movement_view_target_uses_retail_route_context(void **state
 
 	vec3_t target;
 	VectorClear(target);
-	assert_true(BotMovementViewTarget(handle, &goal, TFL_DEFAULT, 96.0f, target));
+	assert_true(BotMovementViewTargetHandle(handle, &goal, TFL_DEFAULT, 96.0f, target));
 	assert_float_equal(target[0], 96.0f, 0.0001f);
 	assert_float_equal(target[1], 0.0f, 0.0001f);
-	assert_float_equal(target[2], 0.0f, 0.0001f);
+	assert_float_equal(target[2], -15.0f, 0.0001f);
 
-	BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areasettings = NULL;
@@ -4659,7 +4844,19 @@ static void test_bot_movement_view_target_uses_retail_route_context(void **state
 
 int main(void)
 {
-    const struct CMUnitTest tests[] = {
+	const struct CMUnitTest tests[] = {
+		cmocka_unit_test_setup_teardown(test_bot_move_retail_struct_layout,
+			test_setup,
+			test_teardown),
+		cmocka_unit_test_setup_teardown(test_bot_clear_move_result_preserves_vector_suffix,
+			test_setup,
+			test_teardown),
+		cmocka_unit_test_setup_teardown(test_bot_setup_move_ai_registers_retail_contract,
+			test_setup,
+			test_teardown),
+		cmocka_unit_test_setup_teardown(test_bot_shutdown_invalidates_handle_registry,
+			test_setup,
+		                                test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_move_handles_elevator_landing,
                                         test_setup,
                                         test_teardown),
@@ -4672,10 +4869,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_bot_finish_elevator_prefers_closer_vertical_endpoint,
                                         test_setup,
                                         test_teardown),
-        cmocka_unit_test_setup_teardown(test_bot_travel_funcbob_waits_for_start_position,
-                                        test_setup,
-                                        test_teardown),
-        cmocka_unit_test_setup_teardown(test_bot_travel_grapple_hook_toggles,
+		cmocka_unit_test_setup_teardown(test_bot_travel_funcbob_preserves_retail_unsupported_result,
                                         test_setup,
                                         test_teardown),
 		cmocka_unit_test_setup_teardown(test_aas_clientmove_retail_layout,
@@ -4804,6 +4998,9 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_bot_travel_ladder_uses_forward_action_and_view,
                                         test_setup,
                                         test_teardown),
+		cmocka_unit_test_setup_teardown(test_bot_travel_grapple_uses_raw_two_degree_gate,
+			test_setup,
+			test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_travel_swim_targets_start_at_retail_speed,
                                         test_setup,
                                         test_teardown),
@@ -4831,7 +5028,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_bot_travel_rocketjump_launches_at_start,
                                         test_setup,
                                         test_teardown),
-        cmocka_unit_test_setup_teardown(test_bot_travel_jumppad_targets_start_with_block_probe,
+		cmocka_unit_test_setup_teardown(test_bot_travel_jumppad_preserves_retail_unsupported_result,
                                         test_setup,
                                         test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_travel_bfgjump_uses_retail_unsupported_path,
@@ -4849,10 +5046,10 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_bot_move_airborne_finishes_last_jump_reachability,
                                         test_setup,
                                         test_teardown),
-        cmocka_unit_test_setup_teardown(test_bot_reachability_area_world_hit_uses_crouch_bounds,
+		cmocka_unit_test_setup_teardown(test_bot_reachability_area_skips_ground_pass_when_disabled,
                                         test_setup,
                                         test_teardown),
-        cmocka_unit_test_setup_teardown(test_bot_reachability_area_non_mover_falls_down_unowned,
+		cmocka_unit_test_setup_teardown(test_bot_reachability_area_ground_pass_finds_lower_reachable_area,
                                         test_setup,
                                         test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_movement_view_target_uses_retail_route_context,

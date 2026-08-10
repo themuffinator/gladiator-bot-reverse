@@ -109,6 +109,12 @@ int PC_ExpectTokenString(pc_source_t *source, char *string);
 // schema expectations while still reusing the low-level lexer.
 int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token);
 
+// Reads any next token and reports a source error when EOF is reached.
+int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token);
+
+// Emits an error associated with the source's current file and line.
+void SourceError(pc_source_t *source, char *format, ...);
+
 // Registers a global define so subsequent source loads inherit the same macro
 // state as the historical botlib precompiler.
 int PC_AddGlobalDefine(const char *string);

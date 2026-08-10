@@ -19,15 +19,15 @@ typedef enum bot_status_e {
 } bot_status_t;
 
 #ifndef BOT_MATCH_MAX_MESSAGE_SIZE
-#define BOT_MATCH_MAX_MESSAGE_SIZE 256
+#define BOT_MATCH_MAX_MESSAGE_SIZE 0x98
 #endif
 
 #ifndef BOT_MATCH_MAX_VARIABLES
-#define BOT_MATCH_MAX_VARIABLES 11
+#define BOT_MATCH_MAX_VARIABLES 10
 #endif
 
 typedef struct bot_matchvariable_s {
-	int offset;
+	char *ptr;
 	int length;
 } bot_matchvariable_t;
 

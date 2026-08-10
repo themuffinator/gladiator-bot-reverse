@@ -120,7 +120,7 @@ static float g_dm_characteristics[DM_CHARACTERISTIC_COUNT];
 static int g_dm_characteristic_call_count[DM_CHARACTERISTIC_COUNT];
 static float g_dm_characteristic_minimum[DM_CHARACTERISTIC_COUNT];
 static float g_dm_characteristic_maximum[DM_CHARACTERISTIC_COUNT];
-static int g_dm_characteristic_last_handle;
+static const bot_character_t *g_dm_characteristic_last_character;
 static dm_move_call_t g_dm_move_calls[DM_MAX_MOVE_CALLS];
 static int g_dm_move_call_count;
 static int g_dm_move_results[DM_MAX_MOVE_CALLS];
@@ -445,12 +445,12 @@ int EA_GetInput(int client, float thinktime, bot_input_t *out_input)
 
 /*
 =============
-BotMoveInDirection
+BotMoveInDirectionHandle
 
 Captures direct-movement retries and emits EA state only on success.
 =============
 */
-int BotMoveInDirection(int move_handle, const vec3_t direction, float speed, int type)
+int BotMoveInDirectionHandle(int move_handle, const vec3_t direction, float speed, int type)
 {
 	int call_index = g_dm_move_call_count;
 	if (call_index < DM_MAX_MOVE_CALLS)
@@ -493,12 +493,12 @@ int BotMoveInDirection(int move_handle, const vec3_t direction, float speed, int
 
 /*
 =============
-BotInitMoveState
+BotInitMoveStateHandle
 
 Captures the retail attack-chase movement setup without requiring move AI.
 =============
 */
-void BotInitMoveState(int move_handle, const bot_initmove_t *initmove)
+void BotInitMoveStateHandle(int move_handle, const bot_initmove_t *initmove)
 {
 	g_dm_init_move_call_count += 1;
 	g_dm_init_move_order = ++g_dm_move_sequence;
@@ -511,12 +511,12 @@ void BotInitMoveState(int move_handle, const bot_initmove_t *initmove)
 
 /*
 =============
-BotMoveToGoal
+BotMoveToGoalHandle
 
 Captures only the goal fields written by retail's dormant attack-chase branch.
 =============
 */
-void BotMoveToGoal(bot_moveresult_t *result,
+void BotMoveToGoalHandle(bot_moveresult_t *result,
 	int move_handle,
 	const bot_goal_t *goal,
 	int travel_flags)
@@ -721,9 +721,12 @@ Characteristic_BFloat
 Provides deterministic bounded character values to the focused DM harness.
 =============
 */
-float Characteristic_BFloat(int handle, int index, float minimum, float maximum)
+float Characteristic_BFloat(const bot_character_t *character,
+	int index,
+	float minimum,
+	float maximum)
 {
-	g_dm_characteristic_last_handle = handle;
+	g_dm_characteristic_last_character = character;
 
 	if (index < 0 || index >= DM_CHARACTERISTIC_COUNT)
 	{
@@ -855,7 +858,7 @@ static int dm_test_setup(void)
 	memset(g_dm_characteristic_maximum, 0, sizeof(g_dm_characteristic_maximum));
 	g_dm_characteristics[DM_CHARACTERISTIC_ATTACK_SKILL] = 1.0f;
 	g_dm_characteristics[DM_CHARACTERISTIC_REACTION_TIME] = 0.3f;
-	g_dm_characteristic_last_handle = -1;
+	g_dm_characteristic_last_character = NULL;
 	dm_move_capture_reset();
 	memset(&g_dm_weapon_info, 0, sizeof(g_dm_weapon_info));
 	g_dm_weapon_available = false;
@@ -907,7 +910,7 @@ static void dm_prepare_client_state(bot_client_state_t *client_state, int client
 	memset(client_state, 0, sizeof(*client_state));
 	client_state->client_number = client;
 	client_state->entity_number = client + 1;
-	client_state->character_handle = 7;
+	client_state->character = (bot_character_t *)(uintptr_t)7;
 	client_state->move_handle = client + 1;
 	client_state->current_weapon = 3;
 	client_state->last_client_update.pm_type = PM_NORMAL;
@@ -1001,7 +1004,7 @@ static void test_dm_reaction_delay_gates_attack(void)
 	DM_ASSERT_FLOAT_CLOSE(metrics.enemysight_time, 1.0f, 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(metrics.reaction_delay, 0.4f, 0.0001f);
 	DM_ASSERT(g_dm_characteristic_call_count[DM_CHARACTERISTIC_REACTION_TIME] == 1);
-	DM_ASSERT(g_dm_characteristic_last_handle == client_state.character_handle);
+	DM_ASSERT(g_dm_characteristic_last_character == client_state.character);
 	DM_ASSERT_FLOAT_CLOSE(g_dm_characteristic_minimum[DM_CHARACTERISTIC_REACTION_TIME],
 		0.0f,
 		0.0001f);

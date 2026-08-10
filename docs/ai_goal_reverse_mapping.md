@@ -1,77 +1,573 @@
-# ai_goal Reverse Mapping
+# `ai_goal` Retail Reverse Mapping
 
-This note captures the current Gladiator HLIL anchors used to reconstruct the goal-state setup and item-selection wiring.
+This document records the Gladiator retail behavior recovered from
+`dev_tools/gladiator.dll.bndb_hlil.txt`. The HLIL is authoritative for the
+retail path. Quake III Arena `be_ai_goal.c` is useful for names and intent, but
+later Q3 behavior is called out explicitly and must remain behind a
+compatibility boundary.
 
-## HLIL anchors
+## Primary HLIL anchors
 
-| HLIL address | Reconstructed role | Source mapping |
-| --- | --- | --- |
-| `sub_100293a0` | Client memory diagnostics. Prints the item-weight config byte count and the separate item-index allocation at client offset `0xbc4`. | `BotGoal_ItemWeightIndexByteSize` reports the index allocation and `BotLoadItemWeights` emits the retail `"%6d bytes item index\n"` developer line after index rebuild. |
-| `sub_10029480` | Client setup. Loads the character, then calls the item-weight loader with characteristic `0x1c` before weapon/chat setup. | `BotSetupClient` now allocates the goal handle and calls `AI_GoalBotlib_LoadItemWeights` with `BOT_CHARACTERISTIC_ITEMWEIGHTS`. |
-| `sub_100308d0` | Item-weight loader. Calls the weight parser with the caller filename, stores the config pointer, requires global item config, then builds the item-to-weight index. Returns `0` on success and `0x1c` on failure. | `BotLoadItemWeights` returns `BLERR_NOERROR` / `BLERR_CANNOTLOADITEMWEIGHTS`, refuses to bind weights before `itemconfig` is loaded, passes the original filename through to `ReadWeightConfig` so retained cache entries are found before filesystem resolution, emits the retail generic `"couldn't load weights\n"` wrapper diagnostic on parser failure, and rebuilds `itemweightindex` from registered item infos. |
-| `sub_10030950` | Frees the item-weight config and item-weight index pair. | `BotFreeItemWeights` and `BotFreeGoalState`. |
-| `sub_10030990` | Goal-state reset. Clears the goal stack/avoid ranges, writes stack top `0`, and then resets avoid-goal state. | `BotResetGoalState` clears the stack, preserves the retail zero-is-empty stack sentinel, resets avoid goals/reach entries, and leaves loaded item weights intact. |
-| `sub_1002f6f0` | Avoid-goal reset. Clears the 64 goal-number slots at goal-state offset `0x1cc` and the 64 expiry-time slots at `0x2cc`. | `bot_goalstate_t` now stores separate `avoidgoals[64]` / `avoidgoaltimes[64]` arrays and `BotResetAvoidGoals` clears both without maintaining a compact count. |
-| `sub_1002f730` / `sub_1002f7b0` / `sub_1002f820` | Avoid-goal dump/add/query helpers. The add helper scans the 64 time slots and writes only the first expired slot; it does not compact, refresh active duplicates, or evict an active entry when the table is full. | `BotAddToAvoidGoals`, `BotAvoidGoalTime`, `BotRemoveFromAvoidGoals`, and `BotDumpAvoidGoals` now operate over the fixed Gladiator table. Removal clears an active timeout in place, queries scan the whole table, and full active tables reject new entries. |
-| `sub_100309d0` | Goal AI setup. Loads `itemconfig` with default `items.c`; failure is `0x1d`. | `BotSetupGoalAI` / `BotInitLevelItems` now preserve the `BLERR_CANNOTLOADITEMCONFIG` startup failure instead of collapsing it into weapon setup. |
-| `sub_10030a20` | Goal AI shutdown. Frees the global item config pointer. | `BotShutdownGoalAI` frees goal states and clears level-item/item-definition caches without reloading `itemconfig`. |
-| `sub_100292e0` | BotAI-side dynamic item refresh throttle. Compares current botlib time against the next refresh deadline, calls `sub_1002fa20`, then advances the deadline by one second. | `BotUpdateEntityItemsThrottled` mirrors the one-second gate and `AI_GoalBotlib_Update` invokes it before stack touch/selection so live entity items are linked before LTG/NBG scoring. |
-| `sub_1002ed20` | Item config loader. Parses `iteminfo` blocks, including classname, display name, model path, model index, respawn time, and bounds. | `BotGoal_LoadItemDefs` now preserves model/modelindex fields and has a raw `iteminfo` fallback when the standalone precompiler path yields an empty or partial table. |
-| `sub_1002f360` | Level item initialization. Reads `notspawnflags` with default `2048`, resolves each item model through `IndexFromModel`, logs modelindex zero, scans BSP entities, skips filtered spawnflag entities, drops every known item to the floor, and seeds level item goals. | `BotGoal_SetMapModelIndexes` caches the `BotLoadMap` model table before `BotInitLevelItems`; item definitions are resolved against that table before BSP item registration; the goal-side BSP reader now preserves little-endian headers on Windows, the `sub_1002f1a0`/`f270`/`f2b0` non-clearing free-list heap supplies and recycles level items, item entity registration applies the retail `spawnflags & notspawnflags` gate and its exact case-sensitive classname match, all known BSP items—including `spawnflags & 1`—trace down before their origin/area is registered, known entries without an origin emit the recovered error, and successor-only `notfree`/`notteam`/`notsingle`/`notbot` eligibility epairs and `item_botroam` weighting are not imported into raw map items. |
-| `sub_1002fe50` / `sub_1002fe80` | Goal-stack peek helpers. Top goal returns null at depth zero; second goal returns null unless stack depth is greater than one. | `BotGetTopGoal` preserves the zero-is-empty sentinel, and `BotGetSecondGoal` now refuses depth-one stacks instead of exposing slot zero. |
-| `sub_1002f890` | Level item goal lookup. Walks level items until it finds the first exact configured display-name match whose goal number is greater than the caller's cursor, then writes the public goal fields from the level-item record and iteminfo bounds. | `BotGetLevelItemGoal` now treats `index` as a lower-bound cursor, writes the raw origin/area/bounds/entity/number prefix only while preserving the caller's `flags` and `iteminfo` tail, returns that goal number, and returns `-1` when the exact raw-name search is exhausted; direct compatibility registrations retain their broader classname/name lookup. |
-| `sub_1002fa20` | Dynamic entity item update. Expires timed goals, matches settled live entities by model index, links nearby static level items, and creates timed dropped goals. | `BotUpdateEntityItems` now performs model-index reconciliation, uses the Gladiator 20-unit static-link radius, separates physical item origin from public best-reachable goal origin, projects origin/area when an unlinked static item first attaches, refreshes only physical origin for an existing link, leaves an old link intact if that entity later changes model, keeps dropped items in jump-pad areas, and creates `GFL_DROPPED` goals with 30-second timeouts. |
-| `sub_10030600` | Goal-touching predicate. Gets the normal presence bounding box, expands the goal bounds by the player extents, then checks all three axes. | `BotTouchingGoal` now mirrors the overlap-style retail test instead of requiring the bot origin to be inside the raw item bounds. |
-| `sub_10030770` | Item-goal visibility stale-entity test. For item goals, traces from the viewer eye to `goal.origin + goal.mins`, then treats stale entity data as "in vis but not visible". | `BotItemGoalInVisButNotVisible` now preserves the original `mins + mins` / `scale 0.5` target-point quirk instead of tracing to the geometric item center. |
+| Address | Retail role |
+| --- | --- |
+| `sub_100292e0` | One-second dynamic entity-item update gate. |
+| `sub_100293a0` | Per-client memory diagnostics. |
+| `sub_10029480` / `sub_10029690` | Client setup and shutdown wiring. |
+| `sub_100297b0` | Complete `0x11d0` client-state move and source clear. |
+| `sub_10029c10` (`0x10029c41`) | Map-load call to level-item initialization. |
+| `sub_10029c90` / `sub_10029da0` | AI setup/shutdown and fixed client-table allocation/free. |
+| `sub_1002ed20` | Strict `iteminfo` config loader. |
+| `sub_1002f100` | Item-to-fuzzy-weight index builder. |
+| `sub_1002f1a0` through `sub_1002f320` | Level-item heap and active-list helpers. |
+| `sub_1002f360` | Per-map level-item initialization. |
+| `sub_1002f6a0` | Direct goal-number-to-display-name lookup. |
+| `sub_1002f6f0` through `sub_1002f820` | Fixed avoid-goal table operations. |
+| `sub_1002f890` | Public level-item goal lookup. |
+| `sub_1002fa20` | Dynamic entity-item reconciliation. |
+| `sub_1002fd40` through `sub_1002fe80` | Goal-stack operations. |
+| `sub_1002feb0` / `sub_10030260` | LTG and NBG item selection. |
+| `sub_10030600` | Goal-touching predicate. |
+| `sub_10030770` | Item-goal visibility/validity predicate. |
+| `sub_100308d0` / `sub_10030950` | Item-weight load/free leaves. |
+| `sub_10030990` | Goal-state reset. |
+| `sub_100309d0` / `sub_10030a20` | Goal-AI setup/shutdown. |
 
-## Q3 successor parity points
+## Exact retail data layouts
 
-The Quake III `be_ai_goal.c` selection flow remains the best readable successor reference for Gladiator's goal item logic:
+Gladiator is a 32-bit DLL. These offsets describe its raw retail records; a
+64-bit compatibility layer should keep its own bookkeeping outside these
+logical core records.
 
-- `BotChooseLTGItem` and `BotChooseNBGItem` require loaded item weights before selecting.
-- Current area resolution uses Gladiator's movement reachability helper directly; a missing or unreachable result rejects selection without a Q3 last-valid-area fallback.
-- Before that reachability query, Gladiator samples the point two units below the bot origin and passes the helper's ground-test mode only when the `0x38` fluid mask is clear; it does not pass the goal-state client number.
-- Item value is divided by travel time scaled by `0.01`, not subtracted from travel time; a raw item with a nonzero timeout then receives the recovered fixed `+20` bonus.
-- Avoid timers are tested against estimated travel seconds using `avoidtime - t * 0.009`.
-- Chosen raw LTG/NBG items are added back to avoid goals using their item-config respawn time, with the 30-second default only for an exactly-zero value; the later dropped-item shortcut is retained only for direct compatibility registrations.
-- Raw level-item selection does not consult the reconstruction-only `next_respawn_time` marker; that bridge compatibility gate applies only to direct registrations.
-- Both raw selectors add the chosen item to the avoid table before pushing its goal. A full retail stack therefore still returns selection success and retains the avoid entry while the existing top goal remains unchanged.
-- Gladiator's avoid-goal table is smaller and less "managed" than the Q3 successor: it is a fixed 64-slot number/time table, inserts use only expired slots, active duplicate inserts do not refresh earlier slots, and a full active table does not evict an older avoid goal.
-- Raw map/dropped records remain selectable by LTG/NBG even with `entitynum == 0`; the unlinked-static/roam guard is retained only for direct compatibility registrations.
-- Dynamic entity item refresh is not run on every goal query; the BotAI path gates it to roughly once per second before goal selection.
-- The later Q3 jump-pad rejection is absent: Gladiator retains dropped dynamic items even when `AAS_BestReachableArea` resolves a jump-pad area.
-- A dynamic entity model change does not remove an earlier static-item link; the new model can add a second, timed dropped goal for the same entity number.
-- `BotGetLevelItemGoal` uses a strict `goal.number > index` cursor, requires the raw case-sensitive configured display name, returns `-1` when no later match exists, and preserves the caller's lookup `flags`/`iteminfo` tail instead of exposing internal bookkeeping.
-- `BotTouchingGoal` treats touching as normal player bbox overlap with the goal bounds, not point containment inside the item bounds.
-- `BotItemGoalInVisButNotVisible` traces to `goal.origin + goal.mins`; this is inherited from the Q3 source sequence and confirmed in Gladiator HLIL.
-- `BotSetAvoidGoalTime` treats negative avoid times as a request to derive the timeout from the matching level item's respawn/default/minimum avoid rules.
-- The public negative `BotSetAvoidGoalTime` path does not use selected-goal behavior; even dropped goals derive from respawn/default/minimum rules on that API. Raw selection itself uses respawn/default timing after its timeout-driven score bonus.
-- Stationary BSP items are traced down to the floor during level-item initialization before goal origin/area registration.
-- Parsed `target_location` and `info_camp` metadata are pushed to the head of their lists in the Q3 successor, so duplicate map locations resolve to the last parsed BSP entity and camp spot iteration runs in reverse entity-lump order.
-- NBG selection requires `travel_time < maxtime`; zero or equal max-time values reject candidates, and repeated LTG/NBG picks are controlled by avoid timers rather than an extra same-goal-number veto.
-- NBG selection checks that returning to the LTG is not more expensive than continuing directly.
-- `BotInterbreedGoalFuzzyLogic` writes into the child's existing item-weight config; it does not clone either parent. `BotMutateGoalFuzzyLogic` ignores the public `range` parameter and dispatches directly to `EvolveWeightConfig`.
-- `BotGoalName` clears the output for unknown goal numbers rather than formatting the numeric id.
-- Goal stack slot `0` is a sentinel. Pushes start at slot `1`, `goalstacktop == 0` means empty, second-goal lookup requires depth greater than one, and overflow logs `"goal heap overflow"` without discarding older goals.
+### `itemconfig_t` and `iteminfo_t`
 
-## Wiring changes in this round
+The item config begins with an item count and an item-array pointer. The loader
+allocates one cleared block of `8 + max_iteminfo * 0x11c` bytes and points the
+array at the bytes immediately following the header.
 
-- Client setup now follows the HLIL order by loading character item weights into the botlib goal state.
-- Goal setup now returns `BLERR_CANNOTLOADITEMCONFIG` for a missing shared `itemconfig`, and item-weight binding returns `BLERR_CANNOTLOADITEMWEIGHTS` when called before that shared config exists.
-- Goal shutdown now clears the reconstructed global goal/item caches instead of invoking the setup loader again.
-- Goal stack helpers now use the retail zero-sentinel contract instead of a `-1` empty marker.
-- Goal avoid synchronisation now merges orchestrator avoid entries instead of clearing botlib-owned avoid timers each frame.
-- Avoid-goal storage now follows the HLIL fixed-slot layout and insertion semantics instead of the earlier compact counted list.
-- Implemented goal helpers are exposed only through the in-repo `bot_export_extended_t` table, leaving retail `bot_export_t` at its exact 20-function size.
-- Item definitions now carry `model` / `modelindex`, `BotLoadMap` feeds the goal module the Quake II model table, and dynamic entity updates reconstruct the HLIL static-link and dropped-item paths, including their separate physical/best-reachable origins and absence of the later Q3 jump-pad rejection.
-- BotAI goal updating now routes through the recovered once-per-second entity item refresh gate before selection, matching `sub_100292e0`.
-- Nearby goal selection now preserves the retail strict `maxtime` ceiling and relies on avoid timers, not an extra same-number filter, to prevent immediate LTG reselection.
-- LTG/NBG start-area resolution rejects missing or no-reachability current areas, even if a previous selection used a valid area.
-- Public negative avoid-time derivation uses a separate respawn/default/minimum helper, independent of raw selection.
-- LTG/NBG selection now gives every timed raw item the fixed `+20` score bonus, pushes a `GFL_ITEM` goal without successor dropped/roam bits, and uses the raw item respawn/default avoid time; direct registrations preserve the extended compatibility flags.
-- NBG selection keeps the raw travel time from the bot to the LTG for the return-route comparison, including the retail zero/unreachable result, instead of substituting a permissive sentinel.
-- Every parsed BSP level item now follows the retail floor-drop trace before registration, including an item carrying `spawnflags & 1`; known items without an `origin` retain the retail error diagnostic. The raw record has no successor `notfree`/`notteam`/`notsingle`/`notbot` eligibility bits, so those epairs do not suppress a static item's live-entity link.
-- Level item initialization now mirrors the retail `notspawnflags` BSP entity filter and keeps normal little-endian Quake II BSP headers readable on Windows builds.
-- Parsed map locations and camp spots now preserve successor head-insertion order rather than append order.
-- Public level-item lookup reconstructs only the retail output prefix, preserving the caller's `flags` and `iteminfo` tail instead of exposing selector bookkeeping.
-- Focused tests cover item-weight setup, itemconfig failure mapping, item-index byte accounting, exported goal helper presence, child-config fuzzy interbreeding, avoid timer preservation, fixed-slot avoid table behavior, negative avoid-time derivation for dropped items, raw dropped-item score/goal/avoid semantics, stack emptying and second-goal sentinel handling, goal naming, goal touching bounds, item visibility trace targeting, level-item cursor lookup with exact raw display names and public flag reconstruction, BSP spawnflag filtering, all-item BSP floor dropping plus the missing-origin diagnostic, no-op successor item eligibility epairs, info-entity ordering, strict NBG max-time handling, start-area reachability rejection, static live-entity linking, model-change stale-link retention, throttled AI-side entity refresh, unlinked-static item selection guards, dropped-item jump-pad retention, and dropped-item timeout handling.
+Each `iteminfo_t` is exactly `0x11c` bytes:
+
+| Offset | Field |
+| ---: | --- |
+| `0x000` | `char name[80]` -- configured display name |
+| `0x050` | `char classname[80]` -- token following `iteminfo` |
+| `0x0a0` | `char model[80]` |
+| `0x0f0` | runtime `modelindex` |
+| `0x0f4` | integer `type` |
+| `0x0f8` | integer inventory `index` |
+| `0x0fc` | float `respawntime` |
+| `0x100` | `mins[3]` |
+| `0x10c` | `maxs[3]` |
+| `0x118` | zero-based item-info number |
+
+`modelindex` is not an item-config field. It is overwritten from
+`IndexFromModel(iteminfo.model)` on every map load.
+
+### `levelitem_t`
+
+The raw level-item record is exactly `0x34` bytes:
+
+| Offset | Field |
+| ---: | --- |
+| `0x00` | goal number |
+| `0x04` | item-info index |
+| `0x08` | physical/entity origin `vec3_t` |
+| `0x14` | best-reachable area number |
+| `0x18` | best-reachable goal origin `vec3_t` |
+| `0x24` | linked entity number |
+| `0x28` | absolute timeout; zero for a permanent item |
+| `0x2c` | active-list `prev` |
+| `0x30` | active/free-list `next` |
+
+Retail does not store a classname, validity flag, base weight, next-respawn
+time, Q3 item eligibility flags, or `GFL_DROPPED` bit in this record. Those are
+compatibility metadata and should not change raw heap size or raw list order.
+
+### Goal and goal-state records
+
+`bot_goal_t` is `0x38` bytes. The retail goal state is exactly `0x3cc` bytes:
+
+| Offset | Field |
+| ---: | --- |
+| `0x000` | item-weight config pointer |
+| `0x004` | item-weight index pointer |
+| `0x008` | eight `0x38` goal-stack slots |
+| `0x1c8` | stack top/depth |
+| `0x1cc` | 64 avoid-goal numbers |
+| `0x2cc` | 64 avoid-goal expiry times |
+
+There is no item-weight count, client number, last-reachability area, or
+avoid-reach table in the retail goal-state leaf. Gladiator embeds this record
+inside each retail client state; allocating it through a Q3-style handle table
+is adapter behavior.
+
+### Host-width boundary
+
+The raw `itemconfig_t` (`0x08`), `iteminfo_t` (`0x11c`), `levelitem_t`
+(`0x34`), `bot_goal_t` (`0x38`), goal state (`0x3cc`), and fuzzy-weight config
+(`0x404`) are asserted at their retail sizes on x86. On x64, native pointers
+necessarily widen in the parser/adapter-facing records. Cache filenames,
+handle ownership, compatibility item flags, and other host metadata therefore
+live in sidecars or adapter tables; none is appended to a raw x86 record or
+used to change retail list, selection, or ownership semantics.
+
+The client-state tables have a related but distinct host-width boundary. Their
+public storage stride remains the retail `0x11d0` bytes on every build, and the
+separate client-settings stride remains exactly `0x90`; the native
+`bot_client_state_t` is required to fit within the leading portion of its
+fixed slot. On x64, its embedded pointers are native-width adapter fields, so
+tests pin the allocation sizes, fixed strides, full-slot clears, and stable
+addresses rather than claiming that every internal x86 pointer offset is
+unchanged.【F:src/botlib/interface/bot_state.h】【F:src/botlib/interface/bot_state.c】【F:tests/parity/test_bot_interface.c】
+
+## Strict `LoadItemConfig` behavior
+
+`sub_1002ed20` implements a strict, atomic load:
+
+1. Read `max_iteminfo`, default `256`. A negative value logs
+   `max_iteminfo = %d`, resets the libvar to `256`, and continues with `256`.
+2. Resolve and load the requested source. Failures log the recovered
+   `couldn't find %s` or `counldn't load %s` diagnostics and return null.
+3. Allocate the cleared header/item block.
+4. Require every top-level token to be exactly `iteminfo`. An unknown
+   definition is a fatal source error; it is not skipped.
+5. Require the classname following `iteminfo` to be a string token and copy it
+   to offset `0x50` with the retail 80-byte limit.
+6. Zero the complete destination `iteminfo_t`, then parse only `name`, `model`,
+   `type`, `index`, `respawntime`, `mins`, and `maxs` with the structure
+   parser's declared types. Unknown fields, malformed values, missing braces,
+   or over-capacity input fail the whole load and free both source and config.
+7. Preserve duplicate classnames as separate entries and assign each entry its
+   declaration-order number.
+8. A zero-entry config warns `no item info loaded` but still succeeds.
+9. Log the loaded source path on success.
+
+There are no implicit display-name, bounds, respawn-time, or model-index
+defaults. A permissive raw scanner, case-insensitive deduplication, accepting
+`TT_NAME` classnames, or accepting a `modelindex` key is non-retail behavior.
+
+The structure parser details are observable too. `type` and `index` accept a
+separate leading minus token but require an integer in the signed 16-bit range;
+floats and out-of-range values are fatal. Float fields accept signed numeric
+tokens. Vector fields are brace-delimited and comma-separated, but the retail
+reader accepts an empty or one-/two-component vector (the cleared remainder
+stays zero) and accepts the comma after a third component. End-of-file inside
+an item block emits `couldn't read expected token` and fails the complete load.
+
+The requested `itemconfig` name is resolved directly: the raw loader does not
+prepend an `itemconfig/` directory. Within each normal asset root, a loose file
+wins before package lookup. Package lookup probes only `pak0.pak` through
+`pak9.pak`, in ascending numeric order, so the first matching entry wins;
+arbitrarily named packages and `pak10.pak` or later are ignored. A loose-file
+success logs the logical request, while a packaged success logs the winning
+container plus logical entry.
+
+## BSP entity list and accessor contract
+
+`AAS_LoadBSPEntities` locates the current Quake II BSP through the shared map
+discovery path, reads its entity lump, and passes that text to
+`AAS_ParseBSPEntities`. The parser preserves the recovered retail linked-list
+semantics:
+
+- each parsed entity is prepended, so the returned entity list is in reverse
+  textual order;
+- each epair is also prepended within its entity;
+- key lookup uses an exact case-sensitive comparison and returns the first
+  linked epair, so the last textual occurrence of a duplicate key wins.
+
+`AAS_VectorForBSPEpairKey` leaves the caller's vector unchanged and returns
+`qfalse` when the key is absent. When the key is present, it zero-initializes
+three double temporaries, attempts to scan all three components, copies all
+three temporaries to the output, and returns `qtrue` without testing the scan
+count. A partial value therefore supplies the parsed prefix and zeroes the
+missing components; a present but wholly malformed value writes three zeroes.
+
+## Setup, map, client, and shutdown lifecycle
+
+The retail lifetimes are deliberately separate:
+
+- `BotSetupGoalAI` (`sub_100309d0`) only loads the global item config from the
+  `itemconfig` libvar, default `items.c`. It returns `0` on success or `0x1d`
+  after logging `couldn't load item config` on failure. It does not scan map
+  entities or initialize the level-item heap.
+- Whole-library AI setup loads the weapon library first, then calls
+  `BotSetupGoalAI`, then invokes chat setup and discards the chat result. A goal
+  setup failure returns without rolling back the already loaded weapon
+  library; a chat setup failure does not fail library setup. None of these
+  setup calls substitutes for the later map-level item initialization. After
+  the ignored chat result, setup allocates one cleared
+  `maxclients * 0x11d0` client-state block and one cleared
+  `maxclients * 0x90` client-settings block.
+- Map load calls `sub_1002f360` at `0x10029c41`. That leaf recreates the
+  map-scoped level-item heap/list, refreshes all item model indices, and scans
+  the current BSP entity data. The global item config persists across maps.
+- `BotShutdownGoalAI` (`sub_10030a20`) frees only the global item config and
+  sets its pointer to null. Client item weights are owned by client setup and
+  shutdown, not this leaf.
+- The dynamic-update deadline is zero-initialized once in BSS. Map init and
+  goal-AI shutdown do not reset it.
+
+Those two client allocations remain fixed for the AI subsystem lifetime.
+State slot `n` is always `state_base + n * 0x11d0`, settings slot `n` is always
+`settings_base + n * 0x90`, and client creation reuses those addresses rather
+than allocating individual records; setup allocation and client destruction
+clear complete state slots. Retail validates client indices
+through `maxclients` inclusively even though it allocates exactly `maxclients`
+records. The reconstruction preserves that observable endpoint with separate,
+aligned state/settings host sentinels for `client == maxclients`; it never
+indexes either physical allocation one record past its end.
+
+`BotMoveClient`/`sub_100297b0` copies the complete `0x11d0` source record over
+the inactive destination and then zeros the complete source record. Embedded
+client/entity identities therefore move unchanged with the record; the host
+adapter only repairs destination-relative service userdata. The separate
+`0x90` presentation-settings table remains indexed by host slot and is not
+part of this state-record copy. Shutdown first
+releases and clears every real slot plus the inclusive sentinel, then frees the
+`0x90` settings base before the `0x11d0` state base, matching the recovered
+retail allocation/free order.【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32577-L32595】【F:dev_tools/gladiator.dll.bndb_hlil.txt†L32727-L32760】【F:src/botlib/interface/bot_state.c】【F:src/botlib/interface/botlib_interface.c】【F:tests/parity/test_bot_interface.c】
+
+The public `BotLoadMap` wiring preserves that boundary and order. A null map
+name returns the `AAS_LoadMap` status directly without resetting adapter
+caches or rebuilding goal items. For a named map, `AAS_LoadMap` runs first and
+any failure returns before adapter mutation. After success, the bridge/frame/
+entity/map caches are reset, host asset tables and model indices are recorded,
+all existing client states are reset for the new map, and only then
+`BotInitLevelItems` rebuilds the map-scoped raw item list. Host asset-catalogue
+failures are warnings and do not replace the successful retail map status.
+
+Client setup (`sub_10029480`) loads character data, then item weights, weapon
+weights, and chat data. An item-weight failure returns immediately. A later
+weapon failure frees item weights; a chat failure frees item and weapon
+weights. Client shutdown (`sub_10029690`) frees those owned resources and then
+zeros the complete client state.
+
+## Item-weight ownership and indexing
+
+`sub_100308d0` calls `ReadWeightConfig(filename)` directly and immediately
+stores its return value in the caller's config field. The goal leaf does not
+perform an asset-path rewrite, cache lookup, preflight item-config test, or
+two-phase replacement.
+
+- Parser failure leaves the just-written config field null, logs
+  `couldn't load weights`, and returns `0x1c`.
+- If parsing succeeds while global itemconfig is null, the leaf returns
+  `0x1c` without freeing the newly installed config and without rebuilding the
+  index.
+- With itemconfig present, it unconditionally overwrites the index field with
+  a new `numiteminfo * 4` cleared allocation and returns `0`.
+- Reloading does not free either prior pointer first; the retail leaf can leak
+  replaced config/index allocations.
+
+`sub_1002f100` looks up a fuzzy-weight index for every iteminfo classname at
+offset `0x50`. Missing fuzzy weights are reported through `Log_Write` as
+`item info %d "%s" has no fuzzy weight`.
+
+`sub_10030950` frees non-null config and index pointers but does not null them.
+The normal client-shutdown path subsequently clears the containing client
+state. Nulling fields or making reload failure transactional is a safety
+improvement, not exact retail leaf behavior.
+
+Memory diagnostics are emitted by `sub_100293a0`, not by the weight loader. In
+order, it reports character, item weights, item index, weapon weights, weapon
+index, and chat-file allocation sizes.
+
+## Level-item heap and map initialization
+
+`sub_1002f1a0` uses `max_levelitems`, default `512`, and allocates
+`count * 0x34` bytes with non-cleared `GetMemory`. Its retail loop contains an
+off-by-one defect for counts of at least two: it links records `0` through
+`count - 3`, making `count - 2` reachable but leaving that record's `next`
+uninitialized, while it writes null only to detached record `count - 1`.
+Count one works; count zero writes before the returned block.
+
+`AllocLevelItem` only pops the free-list head and never clears it.
+`FreeLevelItem` only writes the free-list `next`. Active-list removal repairs
+neighbors but does not clear the removed record. A corrected, fully linked,
+cleared heap is observably different from retail. The reconstruction preserves
+the observable capacity defect without retaining undefined memory access: one
+configured slot remains one usable slot, a count of at least two exposes a
+terminated `count - 1`-slot free list, and a nonpositive count exposes no
+slots.
+
+Per-map initialization performs these operations in order:
+
+1. Recreate the heap, clear the active head, and reset the static item count.
+2. Load and parse the current BSP entity lump into the temporary prepended
+   entity/epair lists described above.
+3. Read `notspawnflags`, default `2048`.
+4. Overwrite every iteminfo model index with `IndexFromModel(model)`, even if a
+   previous or parsed value was positive. Log model-index-zero entries through
+   `Log_Write`.
+5. Walk the parsed BSP entities in their resulting reverse-textual list order.
+   After retrieving classname, apply
+   `spawnflags & notspawnflags` before item lookup or origin validation.
+6. Match entity classname to iteminfo classname case-sensitively.
+7. Require an origin, allocate a level item, assign the next number only after
+   successful allocation, drop it to the floor, compute its best reachable
+   area/origin, and insert it at the active-list head.
+8. Log `found %d level items` after the complete scan.
+
+Static heap exhaustion logs `out of level items` and immediately abandons the
+map scan without the final found-count log. Unknown unfiltered entities are
+written to the log as `entity %s unkown item`. `target_location` and
+`info_camp` have no special retail handling here.
+
+### Floor drop
+
+The reused retail `AAS_DropToFloor` path traces from the entity origin to
+`origin.z - 100` using item bounds, pass entity zero, and mask `3`
+(`MASK_SOLID`, including windows). It fails only when `startsolid` is set.
+Otherwise it copies the trace end position even when the fraction is `1`, so a
+no-hit trace still moves the item down 100 units. A start-solid item is logged
+but remains eligible for registration.
+
+## Dynamic entity-item reconciliation
+
+The retail BotAI path invokes `sub_1002fa20` only when current AAS time is
+strictly greater than the persistent next-update deadline, then sets the
+deadline to a fresh `AAS_Time() + 1`.
+
+At the export boundary an uninitialized AAS world is a successful no-op,
+including before inactive-client validation. With AAS initialized, `BotAI`
+runs the selected client's think first and only then evaluates the global
+one-second entity-item refresh gate. Goal queries do not independently trigger
+that refresh.
+
+The update leaf:
+
+- first sweeps the active list and removes a record only when
+  `timeout != 0 && AAS_Time() > timeout`; this sweep occurs before the
+  item-definition availability check and before AAS entity enumeration, so an
+  expired record is still removed when no live AAS entity can be returned;
+- enumerates with `AAS_NextEntity`, reads `AAS_EntityModelindex` first, skips a
+  zero model index, and only then calls `AAS_EntityInfo`; current and previous
+  origins must be exactly equal;
+- performs one active-list walk per entity. The first same-model record that
+  can handle the entity wins, preserving list precedence: a nearby unlinked
+  head record can bind before a later record already linked to that entity;
+- updates only physical origin for an existing same-model/same-entity link;
+- binds a same-model unlinked static item only when distance is strictly less
+  than 20, then recomputes best-reachable area/origin;
+- otherwise allocates a fresh dropped record with number
+  `static_item_count + entitynum`, timeout `AAS_Time() + 30`, and inserts it at
+  the list head;
+- does not reject jump-pad areas.
+
+Repeated entity model changes can leave multiple active dropped records with
+the same public number. Number-based replacement or deduplication changes
+retail list order and later fuzzy-RNG selection order.
+
+## Intentional reconstruction safety boundaries
+
+The normal retail ordering and successful-path results above are preserved,
+but the reconstruction does not reproduce three undefined or leaking failure
+paths:
+
+- the level-item pool uses the bounded, terminated one-or-`count - 1` usable
+  slot emulation described above instead of following an uninitialized final
+  link or writing before a zero-count allocation;
+- the dynamic dropped-item path checks `AllocLevelItem` and adapter results and
+  returns on exhaustion instead of dereferencing a null pointer;
+- map initialization frees the temporary BSP entity/epair list after both the
+  raw scan and compatibility metadata pass, whereas the recovered retail leaf
+  leaks that temporary list.
+
+## LTG and NBG selection
+
+Both selectors use the recovered current-area path: sample two units below the
+bot, derive the ground-test mode from the `0x38` contents mask, call the
+reachability-area helper, and reject a missing or unreachable start area. They
+do not use a Q3 last-valid-area fallback.
+
+For each raw level item, retail checks `BotAvoidGoalTime` first. Any strictly
+positive remaining avoid time rejects the item directly. It does not subtract
+estimated arrival time. This check occurs before area tests, fuzzy evaluation,
+random-number consumption, and routing, so reordering it changes deterministic
+selection results.
+
+For an eligible item:
+
+- evaluate `FuzzyWeightUndecided`; require a positive weight;
+- require a positive travel time;
+- compute `weight / (travel_time * 0.01)` using the retail double/x87
+  intermediate path;
+- add `20` when the level-item timeout is nonzero;
+- replace the best candidate only on a strict score increase.
+
+After choosing a raw item, add its number to the avoid table using its exact
+nonzero configured respawn time, or 30 seconds when that value is exactly zero,
+then push the goal. The pushed raw item goal has `GFL_ITEM`; timeout does not
+add a Q3 `GFL_DROPPED` goal flag. Push overflow does not change selector
+success: the avoid entry remains and the selector returns `1`.
+
+### LTG roam fallback
+
+If LTG selection finds no item, retail calls `AAS_RandomGoalArea` from the
+current area with the caller travel flags. On success it constructs and pushes
+a roam goal with:
+
+- returned area and origin;
+- mins `{-15, -15, -15}` and maxs `{15, 15, 15}`;
+- entity number, goal number, and iteminfo all zero;
+- flags exactly `GFL_ROAM` (`2`).
+
+It then returns `1`. Only failure to find a random goal returns `0`.
+
+### NBG limits and LTG detour
+
+NBG requires `travel_time < maxtime`; equality is rejected. When an LTG is
+provided, retail computes current-to-LTG travel time and, after a candidate has
+already beaten the current best score, unconditionally computes
+candidate-to-LTG travel time. This detour check applies to permanent and timed
+dropped items alike. A candidate is rejected when its return time is greater
+than the direct current-to-LTG time. Timed items are not exempt.
+
+## Avoid-goal table
+
+The table contains exactly 64 numbers and 64 absolute expiry times.
+
+- Reset zeroes both arrays.
+- Add uses the first slot whose expiry is strictly less than current AAS time.
+- Add does not reject number zero, clamp duration, refresh an active duplicate,
+  compact entries, or evict an active entry when full.
+- Query returns `expiry - now` for the first matching slot whose expiry is
+  greater than or equal to now; otherwise it returns zero.
+- Dump includes entries whose expiry equals now and uses `Log_Write` with
+  `avoid goal %s, number %d for %f seconds`, with no heading.
+
+`BotRemoveFromAvoidGoals`, `BotSetAvoidGoalTime`, avoid-reach storage, and
+negative-time respawn/minimum derivation are later Q3 compatibility APIs, not
+Gladiator retail goal leaves.
+
+## Goal stack, names, and lookup returns
+
+Stack slot zero is a sentinel. Usable goals are slots one through seven;
+`goalstacktop == 0` is empty.
+
+- Push rejects `top >= 7`, logs `goal heap overflow`, dumps the stack, and
+  otherwise increments top and copies exactly `0x38` bytes. Its observed
+  machine return on success is the new depth.
+- Pop decrements a positive top and returns the resulting depth at machine
+  level. Popping the only goal therefore yields zero.
+- Empty writes top zero.
+- Top and second return direct pointers to the internal stack records or null;
+  second requires depth greater than one.
+- The likely original C declarations for push, pop, and empty are `void`; the
+  depth/pointer values from mutating leaves are compiler artifacts unless an
+  adapter intentionally exposes them.
+- Stack dump walks from slot one upward to top and writes only `%d: %s` through
+  `Log_Write`, with no heading or area/number fields.
+
+`sub_1002f6a0` returns a direct pointer to the configured display name for a
+goal number, or a shared empty string when no level item matches. An empty
+configured display name remains empty; retail does not fall back to classname.
+
+`sub_1002f890` walks the active list and requires both:
+
+- `levelitem.number > index`; and
+- a case-insensitive comparison between the caller string and iteminfo display
+  `name` at offset zero (`sub_10045cb0`).
+
+The caller string is not optional and an empty string is not a wildcard. On a
+match, retail writes area, origin, entity number, item bounds, and goal number,
+while deliberately leaving caller `flags` and `iteminfo` untouched. It returns
+the matching goal number or `-1` when exhausted.
+
+## Touching and visibility predicates
+
+### `BotTouchingGoal`
+
+Retail obtains the normal presence-type-4 player bounds (X/Y ±16, Z -24/+32),
+forms the Minkowski-expanded goal interval, and then applies the active safety
+shrink:
+
+- lower X/Y increase by 4; lower Z is unchanged;
+- upper X/Y decrease by 4; upper Z decreases by 10.
+
+The bot origin must remain inside that adjusted interval on all three axes.
+Using ±15 compatibility bounds or omitting the safety vectors is not retail.
+
+### `BotItemGoalInVisButNotVisible`
+
+For an item goal, retail traces a point from the eye to
+`goal.origin + goal.mins` using pass entity `viewer` and mask `3`
+(`MASK_SOLID`). View angles are unused.
+
+If the trace is unobstructed:
+
+- a nonpositive goal entity number returns `1`;
+- otherwise `AAS_EntityInfo` is queried and invalid entity info returns `1`;
+- valid entity info returns `0`.
+
+An obstructed trace returns `0`. There is no half-second `lastUpdateTime`
+staleness test.
+
+### High-level nearby-goal wiring
+
+The game-side nodes intentionally do not share one completion predicate.
+Seek NBG completes an item when the bot touches it, or when the retail
+item-visibility predicate says that a traced, unobstructed item is no longer a
+valid visible entity. Battle NBG uses contact only. Thus an absent-visible item
+can pop Seek NBG, but it must not prematurely pop Battle NBG. True item contact
+still performs the shared runes-drop side effect.
+
+Long-term item replacement uses the same touch-plus-visibility predicate as
+Seek NBG. A failed LTG reselection does not empty the complete stack; lower
+goals remain available beneath the expired or popped item goal.
+
+## Return and logging contract
+
+Stable retail status results are:
+
+- item-config load: pointer or null;
+- level-item allocation: pointer or null;
+- avoid-time query: remaining time or zero;
+- level-item goal lookup: goal number or `-1`;
+- LTG/NBG, touching, and visibility: `1` or `0`;
+- item-weight load: `0` or `0x1c`;
+- goal-AI setup: `0` or `0x1d`.
+
+Several HLIL helpers have inferred non-void return types only because the
+compiler left a pointer, depth, zero, comparison flags, iterator result, or
+logging return in `EAX`. Free/list mutators, resets, dumps, entity updating,
+goal-state reset, and shutdown should be treated as source-level `void` unless
+machine-register parity is explicitly required.
+
+Retail log ordering that affects diagnostics includes:
+
+- model-index warnings before the BSP entity scan;
+- `notspawnflags` filtering before unknown-item or missing-origin diagnostics;
+- immediate termination, with no found-count log, on static heap exhaustion;
+- `Log_Write` rather than `BotLib_Print` for fuzzy-index misses, model-index
+  misses, unknown items, avoid dumps, and stack dumps.
+
+## Q3-only compatibility surface
+
+The following are useful successor/bridge features but are not retail
+Gladiator `ai_goal` leaves and must be clearly isolated from the raw path:
+
+- separately allocated goal-state handles and handle validation;
+- `BotRemoveFromAvoidGoals`, `BotSetAvoidGoalTime`, avoid-reach APIs, and their
+  negative-time/default/minimum semantics;
+- direct register/unregister/mark-taken item APIs, `next_respawn_time`, base
+  weights, successor item eligibility bits, and public `GFL_DROPPED` goals;
+- `target_location` / `info_camp` parsing and the map-location/camp-goal APIs;
+- goal fuzzy-logic interbreed, mutate, and save APIs;
+- high-level goal/move orchestration and external avoid-list synchronization;
+- last-reachability-area fallback, same-goal vetoes, arrival-adjusted avoid
+  tests, and jump-pad rejection;
+- buffer-copy/boolean adapters for goal names and stack peeks in place of the
+  retail direct-pointer leaves.
+
+Gladiator's base `bot_export_t` remains the recovered 20-function table. Q3
+goal APIs may be exposed through an extended in-repository table, but they must
+not change base export size, retail core layouts, retail ownership, selection
+order, logging, or map/setup lifetimes.
+
+The retail library boundary follows the same rule. `BotShutdownLibrary`
+finishes teardown while imports are still callable, then clears the retained
+state, import block, 20-function retail export block, and the separate extended
+block. A host must call `GetBotAPI` again before another setup cycle; using a
+previously returned table after shutdown is intentionally invalid. The Q3
+extension is rebuilt only by that fresh API acquisition and never occupies or
+reorders the retail export prefix.

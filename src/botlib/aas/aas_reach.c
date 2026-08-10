@@ -2180,7 +2180,7 @@ int AAS_Reachability_Step_Barrier_WaterJump_WalkOffLedge(int area1num,
 	}
 
 	float maxstep = AAS_ReachPositiveLibVarValue(Bridge_MaxStep(), 18.0f);
-	float maxwaterjump = AAS_ReachPositiveLibVarValue(Bridge_MaxWaterJump(), 20.0f);
+	float maxwaterjump = AAS_ReachPositiveLibVarValue(Bridge_MaxWaterJump(), 21.0f);
 	float maxbarrier = AAS_ReachPositiveLibVarValue(Bridge_MaxBarrier(), 50.0f);
 	if (groundcandidate.found && groundcandidate.dist >= 0.0f &&
 		groundcandidate.dist < maxstep)

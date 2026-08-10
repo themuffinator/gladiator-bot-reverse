@@ -33,6 +33,7 @@
 #include "botlib/aas/aas_map.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib/aas/aas_sound.h"
+#include "botlib/ai_move/mover_catalogue.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
@@ -811,9 +812,9 @@ static void test_aas_null_map_refreshes_assets_without_world_reset(void **state)
 
 	char *models[] = {"maps/retained.bsp", "*1"};
 	char *sounds[] = {"sound/old.wav", "sound/refreshed.wav"};
-	char *images[] = {"pics/retained.pcx"};
+	char *images[] = {"pics/retained.pcx", "pics/retained_second.pcx"};
 
-	int status = AAS_LoadMap(NULL, 2, models, 2, sounds, 1, images);
+	int status = AAS_LoadMap(NULL, 2, models, 2, sounds, 2, images);
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_true(aasworld.loaded);
 	assert_true(aasworld.initialized);
@@ -823,6 +824,12 @@ static void test_aas_null_map_refreshes_assets_without_world_reset(void **state)
 	assert_string_equal(aasworld.mapName, "retained_world");
 	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/old.wav");
 	assert_string_equal(AAS_SoundSubsystem_AssetName(1), "sound/refreshed.wav");
+	assert_string_equal(AAS_ModelFromIndex(1), "*1");
+	assert_int_equal(IndexFromModel("*1"), 1);
+	assert_string_equal(AAS_SoundFromIndex(1), "sound/refreshed.wav");
+	assert_int_equal(AAS_IndexFromSound("SOUND/REFRESHED.WAV"), 1);
+	assert_string_equal(AAS_ImageFromIndex(0), "pics/retained.pcx");
+	assert_int_equal(AAS_IndexFromImage("PICS/RETAINED_SECOND.PCX"), 1);
 
 	char *replacement_sounds[] = {"sound/replacement.wav"};
 	status = AAS_LoadMap(NULL, 0, NULL, 1, replacement_sounds, 0, NULL);
@@ -832,10 +839,14 @@ static void test_aas_null_map_refreshes_assets_without_world_reset(void **state)
 	assert_string_equal(aasworld.mapName, "retained_world");
 	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/replacement.wav");
 	assert_null(AAS_SoundSubsystem_AssetName(1));
+	assert_string_equal(AAS_ModelFromIndex(1), "*1");
+	assert_string_equal(AAS_SoundFromIndex(0), "sound/old.wav");
+	assert_string_equal(AAS_ImageFromIndex(0), "pics/retained.pcx");
 
 	AAS_SoundSubsystem_ClearMapAssets();
 	aasworld.areas = NULL;
 	memset(&aasworld, 0, sizeof(aasworld));
+	AAS_Shutdown();
 }
 
 /*
@@ -2627,6 +2638,125 @@ static void test_retail_missing_aas_releases_only_bsp_storage(void **state)
 
 /*
 =============
+test_successful_map_commit_retains_parsed_mover_catalogue
+
+Pin mover-catalogue ownership across the AAS clear/commit boundary and discard
+the parsed catalogue when a later load fails after reading the BSP entities.
+=============
+*/
+static void test_successful_map_commit_retains_parsed_mover_catalogue(void **state)
+{
+	(void)state;
+	const char *map_name = "__gladiator_mover_catalogue_commit";
+	const char *bsp_path = "maps/__gladiator_mover_catalogue_commit.bsp";
+	const char *root_aas_path = "__gladiator_mover_catalogue_commit.aas";
+	const char *aas_path = "maps/__gladiator_mover_catalogue_commit.aas";
+	unlink(bsp_path);
+	unlink(root_aas_path);
+	unlink(aas_path);
+	errno = 0;
+	int directory_status = test_make_directory("maps");
+	qboolean remove_directory = directory_status == 0;
+	assert_true(remove_directory || errno == EEXIST);
+
+	static const char entity_data[] =
+		"/* retained BSP lexer comment */\n"
+		"{\n"
+		"\"classname\" \"worldspawn\"\n"
+		"}\n"
+		"{\n"
+		"\"classname\" /* key/value comment */ \"func_door\"\n"
+		"\"model\" \"*1\"\n"
+		"\"noise\" \"textures\\metal\\door\"\n"
+		"}\n";
+	q2_bsp_header_t bsp_header = {0};
+	bsp_header.ident = Q2_BSP_IDENT;
+	bsp_header.version = Q2_BSP_VERSION;
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].offset =
+		(int32_t)sizeof(bsp_header);
+	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].length =
+		(int32_t)(sizeof(entity_data) - 1U);
+	unsigned char bsp_data[sizeof(bsp_header) + sizeof(entity_data) - 1U];
+	memcpy(bsp_data, &bsp_header, sizeof(bsp_header));
+	memcpy(bsp_data + sizeof(bsp_header),
+		entity_data,
+		sizeof(entity_data) - 1U);
+	assert_true(test_write_fixture(bsp_path, bsp_data, sizeof(bsp_data)));
+
+	q2_aas_header_t aas_header = {0};
+	aas_header.ident = Q2_AAS_IDENT;
+	aas_header.version = Q2_AAS_VERSION;
+	assert_true(test_write_fixture(aas_path, &aas_header, sizeof(aas_header)));
+
+	BotMove_MoverCatalogueReset();
+	bot_mover_catalogue_entry_t stale_entry = {0};
+	stale_entry.modelnum = 7;
+	assert_true(BotMove_MoverCatalogueInsert(&stale_entry));
+	assert_int_equal(AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL),
+		BLERR_NOERROR);
+	assert_true(aasworld.loaded);
+	assert_non_null(aasworld.bspEntityData);
+	assert_int_equal(aasworld.bspEntityDataSize,
+		(int)(sizeof(entity_data) - 1U));
+	assert_memory_equal(aasworld.bspEntityData,
+		entity_data,
+		sizeof(entity_data) - 1U);
+	assert_null(BotMove_MoverCatalogueFindByModel(7));
+	const bot_mover_catalogue_entry_t *mover =
+		BotMove_MoverCatalogueFindByModel(1);
+	assert_non_null(mover);
+	assert_int_equal(mover->modelnum, 1);
+	assert_int_equal(mover->kind, BOT_MOVER_KIND_FUNC_DOOR);
+
+	assert_int_equal(unlink(aas_path), 0);
+	assert_int_equal(AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL),
+		BLERR_NOAASFILE);
+	assert_null(BotMove_MoverCatalogueFindByModel(1));
+
+	unlink(root_aas_path);
+	unlink(bsp_path);
+	if (remove_directory)
+	{
+		rmdir("maps");
+	}
+}
+
+/*
+=============
+test_bsp_entity_loader_prefers_retained_lump
+
+Pins retail dentdata ownership: generator parsing uses the entity lump retained
+by the BSP load and does not require map discovery or a second file read.
+=============
+*/
+static void test_bsp_entity_loader_prefers_retained_lump(void **state)
+{
+	(void)state;
+	static const char entity_data[] =
+		"{\n"
+		"\"classname\" \"retained_worldspawn\"\n"
+		"}\n";
+
+	aasworld.bspEntityData = GetMemory(sizeof(entity_data) - 1U);
+	assert_non_null(aasworld.bspEntityData);
+	memcpy(aasworld.bspEntityData,
+		entity_data,
+		sizeof(entity_data) - 1U);
+	aasworld.bspEntityDataSize = (int)(sizeof(entity_data) - 1U);
+	strncpy(aasworld.mapName,
+		"__gladiator_retained_entity_lump_without_bsp",
+		sizeof(aasworld.mapName) - 1U);
+	aasworld.mapName[sizeof(aasworld.mapName) - 1U] = '\0';
+
+	aas_bspentity_t *entities = AAS_LoadBSPEntities();
+	assert_non_null(entities);
+	assert_string_equal(AAS_ValueForBSPEpairKey(entities, "classname"),
+		"retained_worldspawn");
+	AAS_FreeBSPEntities(entities);
+}
+
+/*
+=============
 test_retail_entity_link_heaps_are_fixed_and_reused
 
 Pins the fixed AAS and BSP link heaps, their retail exhaustion diagnostics,
@@ -3083,6 +3213,33 @@ static void test_reachability_area_and_link_helpers(void **state)
 	assert_true(AAS_NearbySolidOrGap(start, end));
 
 	memset(&aasworld, 0, sizeof(aasworld));
+}
+
+/*
+=============
+test_bridge_config_retail_maxwaterjump_default
+
+Pins the retail sv_maxwaterjump fallback cached during bridge startup.
+=============
+*/
+static void test_bridge_config_retail_maxwaterjump_default(void **state)
+{
+	(void)state;
+	test_reset_print_capture();
+	BotInterface_SetImportTable(&g_test_imports);
+	assert_true(BotMemory_Init(TEST_BOTLIB_HEAP_SIZE));
+	LibVar_Init();
+	assert_true(BridgeConfig_Init());
+
+	libvar_t *maxwaterjump = Bridge_MaxWaterJump();
+	assert_non_null(maxwaterjump);
+	assert_non_null(maxwaterjump->string);
+	assert_string_equal(maxwaterjump->string, "21");
+	assert_float_equal(maxwaterjump->value, 21.0f, 0.0001f);
+
+	BridgeConfig_Shutdown();
+	LibVar_Shutdown();
+	BotInterface_SetImportTable(NULL);
 }
 
 /*
@@ -3573,6 +3730,125 @@ static void test_reachability_jump_generation_and_rejections(void **state)
 
 /*
 =============
+test_aas_against_ladder_retail_geometry_contract
+
+Pins the retail boundary-probe order, ladder area/presence guards, signed face
+plane selection, strict three-unit distance, and 0.1 face epsilon.
+=============
+*/
+static void test_aas_against_ladder_retail_geometry_contract(void **state)
+{
+	(void)state;
+	memset(&aasworld, 0, sizeof(aasworld));
+	assert_false(AAS_AgainstLadder(NULL));
+
+	aas_area_t areas[2] = {0};
+	aas_areasettings_t settings[2] = {0};
+	aas_vertex_t vertexes[4] = {
+		{0.0f, 10.0f, -10.0f},
+		{0.0f, -10.0f, -10.0f},
+		{0.0f, -10.0f, 10.0f},
+		{0.0f, 10.0f, 10.0f}
+	};
+	aas_edge_t edges[5] = {0};
+	int edge_index[4] = {1, 2, 3, 4};
+	aas_face_t faces[2] = {0};
+	int face_index[1] = {1};
+	aas_plane_t planes[2] = {0};
+
+	edges[1].v[0] = 0;
+	edges[1].v[1] = 1;
+	edges[2].v[0] = 1;
+	edges[2].v[1] = 2;
+	edges[3].v[0] = 2;
+	edges[3].v[1] = 3;
+	edges[4].v[0] = 3;
+	edges[4].v[1] = 0;
+	areas[1].firstface = 0;
+	areas[1].numfaces = 1;
+	settings[1].areaflags = AAS_AREA_LADDER;
+	settings[1].presencetype = PRESENCE_NORMAL;
+	faces[1].planenum = 0;
+	faces[1].faceflags = AAS_FACE_LADDER;
+	faces[1].firstedge = 0;
+	faces[1].numedges = 4;
+	VectorSet(planes[0].normal, 1.0f, 0.0f, 0.0f);
+	VectorSet(planes[1].normal, -1.0f, 0.0f, 0.0f);
+
+	aasworld.loaded = qtrue;
+	aasworld.numAreas = 2;
+	aasworld.areas = areas;
+	aasworld.numAreaSettings = 2;
+	aasworld.areasettings = settings;
+	aasworld.numVertexes = 4;
+	aasworld.vertexes = vertexes;
+	aasworld.numEdges = 5;
+	aasworld.edges = edges;
+	aasworld.edgeIndexSize = 4;
+	aasworld.edgeIndex = edge_index;
+	aasworld.numFaces = 2;
+	aasworld.faces = faces;
+	aasworld.faceIndexSize = 1;
+	aasworld.faceIndex = face_index;
+	aasworld.numPlanes = 2;
+	aasworld.planes = planes;
+
+	const vec3_t fallback_bounds[4] = {
+		{1.0f, 0.0f, 0.0f},
+		{1.0f, 1.0f, 0.0f},
+		{-1.0f, 1.0f, 0.0f},
+		{-1.0f, -1.0f, 0.0f}
+	};
+	vec3_t origin = {0.0f, 0.0f, 0.0f};
+	for (size_t index = 0;
+		index < sizeof(fallback_bounds) / sizeof(fallback_bounds[0]);
+		++index)
+	{
+		VectorSet(areas[1].mins,
+			fallback_bounds[index][0] - 0.1f,
+			fallback_bounds[index][1] - 0.1f,
+			-1.0f);
+		VectorSet(areas[1].maxs,
+			fallback_bounds[index][0] + 0.1f,
+			fallback_bounds[index][1] + 0.1f,
+			1.0f);
+		assert_true(AAS_AgainstLadder(origin));
+	}
+
+	VectorSet(areas[1].mins, -20.0f, -20.0f, -20.0f);
+	VectorSet(areas[1].maxs, 20.0f, 20.0f, 20.0f);
+	settings[1].areaflags = 0;
+	assert_false(AAS_AgainstLadder(origin));
+	settings[1].areaflags = AAS_AREA_LADDER;
+	settings[1].presencetype = PRESENCE_CROUCH;
+	assert_false(AAS_AgainstLadder(origin));
+	settings[1].presencetype = PRESENCE_NORMAL;
+	faces[1].faceflags = 0;
+	assert_false(AAS_AgainstLadder(origin));
+	faces[1].faceflags = AAS_FACE_LADDER;
+
+	planes[0].dist = 2.999f;
+	assert_true(AAS_AgainstLadder(origin));
+	planes[0].dist = 3.0f;
+	assert_false(AAS_AgainstLadder(origin));
+	planes[0].dist = 0.0f;
+
+	vec3_t epsilon_inside = {0.0f, 10.004f, 0.0f};
+	vec3_t epsilon_outside = {0.0f, 10.01f, 0.0f};
+	assert_true(AAS_AgainstLadder(epsilon_inside));
+	assert_false(AAS_AgainstLadder(epsilon_outside));
+
+	face_index[0] = -1;
+	planes[1].dist = 100.0f;
+	assert_false(AAS_AgainstLadder(origin));
+	planes[1].dist = 0.0f;
+	assert_true(AAS_AgainstLadder(origin));
+
+	memset(&aasworld, 0, sizeof(aasworld));
+}
+
+/*
+=============
 test_reachability_ladder_shared_edge_generation
 
 Pins the symmetric retail ladder transition across a horizontal edge shared
@@ -3674,6 +3950,91 @@ static void test_reachability_ladder_shared_edge_generation(void **state)
 
 /*
 =============
+test_retail_bsp_entity_and_epair_prepend_contract
+
+Pins reverse textual entity order, reverse epair insertion and duplicate-key
+precedence, plus the retail vector accessor's missing and partial-key writes.
+=============
+*/
+static void test_retail_bsp_entity_and_epair_prepend_contract(void **state)
+{
+	(void)state;
+	const char entity_data[] =
+		"{\n"
+		"\"classname\" \"first\"\n"
+		"\"duplicate\" \"early\"\n"
+		"\"duplicate\" \"late\"\n"
+		"\"partial\" \"4.5\"\n"
+		"}\n"
+		"{\n"
+		"\"classname\" \"second\"\n"
+		"}\n";
+	aas_bspentity_t *entities = AAS_ParseBSPEntities(entity_data,
+		sizeof(entity_data) - 1U);
+	assert_non_null(entities);
+	assert_non_null(entities->next);
+	assert_null(entities->next->next);
+	assert_string_equal(AAS_ValueForBSPEpairKey(entities, "classname"),
+		"second");
+	assert_string_equal(AAS_ValueForBSPEpairKey(entities->next, "classname"),
+		"first");
+	assert_string_equal(AAS_ValueForBSPEpairKey(entities->next, "duplicate"),
+		"late");
+
+	vec3_t missing = {11.0f, 22.0f, 33.0f};
+	assert_false(AAS_VectorForBSPEpairKey(entities->next, "missing", missing));
+	assert_float_equal(missing[0], 11.0f, 0.0001f);
+	assert_float_equal(missing[1], 22.0f, 0.0001f);
+	assert_float_equal(missing[2], 33.0f, 0.0001f);
+
+	vec3_t partial = {11.0f, 22.0f, 33.0f};
+	assert_true(AAS_VectorForBSPEpairKey(entities->next, "partial", partial));
+	assert_float_equal(partial[0], 4.5f, 0.0001f);
+	assert_float_equal(partial[1], 0.0f, 0.0001f);
+	assert_float_equal(partial[2], 0.0f, 0.0001f);
+
+	AAS_FreeBSPEntities(entities);
+}
+
+/*
+=============
+test_retail_bsp_entity_lexer_flags
+
+Pins SetScriptFlags(12): comments remain lexer whitespace, adjacent quoted
+tokens stay separate, and backslashes inside strings are copied literally.
+=============
+*/
+static void test_retail_bsp_entity_lexer_flags(void **state)
+{
+	(void)state;
+	const char entity_data[] =
+		"// leading entity comment\n"
+		"{ /* comment after brace */\n"
+		"\"classname\" /* between key and value */ \"worldspawn\"\n"
+		"\"path\" \"textures\\metal\\door\" // trailing comment\n"
+		"}\n"
+		"/* comment between entities */\n"
+		"{\n"
+		"\"classname\" \"info_notnull\"\n"
+		"}\n";
+
+	aas_bspentity_t *entities = AAS_ParseBSPEntities(entity_data,
+		sizeof(entity_data) - 1U);
+	assert_non_null(entities);
+	assert_non_null(entities->next);
+	assert_null(entities->next->next);
+	assert_string_equal(AAS_ValueForBSPEpairKey(entities, "classname"),
+		"info_notnull");
+	assert_string_equal(AAS_ValueForBSPEpairKey(entities->next, "classname"),
+		"worldspawn");
+	assert_string_equal(AAS_ValueForBSPEpairKey(entities->next, "path"),
+		"textures\\metal\\door");
+
+	AAS_FreeBSPEntities(entities);
+}
+
+/*
+=============
 test_reachability_retail_teleporter_generation
 
 Parses retail BSP epairs and pins misc_teleporter destination matching, the
@@ -3702,12 +4063,14 @@ static void test_reachability_retail_teleporter_generation(void **state)
 	assert_non_null(entities);
 	assert_non_null(entities->next);
 	assert_string_equal(AAS_ValueForBSPEpairKey(entities, "classname"),
+		"misc_teleporter_dest");
+	assert_string_equal(AAS_ValueForBSPEpairKey(entities->next, "classname"),
 		"misc_teleporter");
-	assert_float_equal(AAS_FloatForBSPEpairKey(entities, "speed"),
+	assert_float_equal(AAS_FloatForBSPEpairKey(entities->next, "speed"),
 		3.5f, 0.0001f);
-	assert_int_equal(AAS_IntForBSPEpairKey(entities, "spawnflags"), 7);
+	assert_int_equal(AAS_IntForBSPEpairKey(entities->next, "spawnflags"), 7);
 	vec3_t parsedorigin;
-	assert_true(AAS_VectorForBSPEpairKey(entities->next, "origin", parsedorigin));
+	assert_true(AAS_VectorForBSPEpairKey(entities, "origin", parsedorigin));
 	assert_float_equal(parsedorigin[0], 100.0f, 0.0001f);
 
 	aas_area_t areas[3] = {0};
@@ -4636,6 +4999,14 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_retail_missing_aas_releases_only_bsp_storage,
 			aas_link_heap_setup,
 			aas_link_heap_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_successful_map_commit_retains_parsed_mover_catalogue,
+			aas_link_heap_setup,
+			aas_link_heap_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_bsp_entity_loader_prefers_retained_lump,
+			aas_link_heap_setup,
+			aas_link_heap_teardown),
         cmocka_unit_test_setup_teardown(test_routing_frame_respects_framereachability,
                                         aas_environment_setup,
                                         aas_environment_teardown),
@@ -4650,12 +5021,16 @@ int main(void)
                                         aas_environment_teardown),
 		cmocka_unit_test(test_reachability_geometry_helpers),
 		cmocka_unit_test(test_reachability_area_and_link_helpers),
+		cmocka_unit_test(test_bridge_config_retail_maxwaterjump_default),
 		cmocka_unit_test(test_reachability_physics_helpers),
 		cmocka_unit_test(test_reachability_swim_generation_and_storage),
 		cmocka_unit_test(test_reachability_equal_floor_generation_and_storage),
 		cmocka_unit_test(test_reachability_adjacent_edge_travel_branches),
 		cmocka_unit_test(test_reachability_jump_generation_and_rejections),
+		cmocka_unit_test(test_aas_against_ladder_retail_geometry_contract),
 		cmocka_unit_test(test_reachability_ladder_shared_edge_generation),
+		cmocka_unit_test(test_retail_bsp_entity_and_epair_prepend_contract),
+		cmocka_unit_test(test_retail_bsp_entity_lexer_flags),
 		cmocka_unit_test(test_reachability_retail_teleporter_generation),
 		cmocka_unit_test(test_reachability_retail_elevator_generation),
 		cmocka_unit_test(test_reachability_retail_grapple_generation),

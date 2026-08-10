@@ -45,12 +45,18 @@
 #include "bot_state.h"
 
 static void BotInterface_Printf(int priority, const char *fmt, ...);
+static bool BotAI_ConstructLifecycleChat(bot_client_state_t *state,
+	const char *type,
+	int characteristic,
+	bool require_valid_position);
 
 
 static bot_import_extended_t g_botImportStorage;
 static bot_import_extended_t *g_botImport = NULL;
 static bot_chatstate_t *g_botInterfaceConsoleChat = NULL;
 static botlib_import_table_t g_botInterfaceImportTable;
+static bot_export_t *g_botRetailExportTable = NULL;
+static bot_export_extended_t *g_botExtendedExportTable = NULL;
 
 typedef struct botinterface_map_cache_s
 {
@@ -548,7 +554,7 @@ int BotAI_FindEnemy(bot_client_state_t *state, ai_dm_enemy_info_t *enemy)
 		return qfalse;
 	}
 
-	int accelerator_3d = Characteristic_BInteger(state->character_handle,
+	int accelerator_3d = Characteristic_BInteger(state->character,
 		CHARACTERISTIC_3D_ACCELERATOR,
 		0,
 		1);
@@ -824,40 +830,24 @@ static bool BotInterface_RecordMapAssets(const char *mapname,
 =============
 BotInterface_ModelNameForIndex
 
-Resolves a live client gun model index through the map model cache.
+Resolves a client/entity model index through the retail AAS asset table.
 =============
 */
 static const char *BotInterface_ModelNameForIndex(int modelindex)
 {
-	if (modelindex < 0 ||
-		g_botInterfaceMapCache.models.entries == NULL ||
-		(size_t)modelindex >= g_botInterfaceMapCache.models.count)
-	{
-		return NULL;
-	}
-
-	return g_botInterfaceMapCache.models.entries[modelindex];
+	return AAS_ModelFromIndex(modelindex);
 }
 
 /*
 =============
 BotInterface_ImageNameForIndex
 
-Resolves a client stat image index and mirrors ImageFromIndex's empty-string
-fallback for an unset, unused, or out-of-range slot.
+Resolves a client stat image index through the retail AAS asset table.
 =============
 */
 static const char *BotInterface_ImageNameForIndex(int imageindex)
 {
-	if (imageindex < 0 ||
-		g_botInterfaceMapCache.images.entries == NULL ||
-		(size_t)imageindex >= g_botInterfaceMapCache.images.count ||
-		g_botInterfaceMapCache.images.entries[imageindex] == NULL)
-	{
-		return "";
-	}
-
-	return g_botInterfaceMapCache.images.entries[imageindex];
+	return AAS_ImageFromIndex(imageindex);
 }
 
 /*
@@ -1343,7 +1333,7 @@ int BotAI_CanAndWantsToRocketJump(const bot_client_state_t *state)
 		return qfalse;
 	}
 
-	float weapon_jumping = Characteristic_BFloat(state->character_handle,
+	float weapon_jumping = Characteristic_BFloat(state->character,
 		CHARACTERISTIC_WEAPONJUMPING,
 		0.0f,
 		1.0f);
@@ -1412,43 +1402,6 @@ static const bot_goal_t *BotInterface_FindSnapshotGoal(const bot_client_state_t 
     }
 
     return NULL;
-}
-
-static float BotInterface_NormaliseDirection(vec3_t out, const vec3_t in)
-{
-    if (out == NULL || in == NULL)
-    {
-        return 0.0f;
-    }
-
-    float length = sqrtf(in[0] * in[0] + in[1] * in[1] + in[2] * in[2]);
-    if (length <= 0.0001f)
-    {
-        VectorClear(out);
-        return 0.0f;
-    }
-
-    float inv = 1.0f / length;
-    out[0] = in[0] * inv;
-    out[1] = in[1] * inv;
-    out[2] = in[2] * inv;
-    return length;
-}
-
-static void BotInterface_BuildMoveCommand(bot_input_t *out_input,
-                                          const vec3_t from,
-                                          const vec3_t to)
-{
-    if (out_input == NULL || from == NULL || to == NULL)
-    {
-        return;
-    }
-
-    vec3_t delta;
-    VectorSubtract(to, from, delta);
-    float length = BotInterface_NormaliseDirection(out_input->dir, delta);
-    out_input->speed = length;
-    out_input->actionflags = 0;
 }
 
 static int BotInterface_RebuildGoalCandidates(bot_client_state_t *state)
@@ -1602,7 +1555,7 @@ static int BotInterface_PrepareMoveState(bot_client_state_t *state, float thinkt
 
     VectorCopy(state->last_client_update.viewangles, init.viewangles);
 
-    BotInitMoveState(state->move_handle, &init);
+	BotInitMoveStateHandle(state->move_handle, &init);
 
     bot_movestate_t *ms = BotMoveStateFromHandle(state->move_handle);
     if (ms != NULL && state->goal_state != NULL)
@@ -1613,140 +1566,28 @@ static int BotInterface_PrepareMoveState(bot_client_state_t *state, float thinkt
     return BLERR_NOERROR;
 }
 
-static void BotInterface_ApplyMoveResult(bot_client_state_t *state,
-                                         const bot_moveresult_t *result,
-                                         bot_input_t *out_input)
+/*
+=============
+BotInterface_ApplyMoveResult
+
+Applies result-only suppression after the retail elementary actions have been
+captured. Movement direction, speed, and action flags come from EA itself.
+=============
+*/
+static void BotInterface_ApplyMoveResult(const bot_moveresult_t *result,
+	bot_input_t *out_input)
 {
-    if (state == NULL || result == NULL || out_input == NULL)
-    {
-        return;
-    }
+	if (result == NULL || out_input == NULL)
+	{
+		return;
+	}
 
-    if (result->failure)
-    {
-        VectorClear(out_input->dir);
-        out_input->speed = 0.0f;
-    }
-    else
-    {
-        VectorCopy(result->movedir, out_input->dir);
-        out_input->speed = 400.0f;
-    }
+	if (result->failure)
+	{
+		VectorClear(out_input->dir);
+		out_input->speed = 0.0f;
+	}
 
-    out_input->actionflags = 0;
-    if (result->flags & MOVERESULT_MOVEMENTWEAPON)
-    {
-        out_input->actionflags |= ACTION_ATTACK;
-        state->current_weapon = result->weapon;
-    }
-
-    if (result->traveltype == TRAVEL_JUMP || result->traveltype == TRAVEL_ROCKETJUMP ||
-        result->traveltype == TRAVEL_BFGJUMP || result->traveltype == TRAVEL_WATERJUMP)
-    {
-        out_input->actionflags |= ACTION_JUMP;
-    }
-
-    if (result->traveltype == TRAVEL_CROUCH)
-    {
-        out_input->actionflags |= ACTION_CROUCH;
-    }
-
-    if (result->flags & MOVERESULT_WAITING)
-    {
-        out_input->speed = 0.0f;
-    }
-}
-
-static int BotInterface_MovePath(void *ctx,
-                                 const ai_goal_selection_t *goal,
-                                 ai_avoid_list_t *avoid,
-                                 bot_input_t *out_input)
-{
-    bot_client_state_t *state = (bot_client_state_t *)ctx;
-    if (state == NULL || out_input == NULL)
-    {
-        return BLERR_INVALIDIMPORT;
-    }
-
-    if (goal == NULL || !goal->valid)
-    {
-        VectorClear(out_input->dir);
-        out_input->speed = 0.0f;
-        out_input->actionflags = 0;
-        if (state->move_state != NULL)
-        {
-            state->move_state->has_last_result = false;
-        }
-        state->has_move_result = false;
-        return BLERR_NOERROR;
-    }
-
-    const bot_goal_t *target_goal = BotInterface_FindSnapshotGoal(state, goal->candidate.item_index);
-    if (target_goal == NULL)
-    {
-        return BLERR_INVALIDIMPORT;
-    }
-
-    bot_moveresult_t result;
-    BotClearMoveResult(&result);
-
-    bool attempted_move = false;
-    if (state->move_handle > 0 && target_goal->areanum > 0 && aasworld.loaded)
-    {
-        AI_MoveFrame(&result, state->move_handle, target_goal, goal->candidate.travel_flags);
-        attempted_move = true;
-    }
-
-    if (!attempted_move)
-    {
-        BotInterface_BuildMoveCommand(out_input,
-                                      state->last_client_update.origin,
-                                      target_goal->origin);
-        if (state->move_state != NULL)
-        {
-            state->move_state->has_last_result = false;
-        }
-        state->has_move_result = false;
-        return BLERR_NOERROR;
-    }
-
-    if (result.failure)
-    {
-        if (avoid != NULL && state->goal_avoid_duration > 0.0f)
-        {
-            AI_AvoidList_Add(avoid,
-                             goal->candidate.item_index,
-                             g_botInterfaceFrameTime + state->goal_avoid_duration);
-        }
-
-        BotInterface_BuildMoveCommand(out_input,
-                                      state->last_client_update.origin,
-                                      target_goal->origin);
-        if (state->move_state != NULL)
-        {
-            state->move_state->has_last_result = false;
-        }
-        state->has_move_result = false;
-        return BLERR_INVALIDIMPORT;
-    }
-
-    BotInterface_ApplyMoveResult(state, &result, out_input);
-
-    if (state->move_state != NULL)
-    {
-        state->move_state->last_result = result;
-        state->move_state->has_last_result = true;
-    }
-
-    state->last_move_result = result;
-    state->has_move_result = true;
-    return BLERR_NOERROR;
-}
-
-static void BotInterface_MoveSubmit(void *ctx, int client, const bot_input_t *input)
-{
-    (void)ctx;
-    EA_SubmitInput(client, input);
 }
 
 static void BotInterface_BeginFrame(float time)
@@ -2131,19 +1972,26 @@ static char *BotInterface_CopyString(const char *text)
     return copy;
 }
 
+/*
+=============
+BotInterface_FreeImportCache
+
+Releases the local copy of imported library variables.
+=============
+*/
 static void BotInterface_FreeImportCache(void)
 {
-    botlib_import_cache_entry_t *entry = g_botImportCache;
-    while (entry != NULL)
-    {
-        botlib_import_cache_entry_t *next = entry->next;
-        free(entry->name);
-        free(entry->value);
-        free(entry);
-        entry = next;
-    }
+	botlib_import_cache_entry_t *entry = g_botImportCache;
+	while (entry != NULL)
+	{
+		botlib_import_cache_entry_t *next = entry->next;
+		free(entry->name);
+		free(entry->value);
+		free(entry);
+		entry = next;
+	}
 
-    g_botImportCache = NULL;
+	g_botImportCache = NULL;
 }
 
 static bool BotInterface_UpdateImportCache(const char *name, const char *value)
@@ -2511,7 +2359,8 @@ static int BotSetupLibraryWrapper(void)
 =============
 BotShutdownLibraryWrapper
 
-Tears down botlib state while preserving the retail guard and silent wrapper.
+Tears down botlib state, then clears the retail state, import, and export
+blocks after their callbacks are no longer needed.
 =============
 */
 static int BotShutdownLibraryWrapper(void)
@@ -2522,53 +2371,41 @@ static int BotShutdownLibraryWrapper(void)
 		return BLERR_LIBRARYNOTSETUP;
 	}
 
-	int result = BotShutdownLibrary();
-
 	if (g_botInterfaceConsoleChat != NULL)
 	{
-		BotFreeChatState(g_botInterfaceConsoleChat);
+		BotDestroyChatState(g_botInterfaceConsoleChat);
 		g_botInterfaceConsoleChat = NULL;
 	}
+
+	int result = BotShutdownLibrary();
 
 	BotInterface_ResetMapCache();
 	BotInterface_ResetEntityCache();
 	BotInterface_ResetFrameQueues();
+	Bridge_ResetCachedUpdates();
 	g_botInterfaceDebugDrawEnabled = false;
 	Q2Bridge_SetDebugLinesEnabled(false);
+	BotInterface_FreeImportCache();
+	BotMemory_SetAllocatorCallbacks(NULL, NULL);
+	BotInterface_SetImportTable(NULL);
+	BotInterface_SetImportCapture(NULL);
+	Q2Bridge_SetImportTable(NULL);
+	memset(&g_botInterfaceImportTable, 0, sizeof(g_botInterfaceImportTable));
+	memset(&g_botImportStorage, 0, sizeof(g_botImportStorage));
+	g_botImport = NULL;
+
+	if (g_botRetailExportTable != NULL)
+	{
+		memset(g_botRetailExportTable, 0, sizeof(*g_botRetailExportTable));
+	}
+	if (g_botExtendedExportTable != NULL)
+	{
+		memset(g_botExtendedExportTable, 0, sizeof(*g_botExtendedExportTable));
+	}
+	g_botRetailExportTable = NULL;
+	g_botExtendedExportTable = NULL;
 
 	return result;
-}
-
-static int BotInterface_BotSetupLibrary(void)
-{
-    assert(g_botImport != NULL);
-    return BotSetupLibrary();
-}
-
-static int BotInterface_BotShutdownLibrary(void)
-{
-    assert(g_botImport != NULL);
-
-    int status = BotShutdownLibrary();
-    if (g_botInterfaceConsoleChat != NULL)
-    {
-        BotFreeChatState(g_botInterfaceConsoleChat);
-        g_botInterfaceConsoleChat = NULL;
-    }
-
-    BotInterface_ResetMapCache();
-    BotInterface_ResetEntityCache();
-    BotInterface_ResetFrameQueues();
-    g_botInterfaceDebugDrawEnabled = false;
-    Q2Bridge_SetDebugLinesEnabled(false);
-
-    AAS_Shutdown();
-    BotInterface_FreeImportCache();
-    BotInterface_SetImportTable(NULL);
-    Q2Bridge_ClearImportTable();
-    BotLib_LogShutdown();
-
-    return status;
 }
 
 /*
@@ -2658,67 +2495,17 @@ static int BotLoadMap(char *mapname,
 
 	if (mapname == NULL)
 	{
-		int status = AAS_LoadMap(NULL,
+		return AAS_LoadMap(NULL,
 			modelindexes,
 			modelindex,
 			soundindexes,
 			soundindex,
 			imageindexes,
 			imageindex);
-		if (status != BLERR_NOERROR)
-		{
-			BotInterface_Printf(PRT_WARNING,
-				"[bot_interface] BotLoadMap: failed to refresh AAS asset lists\n");
-		}
-
-		if (BotInterface_RecordMapAssets(NULL,
-			modelindexes,
-			modelindex,
-			soundindexes,
-			soundindex,
-			imageindexes,
-			imageindex))
-		{
-			if (!BotMove_MoverCatalogueFinalize(&g_botInterfaceMapCache.models))
-			{
-				BotInterface_Printf(PRT_WARNING,
-					"[bot_interface] BotLoadMap: failed to refresh mover model indexes\n");
-			}
-			BotGoal_SetMapModelIndexes(modelindexes, modelindex);
-		}
-		else
-		{
-			BotInterface_Printf(PRT_WARNING,
-				"[bot_interface] BotLoadMap: failed to refresh asset lists\n");
-		}
-
-		return BLERR_NOERROR;
 	}
 
 	BotInterface_PrintBanner(PRT_MESSAGE,
 		"------------ Map Loading ------------\n");
-
-	Bridge_ResetCachedUpdates();
-	BotInterface_ResetFrameQueues();
-	BotInterface_ResetEntityCache();
-	BotInterface_ResetMapCache();
-	BotGoal_SetMapModelIndexes(0, NULL);
-	TranslateEntity_SetWorldLoaded(qfalse);
-
-	if (!BotInterface_RecordMapAssets(mapname,
-		modelindexes,
-		modelindex,
-		soundindexes,
-		soundindex,
-		imageindexes,
-		imageindex))
-	{
-		BotInterface_Printf(PRT_WARNING,
-			"[bot_interface] BotLoadMap: failed to record asset lists for %s\n",
-			mapname);
-		return BLERR_INVALIDIMPORT;
-	}
-	BotGoal_SetMapModelIndexes(modelindexes, modelindex);
 
 	int status = AAS_LoadMap(mapname,
 							 modelindexes,
@@ -2732,18 +2519,39 @@ static int BotLoadMap(char *mapname,
 		return status;
 	}
 
-	if (!BotMove_MoverCatalogueFinalize(&g_botInterfaceMapCache.models))
+	Bridge_ResetCachedUpdates();
+	BotInterface_ResetFrameQueues();
+	BotInterface_ResetEntityCache();
+	BotInterface_ResetMapCache();
+	TranslateEntity_SetWorldLoaded(qfalse);
+	bool recorded_assets = BotInterface_RecordMapAssets(mapname,
+		modelindexes,
+		modelindex,
+		soundindexes,
+		soundindex,
+		imageindexes,
+		imageindex);
+	if (!recorded_assets)
 	{
 		BotInterface_Printf(PRT_WARNING,
-							 "[bot_interface] BotLoadMap: failed to finalize mover catalogue for %s\n",
-							 mapname);
-		return BLERR_INVALIDIMPORT;
+			"[bot_interface] BotLoadMap: failed to record asset lists for %s\n",
+			mapname);
+	}
+	BotGoal_SetMapModelIndexes(modelindexes, modelindex);
+
+	if (recorded_assets && !BotMove_MoverCatalogueFinalize(
+		g_botInterfaceMapCache.models.entries,
+		g_botInterfaceMapCache.models.count))
+	{
+		BotInterface_Printf(PRT_WARNING,
+			"[bot_interface] BotLoadMap: failed to finalize mover catalogue for %s\n",
+			mapname);
 	}
 
+	BotState_ResetAllForNewMap();
 	BotInitLevelItems();
 	BotInterface_PrintBanner(PRT_MESSAGE,
 		"-------------------------------------\n");
-	BotState_ResetAllForNewMap();
 
 	TranslateEntity_SetWorldLoaded(qtrue);
 	TranslateEntity_SetCurrentTime(0.0f);
@@ -2770,9 +2578,10 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 		return qfalse;
 	}
 
-	CRC_RegisterSourceChecksum(aasworld.mapName, aasworld.bspEntityChecksum);
-
-	if (BotState_Get(client) != NULL)
+	bot_client_state_t *state = BotState_Get(client);
+	bot_chatstate_t *retained_chat_state =
+		state != NULL ? state->chat_state : NULL;
+	if (state != NULL && state->active)
 	{
 		BotInterface_Printf(PRT_FATAL, "client %d already setup\n", client);
 		return qfalse;
@@ -2784,7 +2593,7 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 		return qfalse;
 	}
 
-	bot_client_state_t *state = BotState_Create(client);
+	state = BotState_Create(client);
 	if (state == NULL)
 	{
 		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSetupClient: failed to allocate state for client %d\n", client);
@@ -2793,91 +2602,165 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 
 	int status = BLERR_NOERROR;
 
-	state->weapon_state = BotAllocWeaponState();
-	if (state->weapon_state <= 0)
-	{
-		BotInterface_Printf(PRT_ERROR,
-							"[bot_interface] BotSetupClient: failed to allocate weapon state for client %d\n",
-							client);
-		BotState_Destroy(client);
-		return qfalse;
-	}
-
-	memcpy(&state->settings, settings, sizeof(*settings));
-
-	int character_handle = BotLoadNamedCharacter(settings->characterfile,
-		settings->charactername,
-		1.0f);
-	if (character_handle <= 0)
+	bot_character_t *character = BotLoadCharacter(settings->characterfile,
+		settings->charactername);
+	/* Retail stores the loader result before checking it and retains partial state. */
+	state->character = character;
+	if (character == NULL)
 	{
 		BotInterface_Printf(PRT_FATAL,
 							"couldn't load bot character %s from %s\n",
 							settings->charactername,
 							settings->characterfile);
-		BotState_Destroy(client);
 		return qfalse;
 	}
 
-	status = BotState_AttachCharacter(state, character_handle);
+	status = BotState_AttachCharacter(state, character);
 	if (status != BLERR_NOERROR)
 	{
+		BotFreeCharacter(character);
 		BotInterface_Printf(PRT_ERROR,
 							"[bot_interface] BotSetupClient: failed to attach character resources for client %d\n",
 							client);
 		BotState_Destroy(client);
 		return qfalse;
 	}
-
-	state->goal_state = AI_GoalState_Create();
-	if (state->goal_state == NULL)
+	if (retained_chat_state != NULL)
 	{
-		BotInterface_Printf(PRT_ERROR,
-							"[bot_interface] BotSetupClient: failed to allocate goal state for client %d\n",
-							client);
-		BotState_Destroy(client);
-		return qfalse;
+		state->chat_state = retained_chat_state;
 	}
 
-	state->goal_handle = AI_GoalBotlib_AllocState(client);
+	memcpy(&state->settings, settings, sizeof(*settings));
+
+	if (state->goal_handle <= 0)
+	{
+		state->goal_handle = AI_GoalBotlib_AllocState(client);
+	}
 	if (state->goal_handle <= 0)
 	{
 		BotInterface_Printf(PRT_ERROR,
 							"[bot_interface] BotSetupClient: failed to allocate goal handle for client %d\n",
 							client);
-		AI_GoalState_Destroy(state->goal_state);
-		state->goal_state = NULL;
 		BotState_Destroy(client);
 		return qfalse;
 	}
-
-	AI_GoalBotlib_ResetState(state->goal_handle);
-
 	const char *item_weights_file =
-		AI_CharacteristicAsString(state->character, BOT_CHARACTERISTIC_ITEMWEIGHTS);
-	status = AI_GoalBotlib_LoadItemWeights(state->goal_handle, item_weights_file);
+		Characteristic_String(state->character, BOT_CHARACTERISTIC_ITEMWEIGHTS);
+	status = AI_GoalBotlib_LoadItemWeights(state->goal_handle,
+		item_weights_file);
 	if (status != BLERR_NOERROR)
 	{
-		BotInterface_Printf(PRT_ERROR,
-							"[bot_interface] BotSetupClient: failed to load item weights '%s' for client %d\n",
-							item_weights_file != NULL ? item_weights_file : "<null>",
-							client);
-		BotState_Destroy(client);
 		return qfalse;
 	}
 
-	state->move_state = AI_MoveState_Create();
-	if (state->move_state == NULL)
+	const bot_goalstate_t *goal_owner = AI_GoalBotlib_DebugPeek(state->goal_handle);
+	if (goal_owner == NULL || goal_owner->itemweightconfig == NULL)
 	{
 		BotInterface_Printf(PRT_ERROR,
-							"[bot_interface] BotSetupClient: failed to allocate move state for client %d\n",
-							client);
-		AI_GoalState_Destroy(state->goal_state);
-		state->goal_state = NULL;
+			"[bot_interface] BotSetupClient: item weights have no owning goal state for client %d\n",
+			client);
+		BotState_Destroy(client);
+		return qfalse;
+	}
+	state->item_weights = goal_owner->itemweightconfig;
+
+	if (state->weapon_state <= 0)
+	{
+		state->weapon_state = BotAllocWeaponState();
+	}
+	if (state->weapon_state <= 0)
+	{
+		BotInterface_Printf(PRT_ERROR,
+			"[bot_interface] BotSetupClient: failed to allocate weapon state for client %d\n",
+			client);
 		BotState_Destroy(client);
 		return qfalse;
 	}
 
-	state->move_handle = BotAllocMoveState();
+	const char *weapon_weights_file =
+		Characteristic_String(state->character, BOT_CHARACTERISTIC_WEAPONWEIGHTS);
+	status = BotLoadWeaponWeightsFresh(state->weapon_state, weapon_weights_file);
+	if (status != BLERR_NOERROR)
+	{
+		AI_GoalBotlib_FreeItemWeights(state->goal_handle);
+		return qfalse;
+	}
+
+	const bot_weaponstate_t *weapon_owner = BotWeaponStatePeek(state->weapon_state);
+	if (weapon_owner == NULL || weapon_owner->weights == NULL)
+	{
+		BotInterface_Printf(PRT_ERROR,
+			"[bot_interface] BotSetupClient: weapon weights have no owning weapon state for client %d\n",
+			client);
+		BotState_Destroy(client);
+		return qfalse;
+	}
+	state->weapon_weights = weapon_owner->weights;
+
+	const char *chat_file =
+		Characteristic_String(state->character, BOT_CHARACTERISTIC_CHAT_FILE);
+	const char *chat_name =
+		Characteristic_String(state->character, BOT_CHARACTERISTIC_CHAT_NAME);
+	if (state->chat_state == NULL)
+	{
+		state->chat_state = BotAllocChatState();
+	}
+	if (state->chat_state == NULL)
+	{
+		BotInterface_Printf(PRT_ERROR,
+			"[bot_interface] BotSetupClient: failed to allocate chat state for client %d\n",
+			client);
+		BotState_Destroy(client);
+		return qfalse;
+	}
+	status = BotLoadChatFile(state->chat_state, chat_file, chat_name);
+	if (status != BLERR_NOERROR)
+	{
+		AI_GoalBotlib_FreeItemWeights(state->goal_handle);
+		BotFreeWeaponWeights(state->weapon_state);
+		return qfalse;
+	}
+
+	const char *gender =
+		Characteristic_String(state->character, BOT_CHARACTERISTIC_GENDER);
+	if (gender != NULL && (gender[0] == 'f' || gender[0] == 'F'))
+	{
+		BotSetChatGender(state->chat_state, CHAT_GENDERFEMALE);
+	}
+	else if (gender != NULL && (gender[0] == 'm' || gender[0] == 'M'))
+	{
+		BotSetChatGender(state->chat_state, CHAT_GENDERMALE);
+	}
+	else
+	{
+		BotSetChatGender(state->chat_state, CHAT_GENDERLESS);
+	}
+
+	if (state->goal_state == NULL)
+	{
+		state->goal_state = AI_GoalState_Create();
+	}
+	else
+	{
+		AI_GoalState_Reset(state->goal_state);
+	}
+	if (state->goal_state == NULL)
+	{
+		BotInterface_Printf(PRT_ERROR,
+			"[bot_interface] BotSetupClient: failed to allocate goal state for client %d\n",
+			client);
+		BotState_Destroy(client);
+		return qfalse;
+	}
+
+	if (state->move_handle <= 0)
+	{
+		state->move_handle = BotAllocMoveStateHandle();
+	}
+	else
+	{
+		BotResetMoveStateHandle(state->move_handle);
+	}
 	if (state->move_handle <= 0)
 	{
 		BotInterface_Printf(PRT_ERROR,
@@ -2898,16 +2781,14 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 	AI_GoalState_SetServices(state->goal_state, &goal_services);
 	state->goal_avoid_duration = goal_services.avoid_duration;
 
-	ai_move_services_t move_services = {
-		.path_fn = BotInterface_MovePath,
-		.submit_fn = BotInterface_MoveSubmit,
-		.userdata = state,
-	};
-	AI_MoveState_SetServices(state->move_state, &move_services);
-
-	AI_MoveState_LinkAvoidList(state->move_state, AI_GoalState_GetAvoidList(state->goal_state));
-
-	state->dm_state = AI_DMState_Create(client);
+	if (state->dm_state == NULL)
+	{
+		state->dm_state = AI_DMState_Create(client);
+	}
+	else
+	{
+		AI_DMState_Reset(state->dm_state);
+	}
 	if (state->dm_state == NULL)
 	{
 		BotInterface_Printf(PRT_ERROR,
@@ -2917,11 +2798,14 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 		return qfalse;
 	}
 
+	state->active = true;
+	state->client_number = client;
+	state->entity_number = client + 1;
+	state->client_commands_pending = true;
+	state->enter_game_time = AAS_Time();
+	BotState_SetActive(state, true);
 	Bridge_ClearClientSlot(client);
 	Bridge_SetClientActive(client, qtrue);
-	BotState_SetActive(state, true);
-	state->enter_game_time = AAS_Time();
-	state->enter_game_chat_attempted = false;
 	return qtrue;
 }
 
@@ -2952,7 +2836,14 @@ static int BotShutdownClient(int client)
 		return BLERR_AICLIENTALREADYSHUTDOWN;
 	}
 
-	BotState_SetActive(state, false);
+	if (BotAI_ConstructLifecycleChat(state,
+		"exit_game",
+		CHARACTERISTIC_CHAT_ENTEREXITGAME,
+		false))
+	{
+		BotEnterChat(state->chat_state, state->client_number, 0);
+	}
+
 	BotState_Destroy(client);
 	Bridge_SetClientActive(client, qfalse);
 	Bridge_ClearClientSlot(client);
@@ -2991,7 +2882,8 @@ static int BotMoveClient(int oldclnum, int newclnum)
 		return BLERR_AIMOVEINACTIVECLIENT;
 	}
 
-	if (BotState_Get(newclnum) != NULL)
+	bot_client_state_t *destination = BotState_Get(newclnum);
+	if (destination != NULL && destination->active)
 	{
 		BotInterface_Printf(PRT_FATAL,
 			"tried to move client to active client\n");
@@ -3602,22 +3494,7 @@ team-command gate.
 */
 static int BotAI_FindExactConsoleClientByName(const char *name)
 {
-	if (name == NULL || name[0] == '\0')
-	{
-		return -1;
-	}
-
-	for (int client = 0; client < BotState_ClientCapacity(); ++client)
-	{
-		const char *candidate = BotState_ClientName(client);
-		if (candidate != NULL && candidate[0] != '\0' &&
-			strcmp(candidate, name) == 0)
-		{
-			return client;
-		}
-	}
-
-	return -1;
+	return ClientFromName(name);
 }
 
 /*
@@ -3687,7 +3564,8 @@ static bool BotAI_ConsoleClientIsTeammate(const bot_client_state_t *state,
 	}
 
 	const bot_client_state_t *other = BotState_Get(client);
-	if (other != NULL && state->team >= 0 && other->team >= 0)
+	if (other != NULL && other->active &&
+		state->team >= 0 && other->team >= 0)
 	{
 		return BotInterface_SameTeam(state, other);
 	}
@@ -3758,8 +3636,8 @@ static bool BotAI_ConsoleNameAddressesBot(const bot_client_state_t *state,
 		return false;
 	}
 
-	return StringContains(BotState_ClientName(state->client_number), name, 0) >= 0 ||
-		StringContains(state->subteam, name, 0) >= 0;
+	return StringContainsIndex(BotState_ClientName(state->client_number), name, 0) >= 0 ||
+		StringContainsIndex(state->subteam, name, 0) >= 0;
 }
 
 /*
@@ -3780,7 +3658,7 @@ static bool BotAI_ConsoleAddressedToBot(bot_client_state_t *state,
 	}
 
 	char netname[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_NETNAME,
 		netname,
 		(int)sizeof(netname));
@@ -3802,12 +3680,14 @@ static bool BotAI_ConsoleAddressedToBot(bot_client_state_t *state,
 	}
 
 	char addressee[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_ADDRESSEE,
 		addressee,
 		(int)sizeof(addressee));
 	while (addressee[0] != '\0')
 	{
+		char addressee_source[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
+		memcpy(addressee_source, addressee, sizeof(addressee_source));
 		bot_match_t addressee_match;
 		memset(&addressee_match, 0, sizeof(addressee_match));
 		if (!BotFindMatch(addressee,
@@ -3823,7 +3703,7 @@ static bool BotAI_ConsoleAddressedToBot(bot_client_state_t *state,
 		}
 
 		char name[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-		BotMatchVariable(&addressee_match,
+		BotMatchVariableSized(&addressee_match,
 			BOT_CONSOLE_MATCH_TEAMMATE,
 			name,
 			(int)sizeof(name));
@@ -3836,13 +3716,13 @@ static bool BotAI_ConsoleAddressedToBot(bot_client_state_t *state,
 		{
 			break;
 		}
-		BotMatchVariable(&addressee_match,
+		BotMatchVariableSized(&addressee_match,
 			BOT_CONSOLE_MATCH_MORE,
 			addressee,
 			(int)sizeof(addressee));
 		if (addressee[0] == '\0')
 		{
-			const char *remainder = addressee_match.string + strlen(name);
+			const char *remainder = addressee_source + strlen(name);
 			if (strncmp(remainder, " and ", 5U) == 0)
 			{
 				remainder += 5;
@@ -3873,29 +3753,7 @@ containing the requested text, matching Gladiator's team-command lookup.
 */
 static int BotAI_FindConsoleClientByName(const char *name)
 {
-	if (name == NULL)
-	{
-		return -1;
-	}
-
-	int max_clients = BotState_ClientCapacity();
-	for (int client = 0; client < max_clients; ++client)
-	{
-		if (Q_stricmp(BotState_ClientName(client), name) == 0)
-		{
-			return client;
-		}
-	}
-
-	for (int client = 0; client < max_clients; ++client)
-	{
-		if (StringContains(BotState_ClientName(client), name, 0) >= 0)
-		{
-			return client;
-		}
-	}
-
-	return -1;
+	return FindClientByName((char *)name);
 }
 
 /*
@@ -3915,7 +3773,7 @@ static void BotAI_UpdateConsoleLeadership(bot_client_state_t *state,
 	}
 
 	char teammate[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_TEAMMATE,
 		teammate,
 		(int)sizeof(teammate));
@@ -3941,7 +3799,7 @@ static void BotAI_UpdateConsoleLeadership(bot_client_state_t *state,
 	if ((match->subtype & BOT_CONSOLE_MATCH_SUBTYPE_I) != 0)
 	{
 		char netname[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-		BotMatchVariable(match,
+		BotMatchVariableSized(match,
 			BOT_CONSOLE_MATCH_NETNAME,
 			netname,
 			(int)sizeof(netname));
@@ -3963,8 +3821,8 @@ static void BotAI_UpdateConsoleLeadership(bot_client_state_t *state,
 =============
 BotAI_ConsoleEnterInitialTeamChat
 
-Constructs a single-variable initial chat and dispatches only a successfully
-constructed pending message through Gladiator's team-chat path.
+Constructs a single-variable initial chat, then enters Gladiator's team-chat
+path. Retail BotEnterChat is a no-op when the named template was unavailable.
 =============
 */
 static void BotAI_ConsoleEnterInitialTeamChat(bot_client_state_t *state,
@@ -3976,12 +3834,10 @@ static void BotAI_ConsoleEnterInitialTeamChat(bot_client_state_t *state,
 		return;
 	}
 
-	if (BotInitialChat(state->chat_state, type, 0UL, variable, NULL) != 0)
-	{
-		BotEnterChat(state->chat_state,
-			state->client_number,
-			BOT_CONSOLE_CHAT_TEAM);
-	}
+	BotInitialChat(state->chat_state, type, variable, NULL);
+	BotEnterChat(state->chat_state,
+		state->client_number,
+		BOT_CONSOLE_CHAT_TEAM);
 }
 
 /*
@@ -4001,17 +3857,14 @@ static void BotAI_ConsoleEnterInitialTeamChat2(bot_client_state_t *state,
 		return;
 	}
 
-	if (BotInitialChat(state->chat_state,
+	BotInitialChat(state->chat_state,
 		type,
-		0UL,
 		first,
 		second,
-		NULL) != 0)
-	{
-		BotEnterChat(state->chat_state,
-			state->client_number,
-			BOT_CONSOLE_CHAT_TEAM);
-	}
+		NULL);
+	BotEnterChat(state->chat_state,
+		state->client_number,
+		BOT_CONSOLE_CHAT_TEAM);
 }
 
 /*
@@ -4025,24 +3878,29 @@ static bot_console_waypoint_t *BotAI_ConsoleCreateWaypoint(const char *name,
 	const vec3_t origin,
 	int areanum)
 {
-	bot_console_waypoint_t *waypoint = calloc(1, sizeof(*waypoint));
+	const char *waypoint_name = name != NULL ? name : "";
+	size_t name_bytes = strlen(waypoint_name) + 1U;
+	bot_console_waypoint_t *waypoint = GetMemory(sizeof(*waypoint) + name_bytes);
 	if (waypoint == NULL)
 	{
 		return NULL;
 	}
 
-	if (name != NULL)
-	{
-		strncpy(waypoint->name, name, sizeof(waypoint->name) - 1U);
-		waypoint->name[sizeof(waypoint->name) - 1U] = '\0';
-	}
+	waypoint->name = waypoint->name_storage;
+	memcpy(waypoint->name, waypoint_name, name_bytes);
 	if (origin != NULL)
 	{
 		VectorCopy(origin, waypoint->goal.origin);
 	}
+	else
+	{
+		VectorClear(waypoint->goal.origin);
+	}
 	waypoint->goal.areanum = areanum;
 	VectorSet(waypoint->goal.mins, -8.0f, -8.0f, -8.0f);
 	VectorSet(waypoint->goal.maxs, 8.0f, 8.0f, 8.0f);
+	waypoint->next = NULL;
+	waypoint->prev = NULL;
 	return waypoint;
 }
 
@@ -4171,7 +4029,7 @@ static float BotAI_ConsoleTeamGoalTime(const bot_match_t *match)
 	}
 
 	char time_text[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_TIME,
 		time_text,
 		(int)sizeof(time_text));
@@ -4183,7 +4041,7 @@ static float BotAI_ConsoleTeamGoalTime(const bot_match_t *match)
 	}
 
 	char number[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(&time_match,
+	BotMatchVariableSized(&time_match,
 		BOT_CONSOLE_MATCH_TIME,
 		number,
 		(int)sizeof(number));
@@ -4260,7 +4118,7 @@ static void BotAI_ConsoleHandleHelpAccompany(bot_client_state_t *state,
 	const bot_match_t *match)
 {
 	char teammate[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_TEAMMATE,
 		teammate,
 		(int)sizeof(teammate));
@@ -4276,7 +4134,7 @@ static void BotAI_ConsoleHandleHelpAccompany(bot_client_state_t *state,
 		BOT_CONSOLE_TEAMMATE_CONTEXT) &&
 		teammate_match.type == BOT_CONSOLE_MATCH_ME)
 	{
-		BotMatchVariable(match,
+		BotMatchVariableSized(match,
 			BOT_CONSOLE_MATCH_NETNAME,
 			netname,
 			(int)sizeof(netname));
@@ -4318,7 +4176,7 @@ static void BotAI_ConsoleHandleHelpAccompany(bot_client_state_t *state,
 		(match->subtype & BOT_CONSOLE_MATCH_SUBTYPE_NEARITEM) != 0)
 	{
 		char item[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-		BotMatchVariable(match,
+		BotMatchVariableSized(match,
 			BOT_CONSOLE_MATCH_ITEM,
 			item,
 			(int)sizeof(item));
@@ -4376,7 +4234,7 @@ static void BotAI_ConsoleHandleDefendKeyArea(bot_client_state_t *state,
 	const bot_match_t *match)
 {
 	char keyarea[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_KEYAREA,
 		keyarea,
 		(int)sizeof(keyarea));
@@ -4576,7 +4434,7 @@ static void BotAI_ConsoleHandleCamp(bot_client_state_t *state,
 	const bot_match_t *match)
 {
 	char netname[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_NETNAME,
 		netname,
 		(int)sizeof(netname));
@@ -4588,7 +4446,7 @@ static void BotAI_ConsoleHandleCamp(bot_client_state_t *state,
 	}
 
 	char keyarea[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_KEYAREA,
 		keyarea,
 		(int)sizeof(keyarea));
@@ -4662,7 +4520,7 @@ static void BotAI_ConsoleHandleCheckpoint(bot_client_state_t *state,
 	const bot_match_t *match)
 {
 	char position[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_POSITION,
 		position,
 		(int)sizeof(position));
@@ -4687,7 +4545,7 @@ static void BotAI_ConsoleHandleCheckpoint(bot_client_state_t *state,
 	}
 
 	char name[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_NAME,
 		name,
 		(int)sizeof(name));
@@ -4697,7 +4555,7 @@ static void BotAI_ConsoleHandleCheckpoint(bot_client_state_t *state,
 	if (old != NULL)
 	{
 		BotAI_ConsoleUnlinkCheckpoint(state, old);
-		free(old);
+		FreeMemory(old);
 	}
 
 	bot_console_waypoint_t *checkpoint = BotAI_ConsoleCreateWaypoint(name,
@@ -4783,8 +4641,8 @@ static int BotAI_ConsoleRecoverPatrolVariables(const char *text,
 
 	strncpy(keyarea, cursor, keyarea_size - 1U);
 	keyarea[keyarea_size - 1U] = '\0';
-	int separator = StringContains(keyarea, " to ", 0);
-	int back_to_start = StringContains(keyarea, " and back to the start", 0);
+	int separator = StringContainsIndex(keyarea, " to ", 0);
+	int back_to_start = StringContainsIndex(keyarea, " and back to the start", 0);
 	if (separator >= 0 &&
 		(back_to_start < 0 || separator < back_to_start))
 	{
@@ -4831,7 +4689,7 @@ static bool BotAI_ConsoleGetPatrolPoints(bot_client_state_t *state,
 	const bot_match_t *match)
 {
 	char remaining[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_KEYAREA,
 		remaining,
 		(int)sizeof(remaining));
@@ -4856,13 +4714,13 @@ static bool BotAI_ConsoleGetPatrolPoints(bot_client_state_t *state,
 		}
 
 		char keyarea[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-		BotMatchVariable(&point_match,
+		BotMatchVariableSized(&point_match,
 			BOT_CONSOLE_MATCH_KEYAREA,
 			keyarea,
 			(int)sizeof(keyarea));
 		int point_subtype = point_match.subtype;
 		char recovered_more[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-		BotMatchVariable(&point_match,
+		BotMatchVariableSized(&point_match,
 			BOT_CONSOLE_MATCH_MORE,
 			recovered_more,
 			(int)sizeof(recovered_more));
@@ -5140,7 +4998,7 @@ static void BotAI_ConsoleJoinSubteam(bot_client_state_t *state,
 	const bot_match_t *match)
 {
 	char teamname[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_TEAMMATE,
 		teamname,
 		(int)sizeof(teamname));
@@ -5178,7 +5036,7 @@ static void BotAI_ConsoleSetFormationSpace(bot_client_state_t *state,
 	const bot_match_t *match)
 {
 	char number[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-	BotMatchVariable(match,
+	BotMatchVariableSized(match,
 		BOT_CONSOLE_MATCH_NUMBER,
 		number,
 		(int)sizeof(number));
@@ -5227,11 +5085,11 @@ static bool BotAI_MatchConsoleMessage(bot_client_state_t *state, const char *mes
 	case BOT_CONSOLE_MATCH_DEATH:
 	{
 		char victim[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-		BotMatchVariable(&match,
+		BotMatchVariableSized(&match,
 			BOT_CONSOLE_MATCH_VICTIM,
 			victim,
 			(int)sizeof(victim));
-		int victim_client = BotState_FindClientByName(victim);
+		int victim_client = ClientFromName(victim);
 		if (victim_client == state->client_number)
 		{
 			state->bot_death_type = match.subtype;
@@ -5356,12 +5214,12 @@ chat characters-per-minute characteristic.
 */
 static float BotAI_ChatTime(const bot_client_state_t *state)
 {
-	if (state == NULL || state->chat_state == NULL || state->character_handle <= 0)
+	if (state == NULL || state->chat_state == NULL || state->character == NULL)
 	{
 		return 0.0f;
 	}
 
-	int cpm = Characteristic_BInteger(state->character_handle,
+	int cpm = Characteristic_BInteger(state->character,
 		CHARACTERISTIC_CHAT_CPM,
 		1,
 		4000);
@@ -5379,15 +5237,10 @@ pending initial chat for the Stand node.
 =============
 */
 static bool BotAI_ConstructRandomChat(bot_client_state_t *state,
-	float thinktime,
-	bool *constructed)
+	float thinktime)
 {
-	if (constructed != NULL)
-	{
-		*constructed = false;
-	}
 	if (state == NULL || state->chat_state == NULL ||
-		state->character_handle <= 0 || LibVarGetValue("nochat") != 0.0f)
+		state->character == NULL || LibVarGetValue("nochat") != 0.0f)
 	{
 		return false;
 	}
@@ -5397,7 +5250,7 @@ static bool BotAI_ConstructRandomChat(bot_client_state_t *state,
 		return false;
 	}
 
-	float random_chat = Characteristic_BFloat(state->character_handle,
+	float random_chat = Characteristic_BFloat(state->character,
 		CHARACTERISTIC_CHAT_RANDOM,
 		0.0f,
 		1.0f);
@@ -5416,20 +5269,14 @@ static bool BotAI_ConstructRandomChat(bot_client_state_t *state,
 		return false;
 	}
 
-	float miscellaneous = Characteristic_BFloat(state->character_handle,
+	float miscellaneous = Characteristic_BFloat(state->character,
 		CHARACTERISTIC_CHAT_MISC,
 		0.0f,
 		1.0f);
 	const char *type = BotAI_ConsoleRandom() < miscellaneous
 		? "random_misc"
 		: "random_insult";
-	if (constructed != NULL)
-	{
-		*constructed = BotInitialChat(state->chat_state,
-			type,
-			0UL,
-			NULL) != 0;
-	}
+	BotInitialChat(state->chat_state, type, NULL);
 	return true;
 }
 
@@ -5438,28 +5285,21 @@ static bool BotAI_ConstructRandomChat(bot_client_state_t *state,
 BotAI_ConstructLifecycleChat
 
 Applies the Gladiator initial-chat gates shared by enter-game and level
-transition events, retaining whether construction actually produced a pending
-message for the caller's stand or immediate-dispatch path.
+transition events. The gate result is independent of template availability.
 =============
 */
 static bool BotAI_ConstructLifecycleChat(bot_client_state_t *state,
 	const char *type,
 	int characteristic,
-	bool require_valid_position,
-	bool *constructed)
+	bool require_valid_position)
 {
-	if (constructed != NULL)
-	{
-		*constructed = false;
-	}
 	if (state == NULL || type == NULL || state->chat_state == NULL ||
-		state->character_handle <= 0 || LibVarGetValue("nochat") != 0.0f ||
-		(require_valid_position && !BotAI_ValidChatPosition(state)))
+		state->character == NULL || LibVarGetValue("nochat") != 0.0f)
 	{
 		return false;
 	}
 
-	float chance = Characteristic_BFloat(state->character_handle,
+	float chance = Characteristic_BFloat(state->character,
 		characteristic,
 		0.0f,
 		1.0f);
@@ -5468,20 +5308,17 @@ static bool BotAI_ConstructLifecycleChat(bot_client_state_t *state,
 	{
 		return false;
 	}
+	if (require_valid_position && !BotAI_ValidChatPosition(state))
+	{
+		return false;
+	}
 
-	const char *name = BotState_ClientName(state->client_number);
-	if (name == NULL || *name == '\0')
-	{
-		name = BotChatName(state->chat_state);
-	}
-	if (constructed != NULL)
-	{
-		*constructed = BotInitialChat(state->chat_state,
-			type,
-			0UL,
-			name != NULL ? name : "",
-			NULL) != 0;
-	}
+	char name[0x20];
+	BotAI_ConsoleEasyClientName(state->client_number, name, sizeof(name));
+	BotInitialChat(state->chat_state,
+		type,
+		name,
+		NULL);
 	return true;
 }
 
@@ -5498,12 +5335,12 @@ past its typing deadline.
 static bool BotAI_ConstructDeathChat(bot_client_state_t *state)
 {
 	if (state == NULL || state->chat_state == NULL ||
-		state->character_handle <= 0 || LibVarGetValue("nochat") != 0.0f)
+		state->character == NULL || LibVarGetValue("nochat") != 0.0f)
 	{
 		return false;
 	}
 
-	float death_chat = Characteristic_BFloat(state->character_handle,
+	float death_chat = Characteristic_BFloat(state->character,
 		CHARACTERISTIC_CHAT_DEATH,
 		0.0f,
 		1.0f);
@@ -5523,7 +5360,7 @@ static bool BotAI_ConstructDeathChat(bot_client_state_t *state)
 	const char *chat_type = "death_bfg";
 	if (state->bot_death_type != 12)
 	{
-		float insult = Characteristic_BFloat(state->character_handle,
+		float insult = Characteristic_BFloat(state->character,
 			CHARACTERISTIC_CHAT_INSULT,
 			0.0f,
 			1.0f);
@@ -5532,11 +5369,10 @@ static bool BotAI_ConstructDeathChat(bot_client_state_t *state)
 			: "death_praise";
 	}
 
-	state->respawn_chat_pending = BotInitialChat(state->chat_state,
+	BotInitialChat(state->chat_state,
 		chat_type,
-		0UL,
 		killer_name,
-		NULL) != 0;
+		NULL);
 	return true;
 }
 
@@ -5550,20 +5386,15 @@ characteristic-19, and valid-position gates; the obituary subtype selects the
 telefrag form before the normal insult/praise trial.
 =============
 */
-static bool BotAI_ConstructKillChat(bot_client_state_t *state,
-	bool *constructed)
+static bool BotAI_ConstructKillChat(bot_client_state_t *state)
 {
-	if (constructed != NULL)
-	{
-		*constructed = false;
-	}
 	if (state == NULL || state->chat_state == NULL ||
-		state->character_handle <= 0 || LibVarGetValue("nochat") != 0.0f)
+		state->character == NULL || LibVarGetValue("nochat") != 0.0f)
 	{
 		return false;
 	}
 
-	float kill_chat = Characteristic_BFloat(state->character_handle,
+	float kill_chat = Characteristic_BFloat(state->character,
 		CHARACTERISTIC_CHAT_KILL,
 		0.0f,
 		1.0f);
@@ -5587,7 +5418,7 @@ static bool BotAI_ConstructKillChat(bot_client_state_t *state,
 	const char *chat_type = "kill_telefrag";
 	if (state->enemy_death_type != 13)
 	{
-		float insult = Characteristic_BFloat(state->character_handle,
+		float insult = Characteristic_BFloat(state->character,
 			CHARACTERISTIC_CHAT_INSULT,
 			0.0f,
 			1.0f);
@@ -5596,14 +5427,10 @@ static bool BotAI_ConstructKillChat(bot_client_state_t *state,
 			: "kill_praise";
 	}
 
-	if (constructed != NULL)
-	{
-		*constructed = BotInitialChat(state->chat_state,
-			chat_type,
-			0UL,
-			victim_name != NULL ? victim_name : "",
-			NULL) != 0;
-	}
+	BotInitialChat(state->chat_state,
+		chat_type,
+		victim_name != NULL ? victim_name : "",
+		NULL);
 	return true;
 }
 
@@ -5616,17 +5443,17 @@ probability gates before constructing a reply from the text after the colon.
 =============
 */
 static bool BotAI_SelectConsoleReply(bot_client_state_t *state,
-	char *message,
-	unsigned long synonym_context)
+	char *message)
 {
 	if (state == NULL || message == NULL || state->chat_state == NULL ||
-		state->chat_standing || LibVarGetValue("nochat") != 0.0f ||
-		!BotAI_ValidChatPosition(state) || state->character_handle <= 0)
+		state->ai_node == BOT_AI_NODE_STAND ||
+		LibVarGetValue("nochat") != 0.0f ||
+		!BotAI_ValidChatPosition(state) || state->character == NULL)
 	{
 		return false;
 	}
 
-	float chat_reply = Characteristic_BFloat(state->character_handle,
+	float chat_reply = Characteristic_BFloat(state->character,
 		CHARACTERISTIC_CHAT_REPLY,
 		0.0f,
 		1.0f);
@@ -5645,7 +5472,7 @@ static bool BotAI_SelectConsoleReply(bot_client_state_t *state,
 
 	memmove(message, colon + 1, strlen(colon + 1) + 1U);
 	UnifyWhiteSpaces(message);
-	return BotReplyChat(state->chat_state, message, synonym_context) != 0;
+	return BotReplyChat(state->chat_state, message) != 0;
 }
 
 /*
@@ -5664,11 +5491,11 @@ static void BotCheckConsoleMessages(bot_client_state_t *state)
 		return;
 	}
 
-	const bot_console_message_node_t *node = BotNextConsoleMessageNode(
+	bot_console_message_node_t *node = BotNextConsoleMessage(
 		state->chat_state);
 	while (node != NULL)
 	{
-		if (BotNumConsoleMessages(state->chat_state) < 10U &&
+		if (BotNumConsoleMessages(state->chat_state) < 10 &&
 			node->type == CMS_CHAT)
 		{
 			float read_time = 1.0f + BotAI_ConsoleRandom();
@@ -5683,8 +5510,8 @@ static void BotCheckConsoleMessages(bot_client_state_t *state)
 			const char *colon = strchr(node->message, ':');
 			if (colon == NULL || BotAI_IsOwnConsoleChat(state, node->message, colon))
 			{
-				BotRemoveConsoleMessageNode(state->chat_state, node);
-				node = BotNextConsoleMessageNode(state->chat_state);
+				BotRemoveConsoleMessage(state->chat_state, node);
+				node = BotNextConsoleMessage(state->chat_state);
 				continue;
 			}
 		}
@@ -5693,38 +5520,24 @@ static void BotCheckConsoleMessages(bot_client_state_t *state)
 		memcpy(message, node->message, sizeof(message));
 		message[sizeof(message) - 1U] = '\0';
 		UnifyWhiteSpaces(message);
-		char unsynonymized_message[BOT_CONSOLE_MESSAGE_STORAGE_CHARS];
-		memcpy(unsynonymized_message, message, sizeof(unsynonymized_message));
 		unsigned long synonym_context = BotAI_ConsoleSynonymContext(state);
 		BotReplaceSynonyms(message, synonym_context);
 
 		bool matched = BotAI_MatchConsoleMessage(state, message);
-		if (!matched && strcmp(message, unsynonymized_message) != 0)
-		{
-			/*
-			 * The reconstructed matcher stores literal template words rather
-			 * than retail's synonym-token form. Retrying the normalized source
-			 * keeps commands such as CTF "rush base" reachable after the
-			 * canonical synonym pass rewrites base to a flag name.
-			 */
-			matched = BotAI_MatchConsoleMessage(state,
-				unsynonymized_message);
-		}
 
 		if (!matched &&
 			node->type == CMS_CHAT &&
-			BotAI_SelectConsoleReply(state, message, synonym_context))
+			BotAI_SelectConsoleReply(state, message))
 		{
-			BotRemoveConsoleMessageNode(state->chat_state, node);
+			BotRemoveConsoleMessage(state->chat_state, node);
 			state->stand_time = AAS_Time() + BotAI_ChatTime(state);
 			state->chat_standing = true;
-			state->stand_chat_pending = true;
 			state->ai_node = BOT_AI_NODE_STAND;
 			return;
 		}
 
-		BotRemoveConsoleMessageNode(state->chat_state, node);
-		node = BotNextConsoleMessageNode(state->chat_state);
+		BotRemoveConsoleMessage(state->chat_state, node);
+		node = BotNextConsoleMessage(state->chat_state);
 	}
 }
 
@@ -5761,13 +5574,9 @@ static bool BotAI_ReplyStandActive(bot_client_state_t *state, float thinktime)
 	}
 	if (state->chat_state != NULL)
 	{
-		if (state->stand_chat_pending)
-		{
-			BotEnterChat(state->chat_state, state->client_number, 0);
-		}
+		BotEnterChat(state->chat_state, state->client_number, 0);
 	}
 	state->chat_standing = false;
-	state->stand_chat_pending = false;
 	return false;
 }
 
@@ -5805,7 +5614,7 @@ static void BotAI_ResetFightNavigation(bot_client_state_t *state,
 {
 	if (state->move_handle > 0)
 	{
-		BotResetLastAvoidReach(state->move_handle);
+		BotResetLastAvoidReachHandle(state->move_handle);
 	}
 	if (empty_goal_stack && state->goal_handle > 0)
 	{
@@ -6127,11 +5936,34 @@ static void BotAI_DropUnwantedCTFTech(const bot_client_state_t *state,
 
 /*
 =============
+BotAI_TouchingNearbyGoal
+
+Checks the retail contact branch shared by item LTG, Seek NBG, and Battle NBG.
+=============
+*/
+static bool BotAI_TouchingNearbyGoal(bot_client_state_t *state,
+	bot_goal_t *goal)
+{
+	if (state == NULL || goal == NULL ||
+		!BotTouchingGoal(state->last_client_update.origin, goal))
+	{
+		return false;
+	}
+
+	if ((goal->flags & GFL_ITEM) != 0 && BotAI_LibVarOrderedNonZero("runes"))
+	{
+		BotAI_DropUnwantedCTFTech(state, goal);
+	}
+	return true;
+}
+
+/*
+=============
 BotAI_NearbyGoalReached
 
-Applies BotReachedGoal's item-specific contact/absence/vertical-overlap test
-before an LTG or NBG goal is replaced. Static item contact resets its respawn
-avoid time, while a missing visible item expires immediately.
+Applies BotReachedGoal's retail item-specific contact and visibility tests
+before an LTG or NBG goal is replaced. The selectors exclusively own retail
+avoid-slot insertion.
 =============
 */
 static bool BotAI_NearbyGoalReached(bot_client_state_t *state,
@@ -6142,24 +5974,13 @@ static bool BotAI_NearbyGoalReached(bot_client_state_t *state,
 		return false;
 	}
 
+	if (BotAI_TouchingNearbyGoal(state, goal))
+	{
+		return true;
+	}
 	if ((goal->flags & GFL_ITEM) == 0)
 	{
-		return BotTouchingGoal(state->last_client_update.origin, goal) != 0;
-	}
-
-	if (BotTouchingGoal(state->last_client_update.origin, goal))
-	{
-		if (BotAI_LibVarOrderedNonZero("runes"))
-		{
-			BotAI_DropUnwantedCTFTech(state, goal);
-		}
-		if ((goal->flags & GFL_DROPPED) == 0 && state->goal_handle > 0)
-		{
-			AI_GoalBotlib_SetAvoidGoalTime(state->goal_handle,
-				goal->number,
-				-1.0f);
-		}
-		return true;
+		return false;
 	}
 
 	vec3_t eye;
@@ -6172,16 +5993,7 @@ static bool BotAI_NearbyGoalReached(bot_client_state_t *state,
 		return true;
 	}
 
-	int area = AAS_PointAreaNum(state->last_client_update.origin);
-	if (area != goal->areanum || AAS_Swimming(state->last_client_update.origin))
-	{
-		return false;
-	}
-
-	return state->last_client_update.origin[0] > goal->origin[0] + goal->mins[0] &&
-		state->last_client_update.origin[0] < goal->origin[0] + goal->maxs[0] &&
-		state->last_client_update.origin[1] > goal->origin[1] + goal->mins[1] &&
-		state->last_client_update.origin[1] < goal->origin[1] + goal->maxs[1];
+	return false;
 }
 
 /*
@@ -6222,9 +6034,8 @@ static bool BotAI_GetItemLongTermGoal(bot_client_state_t *state,
 		}
 		else
 		{
-			AI_GoalBotlib_EmptyGoalStack(state->goal_handle);
 			AI_GoalBotlib_ResetAvoidGoals(state->goal_handle);
-			BotMove_ResetAvoidReach(state->move_handle);
+			BotResetAvoidReachHandle(state->move_handle);
 		}
 	}
 
@@ -6265,7 +6076,7 @@ static bool BotAI_TryLongTermNearbyGoal(bot_client_state_t *state,
 
 	state->nearby_goal_time = AAS_Time() + 5.0f;
 	state->ai_node = BOT_AI_NODE_SEEK_NBG;
-	BotResetLastAvoidReach(state->move_handle);
+	BotResetLastAvoidReachHandle(state->move_handle);
 	return true;
 }
 
@@ -6431,14 +6242,10 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 
 	case BOT_AI_NODE_SEEK_LTG:
 	{
-		bool chat_constructed = false;
-		if (BotAI_ConstructRandomChat(state,
-			frame->thinktime,
-			&chat_constructed))
+		if (BotAI_ConstructRandomChat(state, frame->thinktime))
 		{
 			state->stand_time = AAS_Time() + BotAI_ChatTime(state);
 			state->chat_standing = true;
-			state->stand_chat_pending = chat_constructed;
 			state->ai_node = BOT_AI_NODE_STAND;
 			return qfalse;
 		}
@@ -6463,12 +6270,10 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 			AAS_EntityInfo(state->combat.current_enemy, &entity_info);
 			if (BotAI_EntityIsDead(&entity_info))
 			{
-				bool chat_constructed = false;
-				if (BotAI_ConstructKillChat(state, &chat_constructed))
+				if (BotAI_ConstructKillChat(state))
 				{
 					state->stand_time = AAS_Time() + BotAI_ChatTime(state);
 					state->chat_standing = true;
-					state->stand_chat_pending = chat_constructed;
 					state->ai_node = BOT_AI_NODE_STAND;
 					return qfalse;
 				}
@@ -6610,7 +6415,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 		bool has_nearby_goal = state->goal_handle > 0 &&
 			AI_GoalBotlib_GetTopGoal(state->goal_handle, &nearby_goal) != 0;
 		if (!has_nearby_goal ||
-			BotAI_NearbyGoalReached(state, &nearby_goal))
+			BotAI_TouchingNearbyGoal(state, &nearby_goal))
 		{
 			state->nearby_goal_time = 0.0f;
 		}
@@ -6813,7 +6618,7 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 				direction);
 			if (sqrtf(DotProduct(direction, direction)) < 100.0f)
 			{
-				BotMove_ResetAvoidReach(state->move_handle);
+				BotResetAvoidReachHandle(state->move_handle);
 				return BOT_TEAM_GOAL_HANDLED;
 			}
 		}
@@ -6876,9 +6681,9 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 			if (sqrtf(DotProduct(direction, direction)) < state->formation_dist)
 			{
 				float crouch_time = AI_DMState_GetAttackCrouchTime(state->dm_state);
-				if (crouch_time < now - 5.0f && state->character_handle > 0)
+				if (crouch_time < now - 5.0f && state->character != NULL)
 				{
-					float croucher = Characteristic_BFloat(state->character_handle,
+					float croucher = Characteristic_BFloat(state->character,
 						CHARACTERISTIC_CROUCHER,
 						0.0f,
 						1.0f);
@@ -6939,7 +6744,7 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 					held_viewangles[ROLL] *= 0.5f;
 					*held_view_set = true;
 				}
-				BotMove_ResetAvoidReach(state->move_handle);
+				BotResetAvoidReachHandle(state->move_handle);
 				return BOT_TEAM_GOAL_HANDLED;
 			}
 		}
@@ -6993,7 +6798,7 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 		}
 		if (BotAI_TeamGoalDistance(state, goal) < 70.0f)
 		{
-			BotResetLastAvoidReach(state->move_handle);
+			BotResetLastAvoidReachHandle(state->move_handle);
 			state->defend_away_time = now + 5.0f +
 				10.0f * BotAI_ConsoleRandom();
 		}
@@ -7053,7 +6858,7 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 			}
 			else
 			{
-				BotMove_ResetAvoidReach(state->move_handle);
+				BotResetAvoidReachHandle(state->move_handle);
 				state->rush_base_away_time = now + 5.0f +
 					10.0f * BotAI_ConsoleRandom();
 			}
@@ -7103,9 +6908,9 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 			}
 
 			float crouch_time = AI_DMState_GetAttackCrouchTime(state->dm_state);
-			if (crouch_time < now - 5.0f && state->character_handle > 0)
+			if (crouch_time < now - 5.0f && state->character != NULL)
 			{
-				float croucher = Characteristic_BFloat(state->character_handle,
+				float croucher = Characteristic_BFloat(state->character,
 					CHARACTERISTIC_CROUCHER,
 					0.0f,
 					1.0f);
@@ -7129,7 +6934,7 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 				BotAI_ConsoleEnterInitialTeamChat(state, "camp_stop", NULL);
 				state->ltg_type = 0;
 			}
-			BotResetLastAvoidReach(state->move_handle);
+			BotResetLastAvoidReachHandle(state->move_handle);
 			return BOT_TEAM_GOAL_HANDLED;
 		}
 		return BOT_TEAM_GOAL_READY;
@@ -7218,7 +7023,7 @@ static bool BotAI_ApplyLongTermMoveResultView(bot_client_state_t *state,
 
 	if ((result->flags & MOVERESULT_MOVEMENTVIEWSET) != 0)
 	{
-		VectorCopy(result->ideal_viewangles, input->viewangles);
+		/* BotMoveToGoal already issued the authoritative retail EA_View. */
 		return false;
 	}
 
@@ -7260,7 +7065,7 @@ static bool BotAI_ApplyLongTermMoveResultView(bot_client_state_t *state,
 
 	vec3_t target;
 	vec3_t direction;
-	if (BotMovementViewTarget(state->move_handle,
+	if (BotMovementViewTargetHandle(state->move_handle,
 		&view_goal,
 		travel_flags,
 		300.0f,
@@ -7286,12 +7091,23 @@ Maps the game-facing inline model number on a blocked BSP entity back to the
 zero-based AAS model bounds used by Gladiator's static-entity logic.
 =============
 */
-static bool BotAI_BlockedBspModelBounds(int modelindex,
+static bool BotAI_BlockedBspModelBounds(const char *model,
+	bool allow_inline_fallback,
 	vec3_t mins,
 	vec3_t maxs)
 {
-	if (modelindex <= 0 || mins == NULL || maxs == NULL ||
-		aasworld.bspModels == NULL || modelindex > aasworld.numBspModels)
+	if (model == NULL || mins == NULL || maxs == NULL)
+	{
+		return false;
+	}
+
+	int modelindex = IndexFromModel(model);
+	if (modelindex == 0 && allow_inline_fallback && model[0] == '*')
+	{
+		modelindex = (int)strtol(model + 1, NULL, 10);
+	}
+	if (modelindex <= 0 || aasworld.bspModels == NULL ||
+		modelindex > aasworld.numBspModels)
 	{
 		return false;
 	}
@@ -7309,8 +7125,8 @@ static bool BotAI_BlockedBspModelBounds(int modelindex,
 =============
 BotAI_SetBlockedAttack
 
-Carries the retail blocked-door and shoot-button Blaster action through the
-frame-input bridge while preserving the immediate game command selection.
+Issues the retail blocked-door and shoot-button Blaster action while storing
+the ideal movement view in the result.
 =============
 */
 static void BotAI_SetBlockedAttack(bot_client_state_t *state,
@@ -7326,9 +7142,9 @@ static void BotAI_SetBlockedAttack(bot_client_state_t *state,
 	VectorSubtract(target, state->last_client_update.origin, direction);
 	Vector2Angles(direction, result->ideal_viewangles);
 	result->ideal_viewangles[ROLL] *= 0.5f;
-	result->flags |= MOVERESULT_MOVEMENTVIEW | MOVERESULT_MOVEMENTWEAPON;
-	result->weapon = 0;
-	EA_Command(state->client_number, "use Blaster");
+	result->flags |= MOVERESULT_MOVEMENTVIEW;
+	EA_UseItem(state->client_number, "Blaster");
+	EA_Attack(state->client_number);
 }
 
 /*
@@ -7336,7 +7152,9 @@ static void BotAI_SetBlockedAttack(bot_client_state_t *state,
 BotAI_StoreBlockedActivationGoal
 
 Stores Gladiator's single ten-second activation goal after finding a reachable
-ground point beside the blocking static BSP entity.
+ground point beside the blocking static BSP entity. A start-solid button uses
+its untraced face point; a start-solid trigger consumes the block without
+installing a goal.
 =============
 */
 static bool BotAI_StoreBlockedActivationGoal(bot_client_state_t *state,
@@ -7344,11 +7162,14 @@ static bool BotAI_StoreBlockedActivationGoal(bot_client_state_t *state,
 	const vec3_t origin,
 	const vec3_t mins,
 	const vec3_t maxs,
+	const vec3_t fallback_point,
 	const vec3_t trace_start,
-	const vec3_t trace_end)
+	const vec3_t trace_end,
+	bool store_when_startsolid)
 {
 	if (state == NULL || result == NULL || origin == NULL || mins == NULL ||
-		maxs == NULL || trace_start == NULL || trace_end == NULL)
+		maxs == NULL || fallback_point == NULL || trace_start == NULL ||
+		trace_end == NULL)
 	{
 		return false;
 	}
@@ -7357,16 +7178,13 @@ static bool BotAI_StoreBlockedActivationGoal(bot_client_state_t *state,
 		trace_end,
 		PRESENCE_CROUCH,
 		-1);
-	if (trace.startsolid)
+	if (trace.startsolid && !store_when_startsolid)
 	{
-		return false;
+		return true;
 	}
 
-	int areanum = AAS_PointAreaNum(trace.endpos);
-	if (areanum == 0 || AAS_AreaReachability(areanum) == 0)
-	{
-		return false;
-	}
+	const float *goal_point = trace.startsolid ? fallback_point : trace.endpos;
+	int areanum = AAS_PointAreaNum(goal_point);
 
 	memset(&state->activation_goal, 0, sizeof(state->activation_goal));
 	VectorCopy(origin, state->activation_goal.origin);
@@ -7375,6 +7193,19 @@ static bool BotAI_StoreBlockedActivationGoal(bot_client_state_t *state,
 	VectorCopy(maxs, state->activation_goal.maxs);
 	state->activation_goal.entitynum = result->blockentity;
 	state->activation_goal_time = AAS_Time() + 10.0f;
+	if (AAS_AreaReachability(areanum) == 0)
+	{
+		if (state->ai_node == BOT_AI_NODE_SEEK_NBG)
+		{
+			state->nearby_goal_time = 0.0f;
+		}
+		else if (state->ai_node == BOT_AI_NODE_SEEK_LTG)
+		{
+			state->long_term_goal_time = 0.0f;
+		}
+		return true;
+	}
+
 	state->ai_node = BOT_AI_NODE_ACTIVATE_ENTITY;
 	return true;
 }
@@ -7435,25 +7266,37 @@ static bool BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 	{
 		return false;
 	}
-	int modelindex = (int)strtol(model + (model[0] == '*'), NULL, 10);
-	vec3_t model_mins;
-	vec3_t model_maxs;
-	if (!BotAI_BlockedBspModelBounds(modelindex, model_mins, model_maxs))
-	{
-		return false;
-	}
-
-	vec3_t center;
-	VectorAdd(model_mins, model_maxs, center);
-	VectorScale(center, 0.5f, center);
 	const char *classname = AAS_ValueForBSPEpairKey(entity, "classname");
 	if (classname == NULL)
 	{
 		return false;
 	}
 
-	if (strcmp(classname, "func_door") == 0 ||
-		strcmp(classname, "func_door_secret") == 0)
+	bool is_door = strcmp(classname, "func_door") == 0 ||
+		strcmp(classname, "func_door_secret") == 0;
+	bool is_button = strcmp(classname, "func_button") == 0;
+	bool is_trigger = strcmp(classname, "trigger_multiple") == 0 ||
+		strcmp(classname, "trigger_once") == 0;
+	if (!is_door && !is_button && !is_trigger)
+	{
+		return false;
+	}
+
+	vec3_t model_mins;
+	vec3_t model_maxs;
+	if (!BotAI_BlockedBspModelBounds(model,
+		is_trigger,
+		model_mins,
+		model_maxs))
+	{
+		return true;
+	}
+
+	vec3_t center;
+	VectorAdd(model_mins, model_maxs, center);
+	VectorScale(center, 0.5f, center);
+
+	if (is_door)
 	{
 		BotAI_SetBlockedAttack(state, result, center);
 		return true;
@@ -7467,10 +7310,11 @@ static bool BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 		goal_maxs[axis] = model_maxs[axis] - center[axis];
 	}
 
-	if (strcmp(classname, "func_button") == 0)
+	if (is_button)
 	{
 		vec3_t move_direction;
 		BotAI_ButtonMoveDirection(entity, move_direction);
+		(void)AAS_FloatForBSPEpairKey(entity, "lip");
 		float half_extent = 0.5f *
 			(fabsf(move_direction[0]) * (model_maxs[0] - model_mins[0]) +
 			fabsf(move_direction[1]) * (model_maxs[1] - model_mins[1]) +
@@ -7485,13 +7329,25 @@ static bool BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 
 		vec3_t trace_start;
 		vec3_t trace_end;
-		float client_extent = fabsf(move_direction[0]) * 15.0f +
-			fabsf(move_direction[1]) * 15.0f +
-			(move_direction[2] > 0.0f ? 24.0f : 8.0f);
+		vec3_t client_mins;
+		vec3_t client_maxs;
+		AAS_PresenceTypeBoundingBox(PRESENCE_CROUCH,
+			client_mins,
+			client_maxs);
+		float client_extent = 0.0f;
+		for (int axis = 0; axis < 3; ++axis)
+		{
+			float bound = move_direction[axis] < 0.0f ?
+				client_maxs[axis] : client_mins[axis];
+			client_extent += fabsf(bound) * fabsf(move_direction[axis]);
+		}
 		VectorMA(center,
 			-(half_extent + client_extent),
 			move_direction,
 			trace_start);
+		vec3_t fallback_point;
+		VectorCopy(trace_start, fallback_point);
+		trace_start[2] += 24.0f;
 		VectorCopy(trace_start, trace_end);
 		trace_end[2] -= 100.0f;
 		for (int axis = 0; axis < 3; ++axis)
@@ -7504,25 +7360,29 @@ static bool BotAI_HandleBlockedStaticEntity(bot_client_state_t *state,
 			center,
 			goal_mins,
 			goal_maxs,
+			fallback_point,
 			trace_start,
-			trace_end);
+			trace_end,
+			true);
 	}
 
-	if (strcmp(classname, "trigger_multiple") == 0 ||
-		strcmp(classname, "trigger_once") == 0)
+	if (is_trigger)
 	{
 		vec3_t trace_start;
 		vec3_t trace_end;
 		VectorCopy(center, trace_start);
-		VectorCopy(center, trace_end);
-		trace_end[2] = model_maxs[2] + 24.0f - 100.0f;
+		trace_start[2] = model_maxs[2] + 24.0f;
+		VectorCopy(trace_start, trace_end);
+		trace_end[2] -= 100.0f;
 		return BotAI_StoreBlockedActivationGoal(state,
 			result,
 			center,
 			goal_mins,
 			goal_maxs,
+			center,
 			trace_start,
-			trace_end);
+			trace_end,
+			false);
 	}
 
 	return false;
@@ -7601,11 +7461,13 @@ diagnostics, and trigger_key rejection.
 */
 const aas_bspentity_t *BotAI_EntityToActivate(
 	const aas_bspentity_t *entities,
-	int modelindex)
+	int blockentity)
 {
-	char model[32];
-	int written = snprintf(model, sizeof(model), "*%d", modelindex);
-	if (modelindex <= 0 || written < 0 || (size_t)written >= sizeof(model))
+	aas_entityinfo_t entity_info;
+	memset(&entity_info, 0, sizeof(entity_info));
+	AAS_EntityInfo(blockentity, &entity_info);
+	const char *model = AAS_ModelFromIndex(entity_info.modelindex);
+	if (model == NULL || model[0] == '\0')
 	{
 		return NULL;
 	}
@@ -7639,6 +7501,10 @@ const aas_bspentity_t *BotAI_EntityToActivate(
 		AAS_FloatForBSPEpairKey(entity, "health") != 0.0f)
 	{
 		return entity;
+	}
+	if (targetname == NULL)
+	{
+		return NULL;
 	}
 
 	const char *target_stack[10] = {targetname};
@@ -7680,7 +7546,7 @@ const aas_bspentity_t *BotAI_EntityToActivate(
 				BotLib_Print(PRT_ERROR,
 					"BotEntityToActivate: stacked up more than %d trigger_counter or trigger_relay\n",
 					depth);
-				break;
+				return NULL;
 			}
 			++depth;
 			target_stack[depth] = AAS_ValueForBSPEpairKey(match, "targetname");
@@ -7699,6 +7565,7 @@ const aas_bspentity_t *BotAI_EntityToActivate(
 		{
 			return NULL;
 		}
+		--depth;
 	}
 
 	BotLib_Print(PRT_ERROR,
@@ -7713,8 +7580,7 @@ BotAI_HandleBlockedMovement
 
 Implements retail BotAIBlocked's direct static-activator handling and its
 perpendicular alternate movement when no recognized activator applies. The
-outgoing direction is returned separately because the frame-input bridge
-supersedes BotMoveInDirection's immediate EA movement record.
+successful BotMoveInDirection call remains authoritative in the EA record.
 =============
 */
 static bool BotAI_HandleBlockedMovement(bot_client_state_t *state,
@@ -7741,7 +7607,7 @@ static bool BotAI_HandleBlockedMovement(bot_client_state_t *state,
 		{
 			aas_bspentity_t *entities = AAS_LoadBSPEntities();
 			const aas_bspentity_t *entity = BotAI_EntityToActivate(entities,
-				entity_info.modelindex);
+				result->blockentity);
 			if (entity != NULL && BotAI_HandleBlockedStaticEntity(state,
 				result,
 				entity))
@@ -7762,31 +7628,28 @@ static bool BotAI_HandleBlockedMovement(bot_client_state_t *state,
 	VectorCopy(result->movedir, forward);
 	forward[2] = 0.0f;
 	float forward_length = sqrtf(DotProduct(forward, forward));
-	if (forward_length == 0.0f)
+	if (forward_length != 0.0f)
 	{
-		return false;
+		VectorScale(forward, 1.0f / forward_length, forward);
 	}
-	VectorScale(forward, 1.0f / forward_length, forward);
 
 	VectorSet(alternate_direction, forward[1], -forward[0], 0.0f);
 	if (state->blocked_avoid_right)
 	{
 		VectorScale(alternate_direction, -1.0f, alternate_direction);
 	}
-	if (BotMoveInDirection(state->move_handle,
+	bool moved = BotMoveInDirectionHandle(state->move_handle,
 		alternate_direction,
 		400.0f,
-		MOVE_WALK) == 0)
+		MOVE_WALK) != 0;
+	if (!moved)
 	{
 		VectorScale(alternate_direction, -1.0f, alternate_direction);
 		state->blocked_avoid_right = !state->blocked_avoid_right;
-		if (BotMoveInDirection(state->move_handle,
+		moved = BotMoveInDirectionHandle(state->move_handle,
 			alternate_direction,
 			400.0f,
-			MOVE_WALK) == 0)
-		{
-			return false;
-		}
+			MOVE_WALK) != 0;
 	}
 
 	if (state->ai_node == BOT_AI_NODE_SEEK_NBG)
@@ -7797,7 +7660,40 @@ static bool BotAI_HandleBlockedMovement(bot_client_state_t *state,
 	{
 		state->long_term_goal_time = 0.0f;
 	}
-	return true;
+	return moved;
+}
+
+/*
+=============
+BotAI_HandleFightMoveResult
+
+Consume BotAttackMove's dormant chase result before Battle Fight aims or fires,
+matching the retail failure-reset and non-activating blocked-response order.
+=============
+*/
+static void BotAI_HandleFightMoveResult(void *context,
+	const struct bot_moveresult_s *move_result,
+	bool attack_chase_active)
+{
+	bot_client_state_t *state = (bot_client_state_t *)context;
+	if (state == NULL || move_result == NULL || !attack_chase_active)
+	{
+		return;
+	}
+
+	bot_moveresult_t result = *move_result;
+	if (result.failure)
+	{
+		BotResetAvoidReachHandle(state->move_handle);
+		state->long_term_goal_time = 0.0f;
+	}
+	vec3_t alternate_direction;
+	BotAI_HandleBlockedMovement(state,
+		&result,
+		false,
+		alternate_direction);
+	state->last_move_result = result;
+	state->has_move_result = true;
 }
 
 /*
@@ -7832,13 +7728,13 @@ static int BotAI_RunTeamGoalMovement(bot_client_state_t *state,
 
 	bot_moveresult_t result;
 	BotClearMoveResult(&result);
-	BotMoveToGoal(&result,
+	BotMoveToGoalHandle(&result,
 		state->move_handle,
 		goal,
 		BotAI_LongTermGoalTravelFlags(state));
 	if (result.failure)
 	{
-		BotMove_ResetAvoidReach(state->move_handle);
+		BotResetAvoidReachHandle(state->move_handle);
 		if (state->ai_node == BOT_AI_NODE_ACTIVATE_ENTITY ||
 			state->ai_node == BOT_AI_NODE_SEEK_NBG)
 		{
@@ -7850,31 +7746,23 @@ static int BotAI_RunTeamGoalMovement(bot_client_state_t *state,
 		}
 	}
 	vec3_t alternate_direction;
-	bool has_alternate_direction = BotAI_HandleBlockedMovement(state,
+	BotAI_HandleBlockedMovement(state,
 		&result,
 		true,
 		alternate_direction);
 
-	memset(input, 0, sizeof(*input));
-	BotInterface_ApplyMoveResult(state, &result, input);
-	if (has_alternate_direction)
+	status = EA_GetInput(state->client_number, thinktime, input);
+	if (status != BLERR_NOERROR)
 	{
-		VectorCopy(alternate_direction, input->dir);
-		input->speed = 400.0f;
+		return status;
 	}
-	input->thinktime = thinktime;
-	VectorCopy(state->last_client_update.viewangles, input->viewangles);
+	BotInterface_ApplyMoveResult(&result, input);
 	bool advance_view = BotAI_ApplyLongTermMoveResultView(state,
 		goal,
 		BotAI_LongTermGoalTravelFlags(state),
 		thinktime,
 		&result,
 		input);
-	if (state->move_state != NULL)
-	{
-		state->move_state->last_result = result;
-		state->move_state->has_last_result = true;
-	}
 	state->last_move_result = result;
 	state->has_move_result = true;
 	state->active_goal_number = goal->number;
@@ -8040,13 +7928,6 @@ static int BotAI_RunGoalMovement(bot_client_state_t *state,
 		return status;
 	}
 
-	if (state->goal_handle > 0)
-	{
-		AI_GoalBotlib_SynchroniseAvoid(state->goal_handle,
-			state->goal_state,
-			g_botInterfaceFrameTime);
-		BotUpdateEntityItemsThrottled(g_botInterfaceFrameTime);
-	}
 	BotAI_SelectAutomaticCTFGoal(state);
 
 	bot_goal_t team_goal;
@@ -8149,9 +8030,15 @@ static void BotAI_ApplyBattleMoveResultView(const bot_client_state_t *state,
 		return;
 	}
 
+	if ((result->flags & MOVERESULT_MOVEMENTVIEWSET) != 0)
+	{
+		/* Preserve the EA_View captured from the movement helper. */
+		return;
+	}
+
 	VectorCopy(state->last_client_update.viewangles, input->viewangles);
-	if ((result->flags & (MOVERESULT_MOVEMENTVIEWSET |
-		MOVERESULT_MOVEMENTVIEW | MOVERESULT_SWIMVIEW)) != 0)
+	if ((result->flags & (MOVERESULT_MOVEMENTVIEW |
+		MOVERESULT_SWIMVIEW)) != 0)
 	{
 		VectorCopy(result->ideal_viewangles, input->viewangles);
 	}
@@ -8193,7 +8080,7 @@ static int BotAI_SetBattleMovementGoalView(bot_client_state_t *state,
 	}
 
 	vec3_t target;
-	if (!BotMovementViewTarget(state->move_handle,
+	if (!BotMovementViewTargetHandle(state->move_handle,
 		goal,
 		travel_flags,
 		300.0f,
@@ -8300,12 +8187,12 @@ fallback used by the shared combat implementation.
 */
 static float BotAI_BattleAttackSkill(const bot_client_state_t *state)
 {
-	if (state == NULL || state->character_handle <= 0)
+	if (state == NULL || state->character == NULL)
 	{
 		return 1.0f;
 	}
 
-	return Characteristic_BFloat(state->character_handle,
+	return Characteristic_BFloat(state->character,
 		CHARACTERISTIC_ATTACK_SKILL,
 		0.0f,
 		1.0f);
@@ -8338,35 +8225,28 @@ static int BotAI_RunBattleChaseMovement(bot_client_state_t *state,
 	BotAI_BuildBattleChaseGoal(state, &chase_goal);
 	bot_moveresult_t result;
 	BotClearMoveResult(&result);
-	BotMoveToGoal(&result,
+	BotMoveToGoalHandle(&result,
 		state->move_handle,
 		&chase_goal,
 		BotAI_BattleChaseTravelFlags(state));
 	if (result.failure)
 	{
-		BotMove_ResetAvoidReach(state->move_handle);
+		BotResetAvoidReachHandle(state->move_handle);
 		state->long_term_goal_time = 0.0f;
 	}
 	vec3_t alternate_direction;
-	bool has_alternate_direction = BotAI_HandleBlockedMovement(state,
+	BotAI_HandleBlockedMovement(state,
 		&result,
-		true,
+		false,
 		alternate_direction);
 
-	memset(input, 0, sizeof(*input));
-	BotInterface_ApplyMoveResult(state, &result, input);
-	if (has_alternate_direction)
+	status = EA_GetInput(state->client_number, thinktime, input);
+	if (status != BLERR_NOERROR)
 	{
-		VectorCopy(alternate_direction, input->dir);
-		input->speed = 400.0f;
+		return status;
 	}
-	input->thinktime = thinktime;
+	BotInterface_ApplyMoveResult(&result, input);
 	BotAI_ApplyBattleMoveResultView(state, &result, input);
-	if (state->move_state != NULL)
-	{
-		state->move_state->last_result = result;
-		state->move_state->has_last_result = true;
-	}
 	state->last_move_result = result;
 	state->has_move_result = true;
 	status = EA_SubmitInput(state->client_number, input);
@@ -8432,35 +8312,28 @@ static int BotAI_RunBattleNBGMovement(bot_client_state_t *state,
 
 	bot_moveresult_t result;
 	BotClearMoveResult(&result);
-	BotMoveToGoal(&result,
+	BotMoveToGoalHandle(&result,
 		state->move_handle,
 		&nearby_goal,
 		BotAI_BattleChaseTravelFlags(state));
 	if (result.failure)
 	{
-		BotMove_ResetAvoidReach(state->move_handle);
+		BotResetAvoidReachHandle(state->move_handle);
 		state->nearby_goal_time = 0.0f;
 	}
 	vec3_t alternate_direction;
-	bool has_alternate_direction = BotAI_HandleBlockedMovement(state,
+	BotAI_HandleBlockedMovement(state,
 		&result,
-		true,
+		false,
 		alternate_direction);
 
-	memset(input, 0, sizeof(*input));
-	BotInterface_ApplyMoveResult(state, &result, input);
-	if (has_alternate_direction)
+	status = EA_GetInput(state->client_number, thinktime, input);
+	if (status != BLERR_NOERROR)
 	{
-		VectorCopy(alternate_direction, input->dir);
-		input->speed = 400.0f;
+		return status;
 	}
-	input->thinktime = thinktime;
+	BotInterface_ApplyMoveResult(&result, input);
 	BotAI_ApplyBattleMoveResultView(state, &result, input);
-	if (state->move_state != NULL)
-	{
-		state->move_state->last_result = result;
-		state->move_state->has_last_result = true;
-	}
 	state->last_move_result = result;
 	state->has_move_result = true;
 
@@ -8521,35 +8394,28 @@ static int BotAI_RunBattleRetreatMovement(bot_client_state_t *state,
 
 	bot_moveresult_t result;
 	BotClearMoveResult(&result);
-	BotMoveToGoal(&result,
+	BotMoveToGoalHandle(&result,
 		state->move_handle,
 		retreat_goal,
 		BotAI_BattleRetreatTravelFlags());
 	if (result.failure)
 	{
-		BotMove_ResetAvoidReach(state->move_handle);
+		BotResetAvoidReachHandle(state->move_handle);
 		state->long_term_goal_time = 0.0f;
 	}
 	vec3_t alternate_direction;
-	bool has_alternate_direction = BotAI_HandleBlockedMovement(state,
+	BotAI_HandleBlockedMovement(state,
 		&result,
-		true,
+		false,
 		alternate_direction);
 
-	memset(input, 0, sizeof(*input));
-	BotInterface_ApplyMoveResult(state, &result, input);
-	if (has_alternate_direction)
+	status = EA_GetInput(state->client_number, thinktime, input);
+	if (status != BLERR_NOERROR)
 	{
-		VectorCopy(alternate_direction, input->dir);
-		input->speed = 400.0f;
+		return status;
 	}
-	input->thinktime = thinktime;
+	BotInterface_ApplyMoveResult(&result, input);
 	BotAI_ApplyBattleMoveResultView(state, &result, input);
-	if (state->move_state != NULL)
-	{
-		state->move_state->last_result = result;
-		state->move_state->has_last_result = true;
-	}
 	state->last_move_result = result;
 	state->has_move_result = true;
 	state->active_goal_number = retreat_goal->number;
@@ -8677,16 +8543,7 @@ static void BotAI_ResetRespawnState(bot_client_state_t *state)
 	}
 	if (state->move_handle > 0)
 	{
-		BotResetMoveState(state->move_handle);
-	}
-	if (state->move_state != NULL)
-	{
-		AI_MoveState_Reset(state->move_state);
-		if (state->goal_state != NULL)
-		{
-			AI_MoveState_LinkAvoidList(state->move_state,
-				AI_GoalState_GetAvoidList(state->goal_state));
-		}
+		BotResetMoveStateHandle(state->move_handle);
 	}
 	if (state->weapon_state > 0)
 	{
@@ -8726,8 +8583,8 @@ static void BotAI_ResetRespawnState(bot_client_state_t *state)
 BotAI_CompleteRespawnAction
 
 Applies the side effects immediately after retail's EA Respawn call: mark the
-one-shot action, send any death chat to the retained killer context, then
-release that retained enemy.
+one-shot action, enter any pending death chat for the retained killer context,
+then release that retained enemy.
 =============
 */
 static void BotAI_CompleteRespawnAction(bot_client_state_t *state)
@@ -8740,26 +8597,24 @@ static void BotAI_CompleteRespawnAction(bot_client_state_t *state)
 	state->respawn_action_sent = true;
 	if (state->combat.current_enemy != 0)
 	{
-		if (state->respawn_chat_pending && state->chat_state != NULL)
+		if (state->chat_state != NULL)
 		{
 			BotEnterChat(state->chat_state, state->client_number, 0);
 		}
 		state->combat.current_enemy = 0;
 	}
-	state->respawn_chat_pending = false;
 }
 
 /*
 =============
 BotAI_SetLifecycleStand
 
-Adapts Gladiator's generic stand node to the reconstructed reply-stand state,
-including a no-message wait used when an intermission transition has no chat.
+Adapts Gladiator's generic stand node to the reconstructed reply-stand state.
+Stand always enters the pending chat at expiry; an empty buffer is a no-op.
 =============
 */
 static void BotAI_SetLifecycleStand(bot_client_state_t *state,
-	float duration,
-	bool chat_pending)
+	float duration)
 {
 	if (state == NULL)
 	{
@@ -8768,7 +8623,6 @@ static void BotAI_SetLifecycleStand(bot_client_state_t *state,
 
 	state->stand_time = AAS_Time() + duration;
 	state->chat_standing = true;
-	state->stand_chat_pending = chat_pending;
 	state->ai_node = BOT_AI_NODE_STAND;
 }
 
@@ -8806,12 +8660,10 @@ static void BotAI_EnterIntermission(bot_client_state_t *state)
 	}
 
 	BotState_ResetForNewMap(state);
-	bool chat_constructed = false;
 	if (BotAI_ConstructLifecycleChat(state,
 		"end_level",
 		CHARACTERISTIC_CHAT_STARTENDLEVEL,
-		false,
-		&chat_constructed) && chat_constructed)
+		false))
 	{
 		BotEnterChat(state->chat_state, state->client_number, 0);
 	}
@@ -8874,7 +8726,7 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 		return BLERR_AIUPDATEINACTIVECLIENT;
 	}
 
-	if (state->goal_state == NULL || state->move_state == NULL)
+	if (state->goal_state == NULL || state->move_handle <= 0)
 	{
 		return BLERR_INVALIDIMPORT;
 	}
@@ -8903,7 +8755,6 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 			BotAI_ResetRespawnState(state);
 			state->respawn_requested = true;
 			state->respawn_action_sent = false;
-			state->respawn_chat_pending = false;
 			state->respawn_time = AAS_Time();
 			if (BotAI_ConstructDeathChat(state))
 			{
@@ -8919,7 +8770,6 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 	{
 		state->respawn_requested = false;
 		state->respawn_action_sent = false;
-		state->respawn_chat_pending = false;
 		state->respawn_time = 0.0f;
 		state->ai_node = BOT_AI_NODE_SEEK_LTG;
 		/* Retail's respawn node changes state, then ends this first alive frame. */
@@ -8927,40 +8777,31 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 	}
 	if (state->ai_node == BOT_AI_NODE_OBSERVER)
 	{
-		BotAI_SetLifecycleStand(state, 0.0f, false);
+		BotAI_SetLifecycleStand(state, 0.0f);
 		return BotAI_RunLifecycleFrame(state, thinktime, false);
 	}
 	if (state->ai_node == BOT_AI_NODE_INTERMISSION)
 	{
-		bool chat_constructed = false;
 		bool started_chat = BotAI_ConstructLifecycleChat(state,
 			"start_level",
 			CHARACTERISTIC_CHAT_STARTENDLEVEL,
-			false,
-			&chat_constructed);
+			false);
 		BotAI_SetLifecycleStand(state,
-			started_chat ? BotAI_ChatTime(state) : 2.0f,
-			chat_constructed);
+			started_chat ? BotAI_ChatTime(state) : 2.0f);
 		return BotAI_RunLifecycleFrame(state, thinktime, false);
 	}
 
 	BotAI_UpdateBattleInventory(state);
 	BotCheckConsoleMessages(state);
-	if (!state->enter_game_chat_attempted &&
-		state->enter_game_time > AAS_Time() - 8.0f)
+	if (state->enter_game_time > AAS_Time() - 8.0f)
 	{
-		bool chat_constructed = false;
 		if (BotAI_ConstructLifecycleChat(state,
 			"enter_game",
 			CHARACTERISTIC_CHAT_ENTEREXITGAME,
-			true,
-			&chat_constructed))
+			true))
 		{
-			BotAI_SetLifecycleStand(state,
-				BotAI_ChatTime(state),
-				chat_constructed);
+			BotAI_SetLifecycleStand(state, BotAI_ChatTime(state));
 		}
-		state->enter_game_chat_attempted = true;
 	}
 
 	bot_ai_node_frame_t frame;
@@ -9050,12 +8891,14 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 					state->combat.last_enemy_origin);
 				BotAI_BattleUseItems(state);
 				BotAI_UseItems(state);
-				AI_DMState_Update(state->dm_state,
+				AI_DMState_UpdateWithMoveResult(state->dm_state,
 					state,
 					&selection,
 					&frame.enemy,
 					&input,
-					g_botInterfaceFrameTime);
+					g_botInterfaceFrameTime,
+					BotAI_HandleFightMoveResult,
+					state);
 				BotInterface_SynchroniseCombatState(state);
 			}
 		}
@@ -9110,6 +8953,13 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 	return BLERR_NOERROR;
 }
 
+/*
+=============
+BotAI
+
+Runs the client think first, then the retail global entity-item update gate.
+=============
+*/
 static int BotAI(int client, float thinktime)
 {
 	if (!BotInterface_EnsureLibraryReady("BotAI"))
@@ -9121,17 +8971,23 @@ static int BotAI(int client, float thinktime)
 	{
 		return BLERR_INVALIDCLIENTNUMBER;
 	}
+	if (!AAS_Initialized())
+	{
+		return BLERR_NOERROR;
+	}
 
-    bot_client_state_t *state = BotState_Get(client);
-    if (state == NULL || !state->active)
-    {
+	bot_client_state_t *state = BotState_Get(client);
+	if (state == NULL || !state->active)
+	{
 		BotInterface_Printf(PRT_FATAL,
 			"client %d hasn't been setup\n",
 			client);
-        return BLERR_AICLIENTNOTSETUP;
-    }
+		return BLERR_AICLIENTNOTSETUP;
+	}
 
-    return BotAI_Think(state, thinktime);
+	int status = BotAI_Think(state, thinktime);
+	BotUpdateEntityItemsThrottled(g_botInterfaceFrameTime);
+	return status;
 }
 
 /*
@@ -9194,6 +9050,13 @@ static int BotInterface_Test(int parm0, char *parm1, vec3_t parm2, vec3_t parm3)
 	return BLERR_NOERROR;
 }
 
+/*
+=============
+BotInterface_BotWeightIndex
+
+Guards the extended goal-weight lookup behind the botlib setup contract.
+=============
+*/
 static int BotInterface_BotWeightIndex(int handle, const char *classname)
 {
     if (!BotInterface_EnsureLibraryReady("BotWeightIndex"))
@@ -9224,6 +9087,13 @@ static int BotInterface_BotItemGoalInVisButNotVisible(int viewer,
 	return BotItemGoalInVisButNotVisible(viewer, eye, viewangles, goal);
 }
 
+/*
+=============
+BotInterface_BotTouchingGoal
+
+Guards the extended retail goal-bounds query behind library setup.
+=============
+*/
 static int BotInterface_BotTouchingGoal(const vec3_t origin, const bot_goal_t *goal)
 {
     if (!BotInterface_EnsureLibraryReady("BotTouchingGoal"))
@@ -9340,81 +9210,130 @@ static bot_weight_config_t *BotInterface_BotReadWeightsFile(const char *filename
     return BotReadWeightsFile(filename);
 }
 
+/*
+=============
+BotInterface_BotAllocMoveState
+
+Guards allocation of an exported movement-state handle.
+=============
+*/
 static int BotInterface_BotAllocMoveState(void)
 {
-    if (!BotInterface_EnsureLibraryReady("BotAllocMoveState"))
-    {
-        return 0;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotAllocMoveState"))
+	{
+		return 0;
+	}
 
-    return BotAllocMoveState();
+	return BotAllocMoveStateHandle();
 }
 
+/*
+=============
+BotInterface_BotFreeMoveState
+
+Guards release of an exported movement-state handle.
+=============
+*/
 static void BotInterface_BotFreeMoveState(int handle)
 {
-    if (!BotInterface_EnsureLibraryReady("BotFreeMoveState"))
-    {
-        return;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotFreeMoveState"))
+	{
+		return;
+	}
 
-    BotFreeMoveState(handle);
+	BotFreeMoveStateHandle(handle);
 }
 
+/*
+=============
+BotInterface_BotResetMoveState
+
+Guards reset of an exported movement-state handle.
+=============
+*/
 static void BotInterface_BotResetMoveState(int handle)
 {
-    if (!BotInterface_EnsureLibraryReady("BotResetMoveState"))
-    {
-        return;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotResetMoveState"))
+	{
+		return;
+	}
 
-    BotResetMoveState(handle);
+	BotResetMoveStateHandle(handle);
 }
 
+/*
+=============
+BotInterface_BotInitMoveState
+
+Guards initialization of an exported movement-state handle.
+=============
+*/
 static void BotInterface_BotInitMoveState(int handle, const bot_initmove_t *initmove)
 {
-    if (!BotInterface_EnsureLibraryReady("BotInitMoveState"))
-    {
-        return;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotInitMoveState"))
+	{
+		return;
+	}
 
-    BotInitMoveState(handle, initmove);
+	BotInitMoveStateHandle(handle, initmove);
 }
 
+/*
+=============
+BotInterface_BotMoveToGoal
+
+Guards the exported move-to-goal operation.
+=============
+*/
 static void BotInterface_BotMoveToGoal(bot_moveresult_t *result,
-                                       int movestate,
-                                       const bot_goal_t *goal,
-                                       int travelflags)
+	int movestate,
+	const bot_goal_t *goal,
+	int travelflags)
 {
-    if (!BotInterface_EnsureLibraryReady("BotMoveToGoal"))
-    {
-        if (result != NULL)
-        {
-            memset(result, 0, sizeof(*result));
-        }
-        return;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotMoveToGoal"))
+	{
+		if (result != NULL)
+		{
+			memset(result, 0, sizeof(*result));
+		}
+		return;
+	}
 
-    BotMoveToGoal(result, movestate, goal, travelflags);
+	BotMoveToGoalHandle(result, movestate, goal, travelflags);
 }
 
+/*
+=============
+BotInterface_BotMoveInDirection
+
+Guards the exported directional movement operation.
+=============
+*/
 static int BotInterface_BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type)
 {
-    if (!BotInterface_EnsureLibraryReady("BotMoveInDirection"))
-    {
-        return 0;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotMoveInDirection"))
+	{
+		return 0;
+	}
 
-    return BotMoveInDirection(movestate, dir, speed, type);
+	return BotMoveInDirectionHandle(movestate, dir, speed, type);
 }
 
+/*
+=============
+BotInterface_BotResetAvoidReach
+
+Guards reset of movement reachability avoidance.
+=============
+*/
 static void BotInterface_BotResetAvoidReach(int movestate)
 {
-    if (!BotInterface_EnsureLibraryReady("BotResetAvoidReach"))
-    {
-        return;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotResetAvoidReach"))
+	{
+		return;
+	}
 
-    BotMove_ResetAvoidReach(movestate);
+	BotResetAvoidReachHandle(movestate);
 }
 
 /*
@@ -9431,7 +9350,7 @@ static void BotInterface_BotResetLastAvoidReach(int movestate)
 		return;
 	}
 
-	BotResetLastAvoidReach(movestate);
+	BotResetLastAvoidReachHandle(movestate);
 }
 
 /*
@@ -9469,7 +9388,7 @@ static int BotInterface_BotMovementViewTarget(int movestate,
 		return 0;
 	}
 
-	return BotMovementViewTarget(movestate, goal, travelflags, lookahead, target);
+	return BotMovementViewTargetHandle(movestate, goal, travelflags, lookahead, target);
 }
 
 /*
@@ -9608,7 +9527,7 @@ static int BotInterface_BotLoadCharacter(const char *character_file, float skill
 		return 0;
 	}
 
-	return BotLoadCharacter(character_file, skill);
+	return BotLoadCharacterHandle(character_file, skill);
 }
 
 /*
@@ -9625,7 +9544,7 @@ static void BotInterface_BotFreeCharacter(int handle)
 		return;
 	}
 
-	BotFreeCharacter(handle);
+	BotFreeCharacterHandle(handle);
 }
 
 /*
@@ -9642,7 +9561,7 @@ static int BotInterface_BotLoadCharacterSkill(const char *character_file, float 
 		return 0;
 	}
 
-	return BotLoadCharacterSkill(character_file, skill);
+	return BotLoadCharacterSkillHandle(character_file, skill);
 }
 
 /*
@@ -9654,12 +9573,12 @@ Guards and forwards transient character profile cleanup.
 */
 static void BotInterface_BotFreeCharacterStrings(ai_character_profile_t *profile)
 {
-    if (!BotInterface_EnsureLibraryReady("BotFreeCharacterStrings"))
-    {
-        return;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotFreeCharacterStrings"))
+	{
+		return;
+	}
 
-    BotFreeCharacterStrings(profile);
+	BotFreeCharacterStringsHandle(profile);
 }
 
 /*
@@ -9676,7 +9595,7 @@ static float BotInterface_Characteristic_Float(int handle, int index)
 		return 0.0f;
 	}
 
-	return Characteristic_Float(handle, index);
+	return Characteristic_FloatHandle(handle, index);
 }
 
 /*
@@ -9696,7 +9615,7 @@ static float BotInterface_Characteristic_BFloat(int handle,
 		return 0.0f;
 	}
 
-	return Characteristic_BFloat(handle, index, minimum, maximum);
+	return Characteristic_BFloatHandle(handle, index, minimum, maximum);
 }
 
 /*
@@ -9713,7 +9632,7 @@ static int BotInterface_Characteristic_Integer(int handle, int index)
 		return 0;
 	}
 
-	return Characteristic_Integer(handle, index);
+	return Characteristic_IntegerHandle(handle, index);
 }
 
 /*
@@ -9733,7 +9652,7 @@ static int BotInterface_Characteristic_BInteger(int handle,
 		return 0;
 	}
 
-	return Characteristic_BInteger(handle, index, minimum, maximum);
+	return Characteristic_BIntegerHandle(handle, index, minimum, maximum);
 }
 
 /*
@@ -9757,7 +9676,7 @@ static void BotInterface_Characteristic_String(int handle,
 		return;
 	}
 
-	Characteristic_String(handle, index, buffer, buffer_size);
+	Characteristic_StringHandle(handle, index, buffer, buffer_size);
 }
 
 static bot_chatstate_t *BotInterface_BotAllocChatState(void)
@@ -9770,24 +9689,38 @@ static bot_chatstate_t *BotInterface_BotAllocChatState(void)
     return BotAllocChatState();
 }
 
+/*
+=============
+BotInterface_BotFreeChatState
+
+Guards release of an exported chat state.
+=============
+*/
 static void BotInterface_BotFreeChatState(bot_chatstate_t *state)
 {
-    if (!BotInterface_EnsureLibraryReady("BotFreeChatState"))
-    {
-        return;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotFreeChatState"))
+	{
+		return;
+	}
 
-    BotFreeChatState(state);
+	BotDestroyChatState(state);
 }
 
+/*
+=============
+BotInterface_BotLoadChatFile
+
+Guards loading a chat file into an exported chat state.
+=============
+*/
 static int BotInterface_BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *chatname)
 {
-    if (!BotInterface_EnsureLibraryReady("BotLoadChatFile"))
-    {
-        return 0;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotLoadChatFile"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    return BotLoadChatFile(state, chatfile, chatname);
+	return BotLoadChatFile(state, chatfile, chatname);
 }
 
 static void BotInterface_BotFreeChatFile(bot_chatstate_t *state)
@@ -9810,35 +9743,49 @@ static void BotInterface_BotQueueConsoleMessage(bot_chatstate_t *state, int type
     BotQueueConsoleMessage(state, type, message);
 }
 
+/*
+=============
+BotInterface_BotRemoveConsoleMessage
+
+Guards removal of the first queued console message of a given type.
+=============
+*/
 static int BotInterface_BotRemoveConsoleMessage(bot_chatstate_t *state, int type)
 {
-    if (!BotInterface_EnsureLibraryReady("BotRemoveConsoleMessage"))
-    {
-        return 0;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotRemoveConsoleMessage"))
+	{
+		return 0;
+	}
 
-    return BotRemoveConsoleMessage(state, type);
+	return BotRemoveConsoleMessageType(state, type);
 }
 
-static int BotInterface_BotNextConsoleMessage(bot_chatstate_t *state,
-                                              int *type,
-                                              char *buffer,
-                                              size_t buffer_size)
-{
-    if (!BotInterface_EnsureLibraryReady("BotNextConsoleMessage"))
-    {
-        if (type != NULL)
-        {
-            *type = 0;
-        }
-        if (buffer != NULL && buffer_size > 0)
-        {
-            buffer[0] = '\0';
-        }
-        return 0;
-    }
+/*
+=============
+BotInterface_BotNextConsoleMessage
 
-    return BotNextConsoleMessage(state, type, buffer, buffer_size);
+Guards copying and consuming the next queued console message.
+=============
+*/
+static int BotInterface_BotNextConsoleMessage(bot_chatstate_t *state,
+	int *type,
+	char *buffer,
+	size_t buffer_size)
+{
+	if (!BotInterface_EnsureLibraryReady("BotNextConsoleMessage"))
+	{
+		if (type != NULL)
+		{
+			*type = 0;
+		}
+		if (buffer != NULL && buffer_size > 0)
+		{
+			buffer[0] = '\0';
+		}
+		return 0;
+	}
+
+	return BotNextConsoleMessageCopy(state, type, buffer, buffer_size);
 }
 
 static size_t BotInterface_BotNumConsoleMessages(const bot_chatstate_t *state)
@@ -9855,7 +9802,7 @@ static size_t BotInterface_BotNumConsoleMessages(const bot_chatstate_t *state)
 =============
 BotInterface_BotNumInitialChats
 
-Guards the reconstructed initial-chat count export.
+Guards the Q3-shaped initial-chat count adapter, including successor aliases.
 =============
 */
 static int BotInterface_BotNumInitialChats(const bot_chatstate_t *state, const char *type)
@@ -9865,7 +9812,7 @@ static int BotInterface_BotNumInitialChats(const bot_chatstate_t *state, const c
 		return 0;
 	}
 
-	return BotNumInitialChats(state, type);
+	return BotNumInitialChatsWithAliases(state, type);
 }
 
 static void BotInterface_BotEnterChat(bot_chatstate_t *state, int client, int sendto)
@@ -9882,7 +9829,8 @@ static void BotInterface_BotEnterChat(bot_chatstate_t *state, int client, int se
 =============
 BotInterface_BotReplyChat
 
-Guards and forwards the legacy folded-context reply export.
+Guards the compatibility export and forwards its folded context to the named
+host adapter, leaving retail BotReplyChat's two-argument contract untouched.
 =============
 */
 static int BotInterface_BotReplyChat(bot_chatstate_t *state,
@@ -9894,7 +9842,7 @@ static int BotInterface_BotReplyChat(bot_chatstate_t *state,
 		return 0;
 	}
 
-	return BotReplyChat(state, message, context);
+	return BotReplyChatWithContext(state, message, context);
 }
 
 /*
@@ -9940,7 +9888,8 @@ static int BotInterface_BotReplyChatWithContexts(bot_chatstate_t *state,
 =============
 BotInterface_BotInitialChat
 
-Guards and forwards the reconstructed initial-chat construction export.
+Guards the compatibility export and forwards at most ten variables to the
+explicit-context host adapter.
 =============
 */
 static int BotInterface_BotInitialChat(bot_chatstate_t *state,
@@ -9948,7 +9897,7 @@ static int BotInterface_BotInitialChat(bot_chatstate_t *state,
 	unsigned long context,
 	...)
 {
-	const char *variables[11] = {0};
+	const char *variables[10] = {0};
 	if (!BotInterface_EnsureLibraryReady("BotInitialChat"))
 	{
 		return 0;
@@ -9967,7 +9916,7 @@ static int BotInterface_BotInitialChat(bot_chatstate_t *state,
 	}
 	va_end(args);
 
-	return BotInitialChat(state,
+	return BotInitialChatWithContext(state,
 		type,
 		context,
 		variables[0],
@@ -9980,7 +9929,6 @@ static int BotInterface_BotInitialChat(bot_chatstate_t *state,
 		variables[7],
 		variables[8],
 		variables[9],
-		variables[10],
 		NULL);
 }
 
@@ -10025,6 +9973,13 @@ static void BotInterface_BotSetChatGender(bot_chatstate_t *state, int gender)
 	BotSetChatGender(state, gender);
 }
 
+/*
+=============
+BotInterface_BotSetChatName
+
+Guards assignment of an exported chat state's client name.
+=============
+*/
 static void BotInterface_BotSetChatName(bot_chatstate_t *state, const char *name, int client)
 {
 	if (!BotInterface_EnsureLibraryReady("BotSetChatName"))
@@ -10032,14 +9987,14 @@ static void BotInterface_BotSetChatName(bot_chatstate_t *state, const char *name
 		return;
 	}
 
-	BotSetChatName(state, name, client);
+	BotSetChatNameWithClient(state, name, client);
 }
 
 /*
 =============
 BotInterface_StringContains
 
-Guards and forwards the reconstructed chat substring helper.
+Guards and forwards the compatibility substring-index helper.
 =============
 */
 static int BotInterface_StringContains(const char *str1,
@@ -10051,7 +10006,7 @@ static int BotInterface_StringContains(const char *str1,
 		return -1;
 	}
 
-	return StringContains(str1, str2, casesensitive);
+	return StringContainsIndex(str1, str2, casesensitive);
 }
 
 /*
@@ -10081,7 +10036,7 @@ static int BotInterface_BotFindMatch(const char *str,
 =============
 BotInterface_BotMatchVariable
 
-Guards and forwards captured match-variable extraction.
+Guards and forwards bounds-checked captured match-variable extraction.
 =============
 */
 static void BotInterface_BotMatchVariable(const bot_match_t *match,
@@ -10098,7 +10053,7 @@ static void BotInterface_BotMatchVariable(const bot_match_t *match,
 		return;
 	}
 
-	BotMatchVariable(match, variable, buffer, buffer_size);
+	BotMatchVariableSized(match, variable, buffer, buffer_size);
 }
 
 /*
@@ -10147,6 +10102,7 @@ static bot_export_extended_t *BotInterface_GetBotAPI(const void *import,
 	size_t import_size)
 {
 	static bot_export_extended_t exportTable;
+	g_botExtendedExportTable = &exportTable;
 
 	memset(&exportTable, 0, sizeof(exportTable));
 
@@ -10296,6 +10252,7 @@ returns a physically separate 20-callback retail export table.
 GLADIATOR_API bot_export_t *GetBotAPI(bot_import_t *import)
 {
 	static bot_export_t retailExportTable;
+	g_botRetailExportTable = &retailExportTable;
 	bot_export_extended_t *extendedExportTable = BotInterface_GetBotAPI(import,
 		BOT_IMPORT_RETAIL_SIZE);
 

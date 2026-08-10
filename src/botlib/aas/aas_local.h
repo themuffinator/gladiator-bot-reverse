@@ -577,6 +577,8 @@ typedef struct aas_world_s
 	int bspChecksum;        /* checksum recorded during AAS_LoadMap */
 	int aasChecksum;        /* checksum of the loaded .aas file */
 	uint16_t bspEntityChecksum; /* retail parser-source CRC for the BSP entity lump */
+	int bspEntityDataSize;  /* mirrors retail entdatasize */
+	char *bspEntityData;    /* mirrors retail dentdata ownership */
 
     char aasFilePath[MAX_FILEPATH];
     char mapName[MAX_FILEPATH];
@@ -740,6 +742,12 @@ void AAS_EntityOrigin(int entnum, vec3_t origin);
 int AAS_EntityModelindex(int entnum);
 int AAS_EntityRenderFX(int entnum);
 int AAS_EntityModelNum(int entnum);
+const char *AAS_ModelFromIndex(int index);
+int IndexFromModel(const char *model);
+const char *AAS_SoundFromIndex(int index);
+int AAS_IndexFromSound(const char *sound);
+const char *AAS_ImageFromIndex(int index);
+int AAS_IndexFromImage(const char *image);
 void AAS_EntitySize(int entnum, vec3_t mins, vec3_t maxs);
 int AAS_OriginOfMoverWithModelNum(int modelnum, vec3_t origin);
 int AAS_NearestEntity(const vec3_t origin, int modelindex);
@@ -847,6 +855,7 @@ void AAS_SetWeaponJumpAreaFlags(void);
 int AAS_Reachability_WeaponJump(int area1num, int area2num);
 void AAS_Reachability_WalkOffLedge(int areanum);
 void AAS_JumpReachRunStart(const aas_reachability_t *reach, vec3_t runstart);
+int AAS_AgainstLadder(const vec3_t origin);
 int AAS_DropToFloor(vec3_t origin, const vec3_t mins, const vec3_t maxs);
 float AAS_WeaponJumpZVelocity(const vec3_t origin, float radiusdamage);
 float AAS_RocketJumpZVelocity(const vec3_t origin);

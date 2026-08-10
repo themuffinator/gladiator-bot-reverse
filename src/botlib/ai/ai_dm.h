@@ -34,6 +34,11 @@ typedef struct ai_goal_selection_s ai_goal_selection_t;
 
 typedef struct bot_input_s bot_input_t;
 
+struct bot_moveresult_s;
+typedef void (*ai_dm_move_result_handler_t)(void *context,
+	const struct bot_moveresult_s *result,
+	bool attack_chase_active);
+
 typedef struct ai_dm_metrics_s {
     int client_number;
     int enemy_entity;
@@ -66,7 +71,9 @@ typedef struct ai_dm_metrics_s {
 } ai_dm_metrics_t;
 
 ai_dm_state_t *AI_DMState_Create(int client_number);
+ai_dm_state_t *AI_DMState_AcquireRetail(int client_number);
 void AI_DMState_Destroy(ai_dm_state_t *state);
+void AI_DMState_ForgetRetail(void);
 void AI_DMState_Reset(ai_dm_state_t *state);
 void AI_DMState_SetClient(ai_dm_state_t *state, int client_number);
 void AI_DMState_SetEnemyContext(ai_dm_state_t *state,
@@ -104,6 +111,14 @@ void AI_DMState_Update(ai_dm_state_t *state,
                        const ai_dm_enemy_info_t *enemy,
                        const bot_input_t *last_move_command,
                        float now);
+void AI_DMState_UpdateWithMoveResult(ai_dm_state_t *state,
+	const bot_client_state_t *client_state,
+	const ai_goal_selection_t *selection,
+	const ai_dm_enemy_info_t *enemy,
+	const bot_input_t *last_move_command,
+	float now,
+	ai_dm_move_result_handler_t move_result_handler,
+	void *move_result_context);
 
 #ifdef __cplusplus
 }

@@ -107,7 +107,7 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxstep, "sv_step", "18");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxbarrier, "sv_maxbarrier", "50");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxsteepness, "sv_maxsteepness", "0.7");
-    BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxwaterjump, "sv_maxwaterjump", "20");
+	BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_maxwaterjump, "sv_maxwaterjump", "21");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_watergravity, "sv_watergravity", "400");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.sv_waterfriction, "sv_waterfriction", "1");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.weaponconfig, "weaponconfig", BRIDGE_DEFAULT_WEAPONCONFIG);
@@ -118,7 +118,6 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.max_aassounds, "max_aassounds", "256");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.dmflags, "dmflags", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.usehook, "usehook", "0");
-    BridgeConfig_CacheLibVar(&g_bridge_config_cache.laserhook, "laserhook", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.grapple_model,
                              "grapplemodel",
                              "models/weapons/grapple/hook/tris.md2");

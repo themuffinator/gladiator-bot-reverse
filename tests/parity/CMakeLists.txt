@@ -34,6 +34,7 @@ if(BOTLIB_PARITY_ENABLE_SOURCES)
     add_botlib_parity_test(botlib_parity_bot_move test_bot_move.c
         LIBRARIES botlib_interface
     )
+    set_tests_properties(botlib_parity_bot_move PROPERTIES FIXTURES_REQUIRED "")
     add_botlib_parity_test(botlib_parity_precompiler_lexer test_precompiler_lexer.c
         LIBRARIES botlib_interface
     )
@@ -52,6 +53,7 @@ if(BOTLIB_PARITY_ENABLE_SOURCES)
             ${PROJECT_SOURCE_DIR}/src/q2bridge/aas_translation.c
             ${PROJECT_SOURCE_DIR}/src/q2bridge/update_translator.c
     )
+    set_tests_properties(botlib_parity_update_translator PROPERTIES FIXTURES_REQUIRED "")
 
     add_custom_target(botlib_parity_tests
         DEPENDS

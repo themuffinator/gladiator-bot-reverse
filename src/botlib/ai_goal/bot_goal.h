@@ -15,7 +15,6 @@ extern "C" {
 
 #define BOT_GOAL_MAX_AVOID       64
 #define BOT_GOAL_MAX_STACK       8
-#define BOT_GOAL_MAX_AVOIDREACH  32
 
 #define GFL_NONE    0
 #define GFL_ITEM    1
@@ -41,22 +40,12 @@ typedef struct bot_goal_s
 
 typedef struct bot_goalstate_s
 {
-    bot_weight_config_t *itemweightconfig;
-    int *itemweightindex;
-    int itemweightcount;
-
-    int client;
-    int lastreachabilityarea;
-
-    bot_goal_t goalstack[BOT_GOAL_MAX_STACK];
-    int goalstacktop;
-
-    int avoidgoals[BOT_GOAL_MAX_AVOID];
-    float avoidgoaltimes[BOT_GOAL_MAX_AVOID];
-
-    int avoidreach[BOT_GOAL_MAX_AVOIDREACH];
-    float avoidreachtimes[BOT_GOAL_MAX_AVOIDREACH];
-    int numavoidreach;
+	bot_weight_config_t *itemweightconfig;
+	int *itemweightindex;
+	bot_goal_t goalstack[BOT_GOAL_MAX_STACK];
+	int goalstacktop;
+	int avoidgoals[BOT_GOAL_MAX_AVOID];
+	float avoidgoaltimes[BOT_GOAL_MAX_AVOID];
 } bot_goalstate_t;
 
 typedef struct bot_levelitem_setup_s
@@ -70,6 +59,10 @@ typedef struct bot_levelitem_setup_s
 } bot_levelitem_setup_t;
 
 int BotAllocGoalState(int client);
+int BotBindRetailGoalState(int client, bot_goalstate_t *state);
+int BotRebindRetailGoalState(int old_handle,
+	int client,
+	bot_goalstate_t *state);
 void BotFreeGoalState(int handle);
 void BotResetGoalState(int handle);
 
@@ -83,9 +76,6 @@ void BotAddToAvoidGoals(int handle, int number, float avoidtime);
 void BotRemoveFromAvoidGoals(int handle, int number);
 float BotAvoidGoalTime(int handle, int number);
 void BotSetAvoidGoalTime(int handle, int number, float avoidtime);
-void BotResetAvoidReach(int handle);
-void BotAddToAvoidReach(int handle, int number, float avoidtime);
-
 int BotPushGoal(int handle, const bot_goal_t *goal);
 int BotPopGoal(int handle);
 void BotEmptyGoalStack(int handle);
@@ -122,6 +112,7 @@ int BotGetLevelItemGoal(int index, char *classname, bot_goal_t *goal);
 int BotGetNextCampSpotGoal(int num, bot_goal_t *goal);
 int BotGetMapLocationGoal(char *name, bot_goal_t *goal);
 void BotInitLevelItems(void);
+void BotGoal_ForgetLevelItemAllocations(void);
 void BotUpdateEntityItems(void);
 void BotUpdateEntityItemsThrottled(float now);
 void BotInterbreedGoalFuzzyLogic(int parent1, int parent2, int child);

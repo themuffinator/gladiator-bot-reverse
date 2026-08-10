@@ -14,6 +14,10 @@ static int g_last_botlib_message_type = 0;
 static char g_last_botlib_message[1024];
 static char g_botlib_message_history[8192];
 static float g_aas_time = 0.0f;
+static int g_ea_say_calls = 0;
+static int g_ea_say_team_calls = 0;
+static int g_ea_last_client = -1;
+static char g_ea_last_text[256];
 typedef struct botlib_test_libvar_s {
         char name[64];
         char string[128];
@@ -333,6 +337,103 @@ float AAS_Time(void)
 
 /*
 =============
+BotLib_TestResetEAChat
+
+Clears the retail EA chat token capture used by BotEnterChat tests.
+=============
+*/
+void BotLib_TestResetEAChat(void)
+{
+	g_ea_say_calls = 0;
+	g_ea_say_team_calls = 0;
+	g_ea_last_client = -1;
+	g_ea_last_text[0] = '\0';
+}
+
+/*
+=============
+BotLib_TestGetEASayCalls
+
+Returns the number of captured global-chat action tokens.
+=============
+*/
+int BotLib_TestGetEASayCalls(void)
+{
+	return g_ea_say_calls;
+}
+
+/*
+=============
+BotLib_TestGetEASayTeamCalls
+
+Returns the number of captured team-chat action tokens.
+=============
+*/
+int BotLib_TestGetEASayTeamCalls(void)
+{
+	return g_ea_say_team_calls;
+}
+
+/*
+=============
+BotLib_TestGetEALastClient
+
+Returns the client stored in the most recent captured chat action token.
+=============
+*/
+int BotLib_TestGetEALastClient(void)
+{
+	return g_ea_last_client;
+}
+
+/*
+=============
+BotLib_TestGetEALastText
+
+Returns the text stored in the most recent captured chat action token.
+=============
+*/
+const char *BotLib_TestGetEALastText(void)
+{
+	return g_ea_last_text;
+}
+
+/*
+=============
+EA_Say
+
+Captures one retail global-chat action token without invoking the game bridge.
+=============
+*/
+void EA_Say(int client, const char *text)
+{
+	++g_ea_say_calls;
+	g_ea_last_client = client;
+	(void)snprintf(g_ea_last_text,
+		sizeof(g_ea_last_text),
+		"%s",
+		text != NULL ? text : "");
+}
+
+/*
+=============
+EA_SayTeam
+
+Captures one retail team-chat action token without invoking the game bridge.
+=============
+*/
+void EA_SayTeam(int client, const char *text)
+{
+	++g_ea_say_team_calls;
+	g_ea_last_client = client;
+	(void)snprintf(g_ea_last_text,
+		sizeof(g_ea_last_text),
+		"%s",
+		text != NULL ? text : "");
+}
+
+/*
+=============
 LibVarValue
 
 Returns the overridden libvar value for tests, or the provided default.
@@ -435,4 +536,78 @@ bool BotLib_LocateAssetRoot(char *buffer, size_t size) {
 	}
 	return false;
 #endif
+}
+
+/*
+=============
+BotLib_ResolveAssetPath
+
+Resolves direct and test-asset-root paths for the standalone chat harness.
+=============
+*/
+bool BotLib_ResolveAssetPath(const char *requested,
+	const char *preferred_subdir,
+	char *buffer,
+	size_t size)
+{
+	if (buffer == NULL || size == 0)
+	{
+		return false;
+	}
+	buffer[0] = '\0';
+	if (requested == NULL || requested[0] == '\0')
+	{
+		return false;
+	}
+
+	FILE *file = fopen(requested, "rb");
+	if (file != NULL)
+	{
+		fclose(file);
+		int written = snprintf(buffer, size, "%s", requested);
+		return written >= 0 && (size_t)written < size;
+	}
+
+	char root[BOTLIB_ASSET_MAX_PATH];
+	if (!BotLib_LocateAssetRoot(root, sizeof(root)))
+	{
+		(void)snprintf(buffer, size, "%s", requested);
+		return false;
+	}
+
+	bool bare_name = strchr(requested, '/') == NULL &&
+		strchr(requested, '\\') == NULL;
+	const char *subdir = preferred_subdir;
+	if (bare_name && subdir != NULL && subdir[0] != '\0')
+	{
+		int written = snprintf(buffer,
+			size,
+			"%s/%s/%s",
+			root,
+			subdir,
+			requested);
+		if (written >= 0 && (size_t)written < size)
+		{
+			file = fopen(buffer, "rb");
+			if (file != NULL)
+			{
+				fclose(file);
+				return true;
+			}
+		}
+	}
+
+	int written = snprintf(buffer, size, "%s/%s", root, requested);
+	if (written < 0 || (size_t)written >= size)
+	{
+		buffer[0] = '\0';
+		return false;
+	}
+	file = fopen(buffer, "rb");
+	if (file == NULL)
+	{
+		return false;
+	}
+	fclose(file);
+	return true;
 }

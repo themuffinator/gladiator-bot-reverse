@@ -11,8 +11,11 @@
 #include <string.h>
 
 #define BOT_WEAPON_DEFAULT_WEIGHTS "default/defaul_w.c"
+#define BOT_WEAPON_RETAIL_HANDLE_BASE (MAX_CLIENTS + 1)
+#define BOT_WEAPON_HANDLE_LIMIT (2 * MAX_CLIENTS + 1)
 
-static bot_weaponstate_t *g_bot_weapon_states[MAX_CLIENTS + 1];
+static bot_weaponstate_t *g_bot_weapon_states[BOT_WEAPON_HANDLE_LIMIT + 1];
+static bool g_bot_weapon_state_owned[BOT_WEAPON_HANDLE_LIMIT + 1];
 static ai_weapon_library_t *g_weapon_library = NULL;
 
 /*
@@ -24,7 +27,7 @@ Checks whether a weapon-state handle maps to the one-based client table.
 */
 static bool BotWeapon_HandleInRange(int handle)
 {
-	return handle > 0 && handle <= MAX_CLIENTS;
+	return handle > 0 && handle <= BOT_WEAPON_HANDLE_LIMIT;
 }
 
 /*
@@ -92,13 +95,21 @@ static void BotWeapon_ClearWeights(bot_weaponstate_t *state)
 
 	if (state->weights != NULL && state->owns_weights)
 	{
-		AI_FreeWeaponWeights(state->weights);
+		if (state->fresh_weights)
+		{
+			AI_FreeWeaponWeightsFresh(state->weights);
+		}
+		else
+		{
+			AI_FreeWeaponWeights(state->weights);
+		}
 	}
 
 	state->weights = NULL;
 	state->config = NULL;
 	state->weight_config = NULL;
 	state->owns_weights = false;
+	state->fresh_weights = false;
 
 	BotWeapon_ResetRanking(state);
 }
@@ -312,6 +323,19 @@ void BotShutdownWeaponAI(void)
 
 /*
 =============
+BotForgetWeaponStateAdapters
+
+Forgets handle metadata after retail arena ownership has been released.
+=============
+*/
+void BotForgetWeaponStateAdapters(void)
+{
+	memset(g_bot_weapon_states, 0, sizeof(g_bot_weapon_states));
+	memset(g_bot_weapon_state_owned, 0, sizeof(g_bot_weapon_state_owned));
+}
+
+/*
+=============
 BotAllocWeaponState
 =============
 */
@@ -335,11 +359,84 @@ int BotAllocWeaponState(void)
 
 		state->config = AI_GetActiveWeaponConfig();
 		g_bot_weapon_states[handle] = state;
+		g_bot_weapon_state_owned[handle] = true;
 		return handle;
 	}
 
 	BotLib_Print(PRT_ERROR, "BotAllocWeaponState: no free weapon state slots\n");
 	return 0;
+}
+
+/*
+=============
+BotBindRetailWeaponState
+
+Binds a weapon core embedded in a retail client slab to the physical client's
+reserved internal handle without allocating a tracked owner block.
+=============
+*/
+int BotBindRetailWeaponState(int client, bot_weaponstate_t *state)
+{
+	if (client < 0 || client > MAX_CLIENTS || state == NULL)
+	{
+		return 0;
+	}
+
+	int handle = BOT_WEAPON_RETAIL_HANDLE_BASE + client;
+	if (g_bot_weapon_states[handle] == state)
+	{
+		return handle;
+	}
+	if (g_bot_weapon_states[handle] != NULL)
+	{
+		BotFreeWeaponState(handle);
+	}
+
+	memset(state, 0, sizeof(*state));
+	state->config = AI_GetActiveWeaponConfig();
+	g_bot_weapon_states[handle] = state;
+	g_bot_weapon_state_owned[handle] = false;
+	return handle;
+}
+
+/*
+=============
+BotRebindRetailWeaponState
+
+Moves reserved weapon-handle metadata after a full client record copy.
+=============
+*/
+int BotRebindRetailWeaponState(int old_handle,
+	int client,
+	bot_weaponstate_t *state)
+{
+	if (client < 0 || client > MAX_CLIENTS || state == NULL)
+	{
+		return 0;
+	}
+
+	int new_handle = BOT_WEAPON_RETAIL_HANDLE_BASE + client;
+	if (old_handle == new_handle)
+	{
+		g_bot_weapon_states[new_handle] = state;
+		g_bot_weapon_state_owned[new_handle] = false;
+		return new_handle;
+	}
+	if (!BotWeapon_HandleInRange(old_handle) ||
+		g_bot_weapon_states[old_handle] == NULL)
+	{
+		return BotBindRetailWeaponState(client, state);
+	}
+	if (g_bot_weapon_states[new_handle] != NULL)
+	{
+		BotFreeWeaponState(new_handle);
+	}
+
+	g_bot_weapon_states[new_handle] = state;
+	g_bot_weapon_state_owned[new_handle] = false;
+	g_bot_weapon_states[old_handle] = NULL;
+	g_bot_weapon_state_owned[old_handle] = false;
+	return new_handle;
 }
 
 /*
@@ -356,8 +453,12 @@ void BotFreeWeaponState(int handle)
 	}
 
 	BotWeapon_ClearWeights(state);
-	FreeMemory(state);
+	if (g_bot_weapon_state_owned[handle])
+	{
+		FreeMemory(state);
+	}
 	g_bot_weapon_states[handle] = NULL;
+	g_bot_weapon_state_owned[handle] = false;
 }
 
 /*
@@ -380,10 +481,31 @@ void BotResetWeaponState(int handle)
 
 /*
 =============
-BotLoadWeaponWeights
+BotWeaponStatePeek
+
+Returns a read-only weapon state without emitting handle diagnostics.
 =============
 */
-int BotLoadWeaponWeights(int weaponstate, const char *filename)
+const bot_weaponstate_t *BotWeaponStatePeek(int handle)
+{
+	if (!BotWeapon_HandleInRange(handle))
+	{
+		return NULL;
+	}
+
+	return g_bot_weapon_states[handle];
+}
+
+/*
+=============
+BotWeapon_LoadWeightsInternal
+
+Loads either a cached Q3 config or a distinct retail-owned config.
+=============
+*/
+static int BotWeapon_LoadWeightsInternal(int weaponstate,
+	const char *filename,
+	bool fresh)
 {
 	bot_weaponstate_t *state = BotWeapon_StateForHandle(weaponstate);
 	if (state == NULL)
@@ -394,14 +516,21 @@ int BotLoadWeaponWeights(int weaponstate, const char *filename)
 	BotWeapon_ClearWeights(state);
 
 	const char *resolved = filename;
-	if (resolved == NULL || resolved[0] == '\0')
+	if (!fresh && (resolved == NULL || resolved[0] == '\0'))
 	{
 		resolved = BOT_WEAPON_DEFAULT_WEIGHTS;
 	}
 
-	ai_weapon_weights_t *weights = AI_LoadWeaponWeights(resolved);
+	ai_weapon_weights_t *weights = fresh ?
+		AI_LoadWeaponWeightsFresh(resolved) : AI_LoadWeaponWeights(resolved);
 	if (weights == NULL)
 	{
+		if (fresh)
+		{
+			BotLib_Print(PRT_FATAL,
+				"couldn't load weapon config %s\n",
+				resolved != NULL ? resolved : "");
+		}
 		return BLERR_CANNOTLOADWEAPONWEIGHTS;
 	}
 
@@ -412,6 +541,7 @@ int BotLoadWeaponWeights(int weaponstate, const char *filename)
 		state->config = NULL;
 		state->weight_config = weights->config;
 		state->owns_weights = true;
+		state->fresh_weights = fresh;
 		BotWeapon_ResetRanking(state);
 		return BLERR_CANNOTLOADWEAPONCONFIG;
 	}
@@ -421,7 +551,14 @@ int BotLoadWeaponWeights(int weaponstate, const char *filename)
 		 (config->num_weapons > 0 && weights->index_by_weapon == NULL)) &&
 		!AI_WeaponWeightsBindConfig(weights, config))
 	{
-		AI_FreeWeaponWeights(weights);
+		if (fresh)
+		{
+			AI_FreeWeaponWeightsFresh(weights);
+		}
+		else
+		{
+			AI_FreeWeaponWeights(weights);
+		}
 		return BLERR_CANNOTLOADWEAPONWEIGHTS;
 	}
 
@@ -429,8 +566,31 @@ int BotLoadWeaponWeights(int weaponstate, const char *filename)
 	state->config = weights->definitions;
 	state->weight_config = weights->config;
 	state->owns_weights = true;
+	state->fresh_weights = fresh;
 	BotWeapon_ResetRanking(state);
 	return BLERR_NOERROR;
+}
+
+/*
+=============
+BotLoadWeaponWeights
+=============
+*/
+int BotLoadWeaponWeights(int weaponstate, const char *filename)
+{
+	return BotWeapon_LoadWeightsInternal(weaponstate, filename, false);
+}
+
+/*
+=============
+BotLoadWeaponWeightsFresh
+
+Loads a distinct retail-owned weapon-weight config for one client.
+=============
+*/
+int BotLoadWeaponWeightsFresh(int weaponstate, const char *filename)
+{
+	return BotWeapon_LoadWeightsInternal(weaponstate, filename, true);
 }
 
 /*

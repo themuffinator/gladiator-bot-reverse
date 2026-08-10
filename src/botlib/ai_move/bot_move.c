@@ -1,7 +1,5 @@
 #include "bot_move.h"
 
-#include <float.h>
-#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,440 +12,265 @@
 #include "botlib/ea/ea_local.h"
 #include "q2bridge/bridge.h"
 #include "q2bridge/botlib.h"
-#include "q2bridge/bridge_config.h"
-
-static bot_movestate_t *g_botMoveStates[MAX_CLIENTS + 1];
 
 #define AVOIDREACH_TIME 6.0f
 #define AVOIDREACH_TRIES 4
+#define BOT_MOVE_RETAIL_HANDLE_BASE (MAX_CLIENTS + 1)
+#define BOT_MOVE_HANDLE_LIMIT (2 * MAX_CLIENTS + 1)
 
-static float VectorNormalizeInline(vec3_t v);
-static float VectorNormalizeTo(const vec3_t src, vec3_t dst);
-static float BotMove_CRandom(void);
-static int BotMove_FindAreaForPoint(const vec3_t origin);
-static bool BotMove_AreaHasReachability(int areanum);
-static int BotMove_FuzzyPointReachabilityArea(const vec3_t origin);
-static void BotMove_GetClientBounds(int client, vec3_t mins, vec3_t maxs);
-static void BotMove_CrouchPresenceBounds(vec3_t mins, vec3_t maxs);
-static float BotMove_TravelTimeout(int traveltype);
-static bool BotMove_AreaContentsHasLiquid(int contents);
-static bool BotMove_AreaHasLadder(int areanum);
-static int BotMove_AreaPresenceType(int areanum);
-static bool BotMove_PointInLiquid(const vec3_t origin, int areanum);
-static bool BotMove_OnGround(bot_movestate_t *ms);
-static float BotMove_GapDistance(const vec3_t origin, const vec3_t hordir, int entnum);
-static bool BotMove_CheckBarrierJump(bot_movestate_t *ms, const vec3_t dir, float speed);
-static void BotMove_JumpRunStart(const bot_movestate_t *ms, const aas_reachability_t *reach, vec3_t runstart);
-static int BotMove_SwimInDirection(bot_movestate_t *ms, const vec3_t dir, float speed, int type);
-static int BotMove_WalkInDirection(bot_movestate_t *ms, const vec3_t dir, float speed, int type);
-static void BotMove_AddToAvoidReach(bot_movestate_t *ms, int number, float avoidtime);
-static bool BotMove_HasMovementSurface(const bot_movestate_t *ms);
+static bot_movestate_t *botmovestates[BOT_MOVE_HANDLE_LIMIT + 1];
+static bool botmovestate_owned[BOT_MOVE_HANDLE_LIMIT + 1];
 
-static const char *BotMove_DefaultGrappleModel(void)
+static libvar_t *libvar_sv_friction;
+static libvar_t *libvar_sv_stopspeed;
+static libvar_t *libvar_sv_gravity;
+static libvar_t *libvar_sv_waterfriction;
+static libvar_t *libvar_sv_watergravity;
+static libvar_t *libvar_sv_maxvelocity;
+static libvar_t *libvar_sv_maxwalkvelocity;
+static libvar_t *libvar_sv_maxcrouchvelocity;
+static libvar_t *libvar_sv_maxswimvelocity;
+static libvar_t *libvar_sv_maxaccelerate;
+static libvar_t *libvar_sv_airaccelerate;
+static libvar_t *libvar_sv_step;
+static libvar_t *libvar_sv_maxbarrier;
+static libvar_t *libvar_sv_maxsteepness;
+static libvar_t *libvar_sv_jumpvel;
+static libvar_t *libvar_sv_maxwaterjump;
+static libvar_t *libvar_laserhook;
+static int grapplemodelindex;
+
+/* Retail model-name lookup, owned by the AAS map asset table. */
+extern int IndexFromModel(const char *model);
+
+/*
+=============
+BotMove_LibVarValue
+
+Read a registered movement libvar while retaining its retail fallback.
+=============
+*/
+static float BotMove_LibVarValue(const libvar_t *libvar, float fallback)
 {
-    return "models/weapons/grapple/hook/tris.md2";
-}
-
-static const char *BotMove_GrappleModelPath(void)
-{
-	const char *path = Bridge_GrappleModelPath();
-	if (path == NULL || path[0] == '\0')
-	{
-		return BotMove_DefaultGrappleModel();
-	}
-
-	return path;
-}
-
-static bool BotMove_UseHookEnabled(void)
-{
-	libvar_t *usehook = Bridge_UseHook();
-	return usehook != NULL && usehook->value != 0.0f;
-}
-
-static bool BotMove_LaserHookEnabled(void)
-{
-	libvar_t *laserhook = Bridge_LaserHook();
-	return laserhook != NULL && laserhook->value != 0.0f;
-}
-
-static void BotMove_PrecacheGrappleModel(bot_movestate_t *ms)
-{
-    (void)ms;
-
-    static bool s_grapple_precached = false;
-    if (s_grapple_precached)
-    {
-        return;
-    }
-
-    const char *path = BotMove_GrappleModelPath();
-    if (path == NULL || path[0] == '\0')
-    {
-        return;
-    }
-
-    int client = (ms != NULL) ? ms->client : 0;
-    Q2_BotClientCommand(client, "%s %s", "precache", path);
-    s_grapple_precached = true;
-}
-
-static void BotMove_DisengageGrapple(bot_movestate_t *ms)
-{
-    if (ms == NULL)
-    {
-        return;
-    }
-
-    EA_Command(ms->client, "%s", "hookoff");
-
-    ms->moveflags &= ~(MFL_ACTIVEGRAPPLE | MFL_GRAPPLEPULL);
-    ms->grapplevisible_time = 0.0f;
-    ms->lastgrappledist = 0.0f;
-    ms->reachability_time = 0.0f;
-}
-
-bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms, const aas_reachability_t *reach)
-{
-    bot_moveresult_t result;
-    BotClearMoveResult(&result);
-    result.traveltype = TRAVEL_GRAPPLEHOOK;
-
-    if (ms == NULL || reach == NULL)
-    {
-        result.failure = 1;
-        return result;
-    }
-
-    bool use_hook = BotMove_UseHookEnabled();
-    bool laser_hook = BotMove_LaserHookEnabled();
-
-    if (!use_hook || !laser_hook)
-    {
-        result.failure = 1;
-        return result;
-    }
-
-    BotMove_PrecacheGrappleModel(ms);
-
-    vec3_t view_origin;
-    VectorAdd(ms->origin, ms->viewoffset, view_origin);
-
-    vec3_t to_goal;
-    VectorSubtract(reach->end, view_origin, to_goal);
-
-    vec3_t ideal_viewangles;
-    Vector2Angles(to_goal, ideal_viewangles);
-    VectorCopy(ideal_viewangles, result.ideal_viewangles);
-    result.flags |= MOVERESULT_MOVEMENTVIEW;
-
-    if (ms->moveflags & MFL_ACTIVEGRAPPLE)
-    {
-        vec3_t pull_dir;
-        VectorSubtract(reach->end, ms->origin, pull_dir);
-        pull_dir[2] = 0.0f;
-        float pull_dist = VectorNormalizeInline(pull_dir);
-
-        bool slack_release = false;
-        if (pull_dist < 48.0f)
-        {
-            if (ms->lastgrappledist - pull_dist < 1.0f)
-            {
-                slack_release = true;
-            }
-        }
-        else
-        {
-            if (pull_dist > ms->lastgrappledist - 2.0f)
-            {
-                if (aasworld.time - ms->grapplevisible_time > 0.4f)
-                {
-                    slack_release = true;
-                }
-            }
-            else
-            {
-                ms->grapplevisible_time = aasworld.time;
-            }
-        }
-
-        if (slack_release)
-        {
-            BotMove_DisengageGrapple(ms);
-            result.flags |= MOVERESULT_MOVEMENTWEAPON;
-            return result;
-        }
-
-        EA_Attack(ms->client);
-        ms->moveflags |= MFL_GRAPPLEPULL;
-        result.flags |= MOVERESULT_MOVEMENTWEAPON;
-        ms->lastgrappledist = pull_dist;
-        ms->reachability_time = aasworld.time + BotMove_TravelTimeout(TRAVEL_GRAPPLEHOOK);
-        result.weapon = 0;
-        return result;
-    }
-
-    vec3_t approach_dir;
-    VectorSubtract(reach->start, ms->origin, approach_dir);
-    if (!(ms->moveflags & MFL_SWIMMING))
-    {
-        approach_dir[2] = 0.0f;
-    }
-
-    float start_dist = VectorNormalizeInline(approach_dir);
-    float yaw_diff = fabsf(AngleDelta(ideal_viewangles[YAW], ms->viewangles[YAW]));
-    float pitch_diff = fabsf(AngleDelta(ideal_viewangles[PITCH], ms->viewangles[PITCH]));
-
-    ms->grapplevisible_time = aasworld.time;
-
-    if (start_dist < 5.0f && yaw_diff < 2.0f && pitch_diff < 2.0f)
-    {
-        EA_Command(ms->client, "%s", "hookon");
-        EA_Attack(ms->client);
-        ms->moveflags |= (MFL_ACTIVEGRAPPLE | MFL_GRAPPLEPULL);
-        vec3_t grapple_delta;
-        VectorSubtract(reach->end, ms->origin, grapple_delta);
-        grapple_delta[2] = 0.0f;
-        ms->lastgrappledist = sqrtf(VectorLengthSquared(grapple_delta));
-        result.flags |= MOVERESULT_MOVEMENTWEAPON;
-        ms->reachability_time = aasworld.time + BotMove_TravelTimeout(TRAVEL_GRAPPLEHOOK);
-        result.weapon = 0;
-        return result;
-    }
-
-    float speed = 400.0f;
-    if (start_dist < 70.0f)
-    {
-        speed = 300.0f - (300.0f - 4.0f * start_dist);
-    }
-
-    EA_Move(ms->client, approach_dir, speed);
-    VectorCopy(approach_dir, result.movedir);
-    if (ms->moveflags & MFL_SWIMMING)
-    {
-        result.flags |= MOVERESULT_SWIMVIEW;
-    }
-
-    ms->reachability_time = aasworld.time + BotMove_TravelTimeout(TRAVEL_GRAPPLEHOOK);
-    return result;
-}
-
-typedef struct bot_move_mover_support_s
-{
-    const aas_entity_t *entity;
-    int entnum;
-    int modelnum;
-    const bot_mover_catalogue_entry_t *catalogue;
-} bot_move_mover_support_t;
-
-static bool BotMove_DeveloperWarningsEnabled(void)
-{
-    if (LibVarValue("bot_developer", "0") != 0.0f)
-    {
-        return true;
-    }
-
-    return LibVarValue("developer", "0") != 0.0f;
-}
-
-static const char *BotMove_MoverKindName(bot_mover_kind_t kind)
-{
-    switch (kind)
-    {
-        case BOT_MOVER_KIND_FUNC_PLAT:
-            return "func_plat";
-        case BOT_MOVER_KIND_FUNC_BOB:
-            return "func_bobbing";
-        default:
-            return NULL;
-    }
+	return libvar != NULL ? libvar->value : fallback;
 }
 
 /*
 =============
-BotMove_ReachMoverModelNum
+BotMove_AngleDiff
 
-Extract the brush model number encoded in mover reachabilities.
+Return retail's raw, single-wrap angular difference for grapple alignment.
 =============
 */
-static int BotMove_ReachMoverModelNum(const aas_reachability_t *reach)
+static double BotMove_AngleDiff(float angle1, float angle2)
 {
-	if (reach == NULL)
+	double difference = (double)angle1 - (double)angle2;
+	if (angle1 > angle2)
+	{
+		if (difference > 180.0)
+		{
+			return difference - 360.0;
+		}
+	}
+	else if (difference < -180.0)
+	{
+		return difference + 360.0;
+	}
+
+	return difference;
+}
+
+/*
+=============
+BotMove_VectorNormalize
+
+Normalize a vector and return its original length.
+=============
+*/
+static float BotMove_VectorNormalize(vec3_t vector)
+{
+	float length = sqrtf(DotProduct(vector, vector));
+
+	if (length != 0.0f)
+	{
+		float inverse = 1.0f / length;
+		vector[0] *= inverse;
+		vector[1] *= inverse;
+		vector[2] *= inverse;
+	}
+
+	return length;
+}
+
+/*
+=============
+BotMove_RandomSigned
+
+Return the retail rand() based value in the range [-1, 1].
+=============
+*/
+static float BotMove_RandomSigned(void)
+{
+	return 2.0f * ((float)(rand() & 0x7fff) * 0.000030518509f - 0.5f);
+}
+
+/*
+=============
+BotReachabilityArea
+
+Find a reachable area at, around, or below a point.
+=============
+*/
+int BotReachabilityArea(const vec3_t origin, int testground)
+{
+	vec3_t start;
+	vec3_t end;
+	aas_trace_t trace;
+	int areas[10];
+	int fallback = 0;
+
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		VectorCopy(origin, start);
+		if (pass > 0)
+		{
+			VectorCopy(origin, end);
+			end[2] -= 800.0f;
+			trace = AAS_TraceClientBBox(origin, end, PRESENCE_CROUCH, -1);
+			if (!trace.startsolid)
+			{
+				VectorCopy(trace.endpos, start);
+			}
+		}
+
+		fallback = 0;
+		int areanum = AAS_PointAreaNum(start);
+		if (areanum != 0)
+		{
+			fallback = areanum;
+			if (AAS_AreaReachability(areanum) != 0)
+			{
+				return areanum;
+			}
+		}
+
+		for (int dz = 5; dz >= -5; dz -= 5)
+		{
+			for (int dy = 5; dy >= -5; dy -= 5)
+			{
+				for (int dx = 5; dx >= -5; dx -= 5)
+				{
+					end[0] = start[0] + (float)dz;
+					end[1] = start[1] + (float)dy;
+					end[2] = start[2] + (float)dx;
+					int count = AAS_TraceAreas(start, end, areas, NULL, 10);
+					if (count <= 0)
+					{
+						continue;
+					}
+					if (fallback == 0)
+					{
+						fallback = areas[0];
+					}
+					for (int index = 0; index < count; ++index)
+					{
+						if (AAS_AreaReachability(areas[index]) != 0)
+						{
+							return areas[index];
+						}
+					}
+				}
+			}
+		}
+
+		if (!testground)
+		{
+			break;
+		}
+	}
+
+	return fallback;
+}
+
+/*
+=============
+BotOnMover
+
+Test whether the bot is standing on the elevator encoded by a reachability.
+=============
+*/
+static int BotOnMover(const vec3_t origin, int entnum, const aas_reachability_t *reach)
+{
+	vec3_t angles = {0.0f, 0.0f, 0.0f};
+	vec3_t mins;
+	vec3_t maxs;
+	vec3_t modelorigin;
+	vec3_t boxmins = {-16.0f, -16.0f, -8.0f};
+	vec3_t boxmaxs = {16.0f, 16.0f, 8.0f};
+	vec3_t start;
+	vec3_t end;
+
+	if (reach->traveltype != TRAVEL_ELEVATOR)
 	{
 		return 0;
 	}
 
-	return reach->facenum & 0x0000FFFF;
-}
-
-/*
-=============
-BotMove_EntityMatchesModelNum
-
-Match a live entity against a reconstructed brush model number.
-=============
-*/
-static bool BotMove_EntityMatchesModelNum(int entnum, int modelnum)
-{
-	if (modelnum <= 0)
-	{
-		return false;
-	}
-
-	return AAS_ModelNumForEntity(entnum) == modelnum;
-}
-
-/*
-=============
-BotMove_MoverEntityForModel
-
-Find the live AAS entity that owns a mover brush model.
-=============
-*/
-static const aas_entity_t *BotMove_MoverEntityForModel(int modelnum)
-{
-	if (modelnum <= 0 || aasworld.entities == NULL || aasworld.maxEntities <= 0)
-	{
-		return NULL;
-	}
-
-	for (int entnum = 0; entnum < aasworld.maxEntities; ++entnum)
-	{
-		const aas_entity_t *entity = &aasworld.entities[entnum];
-		if (entity == NULL || !entity->inuse || entity->solid != SOLID_BSP)
-		{
-			continue;
-		}
-
-		if (BotMove_EntityMatchesModelNum(entnum, modelnum))
-		{
-			return entity;
-		}
-	}
-
-	return NULL;
-}
-
-/*
-=============
-BotMove_MoverBoundsForModel
-
-Copy the current mover origin and model bounds.
-=============
-*/
-static bool BotMove_MoverBoundsForModel(int modelnum, vec3_t origin, vec3_t mins, vec3_t maxs)
-{
-	const aas_entity_t *entity = BotMove_MoverEntityForModel(modelnum);
-	if (entity == NULL)
-	{
-		BotLib_Print(PRT_MESSAGE, "no entity with model %d\n", modelnum);
-		if (origin != NULL)
-		{
-			VectorClear(origin);
-		}
-		if (mins != NULL)
-		{
-			VectorClear(mins);
-		}
-		if (maxs != NULL)
-		{
-			VectorClear(maxs);
-		}
-		return false;
-	}
-
-	if (origin != NULL)
-	{
-		VectorCopy(entity->origin, origin);
-	}
-	if (mins != NULL)
-	{
-		VectorCopy(entity->mins, mins);
-	}
-	if (maxs != NULL)
-	{
-		VectorCopy(entity->maxs, maxs);
-	}
-	return true;
-}
-
-/*
-=============
-BotMove_OnMover
-
-Check whether the bot is standing on the mover for this reachability.
-=============
-*/
-static bool BotMove_OnMover(const bot_movestate_t *ms, const aas_reachability_t *reach)
-{
-	if (ms == NULL || reach == NULL)
-	{
-		return false;
-	}
-
-	int modelnum = BotMove_ReachMoverModelNum(reach);
-	vec3_t mins;
-	vec3_t maxs;
-	vec3_t modelorigin;
-	if (!BotMove_MoverBoundsForModel(modelnum, modelorigin, mins, maxs))
-	{
-		return false;
-	}
-
+	AAS_BSPModelMinsMaxsOrigin(reach->facenum,
+		angles,
+		mins,
+		maxs,
+		modelorigin);
 	for (int axis = 0; axis < 2; ++axis)
 	{
-		if (ms->origin[axis] > modelorigin[axis] + maxs[axis] + 16.0f)
+		if (origin[axis] > maxs[axis] + modelorigin[axis] + 16.0f ||
+			origin[axis] < mins[axis] + modelorigin[axis] - 16.0f)
 		{
-			return false;
-		}
-		if (ms->origin[axis] < modelorigin[axis] + mins[axis] - 16.0f)
-		{
-			return false;
+			return 0;
 		}
 	}
 
-	vec3_t boxmins;
-	vec3_t boxmaxs;
-	vec3_t start;
-	vec3_t end;
-	VectorSet(boxmins, -16.0f, -16.0f, -8.0f);
-	VectorSet(boxmaxs, 16.0f, 16.0f, 8.0f);
-	VectorCopy(ms->origin, start);
+	VectorCopy(origin, start);
+	VectorCopy(origin, end);
 	start[2] += 24.0f;
-	VectorCopy(ms->origin, end);
 	end[2] -= 48.0f;
-
 	bsp_trace_t trace = Q2_Trace(start,
-	                             boxmins,
-	                             boxmaxs,
-	                             end,
-	                             ms->entitynum,
-	                             CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	if (!trace.startsolid && !trace.allsolid &&
-	    trace.ent >= 0 &&
-	    BotMove_EntityMatchesModelNum(trace.ent, modelnum))
-	{
-		return true;
-	}
-
-	return false;
+		boxmins,
+		boxmaxs,
+		end,
+		entnum,
+		MASK_PLAYERSOLID);
+	return !trace.startsolid && !trace.allsolid && trace.ent != 0 &&
+		AAS_EntityModelNum(trace.ent) == reach->facenum;
 }
 
 /*
 =============
-BotMove_MoverDown
+MoverDown
 
-Check whether a platform mover is below the reachability start point.
+Test whether an elevator is below its reachability start.
 =============
 */
-static bool BotMove_MoverDown(const aas_reachability_t *reach)
+static int MoverDown(const aas_reachability_t *reach)
 {
-	int modelnum = BotMove_ReachMoverModelNum(reach);
-	vec3_t origin;
+	vec3_t angles = {0.0f, 0.0f, 0.0f};
+	vec3_t mins;
 	vec3_t maxs;
-	if (!BotMove_MoverBoundsForModel(modelnum, origin, NULL, maxs))
+	vec3_t origin;
+
+	if (reach->traveltype != TRAVEL_ELEVATOR)
 	{
-		return false;
+		return 0;
+	}
+
+	AAS_BSPModelMinsMaxsOrigin(reach->facenum,
+		angles,
+		mins,
+		maxs,
+		origin);
+	if (!AAS_OriginOfMoverWithModelNum(reach->facenum, origin))
+	{
+		BotLib_Print(PRT_MESSAGE, "no entity with model %d\n", reach->facenum);
+		return 0;
 	}
 
 	return origin[2] + maxs[2] < reach->start[2];
@@ -455,3546 +278,236 @@ static bool BotMove_MoverDown(const aas_reachability_t *reach)
 
 /*
 =============
-BotMove_MoverBottomCenter
+BotValidTravel
 
-Calculate the bottom-position center used by elevator and func_bobbing travel.
+Test whether the caller enabled a reachability's retail travel flag.
 =============
 */
-static void BotMove_MoverBottomCenter(const aas_reachability_t *reach, vec3_t bottomcenter)
+static int BotValidTravel(const aas_reachability_t *reach, int travelflags)
 {
-	if (bottomcenter == NULL)
-	{
-		return;
-	}
-
-	int modelnum = BotMove_ReachMoverModelNum(reach);
-	vec3_t origin;
-	vec3_t mins;
-	vec3_t maxs;
-	if (!BotMove_MoverBoundsForModel(modelnum, origin, mins, maxs))
-	{
-		VectorClear(bottomcenter);
-		return;
-	}
-
-	vec3_t mids;
-	VectorAdd(mins, maxs, mids);
-	VectorMA(origin, 0.5f, mids, bottomcenter);
-	bottomcenter[2] = reach->start[2];
+	return (AAS_TravelFlagForType(reach->traveltype) & ~travelflags) == 0;
 }
 
 /*
 =============
-BotMove_SignedShort
+BotAddToAvoidReach
 
-Sign-extend a 16-bit value packed into a reachability field.
+Record a failed or selected reachability in the one-entry retail avoid list.
 =============
 */
-static int BotMove_SignedShort(int value)
+static void BotAddToAvoidReach(bot_movestate_t *ms, int number, float avoidtime)
 {
-	value &= 0x0000FFFF;
-	if (value > 0x00007FFF)
+	for (int index = 0; index < MAX_AVOIDREACH; ++index)
 	{
-		value |= ~0x0000FFFF;
-	}
-
-	return value;
-}
-
-/*
-=============
-BotMove_FuncBobStartEnd
-
-Decode the moving start/end points for a func_bobbing reachability.
-=============
-*/
-static bool BotMove_FuncBobStartEnd(const aas_reachability_t *reach, vec3_t start, vec3_t end, vec3_t origin)
-{
-	if (reach == NULL || start == NULL || end == NULL || origin == NULL)
-	{
-		return false;
-	}
-
-	int modelnum = BotMove_ReachMoverModelNum(reach);
-	vec3_t mins;
-	vec3_t maxs;
-	if (!BotMove_MoverBoundsForModel(modelnum, origin, mins, maxs))
-	{
-		BotLib_Print(PRT_MESSAGE, "BotFuncBobStartEnd: no entity with model %d\n", modelnum);
-		VectorClear(start);
-		VectorClear(end);
-		VectorClear(origin);
-		return false;
-	}
-
-	vec3_t mid;
-	VectorAdd(mins, maxs, mid);
-	VectorScale(mid, 0.5f, mid);
-	VectorCopy(mid, start);
-	VectorCopy(mid, end);
-
-	int spawnflags = reach->facenum >> 16;
-	int num0 = BotMove_SignedShort(reach->edgenum >> 16);
-	int num1 = BotMove_SignedShort(reach->edgenum);
-
-	if ((spawnflags & 1) != 0)
-	{
-		start[0] = (float)num0;
-		end[0] = (float)num1;
-		origin[0] += mid[0];
-		origin[1] = mid[1];
-		origin[2] = mid[2];
-	}
-	else if ((spawnflags & 2) != 0)
-	{
-		start[1] = (float)num0;
-		end[1] = (float)num1;
-		origin[0] = mid[0];
-		origin[1] += mid[1];
-		origin[2] = mid[2];
-	}
-	else
-	{
-		start[2] = (float)num0;
-		end[2] = (float)num1;
-		origin[0] = mid[0];
-		origin[1] = mid[1];
-		origin[2] += mid[2];
-	}
-
-	return true;
-}
-
-static int BotMove_DetermineTravelTypeForMover(const bot_mover_catalogue_entry_t *entry)
-{
-    if (entry == NULL)
-    {
-        return TRAVEL_INVALID;
-    }
-
-    switch (entry->kind)
-    {
-        case BOT_MOVER_KIND_FUNC_PLAT:
-            return TRAVEL_ELEVATOR;
-        case BOT_MOVER_KIND_FUNC_BOB:
-            return TRAVEL_FUNCBOB;
-        default:
-            return TRAVEL_INVALID;
-    }
-}
-
-static unsigned int BotMove_DiagnosticForMover(bot_mover_kind_t kind, bool success)
-{
-    switch (kind)
-    {
-        case BOT_MOVER_KIND_FUNC_PLAT:
-            return success ? BOT_MOVE_DIAG_FUNCPLAT_RELINKED : BOT_MOVE_DIAG_FUNCPLAT_FAILED;
-        case BOT_MOVER_KIND_FUNC_BOB:
-            return success ? BOT_MOVE_DIAG_FUNCBOB_RELINKED : BOT_MOVE_DIAG_FUNCBOB_FAILED;
-        default:
-            return BOT_MOVE_DIAG_NONE;
-    }
-}
-
-static int BotMove_FindReachabilityForMover(int traveltype, int modelnum)
-{
-    if (aasworld.reachability == NULL || aasworld.numReachability <= 0)
-    {
-        return -1;
-    }
-
-    for (int index = 0; index < aasworld.numReachability; ++index)
-    {
-        const aas_reachability_t *candidate = &aasworld.reachability[index];
-        if ((candidate->traveltype & TRAVELTYPE_MASK) != traveltype)
-        {
-            continue;
-        }
-
-        if ((candidate->facenum & 0x0000FFFF) != modelnum)
-        {
-            continue;
-        }
-
-        return index;
-    }
-
-    return -1;
-}
-
-static bool BotMove_IsUsingMoverReach(const bot_movestate_t *ms, int traveltype, int modelnum)
-{
-    if (ms == NULL || aasworld.reachability == NULL)
-    {
-        return false;
-    }
-
-    if (ms->lastreachnum < 0 || ms->lastreachnum >= aasworld.numReachability)
-    {
-        return false;
-    }
-
-    const aas_reachability_t *current = &aasworld.reachability[ms->lastreachnum];
-    if ((current->traveltype & TRAVELTYPE_MASK) != traveltype)
-    {
-        return false;
-    }
-
-    return (current->facenum & 0x0000FFFF) == modelnum;
-}
-
-/*
-=============
-BotMove_FindSupportingMover
-
-Find a linked brush-model mover under the current move state.
-=============
-*/
-static bool BotMove_FindSupportingMover(bot_movestate_t *ms, bot_move_mover_support_t *support)
-{
-    if (ms == NULL || support == NULL)
-    {
-        return false;
-    }
-
-    if (!aasworld.loaded || !aasworld.entitiesValid || aasworld.entities == NULL)
-    {
-        return false;
-    }
-
-    memset(support, 0, sizeof(*support));
-
-    int area = ms->areanum;
-    if (area <= 0)
-    {
-        area = BotMove_FindAreaForPoint(ms->origin);
-        if (area <= 0)
-        {
-            return false;
-        }
-        ms->areanum = area;
-    }
-
-    if (aasworld.areaEntityLists == NULL)
-    {
-        return false;
-    }
-
-    size_t listCount = aasworld.areaEntityListCount;
-    if (listCount == 0U || (size_t)area >= listCount)
-    {
-        return false;
-    }
-
-    const aas_link_t *link = aasworld.areaEntityLists[area];
-    const float lateralTolerance = 1.0f;
-    const float belowTolerance = 64.0f;
-    const float aboveTolerance = 32.0f;
-
-    for (; link != NULL; link = link->next_ent)
-    {
-        int entnum = link->entnum;
-        if (entnum < 0 || entnum >= aasworld.maxEntities)
-        {
-            continue;
-        }
-
-        const aas_entity_t *entity = &aasworld.entities[entnum];
-        if (!entity->inuse || entity->solid != SOLID_BSP || entity->modelindex <= 0)
-        {
-            continue;
-        }
-
-        int modelnum = AAS_ModelNumForEntity(entnum);
-        if (modelnum <= 0)
-        {
-            continue;
-        }
-
-		const bot_mover_catalogue_entry_t *catalogue = BotMove_MoverCatalogueFindByModel(modelnum);
-		if (catalogue == NULL)
+		if (ms->avoidreach[index] != number)
 		{
 			continue;
 		}
-
-        vec3_t absmins;
-        vec3_t absmaxs;
-        VectorAdd(entity->origin, entity->mins, absmins);
-        VectorAdd(entity->origin, entity->maxs, absmaxs);
-
-        if (ms->origin[0] + lateralTolerance < absmins[0] ||
-            ms->origin[0] - lateralTolerance > absmaxs[0] ||
-            ms->origin[1] + lateralTolerance < absmins[1] ||
-            ms->origin[1] - lateralTolerance > absmaxs[1])
-        {
-            continue;
-        }
-
-        if (ms->origin[2] + belowTolerance < absmaxs[2])
-        {
-            continue;
-        }
-
-        if (ms->origin[2] > absmaxs[2] + aboveTolerance)
-        {
-            continue;
-        }
-
-        support->entity = entity;
-        support->entnum = entnum;
-        support->modelnum = modelnum;
-        support->catalogue = catalogue;
-        return true;
-    }
-
-    return false;
-}
-
-static bool BotMove_HandleGroundMover(bot_movestate_t *ms, bot_moveresult_t *result)
-{
-    if (ms == NULL || result == NULL)
-    {
-        return false;
-    }
-
-    bot_move_mover_support_t support;
-    if (!BotMove_FindSupportingMover(ms, &support))
-    {
-        return false;
-    }
-
-    const bot_mover_catalogue_entry_t *catalogue = support.catalogue;
-    if (catalogue == NULL)
-    {
-        return false;
-    }
-
-    int traveltype = BotMove_DetermineTravelTypeForMover(catalogue);
-    if (traveltype == TRAVEL_INVALID)
-    {
-        return false;
-    }
-
-    if (catalogue->kind == BOT_MOVER_KIND_FUNC_PLAT)
-    {
-        result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
-    }
-    else if (catalogue->kind == BOT_MOVER_KIND_FUNC_BOB)
-    {
-        result->flags |= MOVERESULT_ONTOPOF_FUNCBOB;
-    }
-
-    if (BotMove_IsUsingMoverReach(ms, traveltype, support.modelnum))
-    {
-        return false;
-    }
-
-    int reachnum = BotMove_FindReachabilityForMover(traveltype, support.modelnum);
-    if (reachnum >= 0)
-    {
-        const aas_reachability_t *reach = &aasworld.reachability[reachnum];
-        ms->lastreachnum = reachnum;
-        ms->reachability_time = aasworld.time + BotMove_TravelTimeout(traveltype);
-        ms->reachareanum = reach->areanum;
-        result->diagnostics |= BotMove_DiagnosticForMover(catalogue->kind, true);
-        BotLib_Print(PRT_MESSAGE,
-                     "client %d: relinking brush model ent %d\n",
-                     ms->client,
-                     support.entnum);
-        return false;
-    }
-
-    if (BotMove_DeveloperWarningsEnabled())
-    {
-        const char *mover_name = BotMove_MoverKindName(catalogue->kind);
-        if (mover_name != NULL)
-        {
-            BotLib_Print(PRT_MESSAGE,
-                         "client %d: on %s without reachability\n",
-                         ms->client,
-                         mover_name);
-        }
-    }
-
-    result->blocked = 1;
-    result->blockentity = support.entnum;
-    result->flags |= MOVERESULT_ONTOPOFOBSTACLE;
-    result->failure = 1;
-    result->diagnostics |= BotMove_DiagnosticForMover(catalogue->kind, false);
-    return true;
-}
-
-static float VectorNormalizeInline(vec3_t v)
-{
-    float length = sqrtf(VectorLengthSquared(v));
-    if (length > 1e-6f)
-    {
-        float scale = 1.0f / length;
-        v[0] *= scale;
-        v[1] *= scale;
-        v[2] *= scale;
-    }
-    else
-    {
-        VectorClear(v);
-        length = 0.0f;
-    }
-    return length;
-}
-
-static float VectorNormalizeTo(const vec3_t src, vec3_t dst)
-{
-    dst[0] = src[0];
-    dst[1] = src[1];
-    dst[2] = src[2];
-    return VectorNormalizeInline(dst);
-}
-
-/*
-=============
-BotMove_CRandom
-
-Return a Quake-style random float in the range [-1, 1).
-=============
-*/
-static float BotMove_CRandom(void)
-{
-	return ((float)rand() / ((float)RAND_MAX + 1.0f)) * 2.0f - 1.0f;
-}
-
-/*
-=============
-BotMove_LibVarValue
-
-Read a movement tuning variable with a retail fallback.
-=============
-*/
-static float BotMove_LibVarValue(const libvar_t *var, float fallback)
-{
-	if (var == NULL)
-	{
-		return fallback;
-	}
-
-	return var->value;
-}
-
-/*
-=============
-BotMove_AreaContentsHasLiquid
-
-Check reconstructed AAS area liquid contents.
-=============
-*/
-static bool BotMove_AreaContentsHasLiquid(int contents)
-{
-	return (contents & (AAS_AREACONTENTS_WATER |
-	                    AAS_AREACONTENTS_LAVA |
-	                    AAS_AREACONTENTS_SLIME)) != 0;
-}
-
-/*
-=============
-BotMove_AreaHasLadder
-
-Check ladder state from AAS flags or the Quake II contents bit.
-=============
-*/
-static bool BotMove_AreaHasLadder(int areanum)
-{
-	return AAS_AreaHasLadder(areanum);
-}
-
-/*
-=============
-BotMove_AreaPresenceType
-
-Read the reconstructed AAS presence mask for an area.
-=============
-*/
-static int BotMove_AreaPresenceType(int areanum)
-{
-	int presencetype = AAS_AreaPresenceType(areanum);
-	if (presencetype == 0)
-	{
-		return PRESENCE_NORMAL;
-	}
-
-	return presencetype;
-}
-
-/*
-=============
-BotMove_PointInLiquid
-
-Resolve swimming state from point contents first, then AAS area contents.
-=============
-*/
-static bool BotMove_PointInLiquid(const vec3_t origin, int areanum)
-{
-	if (origin != NULL && (Q2_PointContents((vec_t *)origin) & MASK_WATER) != 0)
-	{
-		return true;
-	}
-
-	if (aasworld.areasettings == NULL ||
-	    areanum <= 0 ||
-	    areanum >= aasworld.numAreaSettings)
-	{
-		return false;
-	}
-
-	return BotMove_AreaContentsHasLiquid(aasworld.areasettings[areanum].contents);
-}
-
-/*
-=============
-BotMove_ClientBoundsForPresence
-
-Provide a conservative Quake II client box when entity bounds are unavailable.
-=============
-*/
-static void BotMove_ClientBoundsForPresence(const bot_movestate_t *ms, vec3_t mins, vec3_t maxs)
-{
-	if (mins == NULL || maxs == NULL)
-	{
-		return;
-	}
-
-	if (ms != NULL)
-	{
-		BotMove_GetClientBounds(ms->entitynum, mins, maxs);
-		if (VectorLengthSquared(mins) > 0.0f || VectorLengthSquared(maxs) > 0.0f)
+		if (ms->avoidreachtimes[index] > AAS_Time())
 		{
-			return;
-		}
-	}
-
-	VectorSet(mins, -16.0f, -16.0f, -24.0f);
-	if (ms != NULL && ms->presencetype == PRESENCE_CROUCH)
-	{
-		VectorSet(maxs, 16.0f, 16.0f, 16.0f);
-	}
-	else
-	{
-		VectorSet(maxs, 16.0f, 16.0f, 32.0f);
-	}
-}
-
-/*
-=============
-BotMove_OnGround
-
-Trace slightly below the bot to refresh the on-ground movement flag.
-=============
-*/
-static bool BotMove_OnGround(bot_movestate_t *ms)
-{
-	if (ms == NULL)
-	{
-		return false;
-	}
-
-	if (aasworld.areasettings != NULL &&
-	    ms->areanum > 0 &&
-	    ms->areanum < aasworld.numAreaSettings &&
-	    (aasworld.areasettings[ms->areanum].areaflags & AAS_AREA_GROUNDED) != 0)
-	{
-		return true;
-	}
-
-	vec3_t mins;
-	vec3_t maxs;
-	vec3_t end;
-	BotMove_ClientBoundsForPresence(ms, mins, maxs);
-	VectorCopy(ms->origin, end);
-	end[2] -= 3.0f;
-
-	bsp_trace_t trace = Q2_Trace(ms->origin,
-	                             mins,
-	                             maxs,
-	                             end,
-	                             ms->entitynum,
-	                             CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	return !trace.startsolid && trace.fraction < 1.0f;
-}
-
-/*
-=============
-BotMove_HasMovementSurface
-
-Check whether normal reachability selection may run this frame.
-=============
-*/
-static bool BotMove_HasMovementSurface(const bot_movestate_t *ms)
-{
-	if (ms == NULL)
-	{
-		return false;
-	}
-
-	return (ms->moveflags & (MFL_ONGROUND | MFL_SWIMMING | MFL_AGAINSTLADDER)) != 0;
-}
-
-static int BotMove_FindAreaForPoint(const vec3_t origin)
-{
-	return AAS_PointAreaNum(origin);
-}
-
-/*
-=============
-BotMove_AreaHasReachability
-
-Check whether an area has reachability data attached.
-=============
-*/
-static bool BotMove_AreaHasReachability(int areanum)
-{
-	if (areanum <= 0)
-	{
-		return false;
-	}
-
-	if (aasworld.areasettings != NULL &&
-	    areanum < aasworld.numAreaSettings)
-	{
-		if (AAS_AreaReachability(areanum) > 0)
-		{
-			return true;
-		}
-	}
-
-	if (aasworld.reachability == NULL || aasworld.numReachability <= 0)
-	{
-		return false;
-	}
-
-	if (aasworld.reachabilityFromArea != NULL)
-	{
-		for (int index = 0; index < aasworld.numReachability; ++index)
-		{
-			if (aasworld.reachabilityFromArea[index] == areanum)
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	for (int index = 0; index < aasworld.numReachability; ++index)
-	{
-		if (aasworld.reachability[index].facenum == areanum)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-/*
-=============
-BotMove_FuzzyPointReachabilityArea
-
-Resolve an area near the origin using small offsets when needed.
-=============
-*/
-static int BotMove_FuzzyPointReachabilityArea(const vec3_t origin)
-{
-	if (origin == NULL)
-	{
-		return 0;
-	}
-
-	int area = BotMove_FindAreaForPoint(origin);
-	int firstArea = area;
-	if (area > 0)
-	{
-		if (BotMove_AreaHasReachability(area))
-		{
-			return area;
-		}
-	}
-
-	int bestArea = 0;
-	float bestDist = FLT_MAX;
-
-	for (int z = 1; z >= -1; --z)
-	{
-		for (int x = 1; x >= -1; --x)
-		{
-			for (int y = 1; y >= -1; --y)
-			{
-				vec3_t offset;
-				VectorCopy(origin, offset);
-				offset[0] += (float)(x * 8);
-				offset[1] += (float)(y * 8);
-				offset[2] += (float)(z * 12);
-
-				area = BotMove_FindAreaForPoint(offset);
-				if (area <= 0)
-				{
-					continue;
-				}
-
-				if (firstArea == 0)
-				{
-					firstArea = area;
-				}
-
-				if (!BotMove_AreaHasReachability(area))
-				{
-					continue;
-				}
-
-				vec3_t delta;
-				VectorSubtract(offset, origin, delta);
-				float dist = sqrtf(VectorLengthSquared(delta));
-				if (dist < bestDist)
-				{
-					bestDist = dist;
-					bestArea = area;
-				}
-			}
-		}
-
-		if (bestArea > 0)
-		{
-			return bestArea;
-		}
-	}
-
-	return firstArea;
-}
-
-/*
-=============
-BotMove_GetClientBounds
-
-Gather the client bounding box for traces.
-=============
-*/
-static void BotMove_GetClientBounds(int client, vec3_t mins, vec3_t maxs)
-{
-	if (mins == NULL || maxs == NULL)
-	{
-		return;
-	}
-
-	VectorClear(mins);
-	VectorClear(maxs);
-
-	if (aasworld.entities == NULL || aasworld.maxEntities <= 0)
-	{
-		return;
-	}
-
-	if (client < 0 || client >= aasworld.maxEntities)
-	{
-		return;
-	}
-
-	const aas_entity_t *entity = &aasworld.entities[client];
-	if (entity == NULL || !entity->inuse)
-	{
-		return;
-	}
-
-	VectorCopy(entity->mins, mins);
-	VectorCopy(entity->maxs, maxs);
-}
-
-/*
-=============
-BotMove_CrouchPresenceBounds
-
-Return the retail crouch presence box used by reachability area probes.
-=============
-*/
-static void BotMove_CrouchPresenceBounds(vec3_t mins, vec3_t maxs)
-{
-	if (mins == NULL || maxs == NULL)
-	{
-		return;
-	}
-
-	VectorSet(mins, -15.0f, -15.0f, -24.0f);
-	VectorSet(maxs, 15.0f, 15.0f, 8.0f);
-}
-
-static int BotMove_TravelFlagsForType(int traveltype)
-{
-	int flags = AAS_TravelFlagForType(traveltype);
-	if (flags == 0)
-	{
-		flags = TFL_INVALID;
-	}
-
-	return flags;
-}
-
-static bool BotMove_TravelAllowed(int traveltype, int travelflags)
-{
-	int flags = BotMove_TravelFlagsForType(traveltype);
-	int allowed = (travelflags != 0) ? travelflags : TFL_DEFAULT;
-	if (allowed == 0)
-	{
-		return true;
-	}
-
-	return (flags & ~allowed) == 0;
-}
-
-/*
-=============
-BotMove_AreaContentsTravelFlags
-
-Translate AAS area contents to routing travel masks.
-=============
-*/
-static int BotMove_AreaContentsTravelFlags(int areanum)
-{
-	return AAS_AreaContentsTravelFlags(areanum);
-}
-
-/*
-=============
-BotMove_AreaTravelAllowed
-
-Check destination area contents against allowed travel flags.
-=============
-*/
-static bool BotMove_AreaTravelAllowed(int areanum, int travelflags)
-{
-	return AAS_AreaTravelAllowed(areanum, travelflags);
-}
-
-/*
-=============
-BotMove_AreaDoNotEnter
-
-Check whether the AAS area carries the do-not-enter content flag.
-=============
-*/
-static bool BotMove_AreaDoNotEnter(int areanum)
-{
-	return AAS_AreaDoNotEnter(areanum);
-}
-
-/*
-=============
-BotMove_TravelTimeout
-
-Return the retained-reach timeout for a travel type.
-=============
-*/
-static float BotMove_TravelTimeout(int traveltype)
-{
-	switch (traveltype)
-	{
-		case TRAVEL_WALK:
-		case TRAVEL_CROUCH:
-		case TRAVEL_BARRIERJUMP:
-		case TRAVEL_JUMP:
-		case TRAVEL_WALKOFFLEDGE:
-		case TRAVEL_SWIM:
-		case TRAVEL_WATERJUMP:
-		case TRAVEL_TELEPORT:
-			return 5.0f;
-		case TRAVEL_LADDER:
-		case TRAVEL_ROCKETJUMP:
-			return 6.0f;
-		case TRAVEL_ELEVATOR:
-		case TRAVEL_JUMPPAD:
-		case TRAVEL_FUNCBOB:
-			return 10.0f;
-		case TRAVEL_BFGJUMP:
-		case TRAVEL_GRAPPLEHOOK:
-			return 8.0f;
-		default:
-			return 8.0f;
-	}
-}
-
-/*
-=============
-BotMove_AddToTarget
-
-Accumulate distance towards the movement lookahead target.
-=============
-*/
-static bool BotMove_AddToTarget(const vec3_t start,
-								const vec3_t end,
-								float maxdist,
-								float *dist,
-								vec3_t target)
-{
-	vec3_t dir;
-	float curdist;
-
-	if (dist == NULL || target == NULL)
-	{
-		return false;
-	}
-
-	VectorSubtract(end, start, dir);
-	curdist = VectorNormalizeInline(dir);
-	if (*dist + curdist < maxdist)
-	{
-		VectorCopy(end, target);
-		*dist += curdist;
-		return false;
-	}
-
-	target[0] = start[0] + (maxdist - *dist) * dir[0];
-	target[1] = start[1] + (maxdist - *dist) * dir[1];
-	target[2] = start[2] + (maxdist - *dist) * dir[2];
-	*dist = maxdist;
-	return true;
-}
-
-static void BotMove_SetMovementView(const vec3_t dir, bot_moveresult_t *result, bool swimming)
-{
-    if (result == NULL)
-    {
-        return;
-    }
-
-    if (swimming)
-    {
-        result->flags |= MOVERESULT_SWIMVIEW;
-    }
-
-	if (dir != NULL && VectorLengthSquared(dir) > 0.0001f)
-	{
-		Vector2Angles(dir, result->ideal_viewangles);
-	}
-}
-
-/*
-=============
-BotMove_CheckBlocked
-
-Detect an entity blocking a short movement probe.
-=============
-*/
-static void BotMove_CheckBlocked(bot_movestate_t *ms,
-                                 const vec3_t dir,
-                                 bool checkbottom,
-                                 bot_moveresult_t *result)
-{
-	if (ms == NULL || dir == NULL || result == NULL)
-	{
-		return;
-	}
-
-	vec3_t mins;
-	vec3_t maxs;
-	vec3_t end;
-	BotMove_ClientBoundsForPresence(ms, mins, maxs);
-
-	VectorCopy(ms->origin, end);
-	end[0] += dir[0] * 3.0f;
-	end[1] += dir[1] * 3.0f;
-	end[2] += dir[2] * 3.0f;
-
-	bsp_trace_t trace = Q2_Trace(ms->origin,
-	                             mins,
-	                             maxs,
-	                             end,
-	                             ms->entitynum,
-	                             CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_MONSTER);
-	if (!trace.startsolid && trace.ent > 0)
-	{
-		result->blocked = 1;
-		result->blockentity = trace.ent;
-		return;
-	}
-
-	if (!checkbottom || BotMove_AreaHasReachability(ms->areanum))
-	{
-		return;
-	}
-
-	VectorCopy(ms->origin, end);
-	end[2] -= 3.0f;
-	trace = Q2_Trace(ms->origin,
-	                 mins,
-	                 maxs,
-	                 end,
-	                 ms->entitynum,
-	                 CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	if (!trace.startsolid && trace.ent > 0)
-	{
-		result->blocked = 1;
-		result->blockentity = trace.ent;
-		result->flags |= MOVERESULT_ONTOPOFOBSTACLE;
-	}
-}
-
-static void BotMove_DirectToGoal(bot_movestate_t *ms,
-                                 const bot_goal_t *goal,
-                                 bot_moveresult_t *result)
-{
-    if (ms == NULL || goal == NULL || result == NULL)
-    {
-        return;
-    }
-
-    vec3_t dir;
-    VectorSubtract(goal->origin, ms->origin, dir);
-
-    bool swimming = (ms->moveflags & MFL_SWIMMING) != 0;
-    if (!swimming)
-    {
-        dir[2] = 0.0f;
-    }
-
-    VectorNormalizeInline(dir);
-    VectorCopy(dir, result->movedir);
-    result->traveltype = swimming ? TRAVEL_SWIM : TRAVEL_WALK;
-    BotMove_SetMovementView(dir, result, swimming);
-	BotMove_CheckBlocked(ms, dir, true, result);
-
-	vec3_t delta;
-	VectorSubtract(goal->origin, ms->origin, delta);
-	float dist = sqrtf(VectorLengthSquared(delta));
-	if (!swimming)
-	{
-		delta[2] = 0.0f;
-		dist = sqrtf(VectorLengthSquared(delta));
-	}
-	if (dist > 100.0f)
-	{
-		dist = 100.0f;
-	}
-	float speed = 4.0f * dist;
-	if (speed < 10.0f)
-	{
-		speed = 0.0f;
-	}
-	EA_Move(ms->client, dir, speed);
-
-    ms->lastreachnum = 0;
-    ms->reachareanum = goal->areanum;
-    ms->lastgoalareanum = goal->areanum;
-    VectorCopy(ms->origin, ms->lastorigin);
-}
-
-static bool BotMove_LoadReachability(int reachnum, aas_reachability_t *out)
-{
-    if (out == NULL || aasworld.reachability == NULL || aasworld.numReachability <= 0)
-    {
-        return false;
-    }
-
-    if (reachnum < 0 || reachnum >= aasworld.numReachability)
-    {
-        return false;
-    }
-
-    *out = aasworld.reachability[reachnum];
-    return true;
-}
-
-static void BotMove_CopyMoveResult(bot_moveresult_t *dst, const bot_moveresult_t *src)
-{
-    if (dst == NULL || src == NULL)
-    {
-        return;
-    }
-
-    memcpy(dst, src, sizeof(*dst));
-}
-
-static void BotMove_RefreshAvoidReach(bot_movestate_t *ms)
-{
-    if (ms == NULL)
-    {
-        return;
-    }
-
-    float now = aasworld.time;
-    for (int i = 0; i < MAX_AVOIDREACH; ++i)
-    {
-        if (ms->avoidreach[i] <= 0)
-        {
-            continue;
-        }
-
-        if (ms->avoidreachtimes[i] <= now)
-        {
-            ms->avoidreach[i] = 0;
-            ms->avoidreachtimes[i] = 0.0f;
-            ms->avoidreachtries[i] = 0;
-        }
-    }
-}
-
-/*
-=============
-BotMove_ShouldAvoidReach
-
-Check whether a reachability should be avoided while updating last-avoid tracking.
-=============
-*/
-static bool BotMove_ShouldAvoidReach(bot_movestate_t *ms, int reachnum)
-{
-	if (ms == NULL || reachnum <= 0)
-	{
-		return false;
-	}
-
-	float now = aasworld.time;
-	for (int i = 0; i < MAX_AVOIDREACH; ++i)
-	{
-		if (ms->avoidreach[i] == reachnum && ms->avoidreachtimes[i] > now)
-		{
-			ms->lastavoidreach = reachnum;
-			ms->lastavoidreachtime = ms->avoidreachtimes[i];
-			ms->lastavoidreachtries = ms->avoidreachtries[i];
-			return ms->avoidreachtries[i] > AVOIDREACH_TRIES;
-		}
-	}
-
-	return false;
-}
-
-/*
-=============
-BotMove_AddToAvoidReach
-
-Track recently selected reachabilities using the retail retry counter.
-=============
-*/
-static void BotMove_AddToAvoidReach(bot_movestate_t *ms, int number, float avoidtime)
-{
-	if (ms == NULL || number <= 0)
-	{
-		return;
-	}
-
-	float now = aasworld.time;
-	for (int i = 0; i < MAX_AVOIDREACH; ++i)
-	{
-		if (ms->avoidreach[i] == number)
-		{
-			if (ms->avoidreachtimes[i] > now)
-			{
-				ms->avoidreachtries[i]++;
-			}
-			else
-			{
-				ms->avoidreachtries[i] = 1;
-			}
-			ms->avoidreachtimes[i] = now + avoidtime;
-			return;
-		}
-	}
-
-	for (int i = 0; i < MAX_AVOIDREACH; ++i)
-	{
-		if (ms->avoidreachtimes[i] <= now)
-		{
-			ms->avoidreach[i] = number;
-			ms->avoidreachtimes[i] = now + avoidtime;
-			ms->avoidreachtries[i] = 1;
-			return;
-		}
-	}
-}
-
-/*
-=============
-BotMove_VectorDistanceSquared
-
-Squared point distance helper used by avoid-spot checks.
-=============
-*/
-static float BotMove_VectorDistanceSquared(const vec3_t a, const vec3_t b)
-{
-	vec3_t delta;
-	VectorSubtract(a, b, delta);
-	return VectorLengthSquared(delta);
-}
-
-/*
-=============
-BotMove_DistanceFromLineSquared
-
-Compute squared distance from a point to a clamped segment.
-=============
-*/
-static float BotMove_DistanceFromLineSquared(const vec3_t point, const vec3_t start, const vec3_t end)
-{
-	vec3_t segment;
-	VectorSubtract(end, start, segment);
-	float lengthSquared = VectorLengthSquared(segment);
-	if (lengthSquared <= 0.0001f)
-	{
-		return BotMove_VectorDistanceSquared(point, start);
-	}
-
-	vec3_t toPoint;
-	VectorSubtract(point, start, toPoint);
-	float t = DotProduct(toPoint, segment) / lengthSquared;
-	if (t < 0.0f)
-	{
-		t = 0.0f;
-	}
-	else if (t > 1.0f)
-	{
-		t = 1.0f;
-	}
-
-	vec3_t projected;
-	projected[0] = start[0] + t * segment[0];
-	projected[1] = start[1] + t * segment[1];
-	projected[2] = start[2] + t * segment[2];
-	return BotMove_VectorDistanceSquared(point, projected);
-}
-
-/*
-=============
-BotMove_AvoidSpots
-
-Return the strongest avoid-spot type blocking a reachability.
-=============
-*/
-static int BotMove_AvoidSpots(const vec3_t origin,
-                              const aas_reachability_t *reach,
-                              const bot_avoidspot_t *avoidspots,
-                              int numavoidspots)
-{
-	if (origin == NULL || reach == NULL || avoidspots == NULL || numavoidspots <= 0)
-	{
-		return AVOID_CLEAR;
-	}
-
-	bool checkbetween = true;
-	switch (reach->traveltype & TRAVELTYPE_MASK)
-	{
-		case TRAVEL_WALKOFFLEDGE:
-		case TRAVEL_JUMP:
-		case TRAVEL_TELEPORT:
-		case TRAVEL_ELEVATOR:
-		case TRAVEL_GRAPPLEHOOK:
-		case TRAVEL_ROCKETJUMP:
-		case TRAVEL_BFGJUMP:
-		case TRAVEL_JUMPPAD:
-		case TRAVEL_FUNCBOB:
-			checkbetween = false;
-			break;
-		default:
-			checkbetween = true;
-			break;
-	}
-
-	int type = AVOID_CLEAR;
-	for (int i = 0; i < numavoidspots; ++i)
-	{
-		const bot_avoidspot_t *spot = &avoidspots[i];
-		float squaredRadius = spot->radius * spot->radius;
-		float squaredDist = BotMove_DistanceFromLineSquared(spot->origin, origin, reach->start);
-		if (squaredDist < squaredRadius &&
-		    BotMove_VectorDistanceSquared(spot->origin, origin) > squaredDist)
-		{
-			type = spot->type;
-		}
-		else if (checkbetween)
-		{
-			squaredDist = BotMove_DistanceFromLineSquared(spot->origin, reach->start, reach->end);
-			if (squaredDist < squaredRadius &&
-			    BotMove_VectorDistanceSquared(spot->origin, reach->start) > squaredDist)
-			{
-				type = spot->type;
-			}
+			++ms->avoidreachtries[index];
 		}
 		else
 		{
-			squaredDist = BotMove_VectorDistanceSquared(spot->origin, reach->end);
-			if (squaredDist < squaredRadius &&
-			    BotMove_VectorDistanceSquared(spot->origin, reach->start) > squaredDist)
-			{
-				type = spot->type;
-			}
+			ms->avoidreachtries[index] = 1;
 		}
+		ms->avoidreachtimes[index] = AAS_Time() + avoidtime;
+		return;
+	}
 
-		if (type == AVOID_ALWAYS)
+	for (int index = 0; index < MAX_AVOIDREACH; ++index)
+	{
+		if (ms->avoidreachtimes[index] >= AAS_Time())
 		{
-			return type;
+			continue;
 		}
+		ms->avoidreach[index] = number;
+		ms->avoidreachtimes[index] = AAS_Time() + avoidtime;
+		ms->avoidreachtries[index] = 1;
+		return;
 	}
-
-	return type;
-}
-
-/*
-=============
-BotMove_FallbackAreaTravelTime
-
-Forward Dijkstra fallback used when reconstructed route caches are unavailable.
-=============
-*/
-static int BotMove_FallbackAreaTravelTime(int startArea, int goalArea, int travelflags)
-{
-	if (startArea <= 0 || goalArea <= 0 || startArea >= aasworld.numAreaSettings ||
-	    goalArea >= aasworld.numAreaSettings || aasworld.areasettings == NULL ||
-	    aasworld.reachability == NULL)
-	{
-		return 0;
-	}
-
-	if (startArea == goalArea)
-	{
-		return 1;
-	}
-
-	int areaCount = aasworld.numAreaSettings;
-	int *best = (int *)malloc((size_t)areaCount * sizeof(int));
-	bool *visited = (bool *)calloc((size_t)areaCount, sizeof(bool));
-	if (best == NULL || visited == NULL)
-	{
-		free(best);
-		free(visited);
-		return 0;
-	}
-
-	for (int i = 0; i < areaCount; ++i)
-	{
-		best[i] = INT_MAX;
-	}
-	best[startArea] = 0;
-
-	while (true)
-	{
-		int current = 0;
-		int currentCost = INT_MAX;
-		for (int area = 1; area < areaCount; ++area)
-		{
-			if (!visited[area] && best[area] < currentCost)
-			{
-				current = area;
-				currentCost = best[area];
-			}
-		}
-
-		if (current == 0 || current == goalArea)
-		{
-			break;
-		}
-
-		visited[current] = true;
-		const aas_areasettings_t *settings = &aasworld.areasettings[current];
-		for (int offset = 0; offset < settings->numreachableareas; ++offset)
-		{
-			int reachIndex = settings->firstreachablearea + offset;
-			if (reachIndex <= 0 || reachIndex >= aasworld.numReachability)
-			{
-				continue;
-			}
-
-			const aas_reachability_t *reach = &aasworld.reachability[reachIndex];
-			int nextArea = reach->areanum;
-			if (nextArea <= 0 || nextArea >= areaCount)
-			{
-				continue;
-			}
-			if (!BotMove_TravelAllowed(reach->traveltype, travelflags) ||
-			    !BotMove_AreaTravelAllowed(nextArea, travelflags))
-			{
-				continue;
-			}
-
-			int step = (reach->traveltime > 0) ? reach->traveltime : 1;
-			if (currentCost <= INT_MAX - step && currentCost + step < best[nextArea])
-			{
-				best[nextArea] = currentCost + step;
-			}
-		}
-	}
-
-	int result = (best[goalArea] != INT_MAX) ? best[goalArea] : 0;
-	free(best);
-	free(visited);
-	return result;
-}
-
-/*
-=============
-BotMove_AreaTravelTimeToGoal
-
-Use reconstructed routing caches when present, otherwise fall back locally.
-=============
-*/
-static int BotMove_AreaTravelTimeToGoal(int areanum,
-                                        vec3_t origin,
-                                        int goalareanum,
-                                        int travelflags)
-{
-	if (aasworld.reversedReachability != NULL &&
-	    aasworld.reachabilityFromArea != NULL &&
-	    aasworld.numAreas > 0)
-	{
-		int routed = AAS_AreaTravelTimeToGoalArea(areanum, origin, goalareanum, travelflags);
-		if (routed > 0)
-		{
-			return routed;
-		}
-	}
-
-	return BotMove_FallbackAreaTravelTime(areanum, goalareanum, travelflags);
 }
 
 /*
 =============
 BotGetReachabilityToGoal
 
-Choose the best first reachability using retail travel-time and avoidance rules.
+Select the least-cost allowed outgoing reachability to a goal.
 =============
 */
-static int BotGetReachabilityToGoal(bot_movestate_t *ms,
-                                    const bot_goal_t *goal,
-                                    int travelflags,
-                                    aas_reachability_t *out,
-                                    int *resultFlags)
+static int BotGetReachabilityToGoal(const vec3_t origin,
+	int areanum,
+	int lastgoalareanum,
+	int lastareanum,
+	int entnum,
+	const int avoidreach[MAX_AVOIDREACH],
+	const float avoidreachtimes[MAX_AVOIDREACH],
+	const int avoidreachtries[MAX_AVOIDREACH],
+	const bot_goal_t *goal,
+	int travelflags)
 {
-	if (resultFlags != NULL)
-	{
-		*resultFlags = 0;
-	}
+	int besttime = 0;
+	int bestreachnum = 0;
 
-	if (ms == NULL || goal == NULL || out == NULL)
+	(void)origin;
+	(void)entnum;
+	for (int reachnum = AAS_NextAreaReachability(areanum, 0);
+		reachnum != 0;
+		reachnum = AAS_NextAreaReachability(areanum, reachnum))
 	{
-		return 0;
-	}
-
-	if (!aasworld.loaded ||
-	    aasworld.areasettings == NULL ||
-	    aasworld.reachability == NULL ||
-	    aasworld.numReachability <= 0)
-	{
-		return 0;
-	}
-
-	if (ms->areanum <= 0 || ms->areanum >= aasworld.numAreaSettings)
-	{
-		return 0;
-	}
-
-	int goalArea = goal->areanum;
-	if (goalArea <= 0 || goalArea >= aasworld.numAreaSettings)
-	{
-		return 0;
-	}
-
-	int routeFlags = (travelflags != 0) ? travelflags : TFL_DEFAULT;
-	int moveTravelFlags = routeFlags;
-	if (BotMove_AreaDoNotEnter(ms->areanum) || BotMove_AreaDoNotEnter(goalArea))
-	{
-		routeFlags |= TFL_DONOTENTER;
-		moveTravelFlags |= TFL_DONOTENTER;
-	}
-
-	const aas_areasettings_t *settings = &aasworld.areasettings[ms->areanum];
-	int bestTime = 0;
-	int bestReachNum = 0;
-	aas_reachability_t bestReach;
-	memset(&bestReach, 0, sizeof(bestReach));
-
-	for (int offset = 0; offset < settings->numreachableareas; ++offset)
-	{
-		int reachnum = settings->firstreachablearea + offset;
-		if (reachnum <= 0 || reachnum >= aasworld.numReachability)
+		int index;
+		for (index = 0; index < MAX_AVOIDREACH; ++index)
+		{
+			if (avoidreach[index] == reachnum &&
+				avoidreachtimes[index] >= AAS_Time())
+			{
+				break;
+			}
+		}
+		if (index != MAX_AVOIDREACH && avoidreachtries[index] > AVOIDREACH_TRIES)
 		{
 			continue;
 		}
 
-		if (BotMove_ShouldAvoidReach(ms, reachnum))
+		aas_reachability_t reach;
+		AAS_ReachabilityFromNum(reachnum, &reach);
+		if (lastgoalareanum == goal->areanum && reach.areanum == lastareanum)
+		{
+			continue;
+		}
+		if (!BotValidTravel(&reach, travelflags))
 		{
 			continue;
 		}
 
-		aas_reachability_t reach = aasworld.reachability[reachnum];
-		if (ms->lastgoalareanum == goalArea && reach.areanum == ms->lastareanum)
+		int traveltime = (unsigned short)AAS_AreaTravelTimeToGoalArea(
+			reach.areanum,
+			NULL,
+			goal->areanum,
+			travelflags);
+		if (traveltime == 0)
 		{
 			continue;
 		}
-
-		if (!BotMove_TravelAllowed(reach.traveltype, moveTravelFlags) ||
-		    !BotMove_AreaTravelAllowed(reach.areanum, moveTravelFlags))
+		traveltime += (unsigned short)reach.traveltime;
+		if (besttime == 0 || traveltime < besttime)
 		{
-			continue;
-		}
-
-		int travelTime = BotMove_AreaTravelTimeToGoal(reach.areanum,
-		                                             reach.end,
-		                                             goalArea,
-		                                             routeFlags);
-		if (travelTime <= 0)
-		{
-			continue;
-		}
-
-		if (BotMove_AvoidSpots(ms->origin, &reach, ms->avoidspots, ms->numavoidspots) != AVOID_CLEAR)
-		{
-			if (resultFlags != NULL)
-			{
-				*resultFlags |= MOVERESULT_BLOCKEDBYAVOIDSPOT;
-			}
-			continue;
-		}
-
-		travelTime += (reach.traveltime > 0) ? reach.traveltime : 1;
-		if (bestTime == 0 || travelTime < bestTime)
-		{
-			bestTime = travelTime;
-			bestReachNum = reachnum;
-			bestReach = reach;
+			besttime = traveltime;
+			bestreachnum = reachnum;
 		}
 	}
 
-	if (bestReachNum <= 0)
+	return bestreachnum;
+}
+
+/*
+=============
+BotMovementViewTarget
+
+Return the next reachability start beyond the currently active reach.
+=============
+*/
+int BotMovementViewTarget(bot_movestate_t *movestate,
+	const bot_goal_t *goal,
+	int travelflags,
+	vec3_t target)
+{
+	if (movestate->lastreachnum == 0 || goal == NULL)
 	{
 		return 0;
 	}
 
-	*out = bestReach;
-	return bestReachNum;
-}
-
-/*
-=============
-BotMove_GetReachabilityFromPoint
-
-Build the temporary route context used by view and prediction helpers.
-=============
-*/
-static int BotMove_GetReachabilityFromPoint(const bot_movestate_t *base,
-                                            const vec3_t origin,
-                                            int areanum,
-                                            int lastgoalareanum,
-                                            int lastareanum,
-                                            const bot_goal_t *goal,
-                                            int travelflags,
-                                            aas_reachability_t *out)
-{
-	if (origin == NULL || goal == NULL || out == NULL)
+	aas_reachability_t reach;
+	AAS_ReachabilityFromNum(movestate->lastreachnum, &reach);
+	int reachnum = BotGetReachabilityToGoal(reach.end,
+		reach.areanum,
+		movestate->lastgoalareanum,
+		movestate->lastareanum,
+		movestate->entitynum,
+		movestate->avoidreach,
+		movestate->avoidreachtimes,
+		movestate->avoidreachtries,
+		goal,
+		travelflags);
+	if (reachnum == 0)
 	{
 		return 0;
 	}
 
-	bot_movestate_t temp;
-	if (base != NULL)
-	{
-		temp = *base;
-	}
-	else
-	{
-		memset(&temp, 0, sizeof(temp));
-	}
-
-	VectorCopy(origin, temp.origin);
-	temp.areanum = areanum;
-	temp.lastgoalareanum = lastgoalareanum;
-	temp.lastareanum = lastareanum;
-	temp.numavoidspots = 0;
-
-	return BotGetReachabilityToGoal(&temp, goal, travelflags, out, NULL);
-}
-
-static void BotMove_PrepareResult(bot_moveresult_t *result,
-                                  const vec3_t dir,
-                                  int traveltype,
-                                  bool swimming)
-{
-    bot_moveresult_t temp;
-    BotClearMoveResult(&temp);
-
-    VectorCopy(dir, temp.movedir);
-    temp.traveltype = traveltype;
-    temp.flags |= MOVERESULT_MOVEMENTVIEW;
-    BotMove_SetMovementView(dir, &temp, swimming);
-
-    BotMove_CopyMoveResult(result, &temp);
-}
-
-static void BotMove_TravelWalk(bot_movestate_t *ms,
-                               const aas_reachability_t *reach,
-                               bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_WALK;
-
-	vec3_t hordir;
-	VectorSubtract(reach->start, ms->origin, hordir);
-	hordir[2] = 0.0f;
-	float dist = VectorNormalizeInline(hordir);
-
-	BotMove_CheckBlocked(ms, hordir, true, result);
-
-	if (dist < 10.0f)
-	{
-		VectorSubtract(reach->end, ms->origin, hordir);
-		hordir[2] = 0.0f;
-		dist = VectorNormalizeInline(hordir);
-	}
-
-	if ((BotMove_AreaPresenceType(reach->areanum) & PRESENCE_NORMAL) == 0 && dist < 20.0f)
-	{
-		EA_Crouch(ms->client);
-	}
-
-	float gapdist = BotMove_GapDistance(ms->origin, hordir, ms->entitynum);
-	float speed;
-	if ((ms->moveflags & MFL_WALK) != 0)
-	{
-		if (gapdist > 0.0f)
-		{
-			speed = 200.0f - (180.0f - gapdist);
-		}
-		else
-		{
-			speed = 200.0f;
-		}
-	}
-	else
-	{
-		if (gapdist > 0.0f)
-		{
-			speed = 400.0f - (360.0f - 2.0f * gapdist);
-		}
-		else
-		{
-			speed = 400.0f;
-		}
-	}
-
-	VectorCopy(hordir, result->movedir);
-	result->flags |= MOVERESULT_MOVEMENTVIEW;
-	BotMove_SetMovementView(hordir, result, false);
-	EA_Move(ms->client, hordir, speed);
+	AAS_ReachabilityFromNum(reachnum, &reach);
+	VectorCopy(reach.start, target);
+	target[2] -= 15.0f;
+	return 1;
 }
 
 /*
 =============
-BotMove_TravelCrouch
+MoverBottomCenter
 
-Travel to the reachability end while crouching.
+Calculate the bottom center of the elevator at its base position.
 =============
 */
-static void BotMove_TravelCrouch(bot_movestate_t *ms,
-                                 const aas_reachability_t *reach,
-                                 bot_moveresult_t *result)
+static void MoverBottomCenter(const aas_reachability_t *reach, vec3_t bottomcenter)
 {
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	dir[2] = 0.0f;
-	VectorNormalizeInline(dir);
-
-	BotMove_PrepareResult(result, dir, TRAVEL_CROUCH, false);
-	BotMove_CheckBlocked(ms, dir, true, result);
-	EA_Crouch(ms->client);
-	EA_Move(ms->client, dir, 400.0f);
-}
-
-/*
-=============
-BotMove_TravelBarrierJump
-
-Approach the barrier jump start, then trigger the jump at close range.
-=============
-*/
-static void BotMove_TravelBarrierJump(bot_movestate_t *ms,
-                                      const aas_reachability_t *reach,
-                                      bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_BARRIERJUMP;
-
-	vec3_t hordir;
-	VectorSubtract(reach->start, ms->origin, hordir);
-	hordir[2] = 0.0f;
-	float dist = VectorNormalizeInline(hordir);
-
-	BotMove_CheckBlocked(ms, hordir, true, result);
-	if (dist < 9.0f)
-	{
-		EA_Jump(ms->client);
-		ms->moveflags |= MFL_BARRIERJUMP;
-		ms->jumpreach = 1;
-	}
-	else
-	{
-		if (dist > 60.0f)
-		{
-			dist = 60.0f;
-		}
-		EA_Move(ms->client, hordir, 6.0f * dist);
-	}
-
-	VectorCopy(hordir, result->movedir);
-	result->flags |= MOVERESULT_MOVEMENTVIEW;
-	BotMove_SetMovementView(hordir, result, false);
-}
-
-/*
-=============
-BotMove_TravelLadder
-
-Face the ladder and submit the retail move-forward action.
-=============
-*/
-static void BotMove_TravelLadder(bot_movestate_t *ms,
-                                 const aas_reachability_t *reach,
-                                 bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_LADDER;
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	VectorNormalizeInline(dir);
-
-	vec3_t viewdir;
-	viewdir[0] = dir[0];
-	viewdir[1] = dir[1];
-	viewdir[2] = 3.0f * dir[2];
-	Vector2Angles(viewdir, result->ideal_viewangles);
-
-	vec3_t origin;
-	VectorClear(origin);
-	EA_Move(ms->client, origin, 0.0f);
-	EA_MoveForward(ms->client);
-
-	VectorCopy(dir, result->movedir);
-	result->flags |= MOVERESULT_MOVEMENTVIEW;
-}
-
-/*
-=============
-BotMove_TravelWalkOffLedge
-
-Walk toward the ledge endpoint using the Gladiator walk-off speed rules.
-=============
-*/
-static void BotMove_TravelWalkOffLedge(bot_movestate_t *ms,
-                                       const aas_reachability_t *reach,
-                                       bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_WALKOFFLEDGE;
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	VectorNormalizeInline(dir);
-	BotMove_CheckBlocked(ms, dir, true, result);
-
-	vec3_t reachdir;
-	VectorSubtract(reach->end, reach->start, reachdir);
-	reachdir[2] = 0.0f;
-	float reachhordist = sqrtf(VectorLengthSquared(reachdir));
-
-	vec3_t hordir;
-	VectorSubtract(reach->end, ms->origin, hordir);
-	hordir[2] = 0.0f;
-	float dist = VectorNormalizeInline(hordir);
-
-	float speed = 400.0f;
-	if (dist < 60.0f)
-	{
-		if (reachhordist >= 15.0f)
-		{
-			if (!AAS_HorizontalVelocityForJump(0.0f, reach->start, reach->end, &speed))
-			{
-				speed = 200.0f;
-			}
-		}
-		else if (dist > 0.0f && dist < 150.0f)
-		{
-			speed = 380.0f - (300.0f - 2.0f * dist);
-		}
-	}
-
-	BotMove_CheckBlocked(ms, hordir, true, result);
-	VectorCopy(hordir, result->movedir);
-	result->flags |= MOVERESULT_MOVEMENTVIEW;
-	BotMove_SetMovementView(hordir, result, false);
-	EA_Move(ms->client, hordir, speed);
-}
-
-/*
-=============
-BotMove_JumpRunStart
-
-Find the run-up point for a jump reachability.
-=============
-*/
-static void BotMove_JumpRunStart(const bot_movestate_t *ms, const aas_reachability_t *reach, vec3_t runstart)
-{
-	if (reach == NULL || runstart == NULL)
-	{
-		return;
-	}
-
-	vec3_t aasrunstart;
-	AAS_JumpReachRunStart(reach, aasrunstart);
-
-	vec3_t hordir;
-	hordir[0] = aasrunstart[0] - reach->start[0];
-	hordir[1] = aasrunstart[1] - reach->start[1];
-	hordir[2] = 0.0f;
-	if (VectorNormalizeInline(hordir) <= 0.0f)
-	{
-		VectorCopy(reach->start, runstart);
-		return;
-	}
-
-	vec3_t start;
-	VectorCopy(reach->start, start);
-	start[2] += 1.0f;
-	VectorMA(reach->start, 80.0f, hordir, runstart);
-
-	float dist;
-	for (dist = 0.0f; dist < 80.0f; dist += 10.0f)
-	{
-		vec3_t end;
-		VectorMA(start, dist + 10.0f, hordir, end);
-		end[2] += 1.0f;
-		if (ms != NULL && BotMove_FindAreaForPoint(end) != ms->reachareanum)
-		{
-			break;
-		}
-	}
-
-	if (dist < 80.0f)
-	{
-		VectorMA(reach->start, dist, hordir, runstart);
-	}
-}
-
-/*
-=============
-BotMove_TravelJump
-
-Run up to a jump reachability and trigger the jump near the launch point.
-=============
-*/
-static void BotMove_TravelJump(bot_movestate_t *ms,
-                               const aas_reachability_t *reach,
-                               bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_JUMP;
-
-	vec3_t runstart;
-	BotMove_JumpRunStart(ms, reach, runstart);
-
-	vec3_t dir1;
-	VectorSubtract(ms->origin, reach->start, dir1);
-	dir1[2] = 0.0f;
-	float dist1 = VectorNormalizeInline(dir1);
-
-	vec3_t dir2;
-	VectorSubtract(ms->origin, runstart, dir2);
-	dir2[2] = 0.0f;
-	float dist2 = VectorNormalizeInline(dir2);
-
-	vec3_t hordir;
-	if (DotProduct(dir1, dir2) < -0.8f || dist2 < 5.0f)
-	{
-		hordir[0] = reach->end[0] - ms->origin[0];
-		hordir[1] = reach->end[1] - ms->origin[1];
-		hordir[2] = 0.0f;
-		VectorNormalizeInline(hordir);
-
-		if (dist1 < 24.0f)
-		{
-			EA_Jump(ms->client);
-		}
-		else if (dist1 < 32.0f)
-		{
-			EA_DelayedJump(ms->client);
-		}
-		EA_Move(ms->client, hordir, 600.0f);
-		ms->jumpreach = (ms->lastreachnum > 0) ? ms->lastreachnum : 1;
-	}
-	else
-	{
-		hordir[0] = runstart[0] - ms->origin[0];
-		hordir[1] = runstart[1] - ms->origin[1];
-		hordir[2] = 0.0f;
-		VectorNormalizeInline(hordir);
-
-		if (dist2 > 80.0f)
-		{
-			dist2 = 80.0f;
-		}
-		EA_Move(ms->client, hordir, 5.0f * dist2);
-	}
-
-	VectorCopy(hordir, result->movedir);
-}
-
-/*
-=============
-BotMove_TravelRocketJump
-
-Approach the rocket-jump launch point, then fire while looking straight down.
-=============
-*/
-static void BotMove_TravelRocketJump(bot_movestate_t *ms,
-                                     const aas_reachability_t *reach,
-                                     bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_ROCKETJUMP;
-
-	vec3_t hordir;
-	VectorSubtract(reach->start, ms->origin, hordir);
-	hordir[2] = 0.0f;
-	float dist = VectorNormalizeInline(hordir);
-
-	if (dist < 5.0f)
-	{
-		VectorSubtract(reach->end, ms->origin, hordir);
-		hordir[2] = 0.0f;
-		VectorNormalizeInline(hordir);
-		EA_Jump(ms->client);
-		EA_Attack(ms->client);
-		EA_Move(ms->client, hordir, 800.0f);
-		ms->jumpreach = (ms->lastreachnum > 0) ? ms->lastreachnum : 1;
-	}
-	else
-	{
-		if (dist > 80.0f)
-		{
-			dist = 80.0f;
-		}
-		EA_Move(ms->client, hordir, 5.0f * dist);
-	}
-
-	Vector2Angles(hordir, result->ideal_viewangles);
-	result->ideal_viewangles[PITCH] = 90.0f;
-	EA_SetViewAngles(ms->client, result->ideal_viewangles);
-
-	int weapon = (int)LibVarValue("weapindex_rocketlauncher", "5");
-	EA_SelectWeapon(ms->client, weapon);
-	result->weapon = weapon;
-	result->flags |= MOVERESULT_MOVEMENTVIEWSET | MOVERESULT_MOVEMENTWEAPON;
-	VectorCopy(hordir, result->movedir);
-}
-
-/*
-=============
-BotMove_TravelSwim
-
-Swim toward the reachability start at the retail fixed speed.
-=============
-*/
-static void BotMove_TravelSwim(bot_movestate_t *ms,
-                               const aas_reachability_t *reach,
-                               bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	vec3_t dir;
-	VectorSubtract(reach->start, ms->origin, dir);
-	VectorNormalizeInline(dir);
-
-	BotMove_PrepareResult(result, dir, TRAVEL_SWIM, true);
-	BotMove_CheckBlocked(ms, dir, true, result);
-	EA_Move(ms->client, dir, 400.0f);
-}
-
-/*
-=============
-BotMove_TravelWaterJump
-
-Swim forward and upward near the water-jump exit point.
-=============
-*/
-static void BotMove_TravelWaterJump(bot_movestate_t *ms,
-                                    const aas_reachability_t *reach,
-                                    bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_WATERJUMP;
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	vec3_t hordir;
-	VectorCopy(dir, hordir);
-	hordir[2] = 0.0f;
-	dir[2] += 15.0f + BotMove_CRandom() * 40.0f;
-	VectorNormalizeInline(dir);
-	float dist = VectorNormalizeInline(hordir);
-
-	EA_MoveForward(ms->client);
-	if (dist < 40.0f)
-	{
-		EA_MoveUp(ms->client);
-	}
-
-	VectorCopy(dir, result->movedir);
-	result->flags |= MOVERESULT_MOVEMENTVIEW;
-	BotMove_SetMovementView(dir, result, false);
-}
-
-/*
-=============
-BotMove_TravelTeleport
-
-Move toward the teleporter start until the caller reports teleportation.
-=============
-*/
-static void BotMove_TravelTeleport(bot_movestate_t *ms,
-                                   const aas_reachability_t *reach,
-                                   bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	if ((ms->moveflags & MFL_TELEPORTED) != 0)
-	{
-		return;
-	}
-
-	result->traveltype = TRAVEL_TELEPORT;
-
-	vec3_t hordir;
-	VectorSubtract(reach->start, ms->origin, hordir);
-	if ((ms->moveflags & MFL_SWIMMING) == 0)
-	{
-		hordir[2] = 0.0f;
-	}
-	float dist = VectorNormalizeInline(hordir);
-
-	BotMove_CheckBlocked(ms, hordir, true, result);
-	EA_Move(ms->client, hordir, (dist < 30.0f) ? 200.0f : 400.0f);
-
-	if ((ms->moveflags & MFL_SWIMMING) != 0)
-	{
-		result->flags |= MOVERESULT_SWIMVIEW;
-	}
-
-	VectorCopy(hordir, result->movedir);
-}
-
-/*
-=============
-BotMove_TravelElevator
-
-Drive active elevator reachability using the retail mover state machine.
-=============
-*/
-static void BotMove_TravelElevator(bot_movestate_t *ms,
-                                   const aas_reachability_t *reach,
-                                   bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_ELEVATOR;
-
-	if (BotMove_OnMover(ms, reach))
-	{
-		result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
-		if (fabsf(ms->origin[2] - reach->end[2]) < BotMove_LibVarValue(Bridge_MaxBarrier(), 50.0f))
-		{
-			vec3_t hordir;
-			VectorSubtract(reach->end, ms->origin, hordir);
-			hordir[2] = 0.0f;
-			VectorNormalizeInline(hordir);
-			if (!BotMove_CheckBarrierJump(ms, hordir, 100.0f))
-			{
-				EA_Move(ms->client, hordir, 400.0f);
-			}
-			VectorCopy(hordir, result->movedir);
-			return;
-		}
-
-		vec3_t bottomcenter;
-		vec3_t hordir;
-		BotMove_MoverBottomCenter(reach, bottomcenter);
-		VectorSubtract(bottomcenter, ms->origin, hordir);
-		hordir[2] = 0.0f;
-		float dist = VectorNormalizeInline(hordir);
-		if (dist > 10.0f)
-		{
-			if (dist > 100.0f)
-			{
-				dist = 100.0f;
-			}
-			EA_Move(ms->client, hordir, 4.0f * dist);
-			VectorCopy(hordir, result->movedir);
-		}
-		return;
-	}
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	float dist = VectorNormalizeInline(dir);
-	if (dist < 64.0f)
-	{
-		if (dist > 60.0f)
-		{
-			dist = 60.0f;
-		}
-		float speed = 6.0f * dist;
-		if ((ms->moveflags & MFL_SWIMMING) != 0 || !BotMove_CheckBarrierJump(ms, dir, 50.0f))
-		{
-			if (speed > 5.0f)
-			{
-				EA_Move(ms->client, dir, speed);
-			}
-		}
-		VectorCopy(dir, result->movedir);
-		if ((ms->moveflags & MFL_SWIMMING) != 0)
-		{
-			result->flags |= MOVERESULT_SWIMVIEW;
-		}
-		ms->reachability_time = 0.0f;
-		return;
-	}
-
-	vec3_t dir1;
-	VectorSubtract(reach->start, ms->origin, dir1);
-	if ((ms->moveflags & MFL_SWIMMING) == 0)
-	{
-		dir1[2] = 0.0f;
-	}
-	float dist1 = VectorNormalizeInline(dir1);
-
-	if (!BotMove_MoverDown(reach))
-	{
-		VectorCopy(dir1, dir);
-		dist = dist1;
-		BotMove_CheckBlocked(ms, dir, false, result);
-		if (dist > 60.0f)
-		{
-			dist = 60.0f;
-		}
-		float speed = 6.0f * dist;
-		if ((ms->moveflags & MFL_SWIMMING) == 0 && !BotMove_CheckBarrierJump(ms, dir, 50.0f))
-		{
-			if (speed > 5.0f)
-			{
-				EA_Move(ms->client, dir, speed);
-			}
-		}
-		VectorCopy(dir, result->movedir);
-		if ((ms->moveflags & MFL_SWIMMING) != 0)
-		{
-			result->flags |= MOVERESULT_SWIMVIEW;
-		}
-		result->type = RESULTTYPE_ELEVATORUP;
-		result->flags |= MOVERESULT_WAITING;
-		return;
-	}
-
-	vec3_t bottomcenter;
-	vec3_t dir2;
-	BotMove_MoverBottomCenter(reach, bottomcenter);
-	VectorSubtract(bottomcenter, ms->origin, dir2);
-	if ((ms->moveflags & MFL_SWIMMING) == 0)
-	{
-		dir2[2] = 0.0f;
-	}
-	float dist2 = VectorNormalizeInline(dir2);
-
-	if (dist1 < 20.0f || dist2 < dist1 || DotProduct(dir1, dir2) < 0.0f)
-	{
-		dist = dist2;
-		VectorCopy(dir2, dir);
-	}
-	else
-	{
-		dist = dist1;
-		VectorCopy(dir1, dir);
-	}
-
-	BotMove_CheckBlocked(ms, dir, false, result);
-	if (dist > 60.0f)
-	{
-		dist = 60.0f;
-	}
-	if ((ms->moveflags & MFL_SWIMMING) == 0 && !BotMove_CheckBarrierJump(ms, dir, 50.0f))
-	{
-		EA_Move(ms->client, dir, 6.0f * dist);
-	}
-	VectorCopy(dir, result->movedir);
-	if ((ms->moveflags & MFL_SWIMMING) != 0)
-	{
-		result->flags |= MOVERESULT_SWIMVIEW;
-	}
-}
-
-static void BotMove_TravelGrapple(bot_movestate_t *ms,
-                                  const aas_reachability_t *reach,
-                                  bot_moveresult_t *result)
-{
-    vec3_t dir;
-    VectorSubtract(reach->end, ms->origin, dir);
-    VectorNormalizeInline(dir);
-
-    ms->moveflags |= MFL_ACTIVEGRAPPLE;
-    BotMove_PrepareResult(result, dir, TRAVEL_GRAPPLEHOOK, false);
-    result->flags |= MOVERESULT_MOVEMENTWEAPON;
-}
-
-/*
-=============
-BotMove_TravelJumpPad
-
-Walk straight to the jump-pad reachability start before launch.
-=============
-*/
-static void BotMove_TravelJumpPad(bot_movestate_t *ms,
-                                  const aas_reachability_t *reach,
-                                  bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_JUMPPAD;
-
-	vec3_t hordir;
-	VectorSubtract(reach->start, ms->origin, hordir);
-	hordir[2] = 0.0f;
-	VectorNormalizeInline(hordir);
-
-	BotMove_CheckBlocked(ms, hordir, true, result);
-	EA_Move(ms->client, hordir, 400.0f);
-	VectorCopy(hordir, result->movedir);
-}
-
-/*
-=============
-BotMove_TravelFuncBob
-
-Drive active func_bobbing reachability using the Q3 mover state machine.
-=============
-*/
-static void BotMove_TravelFuncBob(bot_movestate_t *ms,
-                                  const aas_reachability_t *reach,
-                                  bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_FUNCBOB;
-
-	vec3_t bob_start;
-	vec3_t bob_end;
-	vec3_t bob_origin;
-	(void)BotMove_FuncBobStartEnd(reach, bob_start, bob_end, bob_origin);
-
-	if (BotMove_OnMover(ms, reach))
-	{
-		result->flags |= MOVERESULT_ONTOPOF_FUNCBOB;
-		vec3_t dir;
-		VectorSubtract(bob_origin, bob_end, dir);
-		if (sqrtf(VectorLengthSquared(dir)) < 24.0f)
-		{
-			vec3_t hordir;
-			VectorSubtract(reach->end, ms->origin, hordir);
-			hordir[2] = 0.0f;
-			VectorNormalizeInline(hordir);
-			if (!BotMove_CheckBarrierJump(ms, hordir, 100.0f))
-			{
-				EA_Move(ms->client, hordir, 400.0f);
-			}
-			VectorCopy(hordir, result->movedir);
-			return;
-		}
-
-		vec3_t bottomcenter;
-		vec3_t hordir;
-		BotMove_MoverBottomCenter(reach, bottomcenter);
-		VectorSubtract(bottomcenter, ms->origin, hordir);
-		hordir[2] = 0.0f;
-		float dist = VectorNormalizeInline(hordir);
-		if (dist > 10.0f)
-		{
-			if (dist > 100.0f)
-			{
-				dist = 100.0f;
-			}
-			EA_Move(ms->client, hordir, 4.0f * dist);
-			VectorCopy(hordir, result->movedir);
-		}
-		return;
-	}
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	float dist = VectorNormalizeInline(dir);
-	if (dist < 64.0f)
-	{
-		if (dist > 60.0f)
-		{
-			dist = 60.0f;
-		}
-		float speed = 6.0f * dist;
-		if ((ms->moveflags & MFL_SWIMMING) != 0 || !BotMove_CheckBarrierJump(ms, dir, 50.0f))
-		{
-			if (speed > 5.0f)
-			{
-				EA_Move(ms->client, dir, speed);
-			}
-		}
-		VectorCopy(dir, result->movedir);
-		if ((ms->moveflags & MFL_SWIMMING) != 0)
-		{
-			result->flags |= MOVERESULT_SWIMVIEW;
-		}
-		ms->reachability_time = 0.0f;
-		return;
-	}
-
-	vec3_t dir1;
-	VectorSubtract(reach->start, ms->origin, dir1);
-	if ((ms->moveflags & MFL_SWIMMING) == 0)
-	{
-		dir1[2] = 0.0f;
-	}
-	float dist1 = VectorNormalizeInline(dir1);
-
-	VectorSubtract(bob_origin, bob_start, dir);
-	if (sqrtf(VectorLengthSquared(dir)) > 16.0f)
-	{
-		VectorCopy(dir1, dir);
-		dist = dist1;
-		BotMove_CheckBlocked(ms, dir, false, result);
-		if (dist > 60.0f)
-		{
-			dist = 60.0f;
-		}
-		float speed = 6.0f * dist;
-		if ((ms->moveflags & MFL_SWIMMING) == 0 && !BotMove_CheckBarrierJump(ms, dir, 50.0f))
-		{
-			if (speed > 5.0f)
-			{
-				EA_Move(ms->client, dir, speed);
-			}
-		}
-		VectorCopy(dir, result->movedir);
-		if ((ms->moveflags & MFL_SWIMMING) != 0)
-		{
-			result->flags |= MOVERESULT_SWIMVIEW;
-		}
-		result->type = RESULTTYPE_WAITFORFUNCBOBBING;
-		result->flags |= MOVERESULT_WAITING;
-		return;
-	}
-
-	vec3_t bottomcenter;
-	vec3_t dir2;
-	BotMove_MoverBottomCenter(reach, bottomcenter);
-	VectorSubtract(bottomcenter, ms->origin, dir2);
-	if ((ms->moveflags & MFL_SWIMMING) == 0)
-	{
-		dir2[2] = 0.0f;
-	}
-	float dist2 = VectorNormalizeInline(dir2);
-
-	if (dist1 < 20.0f || dist2 < dist1 || DotProduct(dir1, dir2) < 0.0f)
-	{
-		dist = dist2;
-		VectorCopy(dir2, dir);
-	}
-	else
-	{
-		dist = dist1;
-		VectorCopy(dir1, dir);
-	}
-
-	BotMove_CheckBlocked(ms, dir, false, result);
-	if (dist > 60.0f)
-	{
-		dist = 60.0f;
-	}
-	if ((ms->moveflags & MFL_SWIMMING) == 0 && !BotMove_CheckBarrierJump(ms, dir, 50.0f))
-	{
-		EA_Move(ms->client, dir, 6.0f * dist);
-	}
-	VectorCopy(dir, result->movedir);
-	if ((ms->moveflags & MFL_SWIMMING) != 0)
-	{
-		result->flags |= MOVERESULT_SWIMVIEW;
-	}
-}
-
-/*
-=============
-BotMove_AirControl
-
-Estimate the horizontal correction needed while finishing airborne travel.
-=============
-*/
-static bool BotMove_AirControl(const vec3_t origin,
-                               const vec3_t velocity,
-                               const vec3_t goal,
-                               vec3_t dir,
-                               float *speed)
-{
-	if (origin == NULL || velocity == NULL || goal == NULL || dir == NULL || speed == NULL)
-	{
-		return false;
-	}
-
-	vec3_t org;
-	vec3_t vel;
-	VectorCopy(origin, org);
-	vel[0] = velocity[0] * 0.1f;
-	vel[1] = velocity[1] * 0.1f;
-	vel[2] = velocity[2] * 0.1f;
-
-	float gravity = BotMove_LibVarValue(Bridge_Gravity(), 800.0f);
-	for (int i = 0; i < 50; ++i)
-	{
-		vel[2] -= gravity * 0.01f;
-		if (vel[2] < 0.0f && org[2] + vel[2] < goal[2])
-		{
-			if (fabsf(vel[2]) > 0.0001f)
-			{
-				float scale = (goal[2] - org[2]) / vel[2];
-				vel[0] *= scale;
-				vel[1] *= scale;
-				vel[2] *= scale;
-			}
-			VectorAdd(org, vel, org);
-			VectorSubtract(goal, org, dir);
-			float dist = VectorNormalizeInline(dir);
-			if (dist > 32.0f)
-			{
-				dist = 32.0f;
-			}
-			*speed = 13.0f * dist;
-			return true;
-		}
-
-		VectorAdd(org, vel, org);
-	}
-
-	VectorClear(dir);
-	*speed = BotMove_LibVarValue(Bridge_MaxWalkVelocity(), 400.0f);
-	return false;
-}
-
-/*
-=============
-BotMove_FinishTravelBarrierJump
-
-Continue a barrier jump while airborne.
-=============
-*/
-static void BotMove_FinishTravelBarrierJump(bot_movestate_t *ms,
-                                            const aas_reachability_t *reach,
-                                            bot_moveresult_t *result)
-{
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_BARRIERJUMP;
-
-	if (ms->velocity[2] >= 250.0f)
-	{
-		return;
-	}
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	dir[2] = 0.0f;
-	VectorNormalizeInline(dir);
-	BotMove_CheckBlocked(ms, dir, true, result);
-	EA_Move(ms->client, dir, BotMove_LibVarValue(Bridge_MaxWalkVelocity(), 400.0f));
-	VectorCopy(dir, result->movedir);
-}
-
-/*
-=============
-BotMove_FinishTravelWalkOffLedge
-
-Continue steering toward a ledge reachability endpoint after leaving ground.
-=============
-*/
-static void BotMove_FinishTravelWalkOffLedge(bot_movestate_t *ms,
-                                             const aas_reachability_t *reach,
-                                             bot_moveresult_t *result)
-{
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_WALKOFFLEDGE;
-
-	vec3_t goal;
-	vec3_t forward;
-	VectorSubtract(reach->end, ms->origin, forward);
-	forward[2] = 0.0f;
-	float dist = VectorNormalizeInline(forward);
-	if (dist > 16.0f)
-	{
-		goal[0] = reach->end[0] + 16.0f * forward[0];
-		goal[1] = reach->end[1] + 16.0f * forward[1];
-		goal[2] = reach->end[2] + 16.0f * forward[2];
-	}
-	else
-	{
-		VectorCopy(reach->end, goal);
-	}
-
-	vec3_t dir;
-	float speed;
-	if (!BotMove_AirControl(ms->origin, ms->velocity, goal, dir, &speed))
-	{
-		VectorSubtract(reach->end, ms->origin, dir);
-		dir[2] = 0.0f;
-		VectorNormalizeInline(dir);
-		speed = BotMove_LibVarValue(Bridge_MaxWalkVelocity(), 400.0f);
-	}
-
-	BotMove_CheckBlocked(ms, dir, true, result);
-	EA_Move(ms->client, dir, speed);
-	VectorCopy(dir, result->movedir);
-}
-
-/*
-=============
-BotMove_FinishTravelJump
-
-Continue jump travel after the launch action has happened.
-=============
-*/
-static void BotMove_FinishTravelJump(bot_movestate_t *ms,
-                                     const aas_reachability_t *reach,
-                                     bot_moveresult_t *result,
-                                     int traveltype)
-{
-	BotClearMoveResult(result);
-	result->traveltype = traveltype;
-
-	if (!ms->jumpreach)
-	{
-		return;
-	}
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	dir[2] = 0.0f;
-	float dist = VectorNormalizeInline(dir);
-
-	vec3_t reachdir;
-	VectorSubtract(reach->end, reach->start, reachdir);
-	reachdir[2] = 0.0f;
-	VectorNormalizeInline(reachdir);
-	if (DotProduct(dir, reachdir) < -0.5f && dist < 24.0f)
-	{
-		return;
-	}
-
-	EA_Move(ms->client, dir, 800.0f);
-	VectorCopy(dir, result->movedir);
-}
-
-/*
-=============
-BotMove_FinishTravelWaterJump
-
-Continue a water jump only while still touching liquid below the bot.
-=============
-*/
-static void BotMove_FinishTravelWaterJump(bot_movestate_t *ms,
-                                          const aas_reachability_t *reach,
-                                          bot_moveresult_t *result)
-{
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_WATERJUMP;
-
-	if ((ms->moveflags & MFL_WATERJUMP) != 0)
-	{
-		return;
-	}
-
-	vec3_t probe;
-	VectorCopy(ms->origin, probe);
-	probe[2] -= 32.0f;
-	if (!BotMove_PointInLiquid(probe, ms->areanum))
-	{
-		return;
-	}
-
-	vec3_t dir;
-	VectorSubtract(reach->end, ms->origin, dir);
-	dir[2] += 70.0f;
-	VectorNormalizeInline(dir);
-	BotMove_SetMovementView(dir, result, false);
-	EA_Move(ms->client, dir, BotMove_LibVarValue(Bridge_MaxSwimVelocity(), 400.0f));
-	VectorCopy(dir, result->movedir);
-	result->flags |= MOVERESULT_MOVEMENTVIEW;
-}
-
-/*
-=============
-BotMove_FinishTravelAirControl
-
-Shared Q3 air-control finish path for jump pads.
-=============
-*/
-static void BotMove_FinishTravelAirControl(bot_movestate_t *ms,
-                                           const aas_reachability_t *reach,
-                                           bot_moveresult_t *result,
-                                           int traveltype,
-                                           bool checkblocked)
-{
-	BotClearMoveResult(result);
-	result->traveltype = traveltype;
-
-	vec3_t dir;
-	float speed;
-	if (!BotMove_AirControl(ms->origin, ms->velocity, reach->end, dir, &speed))
-	{
-		VectorSubtract(reach->end, ms->origin, dir);
-		dir[2] = 0.0f;
-		VectorNormalizeInline(dir);
-		speed = BotMove_LibVarValue(Bridge_MaxWalkVelocity(), 400.0f);
-	}
-
-	if (checkblocked)
-	{
-		BotMove_CheckBlocked(ms, dir, true, result);
-	}
-	EA_Move(ms->client, dir, speed);
-	VectorCopy(dir, result->movedir);
-}
-
-/*
-=============
-BotMove_FinishTravelRocketJump
-
-Continue a Gladiator rocket jump after the launch action has happened.
-=============
-*/
-static void BotMove_FinishTravelRocketJump(bot_movestate_t *ms,
-                                           const aas_reachability_t *reach,
-                                           bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_ROCKETJUMP;
-
-	if (!ms->jumpreach)
-	{
-		return;
-	}
-
-	vec3_t hordir;
-	VectorSubtract(reach->end, ms->origin, hordir);
-	hordir[2] = 0.0f;
-	VectorNormalizeInline(hordir);
-	EA_Move(ms->client, hordir, 800.0f);
-	VectorCopy(hordir, result->movedir);
-}
-
-/*
-=============
-BotMove_FinishTravelElevator
-
-Steer toward the closer elevator endpoint while airborne.
-=============
-*/
-static void BotMove_FinishTravelElevator(bot_movestate_t *ms,
-                                         const aas_reachability_t *reach,
-                                         bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_ELEVATOR;
-
-	vec3_t bottomcenter;
-	vec3_t bottomdir;
-	vec3_t topdir;
-	BotMove_MoverBottomCenter(reach, bottomcenter);
-	VectorSubtract(bottomcenter, ms->origin, bottomdir);
-	VectorSubtract(reach->end, ms->origin, topdir);
-
-	vec3_t dir;
-	if (fabsf(bottomdir[2]) < fabsf(topdir[2]))
-	{
-		VectorNormalizeTo(bottomdir, dir);
-	}
-	else
-	{
-		VectorNormalizeTo(topdir, dir);
-	}
-
-	EA_Move(ms->client, dir, 300.0f);
-	VectorCopy(dir, result->movedir);
-}
-
-/*
-=============
-BotMove_FinishTravelFuncBob
-
-Finish a func_bobbing reachability using the Q3 mover timing rules.
-=============
-*/
-static void BotMove_FinishTravelFuncBob(bot_movestate_t *ms,
-                                        const aas_reachability_t *reach,
-                                        bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	BotClearMoveResult(result);
-	result->traveltype = TRAVEL_FUNCBOB;
-
-	vec3_t bob_origin;
-	vec3_t bob_start;
-	vec3_t bob_end;
-	vec3_t dir;
-	(void)BotMove_FuncBobStartEnd(reach, bob_start, bob_end, bob_origin);
-
-	VectorSubtract(bob_origin, bob_end, dir);
-	float dist = sqrtf(VectorLengthSquared(dir));
-	if (dist < 16.0f)
-	{
-		vec3_t hordir;
-		VectorSubtract(reach->end, ms->origin, hordir);
-		if ((ms->moveflags & MFL_SWIMMING) == 0)
-		{
-			hordir[2] = 0.0f;
-		}
-		dist = VectorNormalizeInline(hordir);
-		if (dist > 60.0f)
-		{
-			dist = 60.0f;
-		}
-		float speed = 6.0f * dist;
-		if (speed > 5.0f)
-		{
-			EA_Move(ms->client, dir, speed);
-		}
-		VectorCopy(dir, result->movedir);
-		if ((ms->moveflags & MFL_SWIMMING) != 0)
-		{
-			result->flags |= MOVERESULT_SWIMVIEW;
-		}
-		return;
-	}
-
-	vec3_t bottomcenter;
-	vec3_t hordir;
-	BotMove_MoverBottomCenter(reach, bottomcenter);
-	VectorSubtract(bottomcenter, ms->origin, hordir);
-	if ((ms->moveflags & MFL_SWIMMING) == 0)
-	{
-		hordir[2] = 0.0f;
-	}
-	dist = VectorNormalizeInline(hordir);
-	if (dist > 5.0f)
-	{
-		if (dist > 100.0f)
-		{
-			dist = 100.0f;
-		}
-		EA_Move(ms->client, hordir, 4.0f * dist);
-		VectorCopy(hordir, result->movedir);
-	}
-}
-
-/*
-=============
-BotMove_ShouldKeepReachability
-
-Validate the last reachability before reusing it this frame.
-=============
-*/
-static bool BotMove_ShouldKeepReachability(bot_movestate_t *ms,
-                                           const bot_goal_t *goal,
-                                           int travelflags,
-                                           const aas_reachability_t *reach,
-                                           const bot_moveresult_t *result)
-{
-	if (ms == NULL || goal == NULL || reach == NULL)
-	{
-		return false;
-	}
-
-	int allowed = (travelflags != 0) ? travelflags : TFL_DEFAULT;
-	if (!BotMove_TravelAllowed(reach->traveltype, allowed))
-	{
-		return false;
-	}
-
-	int traveltype = reach->traveltype & TRAVELTYPE_MASK;
-	if (traveltype == TRAVEL_GRAPPLEHOOK)
-	{
-		return ms->reachability_time >= aasworld.time &&
-		       (ms->moveflags & MFL_GRAPPLERESET) == 0;
-	}
-
-	if (traveltype == TRAVEL_ELEVATOR || traveltype == TRAVEL_FUNCBOB)
-	{
-		if (result != NULL &&
-		    (result->flags & (MOVERESULT_ONTOPOF_ELEVATOR | MOVERESULT_ONTOPOF_FUNCBOB)) != 0)
-		{
-			ms->reachability_time = aasworld.time + 5.0f;
-		}
-
-		return ms->areanum != reach->areanum &&
-		       ms->reachability_time >= aasworld.time;
-	}
-
-	return ms->lastgoalareanum == goal->areanum &&
-	       ms->reachability_time >= aasworld.time &&
-	       ms->lastareanum == ms->areanum;
-}
-
-/*
-=============
-BotMove_FindMoverEntry
-
-Resolve a brush-model mover catalogue entry for a live AAS entity.
-=============
-*/
-static const bot_mover_catalogue_entry_t *BotMove_FindMoverEntry(int entnum, int *outModelnum)
-{
-    if (aasworld.entities == NULL || aasworld.maxEntities <= 0)
-    {
-        return NULL;
-    }
-
-    if (entnum < 0 || entnum >= aasworld.maxEntities)
-    {
-        return NULL;
-    }
-
-    const aas_entity_t *entity = &aasworld.entities[entnum];
-    if (entity == NULL || !entity->inuse || entity->solid != SOLID_BSP)
-    {
-        return NULL;
-    }
-
-    int modelnum = AAS_ModelNumForEntity(entnum);
-    if (modelnum <= 0)
-    {
-        return NULL;
-    }
-
-	const bot_mover_catalogue_entry_t *entry = BotMove_MoverCatalogueFindByModel(modelnum);
-	if (entry == NULL)
-	{
-		return NULL;
-	}
-
-    if (outModelnum != NULL)
-    {
-        *outModelnum = modelnum;
-    }
-
-    return entry;
-}
-
-static void BotMove_HandleMoverLanding(bot_movestate_t *ms,
-                                       int dispatchedReachIndex,
-                                       const aas_reachability_t *dispatchedReach,
-                                       bot_moveresult_t *result,
-                                       int *ioReachIndex,
-                                       int *ioReachArea,
-                                       float *ioReachabilityTime)
-{
-    if (ms == NULL || result == NULL || dispatchedReach == NULL ||
-        ioReachIndex == NULL || ioReachArea == NULL || ioReachabilityTime == NULL)
-    {
-        return;
-    }
-
-    if (aasworld.entities == NULL || aasworld.areaEntityLists == NULL ||
-        aasworld.areaEntityListCount == 0U)
-    {
-        return;
-    }
-
-    if (ms->entitynum < 0 || ms->entitynum >= aasworld.maxEntities)
-    {
-        return;
-    }
-
-    const aas_entity_t *botEntity = &aasworld.entities[ms->entitynum];
-    if (botEntity == NULL || !botEntity->inuse)
-    {
-        return;
-    }
-
-    for (aas_link_t *areaLink = botEntity->areas; areaLink != NULL; areaLink = areaLink->next_area)
-    {
-        int area = areaLink->areanum;
-        if (area < 0)
-        {
-            continue;
-        }
-
-        size_t listIndex = (size_t)area;
-        if (listIndex >= aasworld.areaEntityListCount)
-        {
-            continue;
-        }
-
-        for (aas_link_t *entLink = aasworld.areaEntityLists[listIndex]; entLink != NULL; entLink = entLink->next_ent)
-        {
-            int entnum = entLink->entnum;
-            if (entnum == ms->entitynum)
-            {
-                continue;
-            }
-
-            int modelnum = 0;
-            const bot_mover_catalogue_entry_t *entry = BotMove_FindMoverEntry(entnum, &modelnum);
-            if (entry == NULL)
-            {
-                continue;
-            }
-
-            aas_reachability_t moverReach;
-            int reachnum = AAS_NextModelReachability(0, modelnum);
-            if (reachnum <= 0 || !BotMove_LoadReachability(reachnum, &moverReach))
-            {
-                bool assumeFuncBob = (entry->height > 0.0f);
-                result->blocked = 1;
-                result->blockentity = entnum;
-                if (assumeFuncBob)
-                {
-                    result->flags |= MOVERESULT_ONTOPOF_FUNCBOB;
-                    result->type = RESULTTYPE_WAITFORFUNCBOBBING;
-                }
-                else
-                {
-                    result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
-                    result->type = RESULTTYPE_ELEVATORUP;
-                }
-                result->flags |= MOVERESULT_ONTOPOFOBSTACLE;
-                return;
-            }
-
-            int traveltype = moverReach.traveltype & TRAVELTYPE_MASK;
-            if (traveltype != TRAVEL_ELEVATOR && traveltype != TRAVEL_FUNCBOB)
-            {
-                continue;
-            }
-
-            int moverModel = moverReach.facenum & 0x0000FFFF;
-            int dispatchedModel = dispatchedReach->facenum & 0x0000FFFF;
-            bool sameModel = (dispatchedReachIndex > 0) &&
-                             ((dispatchedReach->traveltype & TRAVELTYPE_MASK) == traveltype) &&
-                             (dispatchedModel == moverModel);
-
-            if (traveltype == TRAVEL_ELEVATOR)
-            {
-                result->flags |= MOVERESULT_ONTOPOF_ELEVATOR;
-                result->type = RESULTTYPE_ELEVATORUP;
-            }
-            else
-            {
-                result->flags |= MOVERESULT_ONTOPOF_FUNCBOB;
-                result->type = RESULTTYPE_WAITFORFUNCBOBBING;
-            }
-
-            if (!sameModel)
-            {
-                *ioReachIndex = reachnum;
-                *ioReachArea = moverReach.areanum;
-            }
-
-            *ioReachabilityTime = aasworld.time + 5.0f;
-            return;
-        }
-    }
-}
-
-static void BotMove_DispatchTravel(bot_movestate_t *ms,
-                                   const aas_reachability_t *reach,
-                                   bot_moveresult_t *result)
-{
-    if (ms == NULL || reach == NULL || result == NULL)
-    {
-        return;
-    }
-
-    bot_moveresult_t temp;
-    BotClearMoveResult(&temp);
-
-    int traveltype = reach->traveltype & TRAVELTYPE_MASK;
-    switch (traveltype)
-    {
-        case TRAVEL_WALK:
-            BotMove_TravelWalk(ms, reach, &temp);
-            break;
-        case TRAVEL_CROUCH:
-            BotMove_TravelCrouch(ms, reach, &temp);
-            break;
-        case TRAVEL_BARRIERJUMP:
-            BotMove_TravelBarrierJump(ms, reach, &temp);
-            break;
-        case TRAVEL_LADDER:
-            BotMove_TravelLadder(ms, reach, &temp);
-            break;
-        case TRAVEL_WALKOFFLEDGE:
-            BotMove_TravelWalkOffLedge(ms, reach, &temp);
-            break;
-        case TRAVEL_JUMP:
-            BotMove_TravelJump(ms, reach, &temp);
-            break;
-        case TRAVEL_SWIM:
-            BotMove_TravelSwim(ms, reach, &temp);
-            break;
-        case TRAVEL_WATERJUMP:
-            BotMove_TravelWaterJump(ms, reach, &temp);
-            break;
-        case TRAVEL_TELEPORT:
-            BotMove_TravelTeleport(ms, reach, &temp);
-            break;
-        case TRAVEL_ELEVATOR:
-            BotMove_TravelElevator(ms, reach, &temp);
-            break;
-        case TRAVEL_GRAPPLEHOOK:
-        {
-            bot_moveresult_t grapple = BotTravel_Grapple(ms, reach);
-            *result = grapple;
-            result->traveltype = traveltype;
-            return;
-        }
-        case TRAVEL_ROCKETJUMP:
-            BotMove_TravelRocketJump(ms, reach, &temp);
-            break;
-        case TRAVEL_JUMPPAD:
-            BotMove_TravelJumpPad(ms, reach, &temp);
-            break;
-        case TRAVEL_FUNCBOB:
-            BotMove_TravelFuncBob(ms, reach, &temp);
-            break;
-        default:
-            BotLib_Print(PRT_WARNING,
-                         "(last) travel type %d not implemented yet\n",
-                         traveltype);
-            temp.traveltype = traveltype;
-            temp.failure = 1;
-            break;
-    }
-
-    BotMove_CopyMoveResult(result, &temp);
-}
-
-/*
-=============
-BotMove_DispatchFinishTravel
-
-Finish the previous reachability while airborne, matching the retail split.
-=============
-*/
-static void BotMove_DispatchFinishTravel(bot_movestate_t *ms,
-                                         const aas_reachability_t *reach,
-                                         bot_moveresult_t *result)
-{
-	if (ms == NULL || reach == NULL || result == NULL)
-	{
-		return;
-	}
-
-	bot_moveresult_t temp;
-	BotClearMoveResult(&temp);
-
-	int traveltype = reach->traveltype & TRAVELTYPE_MASK;
-	switch (traveltype)
-	{
-		case TRAVEL_WALK:
-			BotMove_TravelWalk(ms, reach, &temp);
-			break;
-		case TRAVEL_CROUCH:
-		case TRAVEL_TELEPORT:
-			temp.traveltype = traveltype;
-			break;
-		case TRAVEL_BARRIERJUMP:
-			BotMove_FinishTravelBarrierJump(ms, reach, &temp);
-			break;
-		case TRAVEL_LADDER:
-			BotMove_TravelLadder(ms, reach, &temp);
-			break;
-		case TRAVEL_WALKOFFLEDGE:
-			BotMove_FinishTravelWalkOffLedge(ms, reach, &temp);
-			break;
-		case TRAVEL_JUMP:
-			BotMove_FinishTravelJump(ms, reach, &temp, TRAVEL_JUMP);
-			break;
-		case TRAVEL_SWIM:
-			BotMove_TravelSwim(ms, reach, &temp);
-			break;
-		case TRAVEL_WATERJUMP:
-			BotMove_FinishTravelWaterJump(ms, reach, &temp);
-			break;
-		case TRAVEL_ELEVATOR:
-			BotMove_FinishTravelElevator(ms, reach, &temp);
-			break;
-		case TRAVEL_GRAPPLEHOOK:
-		{
-			bot_moveresult_t grapple = BotTravel_Grapple(ms, reach);
-			*result = grapple;
-			result->traveltype = traveltype;
-			return;
-		}
-		case TRAVEL_ROCKETJUMP:
-			BotMove_FinishTravelRocketJump(ms, reach, &temp);
-			break;
-		case TRAVEL_JUMPPAD:
-			BotMove_FinishTravelAirControl(ms, reach, &temp, TRAVEL_JUMPPAD, true);
-			break;
-		case TRAVEL_FUNCBOB:
-			BotMove_FinishTravelFuncBob(ms, reach, &temp);
-			break;
-		default:
-			BotLib_Print(PRT_WARNING,
-			             "(last) travel type %d not implemented yet\n",
-			             traveltype);
-			temp.traveltype = traveltype;
-			temp.failure = 1;
-			break;
-	}
-
-	BotMove_CopyMoveResult(result, &temp);
-}
-
-int BotAllocMoveState(void)
-{
-    for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
-    {
-        if (g_botMoveStates[handle] == NULL)
-        {
-            g_botMoveStates[handle] = GetClearedMemory(sizeof(bot_movestate_t));
-            return handle;
-        }
-    }
-
-    return 0;
-}
-
-void BotFreeMoveState(int handle)
-{
-    if (handle <= 0 || handle > MAX_CLIENTS)
-    {
-        BotLib_Print(PRT_WARNING,
-                      "BotFreeMoveState: handle %d out of range\n",
-                      handle);
-        return;
-    }
-
-    bot_movestate_t *ms = g_botMoveStates[handle];
-    if (ms == NULL)
-    {
-        BotLib_Print(PRT_WARNING,
-                      "BotFreeMoveState: handle %d not allocated\n",
-                      handle);
-        return;
-    }
-
-    FreeMemory(ms);
-    g_botMoveStates[handle] = NULL;
-}
-
-bot_movestate_t *BotMoveStateFromHandle(int handle)
-{
-    if (handle <= 0 || handle > MAX_CLIENTS)
-    {
-        return NULL;
-    }
-
-    return g_botMoveStates[handle];
-}
-
-void BotResetMoveState(int movestate)
-{
-    bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-    if (ms == NULL)
-    {
-        return;
-    }
-
-    memset(ms, 0, sizeof(*ms));
-}
-
-void BotInitMoveState(int handle, const bot_initmove_t *initmove)
-{
-    bot_movestate_t *ms = BotMoveStateFromHandle(handle);
-    if (ms == NULL)
-    {
-        return;
-    }
-
-    if (initmove == NULL)
-    {
-        return;
-    }
-
-    VectorCopy(initmove->origin, ms->origin);
-    VectorCopy(initmove->velocity, ms->velocity);
-    VectorCopy(initmove->viewoffset, ms->viewoffset);
-    ms->entitynum = initmove->entitynum;
-    ms->client = initmove->client;
-    ms->thinktime = initmove->thinktime;
-    ms->presencetype = initmove->presencetype;
-    VectorCopy(initmove->viewangles, ms->viewangles);
-
-	ms->moveflags &= ~(MFL_ONGROUND | MFL_TELEPORTED | MFL_WATERJUMP | MFL_WALK | MFL_GRAPPLEPULL);
-	if ((initmove->or_moveflags & MFL_ONGROUND) != 0)
-	{
-		ms->moveflags |= MFL_ONGROUND;
-	}
-	if ((initmove->or_moveflags & MFL_TELEPORTED) != 0)
-	{
-		ms->moveflags |= MFL_TELEPORTED;
-	}
-	if ((initmove->or_moveflags & MFL_WATERJUMP) != 0)
-	{
-		ms->moveflags |= MFL_WATERJUMP;
-	}
-	if ((initmove->or_moveflags & MFL_WALK) != 0)
-	{
-		ms->moveflags |= MFL_WALK;
-	}
-	if ((initmove->or_moveflags & MFL_GRAPPLEPULL) != 0)
-	{
-		ms->moveflags |= MFL_GRAPPLEPULL;
-	}
-
-    BotMoveClassifyEnvironment(ms);
-}
-
-void BotClearMoveResult(bot_moveresult_t *moveresult)
-{
-    if (moveresult == NULL)
-    {
-        return;
-    }
-
-    memset(moveresult, 0, sizeof(*moveresult));
-}
-
-void BotMoveClassifyEnvironment(bot_movestate_t *ms)
-{
-    if (ms == NULL)
-    {
-        return;
-    }
-
-    ms->lastareanum = ms->areanum;
-    int areanum = BotMove_FindAreaForPoint(ms->origin);
-    if (areanum > 0)
-    {
-        ms->areanum = areanum;
-    }
-
-    ms->moveflags &= ~(MFL_SWIMMING | MFL_AGAINSTLADDER);
-
-    if (aasworld.areasettings != NULL &&
-        ms->areanum > 0 && ms->areanum < aasworld.numAreaSettings)
-    {
-        const aas_areasettings_t *settings = &aasworld.areasettings[ms->areanum];
-        int contents = settings->contents;
-        if (BotMove_AreaContentsHasLiquid(contents))
-        {
-            ms->moveflags |= MFL_SWIMMING;
-        }
-        if (BotMove_AreaHasLadder(ms->areanum))
-        {
-            ms->moveflags |= MFL_AGAINSTLADDER;
-        }
-    }
-
-	if (BotMove_PointInLiquid(ms->origin, ms->areanum))
-	{
-		ms->moveflags |= MFL_SWIMMING;
-	}
-}
-
-void BotMoveToGoal(bot_moveresult_t *result,
-                   int movestate,
-                   const bot_goal_t *goal,
-                   int travelflags)
-{
-    if (result == NULL)
-    {
-        return;
-    }
-
-	BotClearMoveResult(result);
-
-    bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-    if (ms == NULL)
-    {
-        result->failure = 1;
-        return;
-    }
-
-    if (goal == NULL || goal->areanum <= 0)
-    {
-        result->failure = 1;
-        result->type = RESULTTYPE_INSOLIDAREA;
-        return;
-    }
-
-    BotMove_RefreshAvoidReach(ms);
-
-    ms->moveflags &= ~(MFL_SWIMMING | MFL_AGAINSTLADDER);
-	BotMoveClassifyEnvironment(ms);
-	if (BotMove_OnGround(ms))
-	{
-		ms->moveflags |= MFL_ONGROUND;
-	}
-
-	if (ms->areanum <= 0)
-	{
-		ms->areanum = BotMove_FuzzyPointReachabilityArea(ms->origin);
-		if (ms->areanum <= 0)
-		{
-			result->failure = 1;
-			result->blocked = 1;
-			result->type = RESULTTYPE_INSOLIDAREA;
-			return;
-		}
-	}
-
-	bool hasMovementSurface = BotMove_HasMovementSurface(ms);
-
-    if ((ms->moveflags & MFL_ONGROUND) != 0 && BotMove_HandleGroundMover(ms, result))
-    {
-        ms->lastgoalareanum = goal->areanum;
-        ms->lastareanum = ms->areanum;
-        VectorCopy(ms->origin, ms->lastorigin);
-        return;
-    }
-
-	if (!hasMovementSurface && ms->lastreachnum > 0)
-	{
-		aas_reachability_t lastreach;
-		if (BotMove_LoadReachability(ms->lastreachnum, &lastreach))
-		{
-			BotMove_DispatchFinishTravel(ms, &lastreach, result);
-			result->traveltype = lastreach.traveltype;
-			if (result->blocked)
-			{
-				ms->reachability_time -= 10.0f * ms->thinktime;
-			}
-
-			VectorCopy(ms->origin, ms->lastorigin);
-			return;
-		}
-	}
-
-    if (ms->areanum == goal->areanum)
-    {
-        BotMove_DirectToGoal(ms, goal, result);
-        return;
-    }
-
-    aas_reachability_t reach;
-    int resultFlags = 0;
-	int reachIndex = 0;
-	if (ms->lastreachnum > 0 && BotMove_LoadReachability(ms->lastreachnum, &reach) &&
-	    BotMove_ShouldKeepReachability(ms, goal, travelflags, &reach, result))
-	{
-		reachIndex = ms->lastreachnum;
-	}
-
-	if (reachIndex <= 0)
-	{
-		reachIndex = BotGetReachabilityToGoal(ms, goal, travelflags, &reach, &resultFlags);
-		if (reachIndex > 0)
-		{
-			ms->reachareanum = ms->areanum;
-			ms->jumpreach = 0;
-			ms->moveflags &= ~MFL_GRAPPLERESET;
-		}
-	}
-    if (reachIndex <= 0)
-    {
-		if ((resultFlags & MOVERESULT_BLOCKEDBYAVOIDSPOT) != 0)
-		{
-			result->failure = 1;
-			result->flags |= resultFlags;
-			return;
-		}
-
-        BotMove_DirectToGoal(ms, goal, result);
-        ms->lastreachnum = 0;
-        ms->lastgoalareanum = goal->areanum;
-        VectorCopy(ms->origin, ms->lastorigin);
-        return;
-    }
-
-    unsigned int preDispatchDiagnostics = result->diagnostics;
-
-    BotMove_DispatchTravel(ms, &reach, result);
-    result->diagnostics |= preDispatchDiagnostics;
-
-    int traveltype = reach.traveltype & TRAVELTYPE_MASK;
-    int finalReachIndex = reachIndex;
-    int finalReachArea = reach.areanum;
-    float finalReachabilityTime = aasworld.time + BotMove_TravelTimeout(traveltype);
-
-    BotMove_HandleMoverLanding(ms,
-                               reachIndex,
-                               &reach,
-                               result,
-                               &finalReachIndex,
-                               &finalReachArea,
-                               &finalReachabilityTime);
-
-    result->flags |= resultFlags;
-
-    if (result->blocked)
-    {
-		ms->reachability_time -= 10.0f * ms->thinktime;
-        return;
-    }
-
-	BotMove_AddToAvoidReach(ms, finalReachIndex, AVOIDREACH_TIME);
-    ms->reachability_time = finalReachabilityTime;
-    ms->lastreachnum = finalReachIndex;
-    ms->reachareanum = finalReachArea;
-    ms->lastgoalareanum = goal->areanum;
-    ms->lastareanum = ms->areanum;
-    VectorCopy(ms->origin, ms->lastorigin);
-}
-
-/*
-=============
-BotMove_GapDistance
-
-Trace forward with crouch bounds to detect a gap before direct walking.
-=============
-*/
-static float BotMove_GapDistance(const vec3_t origin, const vec3_t hordir, int entnum)
-{
-	if (origin == NULL || hordir == NULL)
-	{
-		return 0.0f;
-	}
-
+	vec3_t angles = {0.0f, 0.0f, 0.0f};
 	vec3_t mins;
 	vec3_t maxs;
-	BotMove_CrouchPresenceBounds(mins, maxs);
+	vec3_t origin;
 
+	if (reach->traveltype != TRAVEL_ELEVATOR)
+	{
+		return;
+	}
+
+	AAS_BSPModelMinsMaxsOrigin(reach->facenum,
+		angles,
+		mins,
+		maxs,
+		origin);
+	bottomcenter[0] = origin[0] + 0.5f * (mins[0] + maxs[0]);
+	bottomcenter[1] = origin[1] + 0.5f * (mins[1] + maxs[1]);
+	bottomcenter[2] = reach->start[2];
+}
+
+/*
+=============
+BotGapDistance
+
+Return the first forward sample distance that drops beyond a walkable step.
+=============
+*/
+static float BotGapDistance(bot_movestate_t *ms, const vec3_t dir)
+{
 	vec3_t start;
 	vec3_t end;
-	float startz = origin[2];
-
-	VectorCopy(origin, start);
-	VectorCopy(origin, end);
+	VectorCopy(ms->origin, start);
+	VectorCopy(ms->origin, end);
 	end[2] -= 60.0f;
-	bsp_trace_t trace = Q2_Trace(start,
-	                             mins,
-	                             maxs,
-	                             end,
-	                             entnum,
-	                             CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	if (trace.fraction >= 1.0f)
-	{
-		return 1.0f;
-	}
-	startz = trace.endpos[2] + 1.0f;
+	aas_trace_t trace = AAS_TraceClientBBox(start, end, PRESENCE_CROUCH, -1);
+	float startz = trace.endpos[2] + 1.0f;
+	float maxbarrier = BotMove_LibVarValue(libvar_sv_maxbarrier, 50.0f);
+	float step = BotMove_LibVarValue(libvar_sv_step, 18.0f);
 
-	float maxbarrier = BotMove_LibVarValue(Bridge_MaxBarrier(), 50.0f);
-	float maxstep = BotMove_LibVarValue(Bridge_MaxStep(), 18.0f);
-	for (float dist = 8.0f; dist <= 100.0f; dist += 8.0f)
+	for (float distance = 8.0f; distance <= 100.0f; distance += 8.0f)
 	{
-		VectorMA(origin, dist, hordir, start);
+		VectorMA(ms->origin, distance, dir, start);
 		start[2] = startz + 24.0f;
 		VectorCopy(start, end);
 		end[2] -= 48.0f + maxbarrier;
-
-		trace = Q2_Trace(start,
-		                 mins,
-		                 maxs,
-		                 end,
-		                 entnum,
-		                 CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+		trace = AAS_TraceClientBBox(start, end, PRESENCE_CROUCH, -1);
 		if (trace.startsolid)
 		{
 			continue;
 		}
-
-		if (trace.endpos[2] < startz - maxstep - 8.0f)
+		if (trace.endpos[2] < startz - step - 8.0f)
 		{
 			VectorCopy(trace.endpos, end);
 			end[2] -= 20.0f;
-			if ((Q2_PointContents(end) & CONTENTS_WATER) != 0)
+			if ((AAS_PointContents(end) & CONTENTS_WATER) != 0)
 			{
 				break;
 			}
-
-			return dist;
+			return distance;
 		}
 		startz = trace.endpos[2];
 	}
@@ -4004,272 +517,167 @@ static float BotMove_GapDistance(const vec3_t origin, const vec3_t hordir, int e
 
 /*
 =============
-BotMove_CheckBarrierJump
+BotCheckBarrierJump
 
-Probe the retail vertical-forward-down barrier jump path before walking.
+Trace the retail up-forward-down barrier sequence and submit a jump on success.
 =============
 */
-static bool BotMove_CheckBarrierJump(bot_movestate_t *ms, const vec3_t dir, float speed)
+static int BotCheckBarrierJump(bot_movestate_t *ms, const vec3_t dir, float speed)
 {
-	if (ms == NULL || dir == NULL)
-	{
-		return false;
-	}
-
-	vec3_t hordir;
-	VectorSet(hordir, dir[0], dir[1], 0.0f);
-	if (VectorNormalizeInline(hordir) <= 0.0f)
-	{
-		return false;
-	}
-
-	vec3_t mins;
-	vec3_t maxs;
-	bot_movestate_t trace_state = *ms;
-	trace_state.presencetype = PRESENCE_NORMAL;
-	BotMove_ClientBoundsForPresence(&trace_state, mins, maxs);
-
-	float maxbarrier = BotMove_LibVarValue(Bridge_MaxBarrier(), 50.0f);
-	float maxstep = BotMove_LibVarValue(Bridge_MaxStep(), 18.0f);
-
 	vec3_t start;
 	vec3_t end;
+	vec3_t hordir;
 	VectorCopy(ms->origin, end);
-	end[2] += maxbarrier;
-
-	bsp_trace_t trace = Q2_Trace(ms->origin,
-	                             mins,
-	                             maxs,
-	                             end,
-	                             ms->entitynum,
-	                             CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	if (trace.startsolid)
+	end[2] += BotMove_LibVarValue(libvar_sv_maxbarrier, 50.0f);
+	aas_trace_t trace = AAS_TraceClientBBox(ms->origin,
+		end,
+		PRESENCE_NORMAL,
+		ms->entitynum);
+	if (trace.startsolid ||
+		trace.endpos[2] - ms->origin[2] < BotMove_LibVarValue(libvar_sv_step, 18.0f))
 	{
-		return false;
-	}
-	if (trace.endpos[2] - ms->origin[2] < maxstep)
-	{
-		return false;
+		return 0;
 	}
 
-	VectorMA(ms->origin, ms->thinktime * speed * 0.5f, hordir, end);
+	hordir[0] = dir[0];
+	hordir[1] = dir[1];
+	hordir[2] = 0.0f;
+	BotMove_VectorNormalize(hordir);
+	VectorMA(ms->origin, speed * ms->thinktime * 0.5f, hordir, end);
 	VectorCopy(trace.endpos, start);
 	end[2] = trace.endpos[2];
-	trace = Q2_Trace(start,
-	                 mins,
-	                 maxs,
-	                 end,
-	                 ms->entitynum,
-	                 CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
+	trace = AAS_TraceClientBBox(start, end, PRESENCE_NORMAL, ms->entitynum);
 	if (trace.startsolid)
 	{
-		return false;
+		return 0;
 	}
 
 	VectorCopy(trace.endpos, start);
 	VectorCopy(trace.endpos, end);
 	end[2] = ms->origin[2];
-	trace = Q2_Trace(start,
-	                 mins,
-	                 maxs,
-	                 end,
-	                 ms->entitynum,
-	                 CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	if (trace.startsolid)
+	trace = AAS_TraceClientBBox(start, end, PRESENCE_NORMAL, ms->entitynum);
+	if (trace.startsolid || trace.fraction >= 1.0f ||
+		trace.endpos[2] - ms->origin[2] < BotMove_LibVarValue(libvar_sv_step, 18.0f))
 	{
-		return false;
-	}
-	if (trace.fraction >= 1.0f)
-	{
-		return false;
-	}
-	if (trace.endpos[2] - ms->origin[2] < maxstep)
-	{
-		return false;
+		return 0;
 	}
 
 	EA_Jump(ms->client);
 	EA_Move(ms->client, hordir, speed);
 	ms->moveflags |= MFL_BARRIERJUMP;
-	ms->jumpreach = 1;
-	return true;
-}
-
-/*
-=============
-BotMove_SwimInDirection
-
-Submit direct swim movement without ground prediction.
-=============
-*/
-static int BotMove_SwimInDirection(bot_movestate_t *ms, const vec3_t dir, float speed, int type)
-{
-	(void)type;
-
-	if (ms == NULL || dir == NULL)
-	{
-		return 0;
-	}
-
-	vec3_t normalized;
-	if (VectorNormalizeTo(dir, normalized) <= 0.0f)
-	{
-		return 0;
-	}
-
-	EA_Move(ms->client, normalized, speed);
 	return 1;
 }
 
 /*
 =============
-BotMove_WalkInDirection
+BotSwimInDirection
 
-Submit direct walk movement, including retail barrier jump probing.
+Submit a normalized direct swimming command.
 =============
 */
-static int BotMove_WalkInDirection(bot_movestate_t *ms, const vec3_t dir, float speed, int type)
+static int BotSwimInDirection(bot_movestate_t *ms,
+	const vec3_t dir,
+	float speed,
+	int type)
 {
-	if (ms == NULL || dir == NULL)
+	vec3_t normdir;
+	(void)type;
+	VectorCopy(dir, normdir);
+	BotMove_VectorNormalize(normdir);
+	EA_Move(ms->client, normdir, speed);
+	return 1;
+}
+
+/*
+=============
+BotWalkInDirection
+
+Predict and submit the retail direct walking or jumping command.
+=============
+*/
+static int BotWalkInDirection(bot_movestate_t *ms,
+	const vec3_t dir,
+	float speed,
+	int type)
+{
+	if ((ms->moveflags & MFL_ONGROUND) != 0)
 	{
-		return 0;
-	}
-
-	vec3_t normalized;
-	if (VectorNormalizeTo(dir, normalized) <= 0.0f)
-	{
-		return 0;
-	}
-
-	vec3_t hordir;
-	VectorSet(hordir, normalized[0], normalized[1], 0.0f);
-	if (VectorNormalizeInline(hordir) <= 0.0f)
-	{
-		return 0;
-	}
-
-	if ((type & MOVE_GRAPPLE) != 0)
-	{
-		ms->moveflags |= MFL_ACTIVEGRAPPLE;
-	}
-
-	if ((ms->moveflags & MFL_ONGROUND) != 0 || BotMove_OnGround(ms))
-	{
-		ms->moveflags |= MFL_ONGROUND;
-		if (BotMove_CheckBarrierJump(ms, hordir, speed))
+		if (!BotCheckBarrierJump(ms, dir, speed))
 		{
-			return 1;
-		}
+			int presencetype = ((type & MOVE_CROUCH) != 0 &&
+				(type & MOVE_JUMP) == 0)
+				? PRESENCE_CROUCH
+				: PRESENCE_NORMAL;
+			vec3_t hordir = {dir[0], dir[1], 0.0f};
+			BotMove_VectorNormalize(hordir);
+			if ((type & MOVE_JUMP) == 0 && BotGapDistance(ms, hordir) > 0.0f)
+			{
+				type |= MOVE_JUMP;
+			}
 
-		ms->moveflags &= ~MFL_BARRIERJUMP;
-		int presencetype = ((type & MOVE_CROUCH) != 0 && (type & MOVE_JUMP) == 0)
-			? PRESENCE_CROUCH
-			: PRESENCE_NORMAL;
-		if ((type & MOVE_JUMP) == 0 &&
-		    BotMove_GapDistance(ms->origin, hordir, ms->entitynum) > 0.0f)
-		{
-			type |= MOVE_JUMP;
-		}
+			vec3_t cmdmove;
+			VectorScale(hordir, speed, cmdmove);
+			float predictiontime;
+			if ((type & MOVE_JUMP) != 0)
+			{
+				predictiontime = 3.0f;
+				cmdmove[2] = BotMove_LibVarValue(libvar_sv_jumpvel, 224.0f);
+			}
+			else
+			{
+				predictiontime = 2.0f;
+			}
 
-		vec3_t cmdmove;
-		vec3_t velocity;
-		vec3_t origin;
-		VectorScale(hordir, speed, cmdmove);
-		VectorCopy(ms->velocity, velocity);
-
-		int maxframes;
-		int cmdframes;
-		int stopevent;
-		if ((type & MOVE_JUMP) != 0)
-		{
-			cmdmove[2] = 400.0f;
-			maxframes = 30;
-			cmdframes = 1;
-			stopevent = SE_HITGROUND | SE_HITGROUNDDAMAGE |
-			            SE_ENTERWATER | SE_ENTERSLIME | SE_ENTERLAVA;
-		}
-		else
-		{
-			maxframes = 2;
-			cmdframes = 2;
-			stopevent = SE_HITGROUNDDAMAGE |
-			            SE_ENTERWATER | SE_ENTERSLIME | SE_ENTERLAVA;
-		}
-
-		VectorCopy(ms->origin, origin);
-		origin[2] += 0.5f;
-
-		aas_clientmove_t move;
-		if (!AAS_PredictClientMovement(&move,
-		                               ms->entitynum,
-		                               origin,
-		                               presencetype,
-		                               qtrue,
-		                               velocity,
-		                               cmdmove,
-		                               cmdframes,
-		                               maxframes,
-		                               0.1f,
-		                               stopevent,
-		                               0,
-		                               qfalse))
-		{
-			return 0;
-		}
-
-		if ((type & MOVE_JUMP) != 0 && move.frames >= maxframes)
-		{
-			return 0;
-		}
-
-		if ((move.stopevent & (SE_ENTERSLIME | SE_ENTERLAVA | SE_HITGROUNDDAMAGE)) != 0)
-		{
-			return 0;
-		}
-
-		if ((move.stopevent & SE_HITGROUND) != 0)
-		{
-			vec3_t tmpdir;
-			if (VectorNormalizeTo(move.velocity, tmpdir) > 0.0f &&
-			    BotMove_GapDistance(move.endpos, tmpdir, ms->entitynum) > 0.0f)
+			if (ms->thinktime <= 0.0f)
 			{
 				return 0;
 			}
-			if (BotMove_GapDistance(move.endpos, hordir, ms->entitynum) > 0.0f)
+			int maxframes = (int)(predictiontime / ms->thinktime);
+			aas_clientmove_t move;
+			if (!AAS_PredictClientMovement(&move,
+				ms->entitynum,
+				ms->origin,
+				presencetype,
+				1,
+				ms->velocity,
+				cmdmove,
+				maxframes,
+				maxframes,
+				ms->thinktime,
+				0x3d,
+				0,
+				0))
 			{
 				return 0;
 			}
-		}
+			if (move.frames >= maxframes || (move.stopevent & 0x38) != 0)
+			{
+				return 0;
+			}
 
-		vec3_t moved;
-		moved[0] = move.endpos[0] - ms->origin[0];
-		moved[1] = move.endpos[1] - ms->origin[1];
-		moved[2] = 0.0f;
-		if (sqrtf(VectorLengthSquared(moved)) < speed * ms->thinktime * 0.5f)
-		{
-			return 0;
-		}
+			vec3_t movedir;
+			movedir[0] = move.endpos[0] - ms->origin[0];
+			movedir[1] = move.endpos[1] - ms->origin[1];
+			movedir[2] = 0.0f;
+			if (sqrtf(DotProduct(movedir, movedir)) < speed * ms->thinktime * 0.5f)
+			{
+				return 0;
+			}
 
-		if ((type & MOVE_JUMP) != 0)
-		{
-			EA_Jump(ms->client);
-			ms->jumpreach = 1;
+			if ((type & MOVE_JUMP) != 0)
+			{
+				EA_Jump(ms->client);
+			}
+			if ((type & MOVE_CROUCH) != 0)
+			{
+				EA_Crouch(ms->client);
+			}
+			EA_Move(ms->client, movedir, speed);
 		}
-		if ((type & MOVE_CROUCH) != 0)
-		{
-			EA_Crouch(ms->client);
-		}
-		EA_Move(ms->client, hordir, speed);
-		return 1;
 	}
-
-	if ((ms->moveflags & MFL_BARRIERJUMP) != 0)
+	else if ((ms->moveflags & MFL_BARRIERJUMP) != 0 && ms->velocity[2] < 50.0f)
 	{
-		if (ms->velocity[2] < 50.0f)
-		{
-			EA_Move(ms->client, normalized, speed);
-		}
-		return 1;
+		EA_Move(ms->client, dir, speed);
 	}
 
 	return 1;
@@ -4279,266 +687,816 @@ static int BotMove_WalkInDirection(bot_movestate_t *ms, const vec3_t dir, float 
 =============
 BotMoveInDirection
 
-Dispatch direct movement through the reconstructed swim/walk helpers.
+Dispatch direct movement through the retail swim or walk predictor.
 =============
 */
-int BotMoveInDirection(int movestate, const vec3_t dir, float speed, int type)
+int BotMoveInDirection(bot_movestate_t *movestate,
+	const vec3_t dir,
+	float speed,
+	int type)
 {
-	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-	if (ms == NULL)
+	if (AAS_Swimming(movestate->origin))
+	{
+		return BotSwimInDirection(movestate, dir, speed, type);
+	}
+	return BotWalkInDirection(movestate, dir, speed, type);
+}
+
+/*
+=============
+Intersection
+
+Find the truncated intersection point of two infinite two-dimensional lines.
+=============
+*/
+int Intersection(const vec3_t p1,
+	const vec3_t p2,
+	const vec3_t p3,
+	const vec3_t p4,
+	vec3_t out)
+{
+	float d1x = p2[0] - p1[0];
+	float d1y = p2[1] - p1[1];
+	float d2x = p4[0] - p3[0];
+	float d2y = p4[1] - p3[1];
+	float determinant = d2x * d1y - d2y * d1x;
+
+	if (determinant == 0.0f)
 	{
 		return 0;
 	}
 
-	if (BotMove_PointInLiquid(ms->origin, ms->areanum) ||
-	    (ms->moveflags & MFL_SWIMMING) != 0)
-	{
-		ms->moveflags |= MFL_SWIMMING;
-		return BotMove_SwimInDirection(ms, dir, speed, type);
-	}
-
-	return BotMove_WalkInDirection(ms, dir, speed, type);
+	float cross1 = d1x * p1[1] - d1y * p1[0];
+	float cross2 = d2x * p3[1] - d2y * p3[0];
+	out[0] = (float)(int)((cross2 * d1x - cross1 * d2x) / determinant);
+	out[1] = (float)(int)((cross2 * d1y - cross1 * d2y) / determinant);
+	return 1;
 }
 
 /*
 =============
-BotMove_ResetAvoidReach
+BotCheckBlocked
 
-Clear movement state avoid reachability tracking.
+Trace three units in the requested direction and record a blocking entity.
 =============
 */
-void BotMove_ResetAvoidReach(int movestate)
+static int BotCheckBlocked(bot_movestate_t *ms,
+	const vec3_t dir,
+	bot_moveresult_t *moveresult)
 {
-	bot_movestate_t *ms = BotMoveStateFromHandle(movestate);
-	if (ms == NULL)
-	{
-		return;
-	}
-
-	memset(ms->avoidreach, 0, sizeof(ms->avoidreach));
-	memset(ms->avoidreachtimes, 0, sizeof(ms->avoidreachtimes));
-	memset(ms->avoidreachtries, 0, sizeof(ms->avoidreachtries));
-	ms->lastavoidreach = 0;
-	ms->lastavoidreachtime = 0.0f;
-	ms->lastavoidreachtries = 0;
-}
-
-/*
-=============
-BotResetLastAvoidReach
-
-Clear the most recent avoid reach entry.
-=============
-*/
-void BotResetLastAvoidReach(int movestate)
-{
-	bot_movestate_t *ms;
-	int latest;
-	float latesttime;
-
-	ms = BotMoveStateFromHandle(movestate);
-	if (ms == NULL)
-	{
-		return;
-	}
-
-	latest = -1;
-	latesttime = 0.0f;
-	for (int i = 0; i < MAX_AVOIDREACH; i++)
-	{
-		if (ms->avoidreachtimes[i] > latesttime)
-		{
-			latesttime = ms->avoidreachtimes[i];
-			latest = i;
-		}
-	}
-
-	if (latest >= 0 && latesttime > 0.0f)
-	{
-		ms->avoidreachtimes[latest] = 0.0f;
-		if (ms->avoidreachtries[latest] > 0)
-		{
-			ms->avoidreachtries[latest]--;
-		}
-	}
-
-	ms->lastavoidreach = 0;
-	ms->lastavoidreachtime = 0.0f;
-	ms->lastavoidreachtries = 0;
-}
-
-/*
-=============
-BotReachabilityArea
-
-Resolve the reachability area for an origin with mover/solid handling.
-=============
-*/
-int BotReachabilityArea(const vec3_t origin, int client)
-{
-	if (origin == NULL)
-	{
-		return 0;
-	}
-
 	vec3_t mins;
 	vec3_t maxs;
-	BotMove_CrouchPresenceBounds(mins, maxs);
-
-	vec3_t start;
 	vec3_t end;
-	VectorCopy(origin, start);
-	VectorCopy(origin, end);
-	end[2] -= 3.0f;
-
-	bsp_trace_t trace = Q2_Trace(start, mins, maxs, end, client, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	if (!trace.startsolid && trace.fraction < 1.0f)
+	AAS_PresenceTypeBoundingBox(ms->presencetype, mins, maxs);
+	if (fabsf(dir[2]) < 0.7f)
 	{
-		int entnum = trace.ent;
-		if (entnum == 0)
-		{
-			return BotMove_FuzzyPointReachabilityArea(start);
-		}
-
-		if (entnum > 0 && aasworld.entities != NULL && entnum < aasworld.maxEntities)
-		{
-			const aas_entity_t *entity = &aasworld.entities[entnum];
-			if (entity != NULL && entity->inuse)
-			{
-				int modelnum = AAS_ModelNumForEntity(entnum);
-				if (modelnum > 0)
-				{
-					const bot_mover_catalogue_entry_t *entry = BotMove_MoverCatalogueFindByModel(modelnum);
-					if (entry != NULL &&
-						(entry->kind == BOT_MOVER_KIND_FUNC_PLAT ||
-						 entry->kind == BOT_MOVER_KIND_FUNC_BOB))
-					{
-						aas_reachability_t reach;
-						int reachnum = AAS_NextModelReachability(0, modelnum);
-						if (reachnum > 0 && BotMove_LoadReachability(reachnum, &reach))
-						{
-							return reach.areanum;
-						}
-					}
-				}
-			}
-		}
-
-		if (Q2_PointContents(start) & MASK_WATER)
-		{
-			return BotMove_FuzzyPointReachabilityArea(start);
-		}
-
-		int areanum = BotMove_FuzzyPointReachabilityArea(start);
-		if (areanum > 0 && BotMove_AreaHasReachability(areanum))
-		{
-			return areanum;
-		}
-
-		VectorCopy(origin, end);
-		end[2] -= 800.0f;
-		trace = Q2_Trace(start, mins, maxs, end, -1, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-		if (!trace.startsolid)
-		{
-			return BotMove_FuzzyPointReachabilityArea(trace.endpos);
-		}
+		mins[2] += BotMove_LibVarValue(libvar_sv_step, 18.0f);
+		maxs[2] -= 10.0f;
 	}
-
-	return BotMove_FuzzyPointReachabilityArea(start);
+	VectorMA(ms->origin, 3.0f, dir, end);
+	bsp_trace_t trace = Q2_Trace(ms->origin,
+		mins,
+		maxs,
+		end,
+		ms->entitynum,
+		MASK_PLAYERSOLID);
+	if (trace.startsolid)
+	{
+		return trace.startsolid;
+	}
+	if (trace.ent != 0)
+	{
+		moveresult->blocked = 1;
+		moveresult->blockentity = trace.ent;
+		return (int)(intptr_t)moveresult;
+	}
+	return 0;
 }
 
 /*
 =============
-BotMovementViewTarget
+BotClearMoveResult
 
-Compute a lookahead target point along the current movement path.
+Clear exactly the six-dword retail status prefix, preserving vector storage.
 =============
 */
-int BotMovementViewTarget(int movestate,
-						  const bot_goal_t *goal,
-						  int travelflags,
-						  float lookahead,
-						  vec3_t target)
+bot_moveresult_t *BotClearMoveResult(bot_moveresult_t *moveresult)
 {
-	aas_reachability_t reach;
-	aas_reachability_t next_reach;
-	int next_reachnum;
-	int reachnum;
-	int lastareanum;
-	bot_movestate_t *ms;
-	vec3_t end;
-	float dist;
+	memset(moveresult, 0, 0x18);
+	return moveresult;
+}
 
-	if (target == NULL)
+/*
+=============
+BotTravel_Walk
+
+Execute an active retail walking reachability.
+=============
+*/
+bot_moveresult_t BotTravel_Walk(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	BotClearMoveResult(&moveresult);
+	dir[0] = reach->start[0] - ms->origin[0];
+	dir[1] = reach->start[1] - ms->origin[1];
+	dir[2] = 0.0f;
+	float distance = BotMove_VectorNormalize(dir);
+	BotCheckBlocked(ms, dir, &moveresult);
+	if (distance < 10.0f)
 	{
-		return 0;
+		dir[0] = reach->end[0] - ms->origin[0];
+		dir[1] = reach->end[1] - ms->origin[1];
+		dir[2] = 0.0f;
+		distance = BotMove_VectorNormalize(dir);
+	}
+	if ((AAS_AreaPresenceType(reach->areanum) & PRESENCE_NORMAL) == 0 &&
+		distance < 20.0f)
+	{
+		EA_Crouch(ms->client);
 	}
 
-	ms = BotMoveStateFromHandle(movestate);
-	if (ms == NULL)
+	float gapdistance = BotGapDistance(ms, dir);
+	float speed = gapdistance > 0.0f
+		? 300.0f - (300.0f - (gapdistance + gapdistance))
+		: 400.0f;
+	EA_Move(ms->client, dir, speed);
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
+
+/*
+=============
+BotFinishTravel_Walk
+
+Execute the retained but unreachable retail walk finish helper.
+=============
+*/
+bot_moveresult_t BotFinishTravel_Walk(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	BotClearMoveResult(&moveresult);
+	dir[0] = reach->end[0] - ms->origin[0];
+	dir[1] = reach->end[1] - ms->origin[1];
+	dir[2] = 0.0f;
+	float distance = BotMove_VectorNormalize(dir);
+	if (distance > 100.0f)
 	{
-		return 0;
+		distance = 100.0f;
 	}
+	float speed = 400.0f - (400.0f - 3.0f * distance);
+	EA_Move(ms->client, dir, speed);
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
 
-	if (goal == NULL || ms->lastreachnum <= 0)
+/*
+=============
+BotTravel_Crouch
+
+Execute an active retail crouch reachability.
+=============
+*/
+bot_moveresult_t BotTravel_Crouch(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	BotClearMoveResult(&moveresult);
+	dir[0] = reach->end[0] - ms->origin[0];
+	dir[1] = reach->end[1] - ms->origin[1];
+	dir[2] = 0.0f;
+	BotMove_VectorNormalize(dir);
+	BotCheckBlocked(ms, dir, &moveresult);
+	EA_Crouch(ms->client);
+	EA_Move(ms->client, dir, 400.0f);
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
+
+/*
+=============
+BotTravel_BarrierJump
+
+Approach and trigger an active retail barrier-jump reachability.
+=============
+*/
+bot_moveresult_t BotTravel_BarrierJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	BotClearMoveResult(&moveresult);
+	dir[0] = reach->start[0] - ms->origin[0];
+	dir[1] = reach->start[1] - ms->origin[1];
+	dir[2] = 0.0f;
+	float distance = BotMove_VectorNormalize(dir);
+	BotCheckBlocked(ms, dir, &moveresult);
+	if (distance < 7.0f)
 	{
-		return 0;
+		EA_Jump(ms->client);
 	}
-
-	reachnum = ms->lastreachnum;
-	VectorCopy(ms->origin, end);
-	lastareanum = ms->lastareanum;
-	dist = 0.0f;
-
-	while (reachnum > 0 && dist < lookahead)
+	else
 	{
-		int traveltype;
-
-		if (!BotMove_LoadReachability(reachnum, &reach))
+		if (distance > 60.0f)
 		{
-			return 0;
+			distance = 60.0f;
 		}
+		float speed = 360.0f - (360.0f - distance * 6.0f);
+		EA_Move(ms->client, dir, speed);
+	}
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
 
-		if (BotMove_AddToTarget(end, reach.start, lookahead, &dist, target))
+/*
+=============
+BotFinishTravel_BarrierJump
+
+Apply descending air control after a retail barrier jump.
+=============
+*/
+bot_moveresult_t BotFinishTravel_BarrierJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	BotClearMoveResult(&moveresult);
+	if (ms->velocity[2] < 250.0f)
+	{
+		vec3_t dir;
+		dir[0] = reach->end[0] - ms->origin[0];
+		dir[1] = reach->end[1] - ms->origin[1];
+		dir[2] = 0.0f;
+		float distance = BotMove_VectorNormalize(dir);
+		BotCheckBlocked(ms, dir, &moveresult);
+		if (distance > 60.0f)
 		{
-			return 1;
+			distance = 60.0f;
 		}
+		float speed = 400.0f - (400.0f - distance * 6.0f);
+		EA_Move(ms->client, dir, speed);
+		VectorCopy(dir, moveresult.movedir);
+	}
+	return moveresult;
+}
 
-		traveltype = reach.traveltype & TRAVELTYPE_MASK;
-		if (traveltype == TRAVEL_TELEPORT ||
-			traveltype == TRAVEL_ROCKETJUMP ||
-			traveltype == TRAVEL_BFGJUMP)
+/*
+=============
+BotTravel_Swim
+
+Execute an active retail swimming reachability.
+=============
+*/
+bot_moveresult_t BotTravel_Swim(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	BotClearMoveResult(&moveresult);
+	VectorSubtract(reach->start, ms->origin, dir);
+	BotMove_VectorNormalize(dir);
+	BotCheckBlocked(ms, dir, &moveresult);
+	EA_Move(ms->client, dir, 400.0f);
+	VectorCopy(dir, moveresult.movedir);
+	Vector2Angles(dir, moveresult.ideal_viewangles);
+	moveresult.flags |= MOVERESULT_SWIMVIEW;
+	return moveresult;
+}
+
+/*
+=============
+BotTravel_WaterJump
+
+Execute the active retail water-jump view and action sequence.
+=============
+*/
+bot_moveresult_t BotTravel_WaterJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	vec3_t hordir;
+	BotClearMoveResult(&moveresult);
+	VectorSubtract(reach->end, ms->origin, dir);
+	VectorCopy(dir, hordir);
+	hordir[2] = 0.0f;
+	dir[2] += BotMove_RandomSigned() * 40.0f + 15.0f;
+	BotMove_VectorNormalize(dir);
+	float distance = BotMove_VectorNormalize(hordir);
+	EA_MoveForward(ms->client);
+	if (distance < 40.0f)
+	{
+		EA_MoveUp(ms->client);
+	}
+	Vector2Angles(dir, moveresult.ideal_viewangles);
+	moveresult.flags |= MOVERESULT_MOVEMENTVIEW;
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
+
+/*
+=============
+BotFinishTravel_WaterJump
+
+Apply the retail randomized push while leaving water after a water jump.
+=============
+*/
+bot_moveresult_t BotFinishTravel_WaterJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	BotClearMoveResult(&moveresult);
+	if ((ms->moveflags & MFL_WATERJUMP) == 0)
+	{
+		vec3_t point;
+		VectorCopy(ms->origin, point);
+		point[2] -= 32.0f;
+		if ((AAS_PointContents(point) & 0x38) != 0)
 		{
-			return 1;
+			vec3_t dir;
+			VectorSubtract(reach->end, ms->origin, dir);
+			dir[0] += BotMove_RandomSigned() * 10.0f;
+			dir[1] += BotMove_RandomSigned() * 10.0f;
+			dir[2] += BotMove_RandomSigned() * 10.0f + 70.0f;
+			BotMove_VectorNormalize(dir);
+			EA_Move(ms->client, dir, 400.0f);
+			Vector2Angles(dir, moveresult.ideal_viewangles);
+			moveresult.flags |= MOVERESULT_MOVEMENTVIEW;
+			VectorCopy(dir, moveresult.movedir);
 		}
+	}
+	return moveresult;
+}
 
-		if (traveltype != TRAVEL_JUMPPAD &&
-			traveltype != TRAVEL_ELEVATOR &&
-			traveltype != TRAVEL_FUNCBOB)
+/*
+=============
+BotTravel_WalkOffLedge
+
+Execute the Gladiator walk-off-ledge approach and horizontal-speed solve.
+=============
+*/
+bot_moveresult_t BotTravel_WalkOffLedge(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	vec3_t position;
+	BotClearMoveResult(&moveresult);
+	VectorSubtract(reach->end, ms->origin, position);
+	BotCheckBlocked(ms, position, &moveresult);
+	dir[0] = position[0];
+	dir[1] = position[1];
+	dir[2] = 0.0f;
+	float distance = BotMove_VectorNormalize(dir);
+	float originaldistance = distance;
+	float speed;
+
+	if (distance < 60.0f)
+	{
+		dir[0] = reach->end[0] - ms->origin[0];
+		dir[1] = reach->end[1] - ms->origin[1];
+		dir[2] = 0.0f;
+		BotMove_VectorNormalize(dir);
+		position[0] = reach->end[0] - reach->start[0];
+		position[1] = reach->end[1] - reach->start[1];
+		position[2] = 0.0f;
+		if (sqrtf(DotProduct(position, position)) < 15.0f)
 		{
-			if (BotMove_AddToTarget(reach.start, reach.end, lookahead, &dist, target))
+			if (originaldistance > 0.0f && originaldistance < 150.0f)
 			{
-				return 1;
+				speed = 380.0f - (300.0f - (originaldistance + originaldistance));
+			}
+			else
+			{
+				speed = 400.0f;
 			}
 		}
-
-		next_reachnum = BotMove_GetReachabilityFromPoint(ms,
-		                                                 reach.end,
-		                                                 reach.areanum,
-		                                                 ms->lastgoalareanum,
-		                                                 lastareanum,
-		                                                 goal,
-		                                                 travelflags,
-		                                                 &next_reach);
-
-		VectorCopy(reach.end, end);
-		lastareanum = reach.areanum;
-		if (lastareanum == goal->areanum)
+		else if (!AAS_HorizontalVelocityForJump(0.0f,
+			reach->start,
+			reach->end,
+			&speed))
 		{
-			BotMove_AddToTarget(reach.end, goal->origin, lookahead, &dist, target);
+			speed = 200.0f;
+		}
+	}
+	else
+	{
+		speed = 400.0f;
+	}
+
+	BotCheckBlocked(ms, dir, &moveresult);
+	EA_Move(ms->client, dir, speed);
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
+
+/*
+=============
+BotFinishTravel_WalkOffLedge
+
+Apply fixed-speed horizontal air control after walking off a ledge.
+=============
+*/
+bot_moveresult_t BotFinishTravel_WalkOffLedge(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t position;
+	vec3_t dir;
+	BotClearMoveResult(&moveresult);
+	VectorSubtract(reach->end, ms->origin, position);
+	BotCheckBlocked(ms, position, &moveresult);
+	dir[0] = position[0];
+	dir[1] = position[1];
+	dir[2] = 0.0f;
+	BotMove_VectorNormalize(dir);
+	EA_Move(ms->client, dir, 400.0f);
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
+
+/*
+=============
+BotTravel_Jump
+
+Execute the retail run-up and launch state machine for a jump reachability.
+=============
+*/
+bot_moveresult_t BotTravel_Jump(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t hordir;
+	vec3_t runstart;
+	vec3_t dir1;
+	vec3_t dir2;
+	vec3_t start;
+	vec3_t end;
+	BotClearMoveResult(&moveresult);
+
+	AAS_JumpReachRunStart(reach, runstart);
+	hordir[0] = runstart[0] - reach->start[0];
+	hordir[1] = runstart[1] - reach->start[1];
+	hordir[2] = 0.0f;
+	BotMove_VectorNormalize(hordir);
+	VectorCopy(reach->start, start);
+	start[2] += 1.0f;
+	VectorMA(reach->start, 80.0f, hordir, runstart);
+
+	float sampledistance;
+	for (sampledistance = 0.0f;
+		sampledistance < 80.0f;
+		sampledistance += 10.0f)
+	{
+		VectorMA(start, sampledistance + 10.0f, hordir, end);
+		end[2] += 1.0f;
+		if (AAS_PointAreaNum(end) != ms->reachareanum)
+		{
+			break;
+		}
+	}
+	if (sampledistance < 80.0f)
+	{
+		VectorMA(reach->start, sampledistance, hordir, runstart);
+	}
+
+	VectorSubtract(ms->origin, reach->start, dir1);
+	dir1[2] = 0.0f;
+	float startdistance = BotMove_VectorNormalize(dir1);
+	VectorSubtract(ms->origin, runstart, dir2);
+	dir2[2] = 0.0f;
+	float runstartdistance = BotMove_VectorNormalize(dir2);
+	if (DotProduct(dir1, dir2) < -0.8f || runstartdistance < 5.0f)
+	{
+		hordir[0] = reach->end[0] - ms->origin[0];
+		hordir[1] = reach->end[1] - ms->origin[1];
+		hordir[2] = 0.0f;
+		BotMove_VectorNormalize(hordir);
+		if (startdistance < 24.0f)
+		{
+			EA_Jump(ms->client);
+		}
+		else if (startdistance < 32.0f)
+		{
+			EA_DelayedJump(ms->client);
+		}
+		EA_Move(ms->client, hordir, 600.0f);
+		ms->jumpreach = ms->lastreachnum;
+	}
+	else
+	{
+		hordir[0] = runstart[0] - ms->origin[0];
+		hordir[1] = runstart[1] - ms->origin[1];
+		hordir[2] = 0.0f;
+		BotMove_VectorNormalize(hordir);
+		if (runstartdistance > 80.0f)
+		{
+			runstartdistance = 80.0f;
+		}
+		float speed = 400.0f - (400.0f - runstartdistance * 5.0f);
+		EA_Move(ms->client, hordir, speed);
+	}
+
+	VectorCopy(hordir, moveresult.movedir);
+	return moveresult;
+}
+
+/*
+=============
+BotFinishTravel_Jump
+
+Apply retail horizontal air control after the jump action has fired.
+=============
+*/
+bot_moveresult_t BotFinishTravel_Jump(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	BotClearMoveResult(&moveresult);
+	if (ms->jumpreach != 0)
+	{
+		vec3_t dir;
+		vec3_t reachdir;
+		dir[0] = reach->end[0] - ms->origin[0];
+		dir[1] = reach->end[1] - ms->origin[1];
+		dir[2] = 0.0f;
+		float distance = BotMove_VectorNormalize(dir);
+		reachdir[0] = reach->end[0] - reach->start[0];
+		reachdir[1] = reach->end[1] - reach->start[1];
+		reachdir[2] = 0.0f;
+		BotMove_VectorNormalize(reachdir);
+		if (DotProduct(reachdir, dir) >= -0.5f || distance >= 24.0f)
+		{
+			EA_Move(ms->client, dir, 800.0f);
+			VectorCopy(dir, moveresult.movedir);
+		}
+	}
+	return moveresult;
+}
+
+/*
+=============
+BotTravel_Ladder
+
+Execute the retail view-driven ladder action.
+=============
+*/
+bot_moveresult_t BotTravel_Ladder(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	vec3_t viewdir;
+	vec3_t origin = {0.0f, 0.0f, 0.0f};
+	BotClearMoveResult(&moveresult);
+	VectorSubtract(reach->end, ms->origin, dir);
+	BotMove_VectorNormalize(dir);
+	viewdir[0] = dir[0];
+	viewdir[1] = dir[1];
+	viewdir[2] = dir[2] * 3.0f;
+	Vector2Angles(viewdir, moveresult.ideal_viewangles);
+	EA_Move(ms->client, origin, 0.0f);
+	EA_MoveForward(ms->client);
+	moveresult.flags |= MOVERESULT_MOVEMENTVIEW;
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
+
+/*
+=============
+BotTravel_Teleport
+
+Approach a teleporter unless the frame input marks the bot as teleported.
+=============
+*/
+bot_moveresult_t BotTravel_Teleport(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	BotClearMoveResult(&moveresult);
+	if ((ms->moveflags & MFL_TELEPORTED) == 0)
+	{
+		vec3_t dir;
+		VectorSubtract(reach->start, ms->origin, dir);
+		if ((ms->moveflags & MFL_SWIMMING) == 0)
+		{
+			dir[2] = 0.0f;
+		}
+		float distance = BotMove_VectorNormalize(dir);
+		BotCheckBlocked(ms, dir, &moveresult);
+		EA_Move(ms->client, dir, distance < 30.0f ? 200.0f : 400.0f);
+		if ((ms->moveflags & MFL_SWIMMING) != 0)
+		{
+			moveresult.flags |= MOVERESULT_SWIMVIEW;
+		}
+		VectorCopy(dir, moveresult.movedir);
+	}
+	return moveresult;
+}
+
+/*
+=============
+BotTravel_Elevator
+
+Execute the retail elevator approach, wait, boarding, and exit states.
+=============
+*/
+bot_moveresult_t BotTravel_Elevator(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t final;
+	vec3_t dir;
+	vec3_t reachdir;
+	vec3_t telegoaldir;
+	vec3_t telegoal;
+	BotClearMoveResult(&moveresult);
+
+	if (BotOnMover(ms->origin, ms->entitynum, reach))
+	{
+		if ((float)abs((int)(ms->origin[2] - reach->end[2])) <
+			BotMove_LibVarValue(libvar_sv_maxbarrier, 50.0f))
+		{
+			dir[0] = reach->end[0] - ms->origin[0];
+			dir[1] = reach->end[1] - ms->origin[1];
+			dir[2] = 0.0f;
+			BotMove_VectorNormalize(dir);
+			if (!BotCheckBarrierJump(ms, dir, 100.0f))
+			{
+				EA_Move(ms->client, dir, 400.0f);
+			}
+			VectorCopy(dir, moveresult.movedir);
+		}
+		else
+		{
+			MoverBottomCenter(reach, telegoal);
+			dir[0] = telegoal[0] - ms->origin[0];
+			dir[1] = telegoal[1] - ms->origin[1];
+			dir[2] = 0.0f;
+			float distance = BotMove_VectorNormalize(dir);
+			if (distance > 5.0f)
+			{
+				if (distance > 100.0f)
+				{
+					distance = 100.0f;
+				}
+				float speed = 400.0f - (400.0f - distance * 4.0f);
+				EA_Move(ms->client, dir, speed);
+				VectorCopy(dir, moveresult.movedir);
+			}
+		}
+		return moveresult;
+	}
+
+	VectorSubtract(reach->start, ms->origin, reachdir);
+	if ((ms->moveflags & MFL_SWIMMING) == 0)
+	{
+		reachdir[2] = 0.0f;
+	}
+	float distance1 = BotMove_VectorNormalize(reachdir);
+	if (!MoverDown(reach))
+	{
+		float distance = distance1;
+		VectorCopy(reachdir, final);
+		BotCheckBlocked(ms, final, &moveresult);
+		if (distance > 60.0f)
+		{
+			distance = 60.0f;
+		}
+		float speed = 360.0f - (360.0f - distance * 6.0f);
+		if ((ms->moveflags & MFL_SWIMMING) == 0 &&
+			!BotCheckBarrierJump(ms, final, 50.0f) && speed > 5.0f)
+		{
+			EA_Move(ms->client, final, speed);
+		}
+		VectorCopy(final, moveresult.movedir);
+		if ((ms->moveflags & MFL_SWIMMING) != 0)
+		{
+			moveresult.flags |= MOVERESULT_SWIMVIEW;
+		}
+		moveresult.type = RESULTTYPE_ELEVATORUP;
+		moveresult.flags |= MOVERESULT_WAITING;
+		return moveresult;
+	}
+
+	MoverBottomCenter(reach, telegoal);
+	VectorSubtract(telegoal, ms->origin, telegoaldir);
+	if ((ms->moveflags & MFL_SWIMMING) == 0)
+	{
+		telegoaldir[2] = 0.0f;
+	}
+	float distance2 = BotMove_VectorNormalize(telegoaldir);
+	float distance;
+	if (distance1 < 20.0f || distance2 < distance1 ||
+		DotProduct(telegoaldir, reachdir) < 0.0f)
+	{
+		distance = distance2;
+		VectorCopy(telegoaldir, final);
+	}
+	else
+	{
+		distance = distance1;
+		VectorCopy(reachdir, final);
+	}
+	BotCheckBlocked(ms, final, &moveresult);
+	if (distance > 60.0f)
+	{
+		distance = 60.0f;
+	}
+	if ((ms->moveflags & MFL_SWIMMING) == 0 &&
+		!BotCheckBarrierJump(ms, final, 50.0f))
+	{
+		float speed = 400.0f - (400.0f - distance * 6.0f);
+		EA_Move(ms->client, final, speed);
+	}
+	VectorCopy(final, moveresult.movedir);
+	if ((ms->moveflags & MFL_SWIMMING) != 0)
+	{
+		moveresult.flags |= MOVERESULT_SWIMVIEW;
+	}
+	return moveresult;
+}
+
+/*
+=============
+BotFinishTravel_Elevator
+
+Move vertically toward the closer elevator-bottom or reach-end target.
+=============
+*/
+bot_moveresult_t BotFinishTravel_Elevator(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t reachdir;
+	vec3_t telegoaldir;
+	vec3_t telegoal;
+	BotClearMoveResult(&moveresult);
+	MoverBottomCenter(reach, telegoal);
+	VectorSubtract(telegoal, ms->origin, telegoaldir);
+	VectorSubtract(reach->end, ms->origin, reachdir);
+	if (fabsf(telegoaldir[2]) < fabsf(reachdir[2]))
+	{
+		BotMove_VectorNormalize(telegoaldir);
+		EA_Move(ms->client, telegoaldir, 300.0f);
+	}
+	else
+	{
+		BotMove_VectorNormalize(reachdir);
+		EA_Move(ms->client, reachdir, 300.0f);
+	}
+	return moveresult;
+}
+
+/*
+=============
+GrappleState
+
+Return whether the retail grapple entity is moving or near the reach end.
+=============
+*/
+int GrappleState(bot_movestate_t *ms, const aas_reachability_t *reach)
+{
+	(void)ms;
+	if (libvar_laserhook == NULL)
+	{
+		libvar_laserhook = LibVar("laserhook", "0");
+	}
+	float laserhook = BotMove_LibVarValue(libvar_laserhook, 0.0f);
+	if (laserhook == 0.0f && grapplemodelindex == 0)
+	{
+		grapplemodelindex = IndexFromModel("models/weapons/grapple/hook/tris.md2");
+	}
+
+	for (int entnum = AAS_NextEntity(0);
+		entnum != 0;
+		entnum = AAS_NextEntity(entnum))
+	{
+		if ((laserhook != 0.0f ||
+			AAS_EntityModelindex(entnum) != grapplemodelindex) &&
+			(laserhook == 0.0f ||
+			(AAS_EntityRenderFX(entnum) & 0x80) == 0))
+		{
+			continue;
+		}
+
+		aas_entityinfo_t info;
+		AAS_EntityInfo(entnum, &info);
+		if (info.origin[0] != info.lastvisorigin[0] ||
+			info.origin[1] != info.lastvisorigin[1] ||
+			info.origin[2] != info.lastvisorigin[2])
+		{
 			return 1;
 		}
-		reachnum = next_reachnum;
+		vec3_t delta;
+		VectorSubtract(info.origin, reach->end, delta);
+		if (sqrtf(DotProduct(delta, delta)) < 32.0f)
+		{
+			return 2;
+		}
 	}
 
 	return 0;
@@ -4546,107 +1504,865 @@ int BotMovementViewTarget(int movestate,
 
 /*
 =============
-BotMove_Visible
+BotResetGrapple
 
-Check line of sight between two points for movement prediction.
+Release a grapple that no longer belongs to the active reachability.
 =============
 */
-static bool BotMove_Visible(int ent, const vec3_t start, const vec3_t end)
+static void BotResetGrapple(bot_movestate_t *ms)
 {
-	if (start == NULL || end == NULL)
+	aas_reachability_t reach;
+	AAS_ReachabilityFromNum(ms->lastreachnum, &reach);
+	if (reach.traveltype != TRAVEL_GRAPPLEHOOK &&
+		((ms->moveflags & MFL_GRAPPLEATTACHED) != 0 ||
+		ms->grapplevisible_time != 0.0f))
 	{
-		return false;
+		EA_Command(ms->client, "hookoff", (char *)NULL);
+		ms->moveflags &= ~MFL_GRAPPLEATTACHED;
+		ms->grapplevisible_time = 0.0f;
+	}
+}
+
+/*
+=============
+BotTravel_Grapple
+
+Execute the retail grapple attach, visibility, pull, and reset state machine.
+=============
+*/
+bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	BotClearMoveResult(&moveresult);
+	if ((ms->moveflags & MFL_GRAPPLERESET) != 0)
+	{
+		EA_Command(ms->client, "hookoff", (char *)NULL);
+		ms->moveflags &= ~MFL_GRAPPLEATTACHED;
+		return moveresult;
 	}
 
-	vec3_t trace_start;
-	vec3_t trace_end;
-	VectorCopy(start, trace_start);
-	VectorCopy(end, trace_end);
+	if ((ms->moveflags & MFL_GRAPPLEATTACHED) != 0)
+	{
+		int state = GrappleState(ms, reach);
+		vec3_t dir;
+		dir[0] = reach->end[0] - ms->origin[0];
+		dir[1] = reach->end[1] - ms->origin[1];
+		dir[2] = 0.0f;
+		float distance = sqrtf(DotProduct(dir, dir));
+		if (state != 0)
+		{
+			if (distance < 48.0f)
+			{
+				if (ms->lastgrappledist - distance < 1.0f)
+				{
+					EA_Command(ms->client, "hookoff", (char *)NULL);
+					ms->reachability_time = 0.0f;
+					ms->moveflags =
+						(ms->moveflags & ~MFL_GRAPPLEATTACHED) | MFL_GRAPPLERESET;
+				}
+				ms->lastgrappledist = distance;
+				return moveresult;
+			}
+			if (state != 2 || ms->lastgrappledist - 2.0f >= distance)
+			{
+				ms->grapplevisible_time = AAS_Time();
+				ms->lastgrappledist = distance;
+				return moveresult;
+			}
+		}
+		if (AAS_Time() - 0.4f <= ms->grapplevisible_time)
+		{
+			ms->lastgrappledist = distance;
+			return moveresult;
+		}
+		EA_Command(ms->client, "hookoff", (char *)NULL);
+		ms->moveflags =
+			(ms->moveflags & ~MFL_GRAPPLEATTACHED) | MFL_GRAPPLERESET;
+		ms->reachability_time = 0.0f;
+		return moveresult;
+	}
 
-	vec3_t mins = {0.0f, 0.0f, 0.0f};
-	vec3_t maxs = {0.0f, 0.0f, 0.0f};
-	bsp_trace_t trace = Q2_Trace(trace_start,
-								 mins,
-								 maxs,
-								 trace_end,
-								 ent,
-								 CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
-	return trace.fraction >= 1.0f;
+	ms->grapplevisible_time = AAS_Time();
+	vec3_t dir;
+	VectorSubtract(reach->start, ms->origin, dir);
+	if ((ms->moveflags & MFL_SWIMMING) == 0)
+	{
+		dir[2] = 0.0f;
+	}
+	vec3_t eye;
+	vec3_t viewdir;
+	VectorAdd(ms->viewoffset, ms->origin, eye);
+	VectorSubtract(reach->end, eye, viewdir);
+	float distance = BotMove_VectorNormalize(dir);
+	Vector2Angles(viewdir, moveresult.ideal_viewangles);
+	moveresult.flags |= MOVERESULT_MOVEMENTVIEW;
+	if (distance >= 5.0f ||
+		fabs(BotMove_AngleDiff(moveresult.ideal_viewangles[0], ms->viewangles[0])) >= 2.0 ||
+		fabs(BotMove_AngleDiff(moveresult.ideal_viewangles[1], ms->viewangles[1])) >= 2.0)
+	{
+		float speed = distance >= 70.0f
+			? 400.0f
+			: 300.0f - (300.0f - distance * 4.0f);
+		BotCheckBlocked(ms, dir, &moveresult);
+		EA_Move(ms->client, dir, speed);
+		VectorCopy(dir, moveresult.movedir);
+	}
+	else
+	{
+		EA_Command(ms->client, "hookon", (char *)NULL);
+		unsigned int sentinel = 0x4969ffb0u;
+		memcpy(&ms->lastgrappledist, &sentinel, sizeof(sentinel));
+		ms->moveflags |= MFL_GRAPPLEATTACHED;
+	}
+
+	int areanum = AAS_PointAreaNum(ms->origin);
+	if (areanum != 0 && areanum != ms->reachareanum)
+	{
+		ms->reachability_time = 0.0f;
+	}
+	return moveresult;
+}
+
+/*
+=============
+BotTravel_RocketJump
+
+Execute the Gladiator distance-gated rocket-jump action and view setup.
+=============
+*/
+bot_moveresult_t BotTravel_RocketJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	BotClearMoveResult(&moveresult);
+	dir[0] = reach->start[0] - ms->origin[0];
+	dir[1] = reach->start[1] - ms->origin[1];
+	dir[2] = 0.0f;
+	float distance = BotMove_VectorNormalize(dir);
+	if (distance < 5.0f)
+	{
+		dir[0] = reach->end[0] - ms->origin[0];
+		dir[1] = reach->end[1] - ms->origin[1];
+		dir[2] = 0.0f;
+		BotMove_VectorNormalize(dir);
+		EA_Jump(ms->client);
+		EA_Attack(ms->client);
+		EA_Move(ms->client, dir, 800.0f);
+		ms->jumpreach = ms->lastreachnum;
+	}
+	else
+	{
+		if (distance > 80.0f)
+		{
+			distance = 80.0f;
+		}
+		float speed = 400.0f - (400.0f - distance * 5.0f);
+		EA_Move(ms->client, dir, speed);
+	}
+	Vector2Angles(dir, ms->viewangles);
+	ms->viewangles[0] = 90.0f;
+	EA_View(ms->client, ms->viewangles);
+	moveresult.flags |= MOVERESULT_MOVEMENTVIEWSET;
+	EA_UseItem(ms->client, "Rocket Launcher");
+	VectorCopy(dir, moveresult.movedir);
+	return moveresult;
+}
+
+/*
+=============
+BotEmptyMoveResult
+
+Retain the original incremental-link empty-result helper.
+=============
+*/
+bot_moveresult_t *BotEmptyMoveResult(bot_moveresult_t *result)
+{
+	bot_moveresult_t moveresult;
+	BotClearMoveResult(&moveresult);
+	*result = moveresult;
+	return result;
+}
+
+/*
+=============
+BotFinishTravel_WeaponJump
+
+Apply Gladiator's fixed-speed horizontal rocket-jump air control.
+=============
+*/
+bot_moveresult_t BotFinishTravel_WeaponJump(bot_movestate_t *ms,
+	const aas_reachability_t *reach)
+{
+	bot_moveresult_t moveresult;
+	BotClearMoveResult(&moveresult);
+	if (ms->jumpreach != 0)
+	{
+		vec3_t hordir;
+		hordir[0] = reach->end[0] - ms->origin[0];
+		hordir[1] = reach->end[1] - ms->origin[1];
+		hordir[2] = 0.0f;
+		BotMove_VectorNormalize(hordir);
+		EA_Move(ms->client, hordir, 800.0f);
+		VectorCopy(hordir, moveresult.movedir);
+	}
+	return moveresult;
+}
+
+/*
+=============
+BotReachabilityTime
+
+Return the retail timeout for a reachability's travel type.
+=============
+*/
+int BotReachabilityTime(const aas_reachability_t *reach)
+{
+	switch (reach->traveltype)
+	{
+		case TRAVEL_WALK:
+		case TRAVEL_CROUCH:
+		case TRAVEL_BARRIERJUMP:
+		case TRAVEL_JUMP:
+		case TRAVEL_WALKOFFLEDGE:
+		case TRAVEL_SWIM:
+		case TRAVEL_WATERJUMP:
+		case TRAVEL_TELEPORT:
+			return 5;
+		case TRAVEL_LADDER:
+		case TRAVEL_ROCKETJUMP:
+			return 6;
+		case TRAVEL_ELEVATOR:
+			return 10;
+		case TRAVEL_GRAPPLEHOOK:
+			return 8;
+		default:
+			BotLib_Print(PRT_ERROR,
+				"travel type %d not implemented yet\n",
+				reach->traveltype);
+			return 8;
+	}
+}
+
+/*
+=============
+BotMoveInGoalArea
+
+Move directly toward a goal already inside the bot's current area.
+=============
+*/
+bot_moveresult_t BotMoveInGoalArea(bot_movestate_t *ms,
+	const bot_goal_t *goal)
+{
+	bot_moveresult_t moveresult;
+	vec3_t dir;
+	BotClearMoveResult(&moveresult);
+	dir[0] = goal->origin[0] - ms->origin[0];
+	dir[1] = goal->origin[1] - ms->origin[1];
+	if ((ms->moveflags & MFL_SWIMMING) != 0)
+	{
+		dir[2] = goal->origin[2] - ms->origin[2];
+		moveresult.traveltype = TRAVEL_SWIM;
+	}
+	else
+	{
+		dir[2] = 0.0f;
+		moveresult.traveltype = TRAVEL_WALK;
+	}
+	float distance = BotMove_VectorNormalize(dir);
+	if (distance > 100.0f)
+	{
+		distance = 100.0f;
+	}
+	float speed = 400.0f - (400.0f - distance * 4.0f);
+	if (speed < 10.0f)
+	{
+		speed = 0.0f;
+	}
+	BotCheckBlocked(ms, dir, &moveresult);
+	EA_Move(ms->client, dir, speed);
+	VectorCopy(dir, moveresult.movedir);
+	if ((ms->moveflags & MFL_SWIMMING) != 0)
+	{
+		Vector2Angles(dir, moveresult.ideal_viewangles);
+		moveresult.flags |= MOVERESULT_SWIMVIEW;
+	}
+	ms->lastreachnum = 0;
+	ms->lastareanum = 0;
+	ms->lastgoalareanum = goal->areanum;
+	VectorCopy(ms->origin, ms->lastorigin);
+	return moveresult;
+}
+
+/*
+=============
+BotMoveToGoal
+
+Select, retain, and execute the retail reachability for one movement frame.
+=============
+*/
+bot_moveresult_t *BotMoveToGoal(bot_moveresult_t *result,
+	bot_movestate_t *movestate,
+	const bot_goal_t *goal,
+	int travelflags)
+{
+	bot_moveresult_t moveresult;
+	aas_reachability_t reach;
+	aas_reachability_t lastreach;
+	BotClearMoveResult(&moveresult);
+	BotResetGrapple(movestate);
+	if (goal == NULL)
+	{
+		moveresult.failure = 1;
+		*result = moveresult;
+		return result;
+	}
+
+	movestate->moveflags &= ~(MFL_SWIMMING | MFL_AGAINSTLADDER);
+	if (AAS_OnGround(movestate->origin,
+		movestate->presencetype,
+		movestate->entitynum))
+	{
+		movestate->moveflags |= MFL_ONGROUND;
+	}
+	if (AAS_Swimming(movestate->origin))
+	{
+		movestate->moveflags |= MFL_SWIMMING;
+	}
+	if (AAS_AgainstLadder(movestate->origin))
+	{
+		movestate->moveflags |= MFL_AGAINSTLADDER;
+	}
+
+	if ((movestate->moveflags &
+		(MFL_ONGROUND | MFL_SWIMMING | MFL_AGAINSTLADDER)) != 0)
+	{
+		AAS_ReachabilityFromNum(movestate->lastreachnum, &lastreach);
+		movestate->areanum = BotReachabilityArea(movestate->origin,
+			lastreach.traveltype != TRAVEL_ELEVATOR);
+		if (movestate->areanum == goal->areanum)
+		{
+			*result = BotMoveInGoalArea(movestate, goal);
+			return result;
+		}
+
+		int reachnum = movestate->lastreachnum;
+		int keepreach = 0;
+		if (reachnum != 0)
+		{
+			AAS_ReachabilityFromNum(reachnum, &reach);
+			if ((travelflags & AAS_TravelFlagForType(reach.traveltype)) != 0)
+			{
+				if (reach.traveltype == TRAVEL_GRAPPLEHOOK)
+				{
+					keepreach = AAS_Time() <= movestate->reachability_time &&
+						(movestate->moveflags & MFL_GRAPPLERESET) == 0;
+				}
+				else if (reach.traveltype == TRAVEL_ELEVATOR)
+				{
+					keepreach = movestate->areanum != reach.areanum &&
+						AAS_Time() <= movestate->reachability_time;
+				}
+				else
+				{
+					keepreach = movestate->lastgoalareanum == goal->areanum &&
+						AAS_Time() <= movestate->reachability_time &&
+						movestate->lastareanum == movestate->areanum;
+				}
+			}
+		}
+
+		if (!keepreach)
+		{
+			AAS_AreaReachability(movestate->areanum);
+			reachnum = BotGetReachabilityToGoal(movestate->origin,
+				movestate->areanum,
+				movestate->lastgoalareanum,
+				movestate->lastareanum,
+				movestate->entitynum,
+				movestate->avoidreach,
+				movestate->avoidreachtimes,
+				movestate->avoidreachtries,
+				goal,
+				travelflags);
+			movestate->reachareanum = movestate->areanum;
+			movestate->jumpreach = 0;
+			movestate->moveflags &= ~MFL_GRAPPLERESET;
+			if (reachnum != 0)
+			{
+				AAS_ReachabilityFromNum(reachnum, &reach);
+				movestate->reachability_time =
+					AAS_Time() + (float)BotReachabilityTime(&reach);
+				BotAddToAvoidReach(movestate, reachnum, AVOIDREACH_TIME);
+			}
+		}
+
+		movestate->lastreachnum = reachnum;
+		movestate->lastareanum = movestate->areanum;
+		movestate->lastgoalareanum = goal->areanum;
+		if (reachnum != 0)
+		{
+			AAS_ReachabilityFromNum(reachnum, &reach);
+			moveresult.traveltype = reach.traveltype;
+			switch (reach.traveltype)
+			{
+				case TRAVEL_WALK:
+					moveresult = BotTravel_Walk(movestate, &reach);
+					break;
+				case TRAVEL_CROUCH:
+					moveresult = BotTravel_Crouch(movestate, &reach);
+					break;
+				case TRAVEL_BARRIERJUMP:
+					moveresult = BotTravel_BarrierJump(movestate, &reach);
+					break;
+				case TRAVEL_LADDER:
+					moveresult = BotTravel_Ladder(movestate, &reach);
+					break;
+				case TRAVEL_WALKOFFLEDGE:
+					moveresult = BotTravel_WalkOffLedge(movestate, &reach);
+					break;
+				case TRAVEL_JUMP:
+					moveresult = BotTravel_Jump(movestate, &reach);
+					break;
+				case TRAVEL_SWIM:
+					moveresult = BotTravel_Swim(movestate, &reach);
+					break;
+				case TRAVEL_WATERJUMP:
+					moveresult = BotTravel_WaterJump(movestate, &reach);
+					break;
+				case TRAVEL_TELEPORT:
+					moveresult = BotTravel_Teleport(movestate, &reach);
+					break;
+				case TRAVEL_ELEVATOR:
+					moveresult = BotTravel_Elevator(movestate, &reach);
+					break;
+				case TRAVEL_GRAPPLEHOOK:
+					moveresult = BotTravel_Grapple(movestate, &reach);
+					break;
+				case TRAVEL_ROCKETJUMP:
+					moveresult = BotTravel_RocketJump(movestate, &reach);
+					break;
+				default:
+					BotLib_Print(PRT_FATAL,
+						"travel type %d not implemented yet\n",
+						reach.traveltype);
+					break;
+			}
+		}
+		else
+		{
+			moveresult.failure = 1;
+		}
+	}
+	else if (movestate->lastreachnum != 0)
+	{
+		AAS_ReachabilityFromNum(movestate->lastreachnum, &reach);
+		moveresult.traveltype = reach.traveltype;
+		switch (reach.traveltype)
+		{
+			case TRAVEL_WALK:
+				moveresult = BotTravel_Walk(movestate, &reach);
+				break;
+			case TRAVEL_CROUCH:
+			case TRAVEL_TELEPORT:
+				break;
+			case TRAVEL_BARRIERJUMP:
+				moveresult = BotFinishTravel_BarrierJump(movestate, &reach);
+				break;
+			case TRAVEL_LADDER:
+				moveresult = BotTravel_Ladder(movestate, &reach);
+				break;
+			case TRAVEL_WALKOFFLEDGE:
+				moveresult = BotFinishTravel_WalkOffLedge(movestate, &reach);
+				break;
+			case TRAVEL_JUMP:
+				moveresult = BotFinishTravel_Jump(movestate, &reach);
+				break;
+			case TRAVEL_SWIM:
+				moveresult = BotTravel_Swim(movestate, &reach);
+				break;
+			case TRAVEL_WATERJUMP:
+				moveresult = BotFinishTravel_WaterJump(movestate, &reach);
+				break;
+			case TRAVEL_ELEVATOR:
+				moveresult = BotFinishTravel_Elevator(movestate, &reach);
+				break;
+			case TRAVEL_GRAPPLEHOOK:
+				moveresult = BotTravel_Grapple(movestate, &reach);
+				break;
+			case TRAVEL_ROCKETJUMP:
+				moveresult = BotFinishTravel_WeaponJump(movestate, &reach);
+				break;
+			default:
+				BotLib_Print(PRT_FATAL,
+					"(last) travel type %d not implemented yet\n",
+					reach.traveltype);
+				break;
+		}
+	}
+
+	if (moveresult.blocked)
+	{
+		movestate->reachability_time -= movestate->thinktime * 10.0f;
+	}
+	VectorCopy(movestate->origin, movestate->lastorigin);
+	*result = moveresult;
+	return result;
+}
+
+/*
+=============
+BotResetAvoidReach
+
+Clear the one-entry retail avoid-reach arrays and return the tries slot.
+=============
+*/
+int *BotResetAvoidReach(bot_movestate_t *movestate)
+{
+	memset(movestate->avoidreach, 0, sizeof(movestate->avoidreach));
+	memset(movestate->avoidreachtimes, 0, sizeof(movestate->avoidreachtimes));
+	memset(movestate->avoidreachtries, 0, sizeof(movestate->avoidreachtries));
+	return movestate->avoidreachtries;
+}
+
+/*
+=============
+BotResetLastAvoidReach
+
+Expire the latest retail avoid-reach entry and reduce its retry count.
+=============
+*/
+void BotResetLastAvoidReach(bot_movestate_t *movestate)
+{
+	float latesttime = 0.0f;
+	int latest = 0;
+	for (int index = 0; index < MAX_AVOIDREACH; ++index)
+	{
+		if (movestate->avoidreachtimes[index] > latesttime)
+		{
+			latesttime = movestate->avoidreachtimes[index];
+			latest = index;
+		}
+	}
+	if (latesttime != 0.0f)
+	{
+		movestate->avoidreachtimes[latest] = 0.0f;
+		if (movestate->avoidreachtries[latest] > 0)
+		{
+			--movestate->avoidreachtries[latest];
+		}
+	}
+}
+
+/*
+=============
+BotResetMoveState
+
+Clear the exact 128-byte retail movement state and return zero.
+=============
+*/
+int BotResetMoveState(bot_movestate_t *movestate)
+{
+	memset(movestate, 0, 0x80);
+	return 0;
+}
+
+/*
+=============
+BotAllocMoveStateHandle
+
+Allocate a reconstruction-only handle around a retail movement state.
+=============
+*/
+int BotAllocMoveStateHandle(void)
+{
+	for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
+	{
+		if (botmovestates[handle] == NULL)
+		{
+			botmovestates[handle] = GetClearedMemory(sizeof(bot_movestate_t));
+			if (botmovestates[handle] != NULL)
+			{
+				botmovestate_owned[handle] = true;
+				return handle;
+			}
+			return 0;
+		}
+	}
+	return 0;
+}
+
+/*
+=============
+BotBindRetailMoveState
+
+Binds the exact 0x80-byte movement core embedded in a retail client slab to a
+reserved internal handle without allocating a tracked owner block.
+=============
+*/
+int BotBindRetailMoveState(int client, bot_movestate_t *state)
+{
+	if (client < 0 || client > MAX_CLIENTS || state == NULL)
+	{
+		return 0;
+	}
+
+	int handle = BOT_MOVE_RETAIL_HANDLE_BASE + client;
+	if (botmovestates[handle] == state)
+	{
+		return handle;
+	}
+	if (botmovestates[handle] != NULL)
+	{
+		BotFreeMoveStateHandle(handle);
+	}
+
+	memset(state, 0, sizeof(*state));
+	botmovestates[handle] = state;
+	botmovestate_owned[handle] = false;
+	return handle;
+}
+
+/*
+=============
+BotRebindRetailMoveState
+
+Moves reserved movement-handle metadata after a full client record copy.
+=============
+*/
+int BotRebindRetailMoveState(int old_handle,
+	int client,
+	bot_movestate_t *state)
+{
+	if (client < 0 || client > MAX_CLIENTS || state == NULL)
+	{
+		return 0;
+	}
+
+	int new_handle = BOT_MOVE_RETAIL_HANDLE_BASE + client;
+	if (old_handle == new_handle)
+	{
+		botmovestates[new_handle] = state;
+		botmovestate_owned[new_handle] = false;
+		return new_handle;
+	}
+	if (old_handle <= 0 || old_handle > BOT_MOVE_HANDLE_LIMIT ||
+		botmovestates[old_handle] == NULL)
+	{
+		return BotBindRetailMoveState(client, state);
+	}
+	if (botmovestates[new_handle] != NULL)
+	{
+		BotFreeMoveStateHandle(new_handle);
+	}
+
+	botmovestates[new_handle] = state;
+	botmovestate_owned[new_handle] = false;
+	botmovestates[old_handle] = NULL;
+	botmovestate_owned[old_handle] = false;
+	return new_handle;
+}
+
+/*
+=============
+BotFreeMoveStateHandle
+
+Free a reconstruction-only movement-state handle.
+=============
+*/
+void BotFreeMoveStateHandle(int handle)
+{
+	if (handle <= 0 || handle > BOT_MOVE_HANDLE_LIMIT ||
+		botmovestates[handle] == NULL)
+	{
+		return;
+	}
+	if (botmovestate_owned[handle])
+	{
+		FreeMemory(botmovestates[handle]);
+	}
+	botmovestates[handle] = NULL;
+	botmovestate_owned[handle] = false;
+}
+
+/*
+=============
+BotMoveStateFromHandle
+
+Resolve a reconstruction-only movement-state handle.
+=============
+*/
+bot_movestate_t *BotMoveStateFromHandle(int handle)
+{
+	if (handle <= 0 || handle > BOT_MOVE_HANDLE_LIMIT)
+	{
+		return NULL;
+	}
+	return botmovestates[handle];
+}
+
+/*
+=============
+BotInitMoveStateHandle
+
+Refresh retail frame inputs without disturbing reachability bookkeeping.
+=============
+*/
+void BotInitMoveStateHandle(int handle, const bot_initmove_t *initmove)
+{
+	bot_movestate_t *movestate = BotMoveStateFromHandle(handle);
+	if (movestate == NULL || initmove == NULL)
+	{
+		return;
+	}
+	VectorCopy(initmove->origin, movestate->origin);
+	VectorCopy(initmove->velocity, movestate->velocity);
+	VectorCopy(initmove->viewoffset, movestate->viewoffset);
+	movestate->entitynum = initmove->entitynum;
+	movestate->client = initmove->client;
+	movestate->thinktime = initmove->thinktime;
+	movestate->presencetype = initmove->presencetype;
+	VectorCopy(initmove->viewangles, movestate->viewangles);
+	movestate->moveflags &= ~(MFL_ONGROUND | MFL_TELEPORTED | MFL_WATERJUMP);
+	movestate->moveflags |= initmove->or_moveflags &
+		(MFL_ONGROUND | MFL_TELEPORTED | MFL_WATERJUMP);
+}
+
+/*
+=============
+BotMoveToGoalHandle
+
+Bridge an extended-API movement handle to the retail pointer core.
+=============
+*/
+void BotMoveToGoalHandle(bot_moveresult_t *result,
+	int movestate,
+	const bot_goal_t *goal,
+	int travelflags)
+{
+	if (result == NULL)
+	{
+		return;
+	}
+	bot_movestate_t *state = BotMoveStateFromHandle(movestate);
+	if (state == NULL)
+	{
+		BotClearMoveResult(result);
+		result->failure = 1;
+		return;
+	}
+	BotMoveToGoal(result, state, goal, travelflags);
+}
+
+/*
+=============
+BotMoveInDirectionHandle
+
+Bridge an extended-API movement handle to retail direct movement.
+=============
+*/
+int BotMoveInDirectionHandle(int movestate,
+	const vec3_t dir,
+	float speed,
+	int type)
+{
+	bot_movestate_t *state = BotMoveStateFromHandle(movestate);
+	if (state == NULL || dir == NULL)
+	{
+		return 0;
+	}
+	return BotMoveInDirection(state, dir, speed, type);
+}
+
+/*
+=============
+BotResetMoveStateHandle
+
+Bridge an extended-API movement handle to the retail full reset.
+=============
+*/
+void BotResetMoveStateHandle(int movestate)
+{
+	bot_movestate_t *state = BotMoveStateFromHandle(movestate);
+	if (state != NULL)
+	{
+		BotResetMoveState(state);
+	}
+}
+
+/*
+=============
+BotResetAvoidReachHandle
+
+Bridge an extended-API movement handle to the retail avoid reset.
+=============
+*/
+void BotResetAvoidReachHandle(int movestate)
+{
+	bot_movestate_t *state = BotMoveStateFromHandle(movestate);
+	if (state != NULL)
+	{
+		BotResetAvoidReach(state);
+	}
+}
+
+/*
+=============
+BotResetLastAvoidReachHandle
+
+Bridge an extended-API movement handle to the retail latest-avoid reset.
+=============
+*/
+void BotResetLastAvoidReachHandle(int movestate)
+{
+	bot_movestate_t *state = BotMoveStateFromHandle(movestate);
+	if (state != NULL)
+	{
+		BotResetLastAvoidReach(state);
+	}
+}
+
+/*
+=============
+BotMovementViewTargetHandle
+
+Bridge an extended-API handle while ignoring successor-only lookahead.
+=============
+*/
+int BotMovementViewTargetHandle(int movestate,
+	const bot_goal_t *goal,
+	int travelflags,
+	float lookahead,
+	vec3_t target)
+{
+	(void)lookahead;
+	bot_movestate_t *state = BotMoveStateFromHandle(movestate);
+	if (state == NULL || target == NULL)
+	{
+		return 0;
+	}
+	return BotMovementViewTarget(state, goal, travelflags, target);
 }
 
 /*
 =============
 BotPredictVisiblePosition
 
-Predict a reachable point that is visible from the goal.
+Retain the successor-only prediction seam without changing retail state.
 =============
 */
 int BotPredictVisiblePosition(const vec3_t origin,
-							  int areanum,
-							  const bot_goal_t *goal,
-							  int travelflags,
-							  vec3_t target)
+	int areanum,
+	const bot_goal_t *goal,
+	int travelflags,
+	vec3_t target)
 {
-	if (origin == NULL || target == NULL || goal == NULL)
-	{
-		return 0;
-	}
-
-	if (areanum <= 0 || goal->areanum <= 0)
-	{
-		return 0;
-	}
-
-	bot_movestate_t temp;
-	memset(&temp, 0, sizeof(temp));
-	VectorCopy(origin, temp.origin);
-	temp.areanum = areanum;
-
-	vec3_t end;
-	VectorCopy(origin, end);
-	int lastgoalareanum = goal->areanum;
-	int lastareanum = areanum;
-
-	for (int i = 0; i < 20 && areanum != goal->areanum; ++i)
-	{
-		aas_reachability_t reach;
-
-		int reachnum = BotMove_GetReachabilityFromPoint(&temp,
-		                                                end,
-		                                                areanum,
-		                                                lastgoalareanum,
-		                                                lastareanum,
-		                                                goal,
-		                                                travelflags,
-		                                                &reach);
-		if (reachnum <= 0)
-		{
-			return 0;
-		}
-
-		if (BotMove_Visible(goal->entitynum, goal->origin, reach.start))
-		{
-			VectorCopy(reach.start, target);
-			return 1;
-		}
-
-		if (BotMove_Visible(goal->entitynum, goal->origin, reach.end))
-		{
-			VectorCopy(reach.end, target);
-			return 1;
-		}
-
-		if (reach.areanum == goal->areanum)
-		{
-			VectorCopy(reach.end, target);
-			return 1;
-		}
-
-		lastareanum = areanum;
-		areanum = reach.areanum;
-		VectorCopy(reach.end, end);
-	}
-
+	(void)origin;
+	(void)areanum;
+	(void)goal;
+	(void)travelflags;
+	(void)target;
 	return 0;
 }
 
@@ -4654,79 +2370,83 @@ int BotPredictVisiblePosition(const vec3_t origin,
 =============
 BotAddAvoidSpot
 
-Adds, updates, or clears avoidance spots for a move state.
+Ignore successor-only avoid spots without extending the retail movement state.
 =============
 */
 void BotAddAvoidSpot(int movestate, vec3_t origin, float radius, int type)
 {
-	bot_movestate_t *ms;
-
-	ms = BotMoveStateFromHandle(movestate);
-	if (ms == NULL)
-	{
-		return;
-	}
-
-	if (type == AVOID_CLEAR)
-	{
-		ms->numavoidspots = 0;
-		return;
-	}
-
-	if (origin == NULL)
-	{
-		return;
-	}
-
-	if (ms->numavoidspots >= MAX_AVOIDSPOTS)
-	{
-		return;
-	}
-
-	int index = ms->numavoidspots;
-	VectorCopy(origin, ms->avoidspots[index].origin);
-	ms->avoidspots[index].radius = radius;
-	ms->avoidspots[index].type = type;
-	ms->numavoidspots++;
+	(void)movestate;
+	(void)origin;
+	(void)radius;
+	(void)type;
 }
 
 /*
 =============
 BotSetBrushModelTypes
 
-Resets mover model metadata; rebuilt on map load.
+Retain the successor-only map hook as a compatibility no-op.
 =============
 */
 void BotSetBrushModelTypes(void)
 {
-	BotMove_MoverCatalogueReset();
 }
 
 /*
 =============
 BotSetupMoveAI
+
+Register all sixteen retail movement libvars with their exact defaults.
 =============
 */
 int BotSetupMoveAI(void)
 {
-	BotSetBrushModelTypes();
-	return BLERR_NOERROR;
+	libvar_sv_friction = LibVar("sv_friction", "6");
+	libvar_sv_stopspeed = LibVar("sv_stopspeed", "100");
+	libvar_sv_gravity = LibVar("sv_gravity", "800");
+	libvar_sv_waterfriction = LibVar("sv_waterfriction", "1");
+	libvar_sv_watergravity = LibVar("sv_watergravity", "400");
+	libvar_sv_maxvelocity = LibVar("sv_maxvelocity", "300");
+	libvar_sv_maxwalkvelocity = LibVar("sv_maxwalkvelocity", "300");
+	libvar_sv_maxcrouchvelocity = LibVar("sv_maxcrouchvelocity", "100");
+	libvar_sv_maxswimvelocity = LibVar("sv_maxswimvelocity", "150");
+	libvar_sv_maxaccelerate = LibVar("sv_maxacceleration", "2200");
+	libvar_sv_airaccelerate = LibVar("sv_airaccelerate", "0");
+	libvar_sv_step = LibVar("sv_step", "18");
+	libvar_sv_maxbarrier = LibVar("sv_maxbarrier", "50");
+	libvar_sv_maxsteepness = LibVar("sv_maxsteepness", "0.7");
+	libvar_sv_jumpvel = LibVar("sv_jumpvel", "224");
+	libvar_sv_maxwaterjump = LibVar("sv_maxwaterjump", "21");
+	return libvar_sv_maxwaterjump != NULL;
 }
 
 /*
 =============
 BotShutdownMoveAI
+
+Invalidate reconstruction-only handle and libvar caches without freeing storage.
 =============
 */
 void BotShutdownMoveAI(void)
 {
-	for (int handle = 1; handle <= MAX_CLIENTS; ++handle)
-	{
-		if (g_botMoveStates[handle] != NULL)
-		{
-			BotFreeMoveState(handle);
-		}
-	}
-
-	BotMove_MoverCatalogueReset();
+	memset(botmovestates, 0, sizeof(botmovestates));
+	memset(botmovestate_owned, 0, sizeof(botmovestate_owned));
+	libvar_sv_friction = NULL;
+	libvar_sv_stopspeed = NULL;
+	libvar_sv_gravity = NULL;
+	libvar_sv_waterfriction = NULL;
+	libvar_sv_watergravity = NULL;
+	libvar_sv_maxvelocity = NULL;
+	libvar_sv_maxwalkvelocity = NULL;
+	libvar_sv_maxcrouchvelocity = NULL;
+	libvar_sv_maxswimvelocity = NULL;
+	libvar_sv_maxaccelerate = NULL;
+	libvar_sv_airaccelerate = NULL;
+	libvar_sv_step = NULL;
+	libvar_sv_maxbarrier = NULL;
+	libvar_sv_maxsteepness = NULL;
+	libvar_sv_jumpvel = NULL;
+	libvar_sv_maxwaterjump = NULL;
+	libvar_laserhook = NULL;
+	grapplemodelindex = 0;
 }

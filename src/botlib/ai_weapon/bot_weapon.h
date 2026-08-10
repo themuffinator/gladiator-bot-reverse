@@ -123,6 +123,7 @@ typedef struct bot_weaponstate_s {
 	const bot_weapon_config_t *config;
 	const bot_weight_config_t *weight_config;
 	bool owns_weights;
+	bool fresh_weights;
 	int current_weapon;
 	const char *current_weapon_model;
 	float next_weapon_select_time;
@@ -140,21 +141,30 @@ int AI_WeaponNumberForModel(const char *model);
 const char *AI_WeaponNameForModel(const char *model);
 
 ai_weapon_weights_t *AI_LoadWeaponWeights(const char *filename);
+ai_weapon_weights_t *AI_LoadWeaponWeightsFresh(const char *filename);
 bool AI_WeaponWeightsBindConfig(ai_weapon_weights_t *weights,
 								const bot_weapon_config_t *definitions);
 size_t AI_WeaponWeightsConfigByteSize(const ai_weapon_weights_t *weights);
 size_t AI_WeaponWeightsIndexByteSize(const ai_weapon_weights_t *weights);
 void AI_FreeWeaponWeights(ai_weapon_weights_t *weights);
+void AI_FreeWeaponWeightsFresh(ai_weapon_weights_t *weights);
 float AI_WeaponWeightForClient(const ai_weapon_weights_t *weights, int weapon_index);
 
 int BotSetupWeaponAI(void);
 void BotShutdownWeaponAI(void);
 
 int BotAllocWeaponState(void);
+int BotBindRetailWeaponState(int client, bot_weaponstate_t *state);
+int BotRebindRetailWeaponState(int old_handle,
+	int client,
+	bot_weaponstate_t *state);
 void BotFreeWeaponState(int handle);
 void BotResetWeaponState(int handle);
+const bot_weaponstate_t *BotWeaponStatePeek(int handle);
+void BotForgetWeaponStateAdapters(void);
 
 int BotLoadWeaponWeights(int weaponstate, const char *filename);
+int BotLoadWeaponWeightsFresh(int weaponstate, const char *filename);
 void BotFreeWeaponWeights(int weaponstate);
 int BotWeaponStateAttachWeights(int weaponstate, ai_weapon_weights_t *weights);
 void BotWeaponStateSyncFrame(int weaponstate, int client, const int *inventory, const char *model);

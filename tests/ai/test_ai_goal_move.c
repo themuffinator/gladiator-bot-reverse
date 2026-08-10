@@ -37,6 +37,7 @@
 #include "botlib/ai_goal/ai_goal.h"
 #include "botlib/ai_goal/bot_goal.h"
 #include "botlib/ai/goal_move_orchestrator.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/bot_state.h"
@@ -52,6 +53,8 @@
 #define TEST_BOTLIB_HEAP_SIZE (8u << 20)
 #define TEST_MAX_LOG_MESSAGES 64
 #define TEST_INVENTORY_ROCKETLAUNCHER 14
+#define TEST_MAX_ALLOCATIONS 4096
+#define TEST_MAP_RESET_CLIENTS 2
 
 typedef struct test_log_message_s {
     int priority;
@@ -67,6 +70,18 @@ typedef struct test_environment_s {
     bool client_active;
     bot_export_extended_t *exports;
 } test_environment_t;
+
+typedef struct test_goal_aas_fixture_s
+{
+	aas_world_t saved_world;
+	aas_area_t *areas;
+	aas_areasettings_t *area_settings;
+	aas_entity_t *entities;
+} test_goal_aas_fixture_t;
+
+static void test_goal_aas_fixture_begin(test_goal_aas_fixture_t *fixture,
+	int max_entities);
+static void test_goal_aas_fixture_end(test_goal_aas_fixture_t *fixture);
 
 static struct {
     test_log_message_t entries[TEST_MAX_LOG_MESSAGES];
@@ -114,6 +129,24 @@ static void test_capture_dprint(const char *fmt, ...)
     (void)fmt;
 }
 
+/*
+=============
+test_log_has_exact
+=============
+*/
+static bool test_log_has_exact(int priority, const char *text)
+{
+	for (int index = 0; index < g_test_log.count; ++index)
+	{
+		if (g_test_log.entries[index].priority == priority &&
+			strcmp(g_test_log.entries[index].text, text) == 0)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 static int test_libvar_get(const char *var_name, char *value, size_t size)
 {
     (void)var_name;
@@ -143,10 +176,43 @@ static vec3_t g_trace_log_last_end;
 static int g_trace_log_last_passent;
 static int g_trace_log_last_contentmask;
 static float g_trace_log_fraction = 1.0f;
+static int g_point_contents_log_count;
+static vec3_t g_point_contents_log_last_point;
+static int g_point_contents_result;
+static struct
+{
+	bool enabled;
+	bool fail_next;
+	int count;
+	int sizes[TEST_MAX_ALLOCATIONS];
+} g_allocator_capture;
+static struct
+{
+	bool enabled;
+	int expected_allocation_size;
+	int client_count;
+	int clients[TEST_MAP_RESET_CLIENTS];
+	int goal_handles[TEST_MAP_RESET_CLIENTS];
+	int matching_allocations;
+	bool saw_reset_state;
+	bool saw_unreset_state;
+} g_map_reset_order_watch;
 
 static void test_reset_bot_input_log(void)
 {
     memset(&g_bot_input_log, 0, sizeof(g_bot_input_log));
+}
+
+/*
+=============
+test_reset_point_contents_log
+=============
+*/
+static void test_reset_point_contents_log(void)
+{
+	g_point_contents_log_count = 0;
+	VectorClear(g_point_contents_log_last_point);
+	g_point_contents_result = 0;
 }
 
 /*
@@ -161,6 +227,7 @@ static void test_reset_trace_log(void)
 	g_trace_log_last_passent = 0;
 	g_trace_log_last_contentmask = 0;
 	g_trace_log_fraction = 1.0f;
+	test_reset_point_contents_log();
 }
 
 static void test_bot_input(int client, bot_input_t *input)
@@ -202,18 +269,97 @@ static bsp_trace_t test_trace(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end
     return trace;
 }
 
+/*
+=============
+test_point_contents
+=============
+*/
 static int test_point_contents(vec3_t point)
 {
-    (void)point;
-    return 0;
+	if (point != NULL)
+	{
+		VectorCopy(point, g_point_contents_log_last_point);
+	}
+	g_point_contents_log_count++;
+	return g_point_contents_result;
 }
 
+/*
+=============
+test_reset_allocator_instrumentation
+=============
+*/
+static void test_reset_allocator_instrumentation(void)
+{
+	memset(&g_allocator_capture, 0, sizeof(g_allocator_capture));
+	memset(&g_map_reset_order_watch, 0, sizeof(g_map_reset_order_watch));
+}
+
+/*
+=============
+test_map_reset_clients_are_clear
+=============
+*/
+static bool test_map_reset_clients_are_clear(void)
+{
+	for (int index = 0; index < g_map_reset_order_watch.client_count; ++index)
+	{
+		bot_client_state_t *state = BotState_Get(g_map_reset_order_watch.clients[index]);
+		const bot_goalstate_t *goalstate =
+			BotGoalStatePeek(g_map_reset_order_watch.goal_handles[index]);
+		if (state == NULL || state->active || state->client_update_valid ||
+			state->active_goal_number != 0 || state->long_term_goal_time != 0.0f ||
+			goalstate == NULL || goalstate->goalstacktop != 0)
+		{
+			return false;
+		}
+		for (int avoid = 0; avoid < BOT_GOAL_MAX_AVOID; ++avoid)
+		{
+			if (goalstate->avoidgoals[avoid] != 0 ||
+				goalstate->avoidgoaltimes[avoid] != 0.0f)
+			{
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+/*
+=============
+test_get_memory
+=============
+*/
 static void *test_get_memory(int size)
 {
-    if (size <= 0) {
-        return NULL;
-    }
-    return calloc(1, (size_t)size);
+	if (size <= 0)
+	{
+		return NULL;
+	}
+	if (g_allocator_capture.fail_next)
+	{
+		g_allocator_capture.fail_next = false;
+		return NULL;
+	}
+	if (g_allocator_capture.enabled &&
+		g_allocator_capture.count < TEST_MAX_ALLOCATIONS)
+	{
+		g_allocator_capture.sizes[g_allocator_capture.count++] = size;
+	}
+	if (g_map_reset_order_watch.enabled &&
+		size == g_map_reset_order_watch.expected_allocation_size)
+	{
+		g_map_reset_order_watch.matching_allocations++;
+		if (test_map_reset_clients_are_clear())
+		{
+			g_map_reset_order_watch.saw_reset_state = true;
+		}
+		else
+		{
+			g_map_reset_order_watch.saw_unreset_state = true;
+		}
+	}
+	return calloc(1, (size_t)size);
 }
 
 static void test_free_memory(void *ptr)
@@ -277,6 +423,7 @@ static int goal_move_setup(void **state)
     test_reset_log();
     test_reset_bot_input_log();
 	test_reset_trace_log();
+	test_reset_allocator_instrumentation();
 	BotGoal_SetCurrentTime(0.0f);
 
     BotInterface_SetImportTable(&g_test_imports);
@@ -318,6 +465,7 @@ static int goal_move_setup(void **state)
     int status = env->exports->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
     env->library_setup = true;
+	BotInitLevelItems();
 
     *state = env;
     return 0;
@@ -437,6 +585,66 @@ static void write_goal_bsp_entity_fixture(const char *path, const char *entity_l
 
 /*
 =============
+write_goal_empty_aas_fixture
+
+Writes the smallest valid Quake II AAS container used by map-wiring tests.
+=============
+*/
+static void write_goal_empty_aas_fixture(const char *path)
+{
+	q2_aas_header_t header;
+	memset(&header, 0, sizeof(header));
+	header.ident = Q2_AAS_IDENT;
+	header.version = Q2_AAS_VERSION;
+
+	FILE *file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_int_equal((int)fwrite(&header, sizeof(header), 1U, file), 1);
+	assert_int_equal(fclose(file), 0);
+}
+
+/*
+=============
+test_allocator_header_size
+
+Measures the native tracking wrapper while retaining payload-size assertions.
+=============
+*/
+static int test_allocator_header_size(void)
+{
+	memset(&g_allocator_capture, 0, sizeof(g_allocator_capture));
+	g_allocator_capture.enabled = true;
+	void *probe = GetMemory(1U);
+	g_allocator_capture.enabled = false;
+	assert_non_null(probe);
+	assert_int_equal(g_allocator_capture.count, 1);
+	assert_true(g_allocator_capture.sizes[0] > 1);
+	int header_size = g_allocator_capture.sizes[0] - 1;
+	FreeMemory(probe);
+	memset(&g_allocator_capture, 0, sizeof(g_allocator_capture));
+	return header_size;
+}
+
+/*
+=============
+test_allocator_size_count
+=============
+*/
+static int test_allocator_size_count(int size)
+{
+	int count = 0;
+	for (int index = 0; index < g_allocator_capture.count; ++index)
+	{
+		if (g_allocator_capture.sizes[index] == size)
+		{
+			count++;
+		}
+	}
+	return count;
+}
+
+/*
+=============
 ensure_goal_fixture_directory
 =============
 */
@@ -453,23 +661,27 @@ static bool ensure_goal_fixture_directory(const char *path)
 	return false;
 }
 
-static void test_setup_allocates_goal_move_states(void **state)
-{
-    test_environment_t *env = (test_environment_t *)(*state);
-    activate_test_client(env);
+/*
+=============
+test_setup_allocates_goal_and_retail_move_states
 
-    bot_client_state_t *slot = BotState_Get(0);
-    assert_non_null(slot);
-    assert_true(slot->active);
+Verify client setup owns one goal state and one retail movement-state handle.
+=============
+*/
+static void test_setup_allocates_goal_and_retail_move_states(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+	assert_true(slot->active);
 	assert_int_equal(slot->client_number, 0);
 	assert_int_equal(slot->entity_number, 1);
-    assert_non_null(slot->goal_state);
-    assert_non_null(slot->move_state);
-
-    ai_avoid_list_t *goal_avoid = AI_GoalState_GetAvoidList(slot->goal_state);
-    ai_avoid_list_t *move_avoid = AI_MoveState_GetAvoidList(slot->move_state);
-    assert_non_null(goal_avoid);
-    assert_ptr_equal(goal_avoid, move_avoid);
+	assert_non_null(slot->goal_state);
+	assert_true(slot->move_handle > 0);
+	assert_non_null(BotMoveStateFromHandle(slot->move_handle));
+	assert_non_null(AI_GoalState_GetAvoidList(slot->goal_state));
 }
 
 /*
@@ -508,10 +720,226 @@ static void test_goal_setup_loads_item_weights_into_goal_state(void **state)
 
 /*
 =============
+test_client_item_weight_failures_reuse_goal_handle
+
+Proves inactive retail setup retries reuse their embedded goal-state adapter
+instead of exhausting the handle table needed by unrelated clients.
+=============
+*/
+static void test_client_item_weight_failures_reuse_goal_handle(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/bots/goal_retry_itemweights_tmp_c.c",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+	(void)remove(fixture_path);
+	write_goal_text_fixture(fixture_path,
+		"character \"retryitem\"\n"
+		"{\n"
+		"0 \"Retry Item Weights\"\n"
+		"3 \"male\"\n"
+		"5 \"bots/babe_w.c\"\n"
+		"12 \"bots/babe_t.c\"\n"
+		"13 \"retryitem\"\n"
+		"28 \"bots/goal_retry_missing_itemweights.w\"\n"
+		"52 0\n"
+		"}\n");
+
+	bot_settings_t failing_settings;
+	memset(&failing_settings, 0, sizeof(failing_settings));
+	snprintf(failing_settings.characterfile,
+		sizeof(failing_settings.characterfile),
+		"%s",
+		fixture_path);
+	snprintf(failing_settings.charactername,
+		sizeof(failing_settings.charactername),
+		"retryitem");
+
+	int retained_handle = 0;
+	for (int attempt = 0; attempt < MAX_CLIENTS + 2; ++attempt)
+	{
+		test_reset_log();
+		assert_false(env->exports->BotSetupClient(0, &failing_settings));
+		bot_client_state_t *partial = BotState_Get(0);
+		assert_non_null(partial);
+		assert_false(partial->active);
+		assert_true(partial->goal_handle > 0);
+		assert_non_null(BotGoalStatePeek(partial->goal_handle));
+		if (retained_handle == 0)
+		{
+			retained_handle = partial->goal_handle;
+		}
+		assert_int_equal(partial->goal_handle, retained_handle);
+	}
+
+	bot_settings_t unrelated_settings;
+	configure_standard_bot_settings(&unrelated_settings);
+	assert_true(env->exports->BotSetupClient(1, &unrelated_settings));
+	bot_client_state_t *unrelated = BotState_Get(1);
+	assert_non_null(unrelated);
+	assert_true(unrelated->active);
+	assert_true(unrelated->goal_handle > 0);
+	assert_int_not_equal(unrelated->goal_handle, retained_handle);
+	assert_int_equal(env->exports->BotShutdownClient(1), BLERR_NOERROR);
+	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
+test_map_load_resets_all_partial_clients_before_level_items
+
+Pins the retail named-map wiring over inactive partial clients. The allocator
+callback observes both records already reset inside BotInitLevelItems, at its
+fixed 64-byte-per-slot compatibility-name allocation.
+=============
+*/
+static void test_map_load_resets_all_partial_clients_before_level_items(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	char character_path[PATH_MAX];
+	int written = snprintf(character_path,
+		sizeof(character_path),
+		"%s/tests/support/assets/bots/goal_map_partial_tmp_c.c",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(character_path));
+	write_goal_text_fixture(character_path,
+		"character \"map_partial\"\n"
+		"{\n"
+		"0 \"Map Partial\"\n"
+		"3 \"male\"\n"
+		"5 \"bots/babe_w.c\"\n"
+		"12 \"bots/babe_t.c\"\n"
+		"13 \"map_partial\"\n"
+		"28 \"bots/goal_map_partial_missing.w\"\n"
+		"52 0\n"
+		"}\n");
+
+	bot_settings_t failing_settings;
+	memset(&failing_settings, 0, sizeof(failing_settings));
+	snprintf(failing_settings.characterfile,
+		sizeof(failing_settings.characterfile),
+		"%s",
+		character_path);
+	snprintf(failing_settings.charactername,
+		sizeof(failing_settings.charactername),
+		"map_partial");
+
+	const int clients[TEST_MAP_RESET_CLIENTS] = {0, 2};
+	g_map_reset_order_watch.client_count = TEST_MAP_RESET_CLIENTS;
+	for (int index = 0; index < TEST_MAP_RESET_CLIENTS; ++index)
+	{
+		assert_false(env->exports->BotSetupClient(clients[index], &failing_settings));
+		bot_client_state_t *partial = BotState_Get(clients[index]);
+		assert_non_null(partial);
+		assert_false(partial->active);
+		assert_true(partial->goal_handle > 0);
+
+		bot_goal_t staged_goal;
+		memset(&staged_goal, 0, sizeof(staged_goal));
+		staged_goal.number = 740 + clients[index];
+		staged_goal.areanum = 1;
+		assert_int_equal(env->exports->BotPushGoal(partial->goal_handle,
+			&staged_goal),
+			1);
+		env->exports->BotSetAvoidGoalTime(partial->goal_handle,
+			staged_goal.number,
+			25.0f);
+		partial->client_update_valid = true;
+		partial->active_goal_number = staged_goal.number;
+		partial->long_term_goal_time = 99.0f;
+		g_map_reset_order_watch.clients[index] = clients[index];
+		g_map_reset_order_watch.goal_handles[index] = partial->goal_handle;
+	}
+	assert_false(test_map_reset_clients_are_clear());
+
+	char fixture_root[PATH_MAX];
+	written = snprintf(fixture_root,
+		sizeof(fixture_root),
+		"%s/tests/support/assets",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_root));
+	char maps_dir[PATH_MAX];
+	written = snprintf(maps_dir, sizeof(maps_dir), "%s/maps", fixture_root);
+	assert_true(written > 0 && written < (int)sizeof(maps_dir));
+	bool remove_maps_dir = ensure_goal_fixture_directory(maps_dir);
+
+	const char *map_name = "goal_partial_reset_tmp";
+	char bsp_path[PATH_MAX];
+	char aas_path[PATH_MAX];
+	written = snprintf(bsp_path, sizeof(bsp_path), "%s/%s.bsp", maps_dir, map_name);
+	assert_true(written > 0 && written < (int)sizeof(bsp_path));
+	written = snprintf(aas_path, sizeof(aas_path), "%s/%s.aas", maps_dir, map_name);
+	assert_true(written > 0 && written < (int)sizeof(aas_path));
+	write_goal_bsp_entity_fixture(bsp_path,
+		"{\n\"classname\" \"worldspawn\"\n}\n");
+	write_goal_empty_aas_fixture(aas_path);
+
+	const int max_levelitems = 13;
+	const int allocator_header_size = test_allocator_header_size();
+	g_map_reset_order_watch.expected_allocation_size = allocator_header_size +
+		max_levelitems * 64;
+	g_map_reset_order_watch.enabled = true;
+	assert_int_equal(env->exports->BotLibVarSet("basedir", fixture_root),
+		BLERR_NOERROR);
+	LibVarSet("basedir", fixture_root);
+	assert_int_equal(env->exports->BotLibVarSet("max_levelitems", "13"),
+		BLERR_NOERROR);
+	LibVarSet("max_levelitems", "13");
+
+	int status = env->exports->BotLoadMap((char *)map_name,
+		0,
+		NULL,
+		0,
+		NULL,
+		0,
+		NULL);
+	g_map_reset_order_watch.enabled = false;
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(g_map_reset_order_watch.matching_allocations >= 1);
+	assert_true(g_map_reset_order_watch.saw_reset_state);
+	assert_false(g_map_reset_order_watch.saw_unreset_state);
+	assert_true(test_map_reset_clients_are_clear());
+
+	for (int index = 0; index < TEST_MAP_RESET_CLIENTS; ++index)
+	{
+		bot_client_state_t *partial = BotState_Get(clients[index]);
+		assert_non_null(partial);
+		assert_false(partial->active);
+		assert_int_equal(partial->goal_handle,
+			g_map_reset_order_watch.goal_handles[index]);
+	}
+
+	assert_int_equal(env->exports->BotLibVarSet("basedir", env->assets.asset_root),
+		BLERR_NOERROR);
+	LibVarSet("basedir", env->assets.asset_root);
+	assert_int_equal(env->exports->BotLibVarSet("max_levelitems", "1024"),
+		BLERR_NOERROR);
+	LibVarSet("max_levelitems", "1024");
+	bot_settings_t retry_settings;
+	configure_standard_bot_settings(&retry_settings);
+	assert_true(env->exports->BotSetupClient(0, &retry_settings));
+	env->client_active = true;
+
+	assert_int_equal(unlink(aas_path), 0);
+	assert_int_equal(unlink(bsp_path), 0);
+	assert_int_equal(unlink(character_path), 0);
+	if (remove_maps_dir)
+	{
+		assert_int_equal(rmdir(maps_dir), 0);
+	}
+	test_reset_allocator_instrumentation();
+}
+
+/*
+=============
 test_goal_stack_uses_retail_zero_sentinel
 
 Pins the retail goal stack contract: stack slot zero is unused, top zero means
-empty, and overflow reports failure without discarding older goals.
+empty, mutators expose the resulting depth, and overflow does not discard
+older goals.
 =============
 */
 static void test_goal_stack_uses_retail_zero_sentinel(void **state)
@@ -541,14 +969,14 @@ static void test_goal_stack_uses_retail_zero_sentinel(void **state)
 	assert_true(env->exports->BotGetTopGoal(handle, &top));
 	assert_int_equal(top.number, 701);
 	assert_false(env->exports->BotGetSecondGoal(handle, &second));
-	assert_true(env->exports->BotPopGoal(handle));
+	assert_int_equal(env->exports->BotPopGoal(handle), 0);
 	assert_false(env->exports->BotGetTopGoal(handle, &top));
 
 	for (int i = 1; i < BOT_GOAL_MAX_STACK; ++i)
 	{
 		goal.number = 700 + i;
 		goal.areanum = i;
-		assert_true(env->exports->BotPushGoal(handle, &goal));
+		assert_int_equal(env->exports->BotPushGoal(handle, &goal), i);
 		debug = BotGoalStatePeek(handle);
 		assert_non_null(debug);
 		assert_int_equal(debug->goalstacktop, i);
@@ -568,9 +996,9 @@ static void test_goal_stack_uses_retail_zero_sentinel(void **state)
 	assert_true(env->exports->BotGetSecondGoal(handle, &second));
 	assert_int_equal(second.number, 700 + BOT_GOAL_MAX_STACK - 2);
 
-	for (int i = 1; i < BOT_GOAL_MAX_STACK; ++i)
+	for (int expected = BOT_GOAL_MAX_STACK - 2; expected >= 0; --expected)
 	{
-		assert_true(env->exports->BotPopGoal(handle));
+		assert_int_equal(env->exports->BotPopGoal(handle), expected);
 	}
 
 	assert_false(env->exports->BotPopGoal(handle));
@@ -606,6 +1034,61 @@ static void test_goal_itemconfig_failure_mapping(void **state)
 
 	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"), BLERR_NOERROR);
 	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+}
+
+/*
+=============
+test_goal_itemconfig_uses_retail_find_and_load_messages
+
+Separates path resolution from source loading and pins both retail spellings,
+including the original misspelling in the second diagnostic.
+=============
+*/
+static void test_goal_itemconfig_uses_retail_find_and_load_messages(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	char missing_name[] = "goal_iteminfo_find_log_missing_tmp.c";
+	test_reset_log();
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", missing_name),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", missing_name);
+	assert_int_equal(BotSetupGoalAI(), BLERR_CANNOTLOADITEMCONFIG);
+	char expected_log[PATH_MAX + 32];
+	int expected_written = snprintf(expected_log,
+		sizeof(expected_log),
+		"couldn't find %s\n",
+		missing_name);
+	assert_true(expected_written > 0 && expected_written < (int)sizeof(expected_log));
+	assert_true(test_log_has_exact(PRT_ERROR, expected_log));
+
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/goal_iteminfo_load_log_tmp.c",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+	write_goal_text_fixture(fixture_path,
+		"iteminfo \"goal_load_log\" { name \"Load Log\" }\n");
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", fixture_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", fixture_path);
+	test_reset_log();
+	g_allocator_capture.fail_next = true;
+	assert_int_equal(BotSetupGoalAI(), BLERR_CANNOTLOADITEMCONFIG);
+	assert_false(g_allocator_capture.fail_next);
+	expected_written = snprintf(expected_log,
+		sizeof(expected_log),
+		"counldn't load %s\n",
+		fixture_path);
+	assert_true(expected_written > 0 && expected_written < (int)sizeof(expected_log));
+	assert_true(test_log_has_exact(PRT_ERROR, expected_log));
+
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(remove(fixture_path), 0);
 }
 
 /*
@@ -657,6 +1140,437 @@ static void test_goal_itemconfig_enforces_max_iteminfo(void **state)
 
 	assert_int_equal(env->exports->BotLibVarSet("max_iteminfo", "256"), BLERR_NOERROR);
 	LibVarSet("max_iteminfo", "256");
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"), BLERR_NOERROR);
+	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
+test_goal_itemconfig_uses_retail_inline_allocation
+
+Pins the setup allocation shape: an eight-byte logical config header followed
+immediately by max_iteminfo retail 0x11c-byte item records.
+=============
+*/
+static void test_goal_itemconfig_uses_retail_inline_allocation(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	const int max_iteminfo = 73;
+	const int allocator_header_size = test_allocator_header_size();
+	const int expected_allocation_size = allocator_header_size + 0x08 +
+		max_iteminfo * 0x11c;
+
+	assert_int_equal(env->exports->BotLibVarSet("max_iteminfo", "73"),
+		BLERR_NOERROR);
+	LibVarSet("max_iteminfo", "73");
+	memset(&g_allocator_capture, 0, sizeof(g_allocator_capture));
+	g_allocator_capture.enabled = true;
+	int status = BotSetupGoalAI();
+	g_allocator_capture.enabled = false;
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(test_allocator_size_count(expected_allocation_size), 1);
+
+	memset(&g_allocator_capture, 0, sizeof(g_allocator_capture));
+	assert_int_equal(env->exports->BotLibVarSet("max_iteminfo", "256"),
+		BLERR_NOERROR);
+	LibVarSet("max_iteminfo", "256");
+}
+
+/*
+=============
+test_goal_itemconfig_preserves_retail_records_and_duplicates
+
+Pins the retail iteminfo grammar and sequence: type/index are accepted, duplicate
+classnames occupy distinct ordered records, and omitted fields remain zero.
+=============
+*/
+static void test_goal_itemconfig_preserves_retail_records_and_duplicates(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	char itemconfig_path[PATH_MAX];
+	char weight_path[PATH_MAX];
+	int itemconfig_written = snprintf(itemconfig_path,
+		sizeof(itemconfig_path),
+		"%s/tests/support/assets/goal_iteminfo_record_tmp.c",
+		PROJECT_SOURCE_DIR);
+	int weight_written = snprintf(weight_path,
+		sizeof(weight_path),
+		"%s/tests/support/assets/goal_iteminfo_record_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(itemconfig_written > 0 && itemconfig_written < (int)sizeof(itemconfig_path));
+	assert_true(weight_written > 0 && weight_written < (int)sizeof(weight_path));
+
+	write_goal_text_fixture(itemconfig_path,
+		"iteminfo \"goal_signed_vectors\"\n"
+		"{\n"
+		"name \"Signed Vectors\"\n"
+		"type -32768\n"
+		"index 32767\n"
+		"mins {}\n"
+		"maxs {4,5,}\n"
+		"}\n"
+		"iteminfo \"goal_record_duplicate\"\n"
+		"{\n"
+		"name \"First Duplicate\"\n"
+		"model \"models/items/first.md2\"\n"
+		"type 2\n"
+		"index 17\n"
+		"respawntime 25\n"
+		"mins {-1,-2,-3}\n"
+		"maxs {4,5,6}\n"
+		"}\n"
+		"iteminfo \"goal_record_duplicate\"\n"
+		"{\n"
+		"name \"Second Duplicate\"\n"
+		"type 3\n"
+		"index -18\n"
+		"}\n"
+		"iteminfo \"goal_zero_defaults\"\n"
+		"{\n"
+		"}\n"
+		"iteminfo \"goal_record_last\"\n"
+		"{\n"
+		"type 4\n"
+		"index 19\n"
+		"}\n");
+	write_goal_weight_fixture(weight_path,
+		"weight \"goal_signed_vectors\"\n"
+		"{\n"
+		"return balance(5,5,5);\n"
+		"}\n"
+		"weight \"goal_record_duplicate\"\n"
+		"{\n"
+		"return balance(10,10,10);\n"
+		"}\n"
+		"weight \"goal_zero_defaults\"\n"
+		"{\n"
+		"return balance(20,20,20);\n"
+		"}\n"
+		"weight \"goal_record_last\"\n"
+		"{\n"
+		"return balance(30,30,30);\n"
+		"}\n");
+
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", itemconfig_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", itemconfig_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+
+	int handle = env->exports->BotAllocGoalState(7);
+	assert_true(handle > 0);
+	assert_int_equal(env->exports->BotLoadItemWeights(handle, weight_path), BLERR_NOERROR);
+	const bot_goalstate_t *goalstate = BotGoalStatePeek(handle);
+	assert_non_null(goalstate);
+	assert_int_equal(BotGoal_ItemWeightIndexByteSize(handle), 5 * sizeof(int));
+	int signed_vectors_weight = BotWeight_FindIndex(goalstate->itemweightconfig,
+		"goal_signed_vectors");
+	int duplicate_weight = BotWeight_FindIndex(goalstate->itemweightconfig,
+		"goal_record_duplicate");
+	int zero_weight = BotWeight_FindIndex(goalstate->itemweightconfig,
+		"goal_zero_defaults");
+	int last_weight = BotWeight_FindIndex(goalstate->itemweightconfig,
+		"goal_record_last");
+	assert_true(signed_vectors_weight >= 0);
+	assert_true(duplicate_weight >= 0);
+	assert_true(zero_weight >= 0);
+	assert_true(last_weight >= 0);
+	assert_int_equal(goalstate->itemweightindex[0], signed_vectors_weight);
+	assert_int_equal(goalstate->itemweightindex[1], duplicate_weight);
+	assert_int_equal(goalstate->itemweightindex[2], duplicate_weight);
+	assert_int_equal(goalstate->itemweightindex[3], zero_weight);
+	assert_int_equal(goalstate->itemweightindex[4], last_weight);
+
+	bot_levelitem_setup_t vector_setup;
+	memset(&vector_setup, 0, sizeof(vector_setup));
+	vector_setup.classname = "goal_signed_vectors";
+	vector_setup.goal.number = 730;
+	vector_setup.goal.entitynum = 730;
+	vector_setup.goal.areanum = 1;
+	vector_setup.flags = GFL_ITEM;
+	assert_int_equal(env->exports->BotRegisterLevelItem(&vector_setup), 730);
+
+	bot_goal_t vector_goal;
+	memset(&vector_goal, 0, sizeof(vector_goal));
+	assert_int_equal(BotGetLevelItemGoal(0,
+		"goal_signed_vectors",
+		&vector_goal),
+		730);
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		assert_float_equal(vector_goal.mins[axis], 0.0f, 0.0001f);
+	}
+	assert_float_equal(vector_goal.maxs[0], 4.0f, 0.0001f);
+	assert_float_equal(vector_goal.maxs[1], 5.0f, 0.0001f);
+	assert_float_equal(vector_goal.maxs[2], 0.0f, 0.0001f);
+
+	bot_levelitem_setup_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.classname = "goal_zero_defaults";
+	setup.goal.number = 731;
+	setup.goal.entitynum = 731;
+	setup.goal.areanum = 1;
+	setup.flags = GFL_ITEM;
+	VectorSet(setup.goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(setup.goal.maxs, 16.0f, 16.0f, 16.0f);
+	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 731);
+
+	bot_goal_t goal;
+	memset(&goal, 0, sizeof(goal));
+	assert_int_equal(BotGetLevelItemGoal(0, "goal_zero_defaults", &goal), 731);
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		assert_float_equal(goal.mins[axis], 0.0f, 0.0001f);
+		assert_float_equal(goal.maxs[axis], 0.0f, 0.0001f);
+	}
+
+	env->exports->BotFreeGoalState(handle);
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"), BLERR_NOERROR);
+	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(remove(itemconfig_path), 0);
+	assert_int_equal(remove(weight_path), 0);
+}
+
+/*
+=============
+test_goal_itemconfig_rejects_nonretail_grammar_atomically
+
+Confirms unknown definitions/fields, modelindex, and an unquoted classname all
+discard the partial table, while a zero-item configuration succeeds with the
+retail warning.
+=============
+*/
+static void test_goal_itemconfig_rejects_nonretail_grammar_atomically(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/goal_iteminfo_strict_tmp.c",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	struct
+	{
+		const char *source;
+		const char *diagnostic;
+	} invalid_configs[] = {
+		{
+			"iteminfo \"valid_before_unknown\" { name \"Valid\" } "
+			"unknown_definition \"bad\" {}\n",
+			"unknown definition unknown_definition\n",
+		},
+		{
+			"iteminfo \"unknown_field\" { unsupported 1 }\n",
+			"unknown structure field unsupported",
+		},
+		{
+			"iteminfo \"modelindex_field\" { modelindex 7 }\n",
+			"unknown structure field modelindex",
+		},
+		{
+			"iteminfo \"signed_overflow\" { type 32768 }\n",
+			"value 32768 out of range [-32768, 32767]",
+		},
+		{
+			"iteminfo \"signed_underflow\" { index -32769 }\n",
+			"value -32769 out of range [-32768, 32767]",
+		},
+		{
+			"iteminfo unquoted_classname { name \"Bad\" }\n",
+			NULL,
+		},
+	};
+
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", fixture_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", fixture_path);
+	for (size_t index = 0; index < sizeof(invalid_configs) / sizeof(invalid_configs[0]); ++index)
+	{
+		write_goal_text_fixture(fixture_path, invalid_configs[index].source);
+		test_reset_log();
+		assert_int_equal(BotSetupGoalAI(), BLERR_CANNOTLOADITEMCONFIG);
+		if (invalid_configs[index].diagnostic != NULL)
+		{
+			char expected_log[PATH_MAX + 128];
+			int expected_written = snprintf(expected_log,
+				sizeof(expected_log),
+				"file %s, line 1: %s\n",
+				fixture_path,
+				invalid_configs[index].diagnostic);
+			assert_true(expected_written > 0 &&
+				expected_written < (int)sizeof(expected_log));
+			assert_true(test_log_has_exact(PRT_ERROR, expected_log));
+		}
+	}
+
+	write_goal_text_fixture(fixture_path, "// deliberately no iteminfo records\n");
+	test_reset_log();
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_true(test_log_has_exact(PRT_WARNING, "no item info loaded\n"));
+	char loaded_log[PATH_MAX + 16];
+	int loaded_written = snprintf(loaded_log,
+		sizeof(loaded_log),
+		"loaded %s\n",
+		fixture_path);
+	assert_true(loaded_written > 0 && loaded_written < (int)sizeof(loaded_log));
+	assert_true(test_log_has_exact(PRT_MESSAGE, loaded_log));
+
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"), BLERR_NOERROR);
+	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
+test_goal_empty_itemconfig_tracks_zero_payload_weight_index
+
+Pins the legal zero-record case: loading a valid weight file still owns a
+tracked zero-payload index block and exposes its non-NULL payload pointer.
+=============
+*/
+static void test_goal_empty_itemconfig_tracks_zero_payload_weight_index(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	char itemconfig_path[PATH_MAX];
+	char weight_path[PATH_MAX];
+	int itemconfig_written = snprintf(itemconfig_path,
+		sizeof(itemconfig_path),
+		"%s/tests/support/assets/goal_empty_itemconfig_tmp.c",
+		PROJECT_SOURCE_DIR);
+	int weight_written = snprintf(weight_path,
+		sizeof(weight_path),
+		"%s/tests/support/assets/goal_empty_itemconfig_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(itemconfig_written > 0 &&
+		itemconfig_written < (int)sizeof(itemconfig_path));
+	assert_true(weight_written > 0 && weight_written < (int)sizeof(weight_path));
+	write_goal_text_fixture(itemconfig_path, "// legal empty item configuration\n");
+	write_goal_weight_fixture(weight_path,
+		"weight \"unused_empty_item\"\n"
+		"{\n"
+		"return balance(1,1,1);\n"
+		"}\n");
+
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", itemconfig_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", itemconfig_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	int handle = env->exports->BotAllocGoalState(7);
+	assert_true(handle > 0);
+	const int allocator_header_size = test_allocator_header_size();
+	const size_t blocks_before_weights = BotMemory_BlockCount();
+	const size_t checksums_before_weights = CRC_SourceChecksumCount();
+	memset(&g_allocator_capture, 0, sizeof(g_allocator_capture));
+	g_allocator_capture.enabled = true;
+	int status = env->exports->BotLoadItemWeights(handle, weight_path);
+	g_allocator_capture.enabled = false;
+	assert_int_equal(status, BLERR_NOERROR);
+	const bot_goalstate_t *goalstate = BotGoalStatePeek(handle);
+	assert_non_null(goalstate);
+	assert_non_null(goalstate->itemweightindex);
+	assert_int_equal(BotGoal_ItemWeightIndexByteSize(handle), 0);
+	assert_true(test_allocator_size_count(allocator_header_size) >= 1);
+	assert_true(BotMemory_BlockCount() > blocks_before_weights);
+
+	BotFreeItemWeights(handle);
+	const size_t checksum_growth = CRC_SourceChecksumCount() -
+		checksums_before_weights;
+	assert_int_equal(BotMemory_BlockCount(),
+		blocks_before_weights + checksum_growth);
+	env->exports->BotFreeGoalState(handle);
+
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(remove(itemconfig_path), 0);
+	assert_int_equal(remove(weight_path), 0);
+}
+
+/*
+=============
+test_goal_itemconfig_refreshes_modelindex_for_each_map
+
+Pins the runtime-only modelindex field: changing map model tables remaps an
+already loaded record, and retail model lookup ignores ASCII case.
+=============
+*/
+static void test_goal_itemconfig_refreshes_modelindex_for_each_map(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/goal_iteminfo_model_refresh_tmp.c",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+	write_goal_text_fixture(fixture_path,
+		"iteminfo \"goal_model_refresh\"\n"
+		"{\n"
+		"name \"Model Refresh\"\n"
+		"model \"models/items/model_refresh.md2\"\n"
+		"}\n");
+
+	char *first_models[16] = {0};
+	first_models[7] = "models/items/model_refresh.md2";
+	BotGoal_SetMapModelIndexes(16, first_models);
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", fixture_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", fixture_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+
+	char *second_models[16] = {0};
+	second_models[8] = "MODELS/ITEMS/MODEL_REFRESH.MD2";
+	BotGoal_SetMapModelIndexes(16, second_models);
+
+	aas_world_t saved_world = aasworld;
+	memset(&aasworld, 0, sizeof(aasworld));
+	aasworld.loaded = qtrue;
+	aasworld.initialized = qtrue;
+	aasworld.numAreas = 2;
+	aasworld.numAreaSettings = 2;
+	aasworld.maxEntities = 10;
+	aas_area_t *areas = (aas_area_t *)calloc(2, sizeof(*areas));
+	aas_areasettings_t *area_settings =
+		(aas_areasettings_t *)calloc(2, sizeof(*area_settings));
+	aas_entity_t *entities = (aas_entity_t *)calloc(10, sizeof(*entities));
+	assert_non_null(areas);
+	assert_non_null(area_settings);
+	assert_non_null(entities);
+	aasworld.areas = areas;
+	aasworld.areasettings = area_settings;
+	aasworld.entities = entities;
+	VectorSet(areas[1].mins, -128.0f, -128.0f, -64.0f);
+	VectorSet(areas[1].maxs, 128.0f, 128.0f, 128.0f);
+	area_settings[1].numreachableareas = 1;
+	TranslateEntity_SetWorldLoaded(qtrue);
+	BotInitLevelItems();
+
+	aas_entity_t *entity = &aasworld.entities[5];
+	entity->inuse = qtrue;
+	entity->number = 5;
+	entity->modelindex = 8;
+	VectorSet(entity->origin, 32.0f, 0.0f, 16.0f);
+	VectorCopy(entity->origin, entity->previousOrigin);
+	aasworld.time = 4.0f;
+	BotGoal_SetCurrentTime(aasworld.time);
+	BotUpdateEntityItems();
+
+	bot_goal_t goal;
+	memset(&goal, 0, sizeof(goal));
+	assert_int_equal(BotGetLevelItemGoal(0, "Model Refresh", &goal), 5);
+	assert_int_equal(goal.entitynum, 5);
+
+	free(areas);
+	free(area_settings);
+	free(entities);
+	aasworld = saved_world;
+	TranslateEntity_SetWorldLoaded(aasworld.loaded);
+	BotGoal_SetMapModelIndexes(0, NULL);
 	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"), BLERR_NOERROR);
 	LibVarSet("itemconfig", "items.c");
 	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
@@ -721,21 +1635,10 @@ static void test_goal_item_weights_use_all_itemconfig_entries(void **state)
 	assert_int_equal(goal_state->itemweightconfig->num_weights, 1);
 	assert_string_equal(goal_state->itemweightconfig->weights[0].name,
 		"goal_weight_present");
-	assert_int_equal(goal_state->itemweightcount, 2);
-	assert_true(BotGoal_ItemWeightIndexByteSize(slot->goal_handle) >= 2 * sizeof(int));
+	assert_int_equal(BotGoal_ItemWeightIndexByteSize(slot->goal_handle), 2 * sizeof(int));
 	assert_true(env->exports->BotWeightIndex(slot->goal_handle, "goal_weight_present") >= 0);
 	assert_int_equal(env->exports->BotWeightIndex(slot->goal_handle, "goal_weight_missing"), -1);
-	bool reported_missing_weight = false;
-	for (int i = 0; i < g_test_log.count; ++i)
-	{
-		if (strcmp(g_test_log.entries[i].text,
-			"item info 1 \"goal_weight_missing\" has no fuzzy weight\n") == 0)
-		{
-			reported_missing_weight = true;
-			break;
-		}
-	}
-	assert_true(reported_missing_weight);
+	/* The retail diagnostic is emitted through Log_Write, not the Print import. */
 
 	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"), BLERR_NOERROR);
 	LibVarSet("itemconfig", "items.c");
@@ -757,7 +1660,7 @@ static void test_goal_level_item_pool_honors_max_levelitems(void **state)
 	test_environment_t *env = (test_environment_t *)(*state);
 	assert_int_equal(env->exports->BotLibVarSet("max_levelitems", "1"), BLERR_NOERROR);
 	LibVarSet("max_levelitems", "1");
-	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	BotInitLevelItems();
 
 	bot_levelitem_setup_t setup;
 	memset(&setup, 0, sizeof(setup));
@@ -779,18 +1682,17 @@ static void test_goal_level_item_pool_honors_max_levelitems(void **state)
 
 	assert_int_equal(env->exports->BotLibVarSet("max_levelitems", "512"), BLERR_NOERROR);
 	LibVarSet("max_levelitems", "512");
-	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	BotInitLevelItems();
 }
 
 /*
 =============
-test_goal_item_weights_cache_uses_caller_filename
+test_goal_item_weights_are_uncached_retail_owners
 
-Pins the exported goal-item path into the Q3 weight cache: retained configs
-must be found by the caller's script name before filesystem resolution.
+Pins the retail goal-item path to a directly owned, uncached weight config.
 =============
 */
-static void test_goal_item_weights_cache_uses_caller_filename(void **state)
+static void test_goal_item_weights_are_uncached_retail_owners(void **state)
 {
 	test_environment_t *env = (test_environment_t *)(*state);
 
@@ -823,7 +1725,7 @@ static void test_goal_item_weights_cache_uses_caller_filename(void **state)
 	int handle = env->exports->BotAllocGoalState(6);
 	assert_true(handle > 0);
 
-	assert_int_equal(env->exports->BotLoadItemWeights(handle, "bots/goal_cache_retained_tmp.w"),
+	assert_int_equal(env->exports->BotLoadItemWeights(handle, fixture_path),
 		BLERR_NOERROR);
 	const bot_goalstate_t *goal_state = BotGoalStatePeek(handle);
 	assert_non_null(goal_state);
@@ -832,11 +1734,12 @@ static void test_goal_item_weights_cache_uses_caller_filename(void **state)
 
 	assert_int_equal(remove(fixture_path), 0);
 
-	assert_int_equal(env->exports->BotLoadItemWeights(handle, "bots/goal_cache_retained_tmp.w"),
-		BLERR_NOERROR);
+	assert_int_equal(env->exports->BotLoadItemWeights(handle, fixture_path),
+		BLERR_CANNOTLOADITEMWEIGHTS);
 	goal_state = BotGoalStatePeek(handle);
 	assert_non_null(goal_state);
-	assert_ptr_equal(goal_state->itemweightconfig, first_config);
+	assert_null(goal_state->itemweightconfig);
+	assert_non_null(first_config);
 
 	assert_int_equal(env->exports->BotLibVarSet("bot_reloadcharacters", "1"), BLERR_NOERROR);
 	LibVarSet("bot_reloadcharacters", "1");
@@ -988,6 +1891,94 @@ static void test_goal_item_scoring_uses_undecided_fuzzy_weights(void **state)
 
 /*
 =============
+test_goal_ltg_compares_double_candidate_against_float_best
+
+Pins retail selector precision: the first candidate's double score rounds down
+when stored as float, allowing a slightly lower later double candidate to win.
+=============
+*/
+static void test_goal_ltg_compares_double_candidate_against_float_best(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+	assert_true(slot->goal_handle > 0);
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 4);
+	BotGoal_SetCurrentTime(0.0f);
+
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/bots/goal_selector_precision_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+	write_goal_weight_fixture(fixture_path,
+		"weight \"goal_precision_first\"\n"
+		"{\n"
+		"return balance(0.21003,0.21003,0.21003);\n"
+		"}\n"
+		"weight \"goal_precision_later\"\n"
+		"{\n"
+		"return balance(0.0100300033,0.0100300033,0.0100300033);\n"
+		"}\n");
+
+	bot_levelitem_setup_t later;
+	memset(&later, 0, sizeof(later));
+	later.classname = "goal_precision_later";
+	later.goal.number = 802;
+	later.goal.entitynum = 802;
+	later.goal.areanum = 1;
+	later.goal.flags = GFL_ITEM | GFL_DROPPED;
+	later.flags = GFL_ITEM | GFL_DROPPED;
+	later.respawntime = 30.0f;
+	VectorSet(later.goal.origin, 32.0f, 0.0f, 16.0f);
+	VectorSet(later.goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(later.goal.maxs, 16.0f, 16.0f, 16.0f);
+
+	bot_levelitem_setup_t first;
+	memset(&first, 0, sizeof(first));
+	first.classname = "goal_precision_first";
+	first.goal.number = 801;
+	first.goal.entitynum = 801;
+	first.goal.areanum = 1;
+	first.goal.flags = GFL_ITEM;
+	first.flags = GFL_ITEM;
+	VectorSet(first.goal.origin, 16.0f, 0.0f, 16.0f);
+	VectorSet(first.goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(first.goal.maxs, 16.0f, 16.0f, 16.0f);
+
+	/* Head insertion makes the second registration the first candidate. */
+	assert_int_equal(env->exports->BotRegisterLevelItem(&later), 802);
+	assert_int_equal(env->exports->BotRegisterLevelItem(&first), 801);
+	assert_int_equal(env->exports->BotLoadItemWeights(slot->goal_handle,
+		fixture_path),
+		BLERR_NOERROR);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	vec3_t origin;
+	VectorClear(origin);
+	assert_int_equal(env->exports->BotChooseLTGItem(slot->goal_handle,
+		origin,
+		inventory,
+		TFL_DEFAULT),
+		1);
+
+	bot_goal_t chosen;
+	memset(&chosen, 0, sizeof(chosen));
+	assert_true(env->exports->BotGetTopGoal(slot->goal_handle, &chosen));
+	assert_int_equal(chosen.number, 802);
+
+	test_goal_aas_fixture_end(&fixture);
+	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
 test_goal_retail_exports_and_avoid_sync
 
 Exercises the in-repo extended goal helpers wired through GetBotAPIEx and
@@ -1115,7 +2106,8 @@ test_goal_avoid_goals_use_retail_fixed_slots
 
 Pins Gladiator's fixed 64-slot avoid table: active entries are not compacted or
 evicted, duplicate active inserts do not refresh an earlier slot, and expired
-slots are reused.
+slots are reused. Goal zero and negative durations are stored without Q3-style
+normalisation.
 =============
 */
 static void test_goal_avoid_goals_use_retail_fixed_slots(void **state)
@@ -1127,6 +2119,17 @@ static void test_goal_avoid_goals_use_retail_fixed_slots(void **state)
 	assert_non_null(slot);
 
 	BotGoal_SetCurrentTime(1.0f);
+	env->exports->BotResetAvoidGoals(slot->goal_handle);
+	BotAddToAvoidGoals(slot->goal_handle, 0, 5.0f);
+	assert_float_equal(env->exports->BotAvoidGoalTime(slot->goal_handle, 0), 5.0f, 0.0001f);
+
+	env->exports->BotResetAvoidGoals(slot->goal_handle);
+	BotAddToAvoidGoals(slot->goal_handle, 77, -2.0f);
+	const bot_goalstate_t *goalstate = BotGoalStatePeek(slot->goal_handle);
+	assert_non_null(goalstate);
+	assert_int_equal(goalstate->avoidgoals[0], 77);
+	assert_float_equal(goalstate->avoidgoaltimes[0], -1.0f, 0.0001f);
+
 	env->exports->BotResetAvoidGoals(slot->goal_handle);
 	for (int i = 0; i < BOT_GOAL_MAX_AVOID; ++i)
 	{
@@ -1264,7 +2267,8 @@ static void test_goal_level_item_goal_preserves_retail_tail_fields(void **state)
 test_goal_touching_uses_presence_bounds
 
 Pins the retail touching contract: the bot origin is tested against goal bounds
-expanded by the normal player presence box, not only the raw item bounds.
+expanded by the normal player presence box and then shrunk by the retail
+horizontal and vertical safety margins.
 =============
 */
 static void test_goal_touching_uses_presence_bounds(void **state)
@@ -1278,17 +2282,105 @@ static void test_goal_touching_uses_presence_bounds(void **state)
 	VectorSet(goal.maxs, 8.0f, 8.0f, 8.0f);
 
 	vec3_t origin;
-	VectorSet(origin, 122.0f, 100.0f, 16.0f);
+	VectorSet(origin, 120.0f, 100.0f, 16.0f);
 	assert_true(env->exports->BotTouchingGoal(origin, &goal));
 
-	VectorSet(origin, 124.0f, 100.0f, 16.0f);
+	VectorSet(origin, 121.0f, 100.0f, 16.0f);
 	assert_false(env->exports->BotTouchingGoal(origin, &goal));
 
-	VectorSet(origin, 100.0f, 100.0f, 48.0f);
+	VectorSet(origin, 100.0f, 100.0f, 38.0f);
 	assert_true(env->exports->BotTouchingGoal(origin, &goal));
 
-	VectorSet(origin, 100.0f, 100.0f, 49.0f);
+	VectorSet(origin, 100.0f, 100.0f, 39.0f);
 	assert_false(env->exports->BotTouchingGoal(origin, &goal));
+}
+
+/*
+=============
+test_goal_high_level_touch_only_pops_without_avoid_reinsert
+
+Pins the high-level touch path after selection: contact pops the goal without
+adding a duplicate avoid slot or extending the existing slot's expiry.
+=============
+*/
+static void test_goal_high_level_touch_only_pops_without_avoid_reinsert(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	int handle = env->exports->BotAllocGoalState(7);
+	assert_true(handle > 0);
+	float saved_time = aasworld.time;
+	aasworld.time = 0.001f;
+	BotGoal_SetCurrentTime(aasworld.time);
+
+	bot_goal_t base_goal;
+	memset(&base_goal, 0, sizeof(base_goal));
+	base_goal.number = 910;
+	base_goal.areanum = 1;
+	VectorSet(base_goal.origin, 96.0f, 0.0f, 0.0f);
+	VectorSet(base_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(base_goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_int_equal(env->exports->BotPushGoal(handle, &base_goal), 1);
+
+	bot_goal_t touched_goal;
+	memset(&touched_goal, 0, sizeof(touched_goal));
+	touched_goal.number = 911;
+	touched_goal.areanum = 1;
+	VectorSet(touched_goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(touched_goal.maxs, 16.0f, 16.0f, 16.0f);
+	assert_int_equal(env->exports->BotPushGoal(handle, &touched_goal), 2);
+	env->exports->BotSetAvoidGoalTime(handle, touched_goal.number, 30.0f);
+
+	const bot_goalstate_t *goalstate = BotGoalStatePeek(handle);
+	assert_non_null(goalstate);
+	int original_slots = 0;
+	float original_expiry = 0.0f;
+	for (int index = 0; index < BOT_GOAL_MAX_AVOID; ++index)
+	{
+		if (goalstate->avoidgoals[index] == touched_goal.number &&
+			goalstate->avoidgoaltimes[index] >= aasworld.time)
+		{
+			original_slots++;
+			original_expiry = goalstate->avoidgoaltimes[index];
+		}
+	}
+	assert_int_equal(original_slots, 1);
+	assert_float_equal(original_expiry, 30.001f, 0.0001f);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	vec3_t origin;
+	VectorClear(origin);
+	assert_int_equal(AI_GoalBotlib_Update(handle,
+		origin,
+		inventory,
+		TFL_DEFAULT,
+		0.001f,
+		0.0f),
+		BLERR_NOERROR);
+	bot_goal_t top_goal;
+	memset(&top_goal, 0, sizeof(top_goal));
+	assert_true(env->exports->BotGetTopGoal(handle, &top_goal));
+	assert_int_equal(top_goal.number, base_goal.number);
+
+	goalstate = BotGoalStatePeek(handle);
+	assert_non_null(goalstate);
+	int resulting_slots = 0;
+	float resulting_expiry = 0.0f;
+	for (int index = 0; index < BOT_GOAL_MAX_AVOID; ++index)
+	{
+		if (goalstate->avoidgoals[index] == touched_goal.number &&
+			goalstate->avoidgoaltimes[index] >= aasworld.time)
+		{
+			resulting_slots++;
+			resulting_expiry = goalstate->avoidgoaltimes[index];
+		}
+	}
+	assert_int_equal(resulting_slots, original_slots);
+	assert_float_equal(resulting_expiry, original_expiry, 0.0001f);
+
+	env->exports->BotFreeGoalState(handle);
+	aasworld.time = saved_time;
+	BotGoal_SetCurrentTime(saved_time);
 }
 
 static void reset_goal_runtime(bot_client_state_t *slot)
@@ -1406,14 +2498,6 @@ static void submit_enemy_entity(bot_export_extended_t *exports,
     assert_int_equal(status, BLERR_NOERROR);
 }
 
-typedef struct test_goal_aas_fixture_s
-{
-	aas_world_t saved_world;
-	aas_area_t *areas;
-	aas_areasettings_t *area_settings;
-	aas_entity_t *entities;
-} test_goal_aas_fixture_t;
-
 /*
 =============
 test_goal_aas_fixture_begin
@@ -1462,6 +2546,55 @@ static void test_goal_aas_fixture_end(test_goal_aas_fixture_t *fixture)
 	free(fixture->entities);
 	aasworld = fixture->saved_world;
 	TranslateEntity_SetWorldLoaded(aasworld.loaded);
+}
+
+/*
+=============
+test_stage_goal_entity
+=============
+*/
+static void test_stage_goal_entity(int entitynum, int modelindex, const vec3_t origin)
+{
+	assert_true(entitynum > 0 && entitynum < aasworld.maxEntities);
+	aas_entity_t *entity = &aasworld.entities[entitynum];
+	memset(entity, 0, sizeof(*entity));
+	entity->inuse = qtrue;
+	entity->number = entitynum;
+	entity->modelindex = modelindex;
+	entity->lastUpdateTime = aasworld.time;
+	VectorCopy(origin, entity->origin);
+	VectorCopy(origin, entity->old_origin);
+	VectorCopy(origin, entity->previousOrigin);
+}
+
+/*
+=============
+test_goal_has_entity_item
+=============
+*/
+static bool test_goal_has_entity_item(char *classname, int entitynum)
+{
+	int cursor = 0;
+	for (int iteration = 0; iteration < 128; ++iteration)
+	{
+		bot_goal_t goal;
+		memset(&goal, 0, sizeof(goal));
+		int next = BotGetLevelItemGoal(cursor, classname, &goal);
+		if (next < 0)
+		{
+			return false;
+		}
+		if (goal.entitynum == entitynum)
+		{
+			return true;
+		}
+		if (next == cursor)
+		{
+			return false;
+		}
+		cursor = next;
+	}
+	return false;
 }
 
 /*
@@ -1540,13 +2673,14 @@ static void test_goal_choose_uses_timeout_for_dropped_semantics(void **state)
 
 /*
 =============
-test_goal_item_vis_trace_targets_retail_mins_point
+test_goal_item_vis_uses_retail_trace_and_entity_validity
 
-Pins the retail visibility target for item goals: Gladiator/Q3 trace to
-goal->origin + goal->mins, not the bbox center.
+Pins the retail visibility target and entity test: trace to goal->origin plus
+goal->mins with MASK_SOLID, then report nonpositive or invalid entities without
+using Q3's stale-update timeout.
 =============
 */
-static void test_goal_item_vis_trace_targets_retail_mins_point(void **state)
+static void test_goal_item_vis_uses_retail_trace_and_entity_validity(void **state)
 {
 	test_environment_t *env = (test_environment_t *)(*state);
 
@@ -1554,7 +2688,7 @@ static void test_goal_item_vis_trace_targets_retail_mins_point(void **state)
 	test_goal_aas_fixture_begin(&fixture, 4);
 	aasworld.time = 8.0f;
 	aasworld.entities[2].number = 2;
-	aasworld.entities[2].inuse = qtrue;
+	aasworld.entities[2].inuse = qfalse;
 	aasworld.entities[2].lastUpdateTime = 7.0f;
 
 	bot_goal_t goal;
@@ -1574,10 +2708,15 @@ static void test_goal_item_vis_trace_targets_retail_mins_point(void **state)
 	assert_true(env->exports->BotItemGoalInVisButNotVisible(1, eye, viewangles, &goal));
 	assert_int_equal(g_trace_log_count, 1);
 	assert_int_equal(g_trace_log_last_passent, 1);
-	assert_int_equal(g_trace_log_last_contentmask, CONTENTS_SOLID);
+	assert_int_equal(g_trace_log_last_contentmask, MASK_SOLID);
 	assert_float_equal(g_trace_log_last_end[0], 48.0f, 0.0001f);
 	assert_float_equal(g_trace_log_last_end[1], 20.0f, 0.0001f);
 	assert_float_equal(g_trace_log_last_end[2], 8.0f, 0.0001f);
+
+	aasworld.entities[2].inuse = qtrue;
+	assert_false(env->exports->BotItemGoalInVisButNotVisible(1, eye, viewangles, &goal));
+	goal.entitynum = 0;
+	assert_true(env->exports->BotItemGoalInVisButNotVisible(1, eye, viewangles, &goal));
 
 	test_goal_aas_fixture_end(&fixture);
 }
@@ -1682,11 +2821,93 @@ static void test_goal_choose_skips_unlinked_static_items_except_roam(void **stat
 
 /*
 =============
+test_goal_ltg_uses_expired_avoid_and_random_roam_fallback
+
+Pins two retail LTG details: a positive avoid remainder is not discounted by
+travel time, and an otherwise empty selection falls back to a random roam goal.
+=============
+*/
+static void test_goal_ltg_uses_expired_avoid_and_random_roam_fallback(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+	assert_true(slot->goal_handle > 0);
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 4);
+	aasworld.areasettings[1].areaflags = AAS_AREA_LIQUID;
+	VectorSet(aasworld.areas[1].center, 40.0f, 0.0f, 16.0f);
+
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/bots/goal_ltg_roam_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	const char *weights =
+		"weight \"goal_ltg_avoided_item\"\n"
+		"{\n"
+		"return balance(100,100,100);\n"
+		"}\n";
+	write_goal_weight_fixture(fixture_path, weights);
+
+	bot_levelitem_setup_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.classname = "goal_ltg_avoided_item";
+	setup.goal.number = 309;
+	setup.goal.entitynum = 309;
+	setup.goal.areanum = 1;
+	setup.goal.flags = GFL_ITEM;
+	setup.flags = GFL_ITEM;
+	VectorSet(setup.goal.origin, 24.0f, 0.0f, 16.0f);
+	VectorSet(setup.goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(setup.goal.maxs, 16.0f, 16.0f, 16.0f);
+
+	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 309);
+	assert_int_equal(env->exports->BotLoadItemWeights(slot->goal_handle, fixture_path), BLERR_NOERROR);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	vec3_t origin;
+	VectorClear(origin);
+
+	BotGoal_SetCurrentTime(1.0f);
+	env->exports->BotResetAvoidGoals(slot->goal_handle);
+	BotAddToAvoidGoals(slot->goal_handle, setup.goal.number, 0.005f);
+	assert_int_equal(env->exports->BotChooseLTGItem(slot->goal_handle,
+		origin,
+		inventory,
+		TFL_DEFAULT),
+		1);
+
+	bot_goal_t chosen;
+	memset(&chosen, 0, sizeof(chosen));
+	assert_true(env->exports->BotGetTopGoal(slot->goal_handle, &chosen));
+	assert_int_equal(chosen.number, 0);
+	assert_int_equal(chosen.entitynum, 0);
+	assert_int_equal(chosen.flags, GFL_ROAM);
+	assert_int_equal(chosen.iteminfo, 0);
+	assert_int_equal(chosen.areanum, 1);
+	assert_float_equal(chosen.origin[0], 40.0f, 0.0001f);
+	assert_float_equal(chosen.mins[0], -15.0f, 0.0001f);
+	assert_float_equal(chosen.maxs[2], 15.0f, 0.0001f);
+
+	test_goal_aas_fixture_end(&fixture);
+	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
 test_goal_nbg_uses_retail_strict_maxtime
 
 Pins the retail nearby-goal selector contract: travel time must be strictly
 less than maxtime, and LTG repetition is controlled by avoid timers rather
-than a separate same-goal-number filter.
+than a separate same-goal-number filter. A positive avoid remainder must
+expire before selection rather than being discounted by travel time.
 =============
 */
 static void test_goal_nbg_uses_retail_strict_maxtime(void **state)
@@ -1759,6 +2980,18 @@ static void test_goal_nbg_uses_retail_strict_maxtime(void **state)
 	assert_false(env->exports->BotGetTopGoal(slot->goal_handle, &chosen));
 
 	bot_goal_t ltg = setup.goal;
+	BotGoal_SetCurrentTime(1.0f);
+	BotAddToAvoidGoals(slot->goal_handle, setup.goal.number, 0.005f);
+	assert_int_equal(env->exports->BotChooseNBGItem(slot->goal_handle,
+		origin,
+		inventory,
+		TFL_DEFAULT,
+		&ltg,
+		2.0f),
+		0);
+	assert_false(env->exports->BotGetTopGoal(slot->goal_handle, &chosen));
+
+	BotGoal_SetCurrentTime(1.006f);
 	assert_int_equal(env->exports->BotChooseNBGItem(slot->goal_handle,
 		origin,
 		inventory,
@@ -1852,6 +3085,96 @@ static void test_goal_choose_rejects_start_area_without_reachability(void **stat
 
 /*
 =============
+test_goal_start_area_uses_retail_contents_ground_test
+
+Pins the retail start-area contents query at origin minus two units. A masked
+0x38 content bit enables BotReachabilityArea's ground pass; zero does not.
+=============
+*/
+static void test_goal_start_area_uses_retail_contents_ground_test(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+	assert_true(slot->goal_handle > 0);
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 4);
+	VectorSet(aasworld.areas[1].mins, -128.0f, -128.0f, -720.0f);
+	VectorSet(aasworld.areas[1].maxs, 128.0f, 128.0f, -680.0f);
+
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/bots/goal_start_contents_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	write_goal_weight_fixture(fixture_path,
+		"weight \"goal_start_contents_item\"\n"
+		"{\n"
+		"return balance(100,100,100);\n"
+		"}\n");
+
+	bot_levelitem_setup_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.classname = "goal_start_contents_item";
+	setup.goal.number = 316;
+	setup.goal.entitynum = 316;
+	setup.goal.areanum = 1;
+	setup.goal.flags = GFL_ITEM;
+	setup.flags = GFL_ITEM;
+	VectorSet(setup.goal.origin, 32.0f, 0.0f, -700.0f);
+	VectorSet(setup.goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(setup.goal.maxs, 16.0f, 16.0f, 16.0f);
+
+	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 316);
+	assert_int_equal(env->exports->BotLoadItemWeights(slot->goal_handle, fixture_path),
+		BLERR_NOERROR);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	vec3_t origin;
+	VectorSet(origin, 24.0f, -12.0f, 96.0f);
+
+	static const struct
+	{
+		int contents;
+		int expected_selection;
+	} cases[] = {
+		{0x08, 1},
+		{0x10, 1},
+		{0x20, 1},
+		{0x00, 0},
+		{0x40, 0},
+	};
+	for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index)
+	{
+		env->exports->BotEmptyGoalStack(slot->goal_handle);
+		env->exports->BotRemoveFromAvoidGoals(slot->goal_handle, setup.goal.number);
+		test_reset_point_contents_log();
+		g_point_contents_result = cases[index].contents;
+		assert_int_equal(env->exports->BotChooseLTGItem(slot->goal_handle,
+			origin,
+			inventory,
+			TFL_DEFAULT),
+			cases[index].expected_selection);
+		assert_int_equal(g_point_contents_log_count, 1);
+		assert_float_equal(g_point_contents_log_last_point[0], origin[0], 0.0001f);
+		assert_float_equal(g_point_contents_log_last_point[1], origin[1], 0.0001f);
+		assert_float_equal(g_point_contents_log_last_point[2],
+			origin[2] - 2.0f,
+			0.0001f);
+	}
+
+	test_goal_aas_fixture_end(&fixture);
+	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
 test_goal_init_filters_notspawnflags_entities
 
 Pins the Gladiator level-item initialization gate that skips BSP item entities
@@ -1925,8 +3248,9 @@ static void test_goal_init_filters_notspawnflags_entities(void **state)
 	test_goal_aas_fixture_t fixture;
 	test_goal_aas_fixture_begin(&fixture, 8);
 	snprintf(aasworld.mapName, sizeof(aasworld.mapName), "goal_spawnfilter_tmp");
-	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"), BLERR_NOERROR);
-	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", itemconfig_path), BLERR_NOERROR);
+	LibVarSet("itemconfig", itemconfig_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
 	LibVarSet("notspawnflags", "2048");
 	char *models[8] = {0};
 	models[7] = "models/weapons/g_rocket/tris.md2";
@@ -1962,12 +3286,13 @@ static void test_goal_init_filters_notspawnflags_entities(void **state)
 	assert_int_equal(unlink(itemconfig_path), 0);
 	(void)rmdir(maps_dir);
 
-	assert_int_equal(first_goal, 1);
+	assert_int_equal(first_goal, 4);
 	assert_int_equal(goal.entitynum, 3);
 	assert_int_equal(goal.areanum, 1);
 	assert_float_equal(goal.origin[0], 64.0f, 0.0001f);
 	assert_int_equal(next_result, -1);
-	assert_int_equal(case_variant_result, -1);
+	assert_int_equal(case_variant_result, 4);
+	assert_int_equal(case_variant_goal.number, 4);
 	assert_int_equal(location_result, 1);
 }
 
@@ -2058,13 +3383,17 @@ static void test_goal_raw_dropped_item_selection(void **state)
 	snprintf(aasworld.mapName, sizeof(aasworld.mapName), "goal_dropped_score_tmp");
 	assert_int_equal(env->exports->BotLibVarSet("itemconfig", itemconfig_path), BLERR_NOERROR);
 	LibVarSet("itemconfig", itemconfig_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
 	char *models[16] = {0};
 	models[7] = "models/weapons/g_rocket/tris.md2";
 	models[8] = "models/weapons/g_shotg/tris.md2";
 	BotGoal_SetMapModelIndexes(16, models);
+	test_reset_trace_log();
+	g_trace_log_fraction = 0.0f;
 	assert_int_equal(chdir(fixture_root), 0);
 	BotInitLevelItems();
 	assert_int_equal(chdir(previous_cwd), 0);
+	g_trace_log_fraction = 1.0f;
 
 	aas_entity_t *shotgun = &aasworld.entities[3];
 	shotgun->inuse = qtrue;
@@ -2188,8 +3517,9 @@ static void test_goal_init_drops_all_bsp_items_to_floor(void **state)
 	test_goal_aas_fixture_t fixture;
 	test_goal_aas_fixture_begin(&fixture, 8);
 	snprintf(aasworld.mapName, sizeof(aasworld.mapName), "goal_dropfloor_tmp");
-	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"), BLERR_NOERROR);
-	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", itemconfig_path), BLERR_NOERROR);
+	LibVarSet("itemconfig", itemconfig_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
 	BotGoal_SetMapModelIndexes(0, NULL);
 	test_reset_trace_log();
 	test_reset_log();
@@ -2204,7 +3534,7 @@ static void test_goal_init_drops_all_bsp_items_to_floor(void **state)
 	int result = BotGetLevelItemGoal(0, "Rocket Launcher", &goal);
 	assert_int_equal(g_trace_log_count, 1);
 	assert_int_equal(g_trace_log_last_passent, 0);
-	assert_int_equal(g_trace_log_last_contentmask, CONTENTS_SOLID);
+	assert_int_equal(g_trace_log_last_contentmask, MASK_SOLID);
 	assert_float_equal(g_trace_log_last_end[2], -36.0f, 0.0001f);
 
 	int inventory[MAX_ITEMS];
@@ -2219,8 +3549,7 @@ static void test_goal_init_drops_all_bsp_items_to_floor(void **state)
 		inventory,
 		TFL_DEFAULT),
 		1);
-	assert_int_equal(g_trace_log_count, 1);
-	assert_int_equal(g_trace_log_last_passent, 1);
+	assert_int_equal(g_trace_log_count, 0);
 	bot_goal_t selected;
 	memset(&selected, 0, sizeof(selected));
 	assert_true(env->exports->BotGetTopGoal(slot->goal_handle, &selected));
@@ -2388,56 +3717,165 @@ static void test_goal_info_entities_use_retail_head_insertion_order(void **state
 
 /*
 =============
-test_goal_static_level_item_links_live_entity_model
+test_goal_raw_static_item_wins_compatibility_collision
 
-Pins the Gladiator HLIL dynamic-item pass that links a known static level item
-to a settled live entity sharing the item model index.
+Pins raw ownership when a direct compatibility record reuses the raw item's
+number and model: registration does not overwrite it, marking targets the
+compatibility record, and entity reconciliation skips that record.
 =============
 */
-static void test_goal_static_level_item_links_live_entity_model(void **state)
+static void test_goal_raw_static_item_wins_compatibility_collision(void **state)
 {
 	test_environment_t *env = (test_environment_t *)(*state);
-	(void)env;
+	char fixture_root[PATH_MAX];
+	int written = snprintf(fixture_root,
+		sizeof(fixture_root),
+		"%s/tests/support/assets",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_root));
+	char maps_dir[PATH_MAX];
+	written = snprintf(maps_dir, sizeof(maps_dir), "%s/maps", fixture_root);
+	assert_true(written > 0 && written < (int)sizeof(maps_dir));
+	bool remove_maps_dir = ensure_goal_fixture_directory(maps_dir);
+
+	char bsp_path[PATH_MAX];
+	char itemconfig_path[PATH_MAX];
+	char weight_path[PATH_MAX];
+	written = snprintf(bsp_path,
+		sizeof(bsp_path),
+		"%s/goal_raw_compat_collision_tmp.bsp",
+		maps_dir);
+	assert_true(written > 0 && written < (int)sizeof(bsp_path));
+	written = snprintf(itemconfig_path,
+		sizeof(itemconfig_path),
+		"%s/goal_raw_compat_collision_tmp.c",
+		fixture_root);
+	assert_true(written > 0 && written < (int)sizeof(itemconfig_path));
+	written = snprintf(weight_path,
+		sizeof(weight_path),
+		"%s/goal_raw_compat_collision_tmp.w",
+		fixture_root);
+	assert_true(written > 0 && written < (int)sizeof(weight_path));
+	write_goal_bsp_entity_fixture(bsp_path,
+		"{\n"
+		"\"classname\" \"goal_raw_collision\"\n"
+		"\"origin\" \"16 0 16\"\n"
+		"}\n");
+	write_goal_text_fixture(itemconfig_path,
+		"iteminfo \"goal_raw_collision\"\n"
+		"{\n"
+		"name \"Raw Collision\"\n"
+		"model \"models/items/collision/tris.md2\"\n"
+		"mins {-15,-15,-15}\n"
+		"maxs {15,15,15}\n"
+		"respawntime 30\n"
+		"}\n"
+		"iteminfo \"goal_compat_collision\"\n"
+		"{\n"
+		"name \"Compatibility Collision\"\n"
+		"model \"models/items/collision/tris.md2\"\n"
+		"mins {-15,-15,-15}\n"
+		"maxs {15,15,15}\n"
+		"respawntime 30\n"
+		"}\n");
+	write_goal_weight_fixture(weight_path,
+		"weight \"goal_raw_collision\"\n"
+		"{\n"
+		"return balance(10,10,10);\n"
+		"}\n"
+		"weight \"goal_compat_collision\"\n"
+		"{\n"
+		"return balance(1000,1000,1000);\n"
+		"}\n");
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", itemconfig_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", itemconfig_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
 
 	test_goal_aas_fixture_t fixture;
 	test_goal_aas_fixture_begin(&fixture, 8);
-
+	snprintf(aasworld.mapName,
+		sizeof(aasworld.mapName),
+		"goal_raw_compat_collision_tmp");
 	char *models[16] = {0};
-	models[7] = "models/weapons/g_rocket/tris.md2";
+	models[7] = "models/items/collision/tris.md2";
 	BotGoal_SetMapModelIndexes(16, models);
+	char previous_cwd[PATH_MAX];
+	assert_non_null(getcwd(previous_cwd, sizeof(previous_cwd)));
+	test_reset_trace_log();
+	g_trace_log_fraction = 0.0f;
+	assert_int_equal(chdir(fixture_root), 0);
 	BotInitLevelItems();
+	assert_int_equal(chdir(previous_cwd), 0);
+	g_trace_log_fraction = 1.0f;
 	BotGoal_SetCurrentTime(0.0f);
 
-	bot_levelitem_setup_t setup;
-	memset(&setup, 0, sizeof(setup));
-	setup.classname = "weapon_rocketlauncher";
-	setup.goal.number = 41;
-	setup.goal.flags = GFL_ITEM;
-	setup.flags = GFL_ITEM;
-	VectorSet(setup.goal.origin, 16.0f, 0.0f, 16.0f);
-	VectorSet(setup.goal.mins, -15.0f, -15.0f, -15.0f);
-	VectorSet(setup.goal.maxs, 15.0f, 15.0f, 15.0f);
-	assert_int_equal(BotGoal_RegisterLevelItem(&setup), 41);
+	bot_goal_t goal;
+	memset(&goal, 0, sizeof(goal));
+	assert_int_equal(BotGetLevelItemGoal(0, "Raw Collision", &goal), 1);
+	assert_int_equal(goal.entitynum, 0);
 
-	aas_entity_t *entity = &aasworld.entities[5];
-	entity->inuse = qtrue;
-	entity->number = 5;
-	entity->modelindex = 7;
-	VectorSet(entity->origin, 20.0f, 0.0f, 16.0f);
-	VectorCopy(entity->origin, entity->previousOrigin);
+	bot_levelitem_setup_t compatibility;
+	memset(&compatibility, 0, sizeof(compatibility));
+	compatibility.classname = "goal_compat_collision";
+	compatibility.goal.number = 1;
+	compatibility.goal.entitynum = 0;
+	compatibility.goal.areanum = 1;
+	compatibility.goal.flags = GFL_ITEM;
+	compatibility.flags = GFL_ITEM;
+	compatibility.respawntime = 30.0f;
+	VectorSet(compatibility.goal.origin, 18.0f, 0.0f, 16.0f);
+	VectorSet(compatibility.goal.mins, -15.0f, -15.0f, -15.0f);
+	VectorSet(compatibility.goal.maxs, 15.0f, 15.0f, 15.0f);
+	assert_int_equal(BotGoal_RegisterLevelItem(&compatibility), 1);
+	BotGoal_MarkItemTaken(1, 100.0f);
 
+	vec3_t entity_origin = {20.0f, 0.0f, 16.0f};
+	test_stage_goal_entity(5, 7, entity_origin);
 	aasworld.time = 4.0f;
 	BotGoal_SetCurrentTime(aasworld.time);
 	BotUpdateEntityItems();
 
-	bot_goal_t goal;
+	int handle = env->exports->BotAllocGoalState(7);
+	assert_true(handle > 0);
+	assert_int_equal(env->exports->BotLoadItemWeights(handle, weight_path),
+		BLERR_NOERROR);
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	vec3_t bot_origin;
+	VectorClear(bot_origin);
+	assert_int_equal(env->exports->BotChooseLTGItem(handle,
+		bot_origin,
+		inventory,
+		TFL_DEFAULT),
+		1);
+	bot_goal_t selected;
+	memset(&selected, 0, sizeof(selected));
+	assert_true(env->exports->BotGetTopGoal(handle, &selected));
+	assert_int_equal(selected.number, 1);
+	assert_int_equal(selected.entitynum, 5);
+	env->exports->BotFreeGoalState(handle);
+
+	BotGoal_UnregisterLevelItem(1);
 	memset(&goal, 0, sizeof(goal));
-	assert_int_equal(BotGetLevelItemGoal(0, "weapon_rocketlauncher", &goal), 41);
+	assert_int_equal(BotGetLevelItemGoal(0, "Raw Collision", &goal), 1);
 	assert_int_equal(goal.entitynum, 5);
 	assert_int_equal(goal.areanum, 1);
 	assert_float_equal(goal.origin[0], 20.0f, 0.0001f);
 
 	test_goal_aas_fixture_end(&fixture);
+	BotGoal_SetMapModelIndexes(0, NULL);
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(unlink(bsp_path), 0);
+	assert_int_equal(unlink(itemconfig_path), 0);
+	assert_int_equal(unlink(weight_path), 0);
+	if (remove_maps_dir)
+	{
+		assert_int_equal(rmdir(maps_dir), 0);
+	}
 }
 
 /*
@@ -2462,17 +3900,6 @@ static void test_goal_dynamic_model_change_preserves_prior_item_link(void **stat
 	BotGoal_SetMapModelIndexes(16, models);
 	BotInitLevelItems();
 
-	bot_levelitem_setup_t setup;
-	memset(&setup, 0, sizeof(setup));
-	setup.classname = "weapon_rocketlauncher";
-	setup.goal.number = 41;
-	setup.goal.flags = GFL_ITEM;
-	setup.flags = GFL_ITEM;
-	VectorSet(setup.goal.origin, 16.0f, 0.0f, 16.0f);
-	VectorSet(setup.goal.mins, -15.0f, -15.0f, -15.0f);
-	VectorSet(setup.goal.maxs, 15.0f, 15.0f, 15.0f);
-	assert_int_equal(BotGoal_RegisterLevelItem(&setup), 41);
-
 	aas_entity_t *entity = &aasworld.entities[5];
 	entity->inuse = qtrue;
 	entity->number = 5;
@@ -2491,11 +3918,11 @@ static void test_goal_dynamic_model_change_preserves_prior_item_link(void **stat
 
 	bot_goal_t goal;
 	memset(&goal, 0, sizeof(goal));
-	assert_int_equal(BotGetLevelItemGoal(0, "weapon_rocketlauncher", &goal), 41);
+	assert_int_equal(BotGetLevelItemGoal(0, "Rocket Launcher", &goal), 5);
 	assert_int_equal(goal.entitynum, 5);
 
 	memset(&goal, 0, sizeof(goal));
-	assert_int_equal(BotGetLevelItemGoal(0, "Shotgun", &goal), 6);
+	assert_int_equal(BotGetLevelItemGoal(0, "Shotgun", &goal), 5);
 	assert_int_equal(goal.entitynum, 5);
 
 	test_goal_aas_fixture_end(&fixture);
@@ -2549,6 +3976,135 @@ static void test_goal_dynamic_entity_items_match_item_models(void **state)
 	BotUpdateEntityItems();
 	memset(&goal, 0, sizeof(goal));
 	assert_int_equal(BotGetLevelItemGoal(0, "Rocket Launcher", &goal), -1);
+
+	test_goal_aas_fixture_end(&fixture);
+}
+
+/*
+=============
+test_goal_dynamic_item_timeout_sweep_precedes_aas_availability
+
+Pins the retail update order: timed compatibility items expire before the
+dynamic entity scan checks whether the AAS world is available.
+=============
+*/
+static void test_goal_dynamic_item_timeout_sweep_precedes_aas_availability(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	(void)env;
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 8);
+	aasworld.time = 10.0f;
+	BotGoal_SetCurrentTime(aasworld.time);
+
+	bot_levelitem_setup_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.classname = "goal_expiring_compatibility_item";
+	setup.goal.number = 61;
+	setup.goal.entitynum = 61;
+	setup.goal.areanum = 1;
+	setup.goal.flags = GFL_ITEM | GFL_DROPPED;
+	setup.respawntime = 2.0f;
+	setup.flags = GFL_ITEM | GFL_DROPPED;
+	VectorSet(setup.goal.origin, 32.0f, 0.0f, 16.0f);
+	VectorSet(setup.goal.mins, -16.0f, -16.0f, -16.0f);
+	VectorSet(setup.goal.maxs, 16.0f, 16.0f, 16.0f);
+	assert_int_equal(BotGoal_RegisterLevelItem(&setup), 61);
+
+	bot_goal_t goal;
+	memset(&goal, 0, sizeof(goal));
+	assert_int_equal(BotGetLevelItemGoal(0,
+		"goal_expiring_compatibility_item",
+		&goal),
+		61);
+
+	aasworld.time = 13.0f;
+	aasworld.loaded = qfalse;
+	TranslateEntity_SetWorldLoaded(qfalse);
+	BotUpdateEntityItems();
+
+	memset(&goal, 0, sizeof(goal));
+	assert_int_equal(BotGetLevelItemGoal(0,
+		"goal_expiring_compatibility_item",
+		&goal),
+		-1);
+
+	test_goal_aas_fixture_end(&fixture);
+}
+
+/*
+=============
+test_goal_dynamic_item_skips_compatibility_records
+
+Pins the raw/compatibility split: direct records retain their staged entity
+state while the live model becomes a separate raw dropped item.
+=============
+*/
+static void test_goal_dynamic_item_skips_compatibility_records(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	(void)env;
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 8);
+
+	char *models[16] = {0};
+	models[7] = "models/weapons/g_rocket/tris.md2";
+	BotGoal_SetMapModelIndexes(16, models);
+	BotInitLevelItems();
+
+	bot_levelitem_setup_t linked_setup;
+	memset(&linked_setup, 0, sizeof(linked_setup));
+	linked_setup.classname = "weapon_rocketlauncher";
+	linked_setup.goal.number = 42;
+	linked_setup.goal.entitynum = 5;
+	linked_setup.goal.areanum = 1;
+	linked_setup.goal.flags = GFL_ITEM;
+	linked_setup.flags = GFL_ITEM;
+	VectorSet(linked_setup.goal.origin, 80.0f, 0.0f, 16.0f);
+	VectorSet(linked_setup.goal.mins, -15.0f, -15.0f, -15.0f);
+	VectorSet(linked_setup.goal.maxs, 15.0f, 15.0f, 15.0f);
+	assert_int_equal(BotGoal_RegisterLevelItem(&linked_setup), 42);
+
+	bot_levelitem_setup_t unlinked_setup;
+	memset(&unlinked_setup, 0, sizeof(unlinked_setup));
+	unlinked_setup.classname = "weapon_rocketlauncher";
+	unlinked_setup.goal.number = 41;
+	unlinked_setup.goal.entitynum = 0;
+	unlinked_setup.goal.areanum = 1;
+	unlinked_setup.goal.flags = GFL_ITEM;
+	unlinked_setup.flags = GFL_ITEM;
+	VectorSet(unlinked_setup.goal.origin, 16.0f, 0.0f, 16.0f);
+	VectorSet(unlinked_setup.goal.mins, -15.0f, -15.0f, -15.0f);
+	VectorSet(unlinked_setup.goal.maxs, 15.0f, 15.0f, 15.0f);
+	assert_int_equal(BotGoal_RegisterLevelItem(&unlinked_setup), 41);
+
+	aas_entity_t *entity = &aasworld.entities[5];
+	entity->inuse = qtrue;
+	entity->number = 5;
+	entity->modelindex = 7;
+	VectorSet(entity->origin, 20.0f, 0.0f, 16.0f);
+	VectorCopy(entity->origin, entity->previousOrigin);
+
+	aasworld.time = 4.0f;
+	BotUpdateEntityItems();
+
+	bot_goal_t goal;
+	memset(&goal, 0, sizeof(goal));
+	assert_int_equal(BotGetLevelItemGoal(0, "weapon_rocketlauncher", &goal), 41);
+	assert_int_equal(goal.entitynum, 0);
+	assert_float_equal(goal.origin[0], 16.0f, 0.0001f);
+
+	memset(&goal, 0, sizeof(goal));
+	assert_int_equal(BotGetLevelItemGoal(41, "weapon_rocketlauncher", &goal), 42);
+	assert_int_equal(goal.entitynum, 5);
+	assert_float_equal(goal.origin[0], 80.0f, 0.0001f);
+
+	memset(&goal, 0, sizeof(goal));
+	assert_int_equal(BotGetLevelItemGoal(0, "Rocket Launcher", &goal), 5);
+	assert_int_equal(goal.entitynum, 5);
+	assert_float_equal(goal.origin[0], 20.0f, 0.0001f);
 
 	test_goal_aas_fixture_end(&fixture);
 }
@@ -2622,19 +4178,6 @@ static void test_goal_update_refreshes_entity_items_before_selection(void **stat
 	BotInitLevelItems();
 	BotGoal_SetCurrentTime(0.0f);
 
-	bot_levelitem_setup_t setup;
-	memset(&setup, 0, sizeof(setup));
-	setup.classname = "weapon_rocketlauncher";
-	setup.goal.number = 306;
-	setup.goal.entitynum = 0;
-	setup.goal.areanum = 1;
-	setup.goal.flags = GFL_ITEM;
-	setup.flags = GFL_ITEM;
-	VectorSet(setup.goal.origin, 16.0f, 0.0f, 16.0f);
-	VectorSet(setup.goal.mins, -15.0f, -15.0f, -15.0f);
-	VectorSet(setup.goal.maxs, 15.0f, 15.0f, 15.0f);
-	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 306);
-
 	char fixture_path[PATH_MAX];
 	int written = snprintf(fixture_path,
 		sizeof(fixture_path),
@@ -2674,12 +4217,12 @@ static void test_goal_update_refreshes_entity_items_before_selection(void **stat
 	bot_goal_t goal;
 	memset(&goal, 0, sizeof(goal));
 	assert_true(env->exports->BotGetTopGoal(slot->goal_handle, &goal));
-	assert_int_equal(goal.number, 306);
+	assert_int_equal(goal.number, 5);
 	assert_int_equal(goal.entitynum, 5);
 
 	bot_goal_t tracked_goal;
 	memset(&tracked_goal, 0, sizeof(tracked_goal));
-	assert_int_equal(BotGetLevelItemGoal(0, "weapon_rocketlauncher", &tracked_goal), 306);
+	assert_int_equal(BotGetLevelItemGoal(0, "Rocket Launcher", &tracked_goal), 5);
 	assert_float_equal(tracked_goal.origin[0], 20.0f, 0.0001f);
 
 	VectorSet(entity->origin, 48.0f, 0.0f, 16.0f);
@@ -2694,7 +4237,7 @@ static void test_goal_update_refreshes_entity_items_before_selection(void **stat
 		0.0f);
 	assert_int_equal(status, BLERR_NOERROR);
 	memset(&tracked_goal, 0, sizeof(tracked_goal));
-	assert_int_equal(BotGetLevelItemGoal(0, "weapon_rocketlauncher", &tracked_goal), 306);
+	assert_int_equal(BotGetLevelItemGoal(0, "Rocket Launcher", &tracked_goal), 5);
 	assert_float_equal(tracked_goal.origin[0], 20.0f, 0.0001f);
 
 	aasworld.time = 3.1f;
@@ -2706,11 +4249,159 @@ static void test_goal_update_refreshes_entity_items_before_selection(void **stat
 		0.0f);
 	assert_int_equal(status, BLERR_NOERROR);
 	memset(&tracked_goal, 0, sizeof(tracked_goal));
-	assert_int_equal(BotGetLevelItemGoal(0, "weapon_rocketlauncher", &tracked_goal), 306);
+	assert_int_equal(BotGetLevelItemGoal(0, "Rocket Launcher", &tracked_goal), 5);
 	assert_float_equal(tracked_goal.origin[0], 20.0f, 0.0001f);
 
 	test_goal_aas_fixture_end(&fixture);
 	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
+test_botai_updates_entity_items_after_each_active_think_path
+
+Pins the BotAI wrapper order. Ordinary LTG selection sees the list from the
+start of its frame, while the post-think gate refreshes goal, stand, fight,
+and active-client error exits before BotAI returns.
+=============
+*/
+static void test_botai_updates_entity_items_after_each_active_think_path(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+	assert_true(slot->goal_handle > 0);
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 10);
+	LibVarSet("nochat", "1");
+	char *models[16] = {0};
+	models[7] = "models/weapons/g_rocket/tris.md2";
+	BotGoal_SetMapModelIndexes(16, models);
+	BotInitLevelItems();
+
+	char weight_path[PATH_MAX];
+	int written = snprintf(weight_path,
+		sizeof(weight_path),
+		"%s/tests/support/assets/bots/goal_botai_postthink_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(weight_path));
+	write_goal_weight_fixture(weight_path,
+		"weight \"weapon_rocketlauncher\"\n"
+		"{\n"
+		"return balance(100,100,100);\n"
+		"}\n");
+	assert_int_equal(env->exports->BotLoadItemWeights(slot->goal_handle, weight_path),
+		BLERR_NOERROR);
+
+	vec3_t client_origin;
+	vec3_t viewangles;
+	VectorClear(client_origin);
+	VectorClear(viewangles);
+	vec3_t item_five = {20.0f, 0.0f, 16.0f};
+	vec3_t item_six = {48.0f, 0.0f, 16.0f};
+	vec3_t item_seven = {72.0f, 0.0f, 16.0f};
+	vec3_t item_eight = {96.0f, 0.0f, 16.0f};
+
+	slot->enter_game_time = -1000.0f;
+	slot->ai_node = BOT_AI_NODE_SEEK_LTG;
+	slot->long_term_goal_time = 0.0f;
+	env->exports->BotEmptyGoalStack(slot->goal_handle);
+	submit_client_update(env->exports, 1000.0f, client_origin, viewangles);
+	test_stage_goal_entity(5, 7, item_five);
+	assert_false(test_goal_has_entity_item("Rocket Launcher", 5));
+	assert_int_equal(env->exports->BotAI(0, 0.1f), BLERR_NOERROR);
+	bot_goal_t selected;
+	memset(&selected, 0, sizeof(selected));
+	if (env->exports->BotGetTopGoal(slot->goal_handle, &selected))
+	{
+		assert_int_not_equal(selected.entitynum, 5);
+	}
+	assert_true(test_goal_has_entity_item("Rocket Launcher", 5));
+
+	submit_client_update(env->exports, 1002.0f, client_origin, viewangles);
+	test_stage_goal_entity(5, 7, item_five);
+	test_stage_goal_entity(6, 7, item_six);
+	slot->ai_node = BOT_AI_NODE_STAND;
+	slot->chat_standing = false;
+	assert_false(test_goal_has_entity_item("Rocket Launcher", 6));
+	assert_int_equal(env->exports->BotAI(0, 0.1f), BLERR_NOERROR);
+	assert_true(test_goal_has_entity_item("Rocket Launcher", 6));
+
+	submit_client_update(env->exports, 1004.0f, client_origin, viewangles);
+	test_stage_goal_entity(5, 7, item_five);
+	test_stage_goal_entity(6, 7, item_six);
+	test_stage_goal_entity(7, 7, item_seven);
+	vec3_t enemy_origin = {64.0f, 32.0f, 16.0f};
+	test_stage_goal_entity(2, 255, enemy_origin);
+	aasworld.maxClients = 2;
+	slot->combat.current_enemy = 2;
+	slot->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+	assert_false(test_goal_has_entity_item("Rocket Launcher", 7));
+	assert_int_equal(env->exports->BotAI(0, 0.1f), BLERR_NOERROR);
+	assert_true(test_goal_has_entity_item("Rocket Launcher", 7));
+	assert_int_equal(slot->combat.current_enemy, 2);
+
+	assert_int_equal(env->exports->BotStartFrame(1006.0f), BLERR_NOERROR);
+	test_stage_goal_entity(5, 7, item_five);
+	test_stage_goal_entity(6, 7, item_six);
+	test_stage_goal_entity(7, 7, item_seven);
+	test_stage_goal_entity(8, 7, item_eight);
+	assert_false(slot->client_update_valid);
+	assert_false(test_goal_has_entity_item("Rocket Launcher", 8));
+	assert_int_equal(env->exports->BotAI(0, 0.1f),
+		BLERR_AIUPDATEINACTIVECLIENT);
+	assert_true(test_goal_has_entity_item("Rocket Launcher", 8));
+
+	LibVarSet("nochat", "0");
+	test_goal_aas_fixture_end(&fixture);
+	assert_int_equal(remove(weight_path), 0);
+}
+
+/*
+=============
+test_botai_uninitialised_aas_is_retail_noop
+
+Pins the outer retail AAS gate: a valid active client returns success without
+running its think or the post-think dynamic-item refresh.
+=============
+*/
+static void test_botai_uninitialised_aas_is_retail_noop(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+	assert_true(slot->goal_handle > 0);
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 8);
+	char *models[16] = {0};
+	models[7] = "models/weapons/g_rocket/tris.md2";
+	BotGoal_SetMapModelIndexes(16, models);
+	BotInitLevelItems();
+
+	vec3_t item_origin = {32.0f, 0.0f, 16.0f};
+	test_stage_goal_entity(5, 7, item_origin);
+	assert_false(test_goal_has_entity_item("Rocket Launcher", 5));
+
+	aasworld.time = 2000.0f;
+	BotGoal_SetCurrentTime(aasworld.time);
+	aasworld.initialized = qfalse;
+	slot->client_update_valid = true;
+	slot->ai_node_switches = -77;
+	test_reset_bot_input_log();
+
+	assert_int_equal(env->exports->BotAI(0, 0.1f), BLERR_NOERROR);
+	assert_true(slot->client_update_valid);
+	assert_int_equal(slot->ai_node_switches, -77);
+	assert_int_equal(g_bot_input_log.count, 0);
+	assert_false(test_goal_has_entity_item("Rocket Launcher", 5));
+
+	aasworld.initialized = qtrue;
+	test_goal_aas_fixture_end(&fixture);
 }
 
 /*
@@ -2728,7 +4419,7 @@ static void test_goal_refresh_and_movement_dispatch_order(void **state)
 
     bot_client_state_t *slot = BotState_Get(0);
     assert_non_null(slot);
-	slot->enter_game_chat_attempted = true;
+	slot->enter_game_time = -1000.0f;
 
     reset_goal_runtime(slot);
 
@@ -2790,7 +4481,7 @@ static void test_movement_error_propagates_without_submission(void **state)
 
     bot_client_state_t *slot = BotState_Get(0);
     assert_non_null(slot);
-	slot->enter_game_chat_attempted = true;
+	slot->enter_game_time = -1000.0f;
 
     reset_goal_runtime(slot);
 
@@ -3040,19 +4731,43 @@ static void test_dm_enemy_selection_damage_alert(void **state)
 int main(void)
 {
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test_setup_teardown(test_setup_allocates_goal_move_states,
+        cmocka_unit_test_setup_teardown(test_setup_allocates_goal_and_retail_move_states,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_setup_loads_item_weights_into_goal_state,
                                         goal_move_setup,
                                         goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_client_item_weight_failures_reuse_goal_handle,
+									goal_move_setup,
+									goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_map_load_resets_all_partial_clients_before_level_items,
+									goal_move_setup,
+									goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_stack_uses_retail_zero_sentinel,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_itemconfig_failure_mapping,
                                         goal_move_setup,
                                         goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_itemconfig_uses_retail_find_and_load_messages,
+									goal_move_setup,
+									goal_move_teardown),
 		cmocka_unit_test_setup_teardown(test_goal_itemconfig_enforces_max_iteminfo,
+									goal_move_setup,
+									goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_itemconfig_uses_retail_inline_allocation,
+									goal_move_setup,
+									goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_itemconfig_preserves_retail_records_and_duplicates,
+										goal_move_setup,
+										goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_itemconfig_rejects_nonretail_grammar_atomically,
+										goal_move_setup,
+										goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_empty_itemconfig_tracks_zero_payload_weight_index,
+									goal_move_setup,
+									goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_itemconfig_refreshes_modelindex_for_each_map,
 										goal_move_setup,
 										goal_move_teardown),
 		cmocka_unit_test_setup_teardown(test_goal_item_weights_use_all_itemconfig_entries,
@@ -3061,7 +4776,7 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_goal_level_item_pool_honors_max_levelitems,
                                         goal_move_setup,
                                         goal_move_teardown),
-        cmocka_unit_test_setup_teardown(test_goal_item_weights_cache_uses_caller_filename,
+		cmocka_unit_test_setup_teardown(test_goal_item_weights_are_uncached_retail_owners,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_fuzzy_logic_reuses_child_config,
@@ -3070,15 +4785,24 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_goal_item_scoring_uses_undecided_fuzzy_weights,
                                         goal_move_setup,
                                         goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_ltg_compares_double_candidate_against_float_best,
+									goal_move_setup,
+									goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_choose_skips_unlinked_static_items_except_roam,
                                         goal_move_setup,
                                         goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_ltg_uses_expired_avoid_and_random_roam_fallback,
+										goal_move_setup,
+										goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_nbg_uses_retail_strict_maxtime,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_choose_rejects_start_area_without_reachability,
                                         goal_move_setup,
                                         goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_start_area_uses_retail_contents_ground_test,
+										goal_move_setup,
+										goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_retail_exports_and_avoid_sync,
                                         goal_move_setup,
                                         goal_move_teardown),
@@ -3100,7 +4824,10 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_goal_touching_uses_presence_bounds,
                                         goal_move_setup,
                                         goal_move_teardown),
-        cmocka_unit_test_setup_teardown(test_goal_item_vis_trace_targets_retail_mins_point,
+		cmocka_unit_test_setup_teardown(test_goal_high_level_touch_only_pops_without_avoid_reinsert,
+									goal_move_setup,
+									goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_goal_item_vis_uses_retail_trace_and_entity_validity,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_init_filters_notspawnflags_entities,
@@ -3115,7 +4842,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_goal_info_entities_use_retail_head_insertion_order,
                                         goal_move_setup,
                                         goal_move_teardown),
-        cmocka_unit_test_setup_teardown(test_goal_static_level_item_links_live_entity_model,
+		cmocka_unit_test_setup_teardown(test_goal_raw_static_item_wins_compatibility_collision,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_dynamic_model_change_preserves_prior_item_link,
@@ -3124,12 +4851,24 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_goal_dynamic_entity_items_match_item_models,
                                         goal_move_setup,
                                         goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_dynamic_item_timeout_sweep_precedes_aas_availability,
+										goal_move_setup,
+										goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_dynamic_item_skips_compatibility_records,
+										goal_move_setup,
+										goal_move_teardown),
 		cmocka_unit_test_setup_teardown(test_goal_dynamic_entity_items_register_jumppad_areas,
                                         goal_move_setup,
                                         goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_update_refreshes_entity_items_before_selection,
                                         goal_move_setup,
                                         goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_botai_updates_entity_items_after_each_active_think_path,
+									goal_move_setup,
+									goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_botai_uninitialised_aas_is_retail_noop,
+									goal_move_setup,
+									goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_refresh_and_movement_dispatch_order,
                                         goal_move_setup,
                                         goal_move_teardown),

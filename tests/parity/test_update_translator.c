@@ -837,15 +837,12 @@ static void test_translate_entity_retail_fields_and_relink_flags(void **state)
 
 	BotMove_MoverCatalogueReset();
 	bot_mover_catalogue_entry_t mover_entry = {0};
-	mover_entry.modelnum = update.modelindex;
+	mover_entry.modelnum = update.modelindex - 1;
 	assert_true(BotMove_MoverCatalogueInsert(&mover_entry));
-	char model_name[] = "*2";
+	char model_name[] = "*1";
 	char *model_entries[] = {model_name};
-	botinterface_asset_list_t assets = {
-		.entries = model_entries,
-		.count = ARRAY_LEN(model_entries),
-	};
-	assert_true(BotMove_MoverCatalogueFinalize(&assets));
+	assert_true(BotMove_MoverCatalogueFinalize(model_entries,
+		ARRAY_LEN(model_entries)));
 
 	TranslateEntity_SetCurrentTime(4.0f);
 	status = TranslateEntityUpdate(5, &follow_up, &frame);
@@ -867,6 +864,38 @@ static void test_translate_entity_retail_fields_and_relink_flags(void **state)
 	assert_false(frame.origin_dirty);
 	assert_vec3_equal(frame.previous_origin, follow_up.origin, 0.0001f);
 	assert_int_equal(g_bsp_bounds_calls, 4);
+
+	BotMove_MoverCatalogueReset();
+}
+
+/*
+=============
+test_translate_entity_matches_one_based_modelindex_to_raw_bsp_mover
+
+Entity updates carry a one-based model index while the mover catalogue is keyed
+by the raw BSP submodel number.
+=============
+*/
+static void test_translate_entity_matches_one_based_modelindex_to_raw_bsp_mover(
+	void **state)
+{
+	(void)state;
+	TranslateEntity_SetWorldLoaded(qtrue);
+	TranslateEntity_SetCurrentTime(1.0f);
+	BotMove_MoverCatalogueReset();
+
+	bot_mover_catalogue_entry_t mover = {0};
+	mover.modelnum = 1;
+	assert_true(BotMove_MoverCatalogueInsert(&mover));
+
+	bot_updateentity_t update = {0};
+	update.solid = SOLID_BSP;
+	update.modelindex = 2;
+	AASEntityFrame frame = {0};
+	assert_int_equal(TranslateEntityUpdate(3, &update, &frame),
+		BLERR_NOERROR);
+	assert_true(frame.is_mover);
+	assert_int_equal(g_bsp_bounds_modelnum, 1);
 
 	BotMove_MoverCatalogueReset();
 }
@@ -1125,6 +1154,10 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_translate_entity_retail_fields_and_relink_flags,
                                         translator_setup,
                                         translator_teardown),
+		cmocka_unit_test_setup_teardown(
+			test_translate_entity_matches_one_based_modelindex_to_raw_bsp_mover,
+			translator_setup,
+			translator_teardown),
         cmocka_unit_test_setup_teardown(test_translate_entity_only_bsp_angles_and_bbox_bounds_are_mutable,
                                         translator_setup,
                                         translator_teardown),

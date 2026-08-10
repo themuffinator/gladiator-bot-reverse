@@ -1,17 +1,14 @@
 #include "botlib/ai_character/bot_character.h"
 
-#include "botlib/ai_chat/ai_chat.h"
-#include "botlib/ai_weapon/bot_weapon.h"
-#include "botlib/ai_weight/bot_weight.h"
 #include "botlib/common/l_assets.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/precomp/l_precomp.h"
 #include "botlib/precomp/l_script.h"
 
-#include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,28 +21,20 @@
  * settings.charactername, then asks the characteristic table for item weights
  * (28), weapon weights (5), chat file (12), chat name (13), and gender (3).
  * sub_10029eb0 performs a two-pass parse over preprocessed character files:
- * the first pass finds the named `character "name"` block and counts the
- * largest characteristic index plus string storage, the second pass allocates
- * one packed block and fills typed entries. Accessors at sub_1002a5b0 through
+ * the first pass finds the named `character "name"` block and tracks the
+ * highest characteristic index plus string storage. The allocation includes
+ * that highest slot, while the public count retains retail's hidden-sentinel
+ * maximum. The second pass fills typed entries. Accessors at sub_1002a5b0 through
  * sub_1002a810 validate indices, convert integer/float values, and report
  * exact type diagnostics for invalid lookups.
  * HLIL refs: dev_tools/gladiator.dll.bndb_hlil.txt lines 32483-32599
  * and 32844-33312.
  */
 
-#define AI_CHARACTER_NAME_MAX 128
-#define AI_CHARACTER_PATH_MAX 512
-#define AI_CHARACTER_INDEX_LIMIT 1024
+#define AI_CHARACTER_NAME_MAX MAX_TOKEN
+#define AI_CHARACTER_RETAIL_FILENAME_SIZE 0x104
 #define AI_CHARACTER_Q3_MAX_CHARACTERISTICS 80
 #define AI_CHARACTER_Q3_DEFAULT_FILE "bots/default_c.c"
-
-enum {
-	AI_CHARACTER_INDEX_GENDER = 3,
-	AI_CHARACTER_INDEX_WEAPON_WEIGHTS = 5,
-	AI_CHARACTER_INDEX_CHAT_FILE = 12,
-	AI_CHARACTER_INDEX_CHAT_NAME = 13,
-	AI_CHARACTER_INDEX_ITEM_WEIGHTS = 28,
-};
 
 typedef struct ai_characteristic_s {
 	ai_character_value_type_t type;
@@ -65,16 +54,40 @@ typedef struct ai_character_scan_s {
 } ai_character_scan_t;
 
 typedef struct ai_character_definition_s {
-	int num_characteristics;
-	int public_characteristics;
-	size_t string_bytes;
-	float skill;
-	char identifier[AI_CHARACTER_NAME_MAX];
+	int32_t highest_characteristic;
 	ai_characteristic_t characteristics[1];
 } ai_character_definition_t;
 
-int PC_ExpectAnyToken(pc_source_t *source, pc_token_t *token);
-int PC_ExpectTokenString(pc_source_t *source, char *string);
+typedef struct ai_character_definition_metadata_s {
+	ai_character_definition_t *definition;
+	int num_characteristics;
+	size_t string_bytes;
+	float skill;
+	char identifier[AI_CHARACTER_NAME_MAX];
+	struct ai_character_definition_metadata_s *next;
+} ai_character_definition_metadata_t;
+
+/*
+ * Retail x86 layout is exactly:
+ *     int32_t highest_characteristic;
+ *     ai_characteristic_t characteristics[highest + 1]; // 8 bytes each
+ *     char strings[];
+ *
+ * Native x64 builds retain the same field order but naturally widen and align
+ * the pointer-bearing characteristic slots.
+ */
+_Static_assert(offsetof(ai_character_definition_t, highest_characteristic) == 0,
+	"retail character allocation must begin with the public header");
+#if UINTPTR_MAX == UINT32_MAX
+_Static_assert(offsetof(ai_character_definition_t, characteristics) == sizeof(int32_t),
+	"retail character slots must immediately follow the x86 header");
+_Static_assert(sizeof(ai_characteristic_t) == 8,
+	"retail x86 character slots must be eight bytes");
+#endif
+
+static ai_character_definition_metadata_t *g_ai_character_metadata;
+static char g_ai_character_empty_string;
+
 void StripDoubleQuotes(char *string);
 
 /*
@@ -86,7 +99,7 @@ Returns the requested character name used in diagnostics.
 */
 static const char *ai_character_requested_name(const char *character_name)
 {
-	if (character_name == NULL || character_name[0] == '\0')
+	if (character_name == NULL)
 	{
 		return "<first>";
 	}
@@ -103,7 +116,7 @@ Compares a parsed character identifier with the requested identifier.
 */
 static bool ai_character_name_matches(const char *identifier, const char *character_name)
 {
-	if (character_name == NULL || character_name[0] == '\0')
+	if (character_name == NULL)
 	{
 		return true;
 	}
@@ -137,6 +150,93 @@ static void ai_character_copy_string(char *destination, size_t destination_size,
 
 /*
 =============
+ai_character_definition_metadata
+
+Finds the private metadata sidecar for a packed definition.
+=============
+*/
+static ai_character_definition_metadata_t *ai_character_definition_metadata(
+	const ai_character_definition_t *definition)
+{
+	for (ai_character_definition_metadata_t *metadata = g_ai_character_metadata;
+		metadata != NULL;
+		metadata = metadata->next)
+	{
+		if (metadata->definition == definition)
+		{
+			return metadata;
+		}
+	}
+
+	return NULL;
+}
+
+/*
+=============
+ai_character_register_definition
+
+Attaches private parser metadata without changing the retail allocation.
+=============
+*/
+static bool ai_character_register_definition(ai_character_definition_t *definition,
+	const ai_character_scan_t *scan)
+{
+	if (definition == NULL || scan == NULL)
+	{
+		return false;
+	}
+
+	ai_character_definition_metadata_t *metadata =
+		(ai_character_definition_metadata_t *)calloc(1, sizeof(*metadata));
+	if (metadata == NULL)
+	{
+		return false;
+	}
+
+	metadata->definition = definition;
+	metadata->num_characteristics = scan->count;
+	metadata->string_bytes = scan->string_bytes;
+	metadata->skill = scan->skill;
+	ai_character_copy_string(metadata->identifier,
+		sizeof(metadata->identifier),
+		scan->identifier);
+	metadata->next = g_ai_character_metadata;
+	g_ai_character_metadata = metadata;
+	return true;
+}
+
+/*
+=============
+ai_character_release_definition
+
+Unlinks a definition sidecar and frees the packed retail allocation.
+=============
+*/
+static void ai_character_release_definition(ai_character_definition_t *definition)
+{
+	if (definition == NULL)
+	{
+		return;
+	}
+
+	ai_character_definition_metadata_t **link = &g_ai_character_metadata;
+	while (*link != NULL)
+	{
+		ai_character_definition_metadata_t *metadata = *link;
+		if (metadata->definition == definition)
+		{
+			*link = metadata->next;
+			free(metadata);
+			break;
+		}
+		link = &metadata->next;
+	}
+
+	FreeMemory(definition);
+}
+
+/*
+=============
 ai_character_token_is
 
 Checks the token text against a punctuation or name literal.
@@ -161,22 +261,12 @@ static bool ai_character_parse_integer_token(const pc_token_t *token, int *value
 		return false;
 	}
 
-	errno = 0;
-	char *end = NULL;
-	long parsed = strtol(token->string, &end, 0);
-	if (end == token->string || (end != NULL && *end != '\0') || errno == ERANGE)
-	{
-		parsed = (long)token->intvalue;
-	}
-
-	if (parsed < INT_MIN || parsed > INT_MAX)
-	{
-		return false;
-	}
-
 	if (value != NULL)
 	{
-		*value = (int)parsed;
+		uint32_t low = (uint32_t)token->intvalue;
+		*value = low <= INT32_MAX
+			? (int)low
+			: (int)((int64_t)low - INT64_C(4294967296));
 	}
 	return true;
 }
@@ -195,19 +285,39 @@ static bool ai_character_parse_float_token(const pc_token_t *token, float *value
 		return false;
 	}
 
-	errno = 0;
-	char *end = NULL;
-	double parsed = strtod(token->string, &end);
-	if (end == token->string || (end != NULL && *end != '\0') || errno == ERANGE)
-	{
-		parsed = (double)token->floatvalue;
-	}
-
 	if (value != NULL)
 	{
-		*value = (float)parsed;
+		*value = (float)token->floatvalue;
 	}
 	return true;
+}
+
+/*
+=============
+ai_character_retail_ftol
+
+Emulates the retail x87 __ftol helper: truncate to a signed 64-bit integer,
+then return its low 32 bits. Masked invalid conversions yield integer
+indefinite, whose low 32 bits are zero.
+=============
+*/
+static int ai_character_retail_ftol(float value)
+{
+	double extended = (double)value;
+	if (!(extended >= -9223372036854775808.0 &&
+		extended < 9223372036854775808.0))
+	{
+		return 0;
+	}
+
+	int64_t wide = (int64_t)extended;
+	uint32_t low = (uint32_t)(uint64_t)wide;
+	if (low <= INT32_MAX)
+	{
+		return (int)low;
+	}
+
+	return (int)((int64_t)low - INT64_C(4294967296));
 }
 
 /*
@@ -265,14 +375,17 @@ static bool ai_character_skip_block(pc_source_t *source)
 =============
 ai_character_read_index
 
-Reads and validates a characteristic index token.
+Reads a characteristic index token and applies only the requested safety bound.
 =============
 */
-static bool ai_character_read_index(const pc_token_t *token, int max_index, int *index)
+static bool ai_character_read_index(pc_source_t *source,
+	const pc_token_t *token,
+	int max_index,
+	int *index)
 {
 	if (token == NULL || token->type != TT_NUMBER || (token->subtype & TT_INTEGER) == 0)
 	{
-		BotLib_Print(PRT_ERROR,
+		SourceError(source,
 			"expected integer index, found %s\n",
 			token != NULL ? token->string : "<eof>");
 		return false;
@@ -281,17 +394,20 @@ static bool ai_character_read_index(const pc_token_t *token, int max_index, int 
 	int parsed_index = 0;
 	if (!ai_character_parse_integer_token(token, &parsed_index))
 	{
-		BotLib_Print(PRT_ERROR,
+		SourceError(source,
 			"expected integer index, found %s\n",
 			token->string);
 		return false;
 	}
 
-	if (parsed_index < 0 || parsed_index > max_index)
+	if (parsed_index < 0 ||
+		(max_index >= 0 && parsed_index > max_index) ||
+		(max_index < 0 && parsed_index == INT_MAX))
 	{
-		BotLib_Print(PRT_ERROR,
+		int diagnostic_max = max_index >= 0 ? max_index : INT_MAX - 1;
+		SourceError(source,
 			"characteristic index out of range [0, %d]\n",
-			max_index);
+			diagnostic_max);
 		return false;
 	}
 
@@ -306,7 +422,7 @@ static bool ai_character_read_index(const pc_token_t *token, int max_index, int 
 =============
 ai_character_scan_block
 
-First pass over the matching block: count entries and packed string bytes.
+First pass over the matching block: track the highest slot and packed strings.
 =============
 */
 static bool ai_character_scan_block(pc_source_t *source,
@@ -323,7 +439,7 @@ static bool ai_character_scan_block(pc_source_t *source,
 		}
 
 		int index = 0;
-		if (!ai_character_read_index(&token, max_index, &index))
+		if (!ai_character_read_index(source, &token, max_index, &index))
 		{
 			return false;
 		}
@@ -342,18 +458,23 @@ static bool ai_character_scan_block(pc_source_t *source,
 		if (value.type == TT_STRING)
 		{
 			StripDoubleQuotes(value.string);
-			scan->string_bytes += strlen(value.string) + 1;
+			size_t length = strlen(value.string) + 1;
+			if (length > (size_t)-1 - scan->string_bytes)
+			{
+				return false;
+			}
+			scan->string_bytes += length;
 		}
 		else if (value.type != TT_NUMBER)
 		{
-			BotLib_Print(PRT_ERROR,
+			SourceError(source,
 				"expected integer, float or string, found %s\n",
 				value.string);
 			return false;
 		}
 	}
 
-	return false;
+	return true;
 }
 
 /*
@@ -365,7 +486,15 @@ Returns the packed string storage immediately following the flexible table.
 */
 static char *ai_character_definition_string_storage(ai_character_definition_t *definition)
 {
-	int slot_count = definition->num_characteristics > 0 ? definition->num_characteristics : 1;
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL)
+	{
+		return NULL;
+	}
+
+	int slot_count =
+		metadata->num_characteristics > 0 ? metadata->num_characteristics : 1;
 	return (char *)&definition->characteristics[slot_count];
 }
 
@@ -379,8 +508,20 @@ Allocates the packed characteristic table discovered by the first pass.
 static ai_character_definition_t *ai_character_alloc_definition(const ai_character_scan_t *scan)
 {
 	int slot_count = scan->count > 0 ? scan->count : 1;
-	size_t extra_slots = (size_t)(slot_count - 1) * sizeof(ai_characteristic_t);
-	size_t allocation_size = sizeof(ai_character_definition_t) + extra_slots + scan->string_bytes;
+	size_t slot_offset = offsetof(ai_character_definition_t, characteristics);
+	if (scan->string_bytes > (size_t)-1 - slot_offset)
+	{
+		return NULL;
+	}
+
+	size_t available = (size_t)-1 - slot_offset - scan->string_bytes;
+	if ((size_t)slot_count > available / sizeof(ai_characteristic_t))
+	{
+		return NULL;
+	}
+
+	size_t slot_bytes = (size_t)slot_count * sizeof(ai_characteristic_t);
+	size_t allocation_size = slot_offset + slot_bytes + scan->string_bytes;
 
 	ai_character_definition_t *definition =
 		(ai_character_definition_t *)GetClearedMemory(allocation_size);
@@ -389,13 +530,13 @@ static ai_character_definition_t *ai_character_alloc_definition(const ai_charact
 		return NULL;
 	}
 
-	definition->num_characteristics = scan->count;
-	definition->public_characteristics = scan->count;
-	definition->string_bytes = scan->string_bytes;
-	definition->skill = scan->skill;
-	ai_character_copy_string(definition->identifier,
-		sizeof(definition->identifier),
-		scan->identifier);
+	definition->highest_characteristic = scan->count;
+	if (!ai_character_register_definition(definition, scan))
+	{
+		FreeMemory(definition);
+		return NULL;
+	}
+
 	return definition;
 }
 
@@ -455,7 +596,11 @@ Returns a characteristic slot when it exists in a definition.
 static const ai_characteristic_t *ai_character_definition_slot(const ai_character_definition_t *definition,
 	int index)
 {
-	if (definition == NULL || index < 0 || index >= definition->num_characteristics)
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL ||
+		index < 0 ||
+		index >= metadata->num_characteristics)
 	{
 		return NULL;
 	}
@@ -513,11 +658,19 @@ ai_character_fill_block
 Second pass over the matching block: fill typed characteristic entries.
 =============
 */
-static bool ai_character_fill_block(pc_source_t *source, ai_character_definition_t *definition)
+static bool ai_character_fill_block(pc_source_t *source,
+	ai_character_definition_t *definition,
+	char **string_cursor,
+	char *string_end)
 {
-	char *string_cursor = ai_character_definition_string_storage(definition);
-	char *string_end = string_cursor + definition->string_bytes;
-	int max_index = definition->num_characteristics - 1;
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL)
+	{
+		return false;
+	}
+
+	int max_index = metadata->num_characteristics - 1;
 	pc_token_t token;
 
 	while (PC_ExpectAnyToken(source, &token))
@@ -528,23 +681,23 @@ static bool ai_character_fill_block(pc_source_t *source, ai_character_definition
 		}
 
 		int index = 0;
-		if (!ai_character_read_index(&token, max_index, &index))
+		if (!ai_character_read_index(source, &token, max_index, &index))
 		{
 			return false;
 		}
 
-		if (index < 0 || index >= definition->num_characteristics)
+		if (index < 0 || index >= metadata->num_characteristics)
 		{
-			BotLib_Print(PRT_ERROR,
+			SourceError(source,
 				"characteristic index out of range [0, %d]\n",
-				definition->num_characteristics - 1);
+				metadata->num_characteristics - 1);
 			return false;
 		}
 
 		ai_characteristic_t *slot = &definition->characteristics[index];
 		if (slot->type != AI_CHARACTER_VALUE_NONE)
 		{
-			BotLib_Print(PRT_ERROR,
+			SourceError(source,
 				"characteristic %d already initialized\n",
 				index);
 			return false;
@@ -559,7 +712,7 @@ static bool ai_character_fill_block(pc_source_t *source, ai_character_definition
 		if (value.type == TT_STRING)
 		{
 			StripDoubleQuotes(value.string);
-			if (!ai_character_store_string(definition, slot, value.string, &string_cursor, string_end))
+			if (!ai_character_store_string(definition, slot, value.string, string_cursor, string_end))
 			{
 				return false;
 			}
@@ -589,14 +742,14 @@ static bool ai_character_fill_block(pc_source_t *source, ai_character_definition
 		}
 		else
 		{
-			BotLib_Print(PRT_ERROR,
+			SourceError(source,
 				"expected integer, float or string, found %s\n",
 				value.string);
 			return false;
 		}
 	}
 
-	return false;
+	return true;
 }
 
 /*
@@ -621,7 +774,7 @@ static ai_character_definition_t *ai_character_alloc_derived_definition(int coun
 	ai_character_definition_t *definition = ai_character_alloc_definition(&scan);
 	if (definition != NULL)
 	{
-		definition->public_characteristics = public_count;
+		definition->highest_characteristic = public_count;
 	}
 	return definition;
 }
@@ -630,7 +783,7 @@ static ai_character_definition_t *ai_character_alloc_derived_definition(int coun
 =============
 ai_character_public_count
 
-Returns the retail-visible characteristic count for a definition.
+Returns the explicitly recorded public characteristic count.
 =============
 */
 static int ai_character_public_count(const ai_character_definition_t *definition)
@@ -640,9 +793,7 @@ static int ai_character_public_count(const ai_character_definition_t *definition
 		return 0;
 	}
 
-	return definition->public_characteristics > 0 ?
-		definition->public_characteristics :
-		definition->num_characteristics;
+	return definition->highest_characteristic;
 }
 
 /*
@@ -664,10 +815,19 @@ static ai_character_definition_t *ai_character_merge_default_definition(const ai
 		return NULL;
 	}
 
-	int count = definition->num_characteristics;
-	if (defaults->num_characteristics > count)
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	ai_character_definition_metadata_t *default_metadata =
+		ai_character_definition_metadata(defaults);
+	if (metadata == NULL || default_metadata == NULL)
 	{
-		count = defaults->num_characteristics;
+		return NULL;
+	}
+
+	int count = metadata->num_characteristics;
+	if (default_metadata->num_characteristics > count)
+	{
+		count = default_metadata->num_characteristics;
 	}
 
 	int public_count = ai_character_public_count(definition);
@@ -696,15 +856,22 @@ static ai_character_definition_t *ai_character_merge_default_definition(const ai
 		ai_character_alloc_derived_definition(count,
 			public_count,
 			string_bytes,
-			definition->skill,
-			definition->identifier);
+			metadata->skill,
+			metadata->identifier);
 	if (merged == NULL)
 	{
 		return NULL;
 	}
 
+	ai_character_definition_metadata_t *merged_metadata =
+		ai_character_definition_metadata(merged);
 	char *cursor = ai_character_definition_string_storage(merged);
-	char *end = cursor + merged->string_bytes;
+	if (merged_metadata == NULL || cursor == NULL)
+	{
+		ai_character_release_definition(merged);
+		return NULL;
+	}
+	char *end = cursor + merged_metadata->string_bytes;
 	for (int index = 0; index < count; ++index)
 	{
 		const ai_characteristic_t *source = ai_character_definition_slot(definition, index);
@@ -718,7 +885,7 @@ static ai_character_definition_t *ai_character_merge_default_definition(const ai
 		}
 		if (!ai_character_copy_slot(merged, &merged->characteristics[index], source, &cursor, end))
 		{
-			FreeMemory(merged);
+			ai_character_release_definition(merged);
 			return NULL;
 		}
 	}
@@ -737,7 +904,13 @@ static ai_character_definition_t *ai_character_interpolate_definitions(const ai_
 	const ai_character_definition_t *second,
 	float skill)
 {
-	if (first == NULL || second == NULL || first->skill == second->skill)
+	ai_character_definition_metadata_t *first_metadata =
+		ai_character_definition_metadata(first);
+	ai_character_definition_metadata_t *second_metadata =
+		ai_character_definition_metadata(second);
+	if (first_metadata == NULL ||
+		second_metadata == NULL ||
+		first_metadata->skill == second_metadata->skill)
 	{
 		return NULL;
 	}
@@ -764,15 +937,23 @@ static ai_character_definition_t *ai_character_interpolate_definitions(const ai_
 			count,
 			string_bytes,
 			skill,
-			first->identifier);
+			first_metadata->identifier);
 	if (interpolated == NULL)
 	{
 		return NULL;
 	}
 
-	float scale = (skill - first->skill) / (second->skill - first->skill);
+	ai_character_definition_metadata_t *interpolated_metadata =
+		ai_character_definition_metadata(interpolated);
 	char *cursor = ai_character_definition_string_storage(interpolated);
-	char *end = cursor + interpolated->string_bytes;
+	if (interpolated_metadata == NULL || cursor == NULL)
+	{
+		ai_character_release_definition(interpolated);
+		return NULL;
+	}
+	float scale = (skill - first_metadata->skill) /
+		(second_metadata->skill - first_metadata->skill);
+	char *end = cursor + interpolated_metadata->string_bytes;
 	for (int index = 0; index < count; ++index)
 	{
 		const ai_characteristic_t *first_slot = ai_character_definition_slot(first, index);
@@ -800,7 +981,7 @@ static ai_character_definition_t *ai_character_interpolate_definitions(const ai_
 		{
 			if (!ai_character_copy_slot(interpolated, out, first_slot, &cursor, end))
 			{
-				FreeMemory(interpolated);
+				ai_character_release_definition(interpolated);
 				return NULL;
 			}
 		}
@@ -817,7 +998,6 @@ Finds the requested character block and gathers allocation sizes.
 =============
 */
 static bool ai_character_scan_source(pc_source_t *source,
-	const char *filename,
 	const char *character_name,
 	ai_character_scan_t *scan)
 {
@@ -825,9 +1005,9 @@ static bool ai_character_scan_source(pc_source_t *source,
 
 	while (PC_ReadToken(source, &token))
 	{
-		if (token.type != TT_NAME || strcmp(token.string, "character") != 0)
+		if (strcmp(token.string, "character") != 0)
 		{
-			BotLib_Print(PRT_ERROR, "unknown definition %s\n", token.string);
+			SourceError(source, "unknown definition %s\n", token.string);
 			return false;
 		}
 
@@ -837,7 +1017,13 @@ static bool ai_character_scan_source(pc_source_t *source,
 			return false;
 		}
 
-		if (!ai_character_name_matches(identifier, character_name))
+		bool matches = ai_character_name_matches(identifier, character_name);
+		if (character_name == NULL && scan->found)
+		{
+			matches = strcmp(identifier, scan->identifier) == 0;
+		}
+
+		if (!matches)
 		{
 			if (!ai_character_skip_block(source))
 			{
@@ -847,19 +1033,14 @@ static bool ai_character_scan_source(pc_source_t *source,
 		}
 
 		ai_character_copy_string(scan->identifier, sizeof(scan->identifier), identifier);
-		if (!ai_character_scan_block(source, scan, AI_CHARACTER_INDEX_LIMIT - 1))
+		if (!ai_character_scan_block(source, scan, -1))
 		{
 			return false;
 		}
 		scan->found = true;
-		return true;
 	}
 
-	BotLib_Print(PRT_ERROR,
-		"couldn't find character %s in %s\n",
-		ai_character_requested_name(character_name),
-		filename);
-	return false;
+	return true;
 }
 
 /*
@@ -870,17 +1051,31 @@ Replays the source and fills the packed definition for the matching block.
 =============
 */
 static bool ai_character_fill_source(pc_source_t *source,
-	const char *filename,
 	const char *character_name,
-	ai_character_definition_t *definition)
+	ai_character_definition_t *definition,
+	bool *found_out)
 {
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL)
+	{
+		return false;
+	}
+
+	bool found = false;
+	char *string_cursor = ai_character_definition_string_storage(definition);
+	if (string_cursor == NULL)
+	{
+		return false;
+	}
+	char *string_end = string_cursor + metadata->string_bytes;
 	pc_token_t token;
 
 	while (PC_ReadToken(source, &token))
 	{
-		if (token.type != TT_NAME || strcmp(token.string, "character") != 0)
+		if (strcmp(token.string, "character") != 0)
 		{
-			BotLib_Print(PRT_ERROR, "unknown definition %s\n", token.string);
+			SourceError(source, "unknown definition %s\n", token.string);
 			return false;
 		}
 
@@ -890,7 +1085,13 @@ static bool ai_character_fill_source(pc_source_t *source,
 			return false;
 		}
 
-		if (!ai_character_name_matches(identifier, character_name))
+		const char *selected_name = character_name;
+		if (selected_name == NULL)
+		{
+			selected_name = metadata->identifier;
+		}
+
+		if (!ai_character_name_matches(identifier, selected_name))
 		{
 			if (!ai_character_skip_block(source))
 			{
@@ -899,14 +1100,18 @@ static bool ai_character_fill_source(pc_source_t *source,
 			continue;
 		}
 
-		return ai_character_fill_block(source, definition);
+		if (!ai_character_fill_block(source, definition, &string_cursor, string_end))
+		{
+			return false;
+		}
+		found = true;
 	}
 
-	BotLib_Print(PRT_ERROR,
-		"couldn't find character %s in %s\n",
-		ai_character_requested_name(character_name),
-		filename);
-	return false;
+	if (found_out != NULL)
+	{
+		*found_out = found;
+	}
+	return true;
 }
 
 /*
@@ -966,7 +1171,7 @@ static bool ai_character_scan_skill_source(pc_source_t *source,
 	{
 		if (token.type != TT_NAME || strcmp(token.string, "skill") != 0)
 		{
-			BotLib_Print(PRT_ERROR, "unknown definition %s\n", token.string);
+			SourceError(source, "unknown definition %s\n", token.string);
 			return false;
 		}
 
@@ -1013,13 +1218,26 @@ static bool ai_character_fill_skill_source(pc_source_t *source,
 	int requested_skill,
 	ai_character_definition_t *definition)
 {
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL)
+	{
+		return false;
+	}
+
+	char *string_cursor = ai_character_definition_string_storage(definition);
+	if (string_cursor == NULL)
+	{
+		return false;
+	}
+	char *string_end = string_cursor + metadata->string_bytes;
 	pc_token_t token;
 
 	while (PC_ReadToken(source, &token))
 	{
 		if (token.type != TT_NAME || strcmp(token.string, "skill") != 0)
 		{
-			BotLib_Print(PRT_ERROR, "unknown definition %s\n", token.string);
+			SourceError(source, "unknown definition %s\n", token.string);
 			return false;
 		}
 
@@ -1038,7 +1256,7 @@ static bool ai_character_fill_skill_source(pc_source_t *source,
 			continue;
 		}
 
-		return ai_character_fill_block(source, definition);
+		return ai_character_fill_block(source, definition, &string_cursor, string_end);
 	}
 
 	return false;
@@ -1048,15 +1266,26 @@ static bool ai_character_fill_skill_source(pc_source_t *source,
 =============
 ai_character_open_source
 
-Loads a character file through the reconstructed precompiler.
+Loads a previously resolved character file through the reconstructed
+precompiler while preserving its logical name for include resolution.
 =============
 */
-static pc_source_t *ai_character_open_source(const char *filename)
+static pc_source_t *ai_character_open_source(const char *filename,
+	const botlib_asset_resolution_t *resolution)
 {
+	if (resolution == NULL || resolution->resolved_path[0] == '\0')
+	{
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n", filename);
+		return NULL;
+	}
+
 	pc_source_t *source = PC_LoadSourceFile(filename);
 	if (source == NULL)
 	{
-		BotLib_Print(PRT_ERROR, "counldn't load %s\n", filename);
+		BotLib_Print(PRT_ERROR,
+			"counldn't load %s\n",
+			resolution->source_path[0] != '\0' ?
+				resolution->source_path : filename);
 	}
 
 	return source;
@@ -1072,24 +1301,47 @@ Builds the packed character definition with Gladiator's two-pass parser.
 static ai_character_definition_t *ai_parse_definition(const char *filename,
 	const char *character_name)
 {
-	if (filename == NULL || filename[0] == '\0')
+	if (filename == NULL)
 	{
 		return NULL;
 	}
+	char retail_filename[AI_CHARACTER_RETAIL_FILENAME_SIZE];
+	ai_character_copy_string(retail_filename,
+		sizeof(retail_filename),
+		filename);
 
 	ai_character_scan_t scan;
 	memset(&scan, 0, sizeof(scan));
 
-	pc_source_t *source = ai_character_open_source(filename);
+	botlib_asset_resolution_t resolution;
+	if (!BotLib_ResolveAssetPathDetailed(retail_filename, NULL, &resolution))
+	{
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n", retail_filename);
+		return NULL;
+	}
+
+	pc_source_t *source = ai_character_open_source(retail_filename, &resolution);
 	if (source == NULL)
 	{
 		return NULL;
 	}
 
-	bool scanned = ai_character_scan_source(source, filename, character_name, &scan);
+	const char *diagnostic_source = resolution.source_path[0] != '\0' ?
+		resolution.source_path : retail_filename;
+	bool scanned = ai_character_scan_source(source,
+		character_name,
+		&scan);
 	PC_FreeSource(source);
-	if (!scanned || !scan.found)
+	if (!scanned)
 	{
+		return NULL;
+	}
+	if (!scan.found)
+	{
+		BotLib_Print(PRT_ERROR,
+			"couldn't find character %s in %s\n",
+			ai_character_requested_name(character_name),
+			diagnostic_source);
 		return NULL;
 	}
 
@@ -1098,27 +1350,96 @@ static ai_character_definition_t *ai_parse_definition(const char *filename,
 	{
 		return NULL;
 	}
+	definition->highest_characteristic = scan.count > 0 ? scan.count - 1 : 0;
 
-	source = ai_character_open_source(filename);
+	source = ai_character_open_source(retail_filename, &resolution);
 	if (source == NULL)
 	{
-		FreeMemory(definition);
+		/* Retail abandons the pass-one allocation on a pass-two open failure. */
 		return NULL;
 	}
 
-	bool filled = ai_character_fill_source(source, filename, character_name, definition);
+	bool fill_found = false;
+	bool filled = ai_character_fill_source(source,
+		character_name,
+		definition,
+		&fill_found);
 	PC_FreeSource(source);
 	if (!filled)
 	{
-		FreeMemory(definition);
+		/* Retail likewise retains the allocation after any pass-two parse error. */
+		return NULL;
+	}
+	if (!fill_found)
+	{
+		BotLib_Print(PRT_ERROR,
+			"couldn't find character %s in %s\n",
+			ai_character_requested_name(character_name),
+			diagnostic_source);
 		return NULL;
 	}
 
-	BotLib_Print(PRT_MESSAGE,
-		"loaded %s from %s\n",
-		definition->identifier[0] != '\0' ? definition->identifier : ai_character_requested_name(character_name),
-		filename);
+	if (resolution.pak_entry_length != 0)
+	{
+		BotLib_Print(PRT_MESSAGE,
+			"loaded %s from %s\\%s\n",
+			ai_character_requested_name(character_name),
+			resolution.source_path,
+			retail_filename);
+	}
+	else
+	{
+		BotLib_Print(PRT_MESSAGE,
+			"loaded %s from %s\n",
+			ai_character_requested_name(character_name),
+			retail_filename);
+	}
 	return definition;
+}
+
+/*
+=============
+AI_LoadCharacterDefinition
+
+Loads the single packed definition allocation used by the retail pointer ABI.
+=============
+*/
+bot_character_t *AI_LoadCharacterDefinition(const char *filename,
+	const char *character_name)
+{
+	return ai_parse_definition(filename, character_name);
+}
+
+/*
+=============
+AI_FreeCharacterDefinition
+
+Frees a packed retail character definition.
+=============
+*/
+void AI_FreeCharacterDefinition(bot_character_t *character)
+{
+	ai_character_release_definition(character);
+}
+
+/*
+=============
+AI_ShutdownCharacterDefinitions
+
+Reclaims definition/sidecar pairs abandoned by retail-compatible partial
+setup retries before the bot memory arena is destroyed.
+=============
+*/
+void AI_ShutdownCharacterDefinitions(void)
+{
+	while (g_ai_character_metadata != NULL)
+	{
+		ai_character_definition_metadata_t *metadata =
+			g_ai_character_metadata;
+		g_ai_character_metadata = metadata->next;
+		FreeMemory(metadata->definition);
+		free(metadata);
+	}
 }
 
 /*
@@ -1139,7 +1460,14 @@ static ai_character_definition_t *ai_parse_skill_definition(const char *filename
 	ai_character_scan_t scan;
 	memset(&scan, 0, sizeof(scan));
 
-	pc_source_t *source = ai_character_open_source(filename);
+	botlib_asset_resolution_t resolution;
+	if (!BotLib_ResolveAssetPathDetailed(filename, NULL, &resolution))
+	{
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n", filename);
+		return NULL;
+	}
+
+	pc_source_t *source = ai_character_open_source(filename, &resolution);
 	if (source == NULL)
 	{
 		return NULL;
@@ -1157,12 +1485,12 @@ static ai_character_definition_t *ai_parse_skill_definition(const char *filename
 	{
 		return NULL;
 	}
-	definition->public_characteristics = AI_CHARACTER_Q3_MAX_CHARACTERISTICS;
+	definition->highest_characteristic = AI_CHARACTER_Q3_MAX_CHARACTERISTICS;
 
-	source = ai_character_open_source(filename);
+	source = ai_character_open_source(filename, &resolution);
 	if (source == NULL)
 	{
-		FreeMemory(definition);
+		ai_character_release_definition(definition);
 		return NULL;
 	}
 
@@ -1170,14 +1498,10 @@ static ai_character_definition_t *ai_parse_skill_definition(const char *filename
 	PC_FreeSource(source);
 	if (!filled)
 	{
-		FreeMemory(definition);
+		ai_character_release_definition(definition);
 		return NULL;
 	}
 
-	BotLib_Print(PRT_MESSAGE,
-		"loaded skill %.0f from %s\n",
-		definition->skill,
-		filename);
 	return definition;
 }
 
@@ -1198,10 +1522,18 @@ static ai_character_profile_t *ai_profile_from_definition(const char *filename,
 		return NULL;
 	}
 
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL)
+	{
+		ai_character_release_definition(definition);
+		return NULL;
+	}
+
 	ai_character_profile_t *profile = (ai_character_profile_t *)GetClearedMemory(sizeof(*profile));
 	if (profile == NULL)
 	{
-		FreeMemory(definition);
+		ai_character_release_definition(definition);
 		return NULL;
 	}
 
@@ -1212,7 +1544,7 @@ static ai_character_profile_t *ai_profile_from_definition(const char *filename,
 		filename);
 	ai_character_copy_string(profile->character_name,
 		sizeof(profile->character_name),
-		character_name != NULL && character_name[0] != '\0' ? character_name : definition->identifier);
+		character_name != NULL ? character_name : metadata->identifier);
 	return profile;
 }
 
@@ -1338,10 +1670,10 @@ ai_character_profile_t *AI_LoadCharacterSkillProfileBlock(const char *filename,
 		{
 			ai_character_definition_t *merged =
 				ai_character_merge_default_definition(definition, defaults);
-			FreeMemory(defaults);
+			ai_character_release_definition(defaults);
 			if (merged != NULL)
 			{
-				FreeMemory(definition);
+				ai_character_release_definition(definition);
 				definition = merged;
 			}
 		}
@@ -1367,6 +1699,22 @@ ai_character_profile_t *AI_LoadCharacterSkillProfile(const char *filename, float
 	int rounded_skill = skill < 0.0f ? -1 : (int)(skill + 0.5f);
 	ai_character_definition_t *definition = ai_parse_skill_definition(filename, rounded_skill);
 	const char *loaded_file = filename;
+	if (definition != NULL && rounded_skill >= 0)
+	{
+		BotLib_Print(PRT_MESSAGE,
+			"loaded skill %d from %s\n",
+			rounded_skill,
+			filename);
+	}
+	else if (definition != NULL)
+	{
+		ai_character_definition_metadata_t *metadata =
+			ai_character_definition_metadata(definition);
+		BotLib_Print(PRT_MESSAGE,
+			"loaded skill %f from %s\n",
+			metadata != NULL ? metadata->skill : skill,
+			filename);
+	}
 
 	bool default_available = AI_CharacterFileUsesSkillBlocks(AI_CHARACTER_Q3_DEFAULT_FILE);
 	if (definition == NULL)
@@ -1394,9 +1742,11 @@ ai_character_profile_t *AI_LoadCharacterSkillProfile(const char *filename, float
 		definition = ai_parse_skill_definition(filename, -1);
 		if (definition != NULL)
 		{
+			ai_character_definition_metadata_t *metadata =
+				ai_character_definition_metadata(definition);
 			BotLib_Print(PRT_MESSAGE,
-				"loaded skill %.0f from %s\n",
-				definition->skill,
+				"loaded skill %f from %s\n",
+				metadata != NULL ? metadata->skill : skill,
 				filename);
 		}
 	}
@@ -1406,10 +1756,12 @@ ai_character_profile_t *AI_LoadCharacterSkillProfile(const char *filename, float
 		definition = ai_parse_skill_definition(AI_CHARACTER_Q3_DEFAULT_FILE, -1);
 		if (definition != NULL)
 		{
+			ai_character_definition_metadata_t *metadata =
+				ai_character_definition_metadata(definition);
 			loaded_file = AI_CHARACTER_Q3_DEFAULT_FILE;
 			BotLib_Print(PRT_MESSAGE,
-				"loaded default skill %.0f from %s\n",
-				definition->skill,
+				"loaded default skill %f from %s\n",
+				metadata != NULL ? metadata->skill : skill,
 				filename);
 		}
 	}
@@ -1434,10 +1786,10 @@ ai_character_profile_t *AI_LoadCharacterSkillProfile(const char *filename, float
 		{
 			ai_character_definition_t *merged =
 				ai_character_merge_default_definition(definition, defaults);
-			FreeMemory(defaults);
+			ai_character_release_definition(defaults);
 			if (merged != NULL)
 			{
-				FreeMemory(definition);
+				ai_character_release_definition(definition);
 				definition = merged;
 			}
 		}
@@ -1473,7 +1825,7 @@ bool AI_ApplyCharacterDefaults(ai_character_profile_t *profile,
 		return false;
 	}
 
-	FreeMemory(profile->definition_blob);
+	ai_character_release_definition(profile->definition_blob);
 	profile->definition_blob = merged;
 	return true;
 }
@@ -1508,264 +1860,23 @@ ai_character_profile_t *AI_InterpolateCharacterProfiles(const ai_character_profi
 
 /*
 =============
-ai_profile_display_name
-
-Returns a useful profile label for setup diagnostics.
-=============
-*/
-static const char *ai_profile_display_name(const ai_character_profile_t *profile,
-	const char *fallback)
-{
-	if (profile == NULL)
-	{
-		return fallback != NULL ? fallback : "<unknown>";
-	}
-
-	if (profile->character_name[0] != '\0')
-	{
-		return profile->character_name;
-	}
-
-	if (profile->definition_blob != NULL && profile->definition_blob->identifier[0] != '\0')
-	{
-		return profile->definition_blob->identifier;
-	}
-
-	if (profile->character_filename[0] != '\0')
-	{
-		return profile->character_filename;
-	}
-
-	return fallback != NULL ? fallback : "<unknown>";
-}
-
-/*
-=============
-ai_profile_load_item_weights
-
-Loads the item weights named by characteristic 28.
-=============
-*/
-static bool ai_profile_load_item_weights(ai_character_profile_t *profile,
-	const char *character_name)
-{
-	const char *item_weights_file = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_ITEM_WEIGHTS);
-	if (item_weights_file == NULL || item_weights_file[0] == '\0')
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] %s is missing an item weight file.\n",
-			character_name);
-		return false;
-	}
-
-	profile->item_weights = ReadWeightConfig(item_weights_file);
-	if (profile->item_weights == NULL)
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] failed to load item weights %s for %s.\n",
-			item_weights_file,
-			character_name);
-		return false;
-	}
-
-	BotLib_Print(PRT_DEVELOPER,
-		"%6d bytes item weights\n",
-		(int)MemoryByteSize(profile->item_weights));
-	return true;
-}
-
-/*
-=============
-ai_profile_load_weapon_weights
-
-Loads the weapon weights named by characteristic 5.
-=============
-*/
-static bool ai_profile_load_weapon_weights(ai_character_profile_t *profile,
-	const char *character_name)
-{
-	const char *weapon_weights_file = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_WEAPON_WEIGHTS);
-	if (weapon_weights_file == NULL || weapon_weights_file[0] == '\0')
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] %s is missing a weapon weight file.\n",
-			character_name);
-		return false;
-	}
-
-	profile->weapon_weights = AI_LoadWeaponWeights(weapon_weights_file);
-	if (profile->weapon_weights == NULL)
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] failed to load weapon weights %s for %s.\n",
-			weapon_weights_file,
-			character_name);
-		return false;
-	}
-
-	BotLib_Print(PRT_DEVELOPER,
-		"%6d bytes weapon weights\n",
-		(int)AI_WeaponWeightsConfigByteSize(profile->weapon_weights));
-	BotLib_Print(PRT_DEVELOPER,
-		"%6d bytes weapon index\n",
-		(int)AI_WeaponWeightsIndexByteSize(profile->weapon_weights));
-	return true;
-}
-
-/*
-=============
-ai_profile_load_chat
-
-Loads the chat file and chat persona named by characteristics 12 and 13.
-=============
-*/
-static bool ai_profile_load_chat(ai_character_profile_t *profile,
-	const char *character_name)
-{
-	const char *chat_file = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_CHAT_FILE);
-	const char *chat_name = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_CHAT_NAME);
-	if (chat_file == NULL || chat_file[0] == '\0' || chat_name == NULL || chat_name[0] == '\0')
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] %s is missing chat configuration.\n",
-			character_name);
-		return false;
-	}
-
-	profile->chat_state = BotAllocChatState();
-	if (profile->chat_state == NULL)
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] failed to allocate chat state for %s.\n",
-			character_name);
-		return false;
-	}
-
-	char resolved_path[AI_CHARACTER_PATH_MAX];
-	if (!BotLib_ResolveAssetPath(chat_file, "bots", resolved_path, sizeof(resolved_path)))
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] failed to locate chat file %s for %s.\n",
-			chat_file,
-			character_name);
-		return false;
-	}
-
-	if (!BotLoadChatFile(profile->chat_state, resolved_path, chat_name))
-	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] failed to load chat file %s (%s) for %s.\n",
-			resolved_path,
-			chat_name,
-			character_name);
-		return false;
-	}
-
-	BotSetChatName(profile->chat_state, chat_name, -1);
-	const char *gender = AI_CharacteristicAsString(profile, AI_CHARACTER_INDEX_GENDER);
-	if (gender != NULL && (gender[0] == 'f' || gender[0] == 'F'))
-	{
-		BotSetChatGender(profile->chat_state, CHAT_GENDERFEMALE);
-	}
-	else if (gender != NULL && (gender[0] == 'm' || gender[0] == 'M'))
-	{
-		BotSetChatGender(profile->chat_state, CHAT_GENDERMALE);
-	}
-	else
-	{
-		BotSetChatGender(profile->chat_state, CHAT_GENDERLESS);
-	}
-
-	BotLib_Print(PRT_DEVELOPER,
-		"%6d bytes chat file\n",
-		(int)MemoryByteSize(profile->chat_state));
-	return true;
-}
-
-/*
-=============
 AI_LoadCharacterNamed
 
-Loads a named Gladiator character and wires item weights, weapon weights, and chat.
+Loads a named Gladiator character definition.
 =============
 */
 ai_character_profile_t *AI_LoadCharacterNamed(const char *filename,
 	const char *character_name,
 	float skill)
 {
-	ai_character_definition_t *definition = ai_parse_definition(filename, character_name);
+	ai_character_definition_t *definition =
+		AI_LoadCharacterDefinition(filename, character_name);
 	if (definition == NULL)
 	{
-		BotLib_Print(PRT_ERROR,
-			"[ai_character] failed to parse character %s from %s.\n",
-			ai_character_requested_name(character_name),
-			filename != NULL ? filename : "<null>");
 		return NULL;
 	}
 
-	ai_character_profile_t *profile = (ai_character_profile_t *)GetClearedMemory(sizeof(*profile));
-	if (profile == NULL)
-	{
-		FreeMemory(definition);
-		return NULL;
-	}
-
-	profile->requested_skill = skill;
-	profile->definition_blob = definition;
-	ai_character_copy_string(profile->character_filename,
-		sizeof(profile->character_filename),
-		filename);
-	ai_character_copy_string(profile->character_name,
-		sizeof(profile->character_name),
-		definition->identifier[0] != '\0' ? definition->identifier : character_name);
-
-	BotLib_Print(PRT_DEVELOPER,
-		"%6d bytes character\n",
-		(int)MemoryByteSize(profile->definition_blob));
-
-	const char *profile_name = ai_profile_display_name(profile, filename);
-
-	if (!ai_profile_load_item_weights(profile, profile_name))
-	{
-		goto free_profile;
-	}
-
-	if (!ai_profile_load_weapon_weights(profile, profile_name))
-	{
-		goto free_item_weights;
-	}
-
-	if (!ai_profile_load_chat(profile, profile_name))
-	{
-		goto free_weapon_weights;
-	}
-
-	return profile;
-
-free_weapon_weights:
-	if (profile->chat_state != NULL)
-	{
-		BotFreeChatState(profile->chat_state);
-		profile->chat_state = NULL;
-	}
-	if (profile->weapon_weights != NULL)
-	{
-		AI_FreeWeaponWeights(profile->weapon_weights);
-		profile->weapon_weights = NULL;
-	}
-
-free_item_weights:
-	if (profile->item_weights != NULL)
-	{
-		FreeWeightConfig(profile->item_weights);
-		profile->item_weights = NULL;
-	}
-
-free_profile:
-	FreeMemory(profile->definition_blob);
-	profile->definition_blob = NULL;
-	FreeMemory(profile);
-	return NULL;
+	return ai_profile_from_definition(filename, character_name, skill, definition);
 }
 
 /*
@@ -1789,7 +1900,7 @@ ai_character_profile_t *AI_LoadCharacter(const char *filename, float skill)
 =============
 AI_FreeCharacter
 
-Frees a character profile and all resources wired through setup.
+Frees a character profile and its packed definition.
 =============
 */
 void AI_FreeCharacter(ai_character_profile_t *profile)
@@ -1799,31 +1910,53 @@ void AI_FreeCharacter(ai_character_profile_t *profile)
 		return;
 	}
 
-	if (profile->chat_state != NULL)
-	{
-		BotFreeChatState(profile->chat_state);
-		profile->chat_state = NULL;
-	}
-
-	if (profile->weapon_weights != NULL)
-	{
-		AI_FreeWeaponWeights(profile->weapon_weights);
-		profile->weapon_weights = NULL;
-	}
-
-	if (profile->item_weights != NULL)
-	{
-		FreeWeightConfig(profile->item_weights);
-		profile->item_weights = NULL;
-	}
-
 	if (profile->definition_blob != NULL)
 	{
-		FreeMemory(profile->definition_blob);
+		AI_FreeCharacterDefinition(profile->definition_blob);
 		profile->definition_blob = NULL;
 	}
 
 	FreeMemory(profile);
+}
+
+/*
+=============
+AI_FreeCharacterStrings
+
+Invalidates public string slots while retaining the packed definition storage.
+=============
+*/
+void AI_FreeCharacterStrings(ai_character_profile_t *profile)
+{
+	ai_character_definition_t *definition =
+		profile != NULL ? profile->definition_blob : NULL;
+	if (definition == NULL)
+	{
+		return;
+	}
+
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL)
+	{
+		return;
+	}
+
+	int count = ai_character_public_count(definition);
+	if (count > metadata->num_characteristics)
+	{
+		count = metadata->num_characteristics;
+	}
+
+	for (int index = 0; index < count; ++index)
+	{
+		ai_characteristic_t *slot = &definition->characteristics[index];
+		if (slot->type == AI_CHARACTER_VALUE_STRING)
+		{
+			slot->type = AI_CHARACTER_VALUE_NONE;
+			slot->value.string_value = NULL;
+		}
+	}
 }
 
 /*
@@ -1835,7 +1968,8 @@ Returns the item weight configuration attached to a character profile.
 */
 bot_weight_config_t *AI_ItemWeightsForCharacter(const ai_character_profile_t *profile)
 {
-	return profile != NULL ? profile->item_weights : NULL;
+	(void)profile;
+	return NULL;
 }
 
 /*
@@ -1847,7 +1981,8 @@ Returns the weapon weight table attached to a character profile.
 */
 ai_weapon_weights_t *AI_WeaponWeightsForCharacter(const ai_character_profile_t *profile)
 {
-	return profile != NULL ? profile->weapon_weights : NULL;
+	(void)profile;
+	return NULL;
 }
 
 /*
@@ -1872,9 +2007,11 @@ Returns the skill value stored in a loaded character definition.
 float AI_CharacterProfileSkill(const ai_character_profile_t *profile)
 {
 	const ai_character_definition_t *definition = ai_definition(profile);
-	if (definition != NULL)
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata != NULL)
 	{
-		return definition->skill;
+		return metadata->skill;
 	}
 
 	return profile != NULL ? profile->requested_skill : 0.0f;
@@ -1894,19 +2031,22 @@ const char *AI_CharacterProfileFilename(const ai_character_profile_t *profile)
 
 /*
 =============
-ai_character_checked_slot
+ai_character_definition_checked_slot
 
-Validates a characteristic lookup and emits retail diagnostics.
+Validates a packed-definition lookup and emits retail diagnostics.
 =============
 */
-static const ai_characteristic_t *ai_character_checked_slot(const ai_character_profile_t *profile,
+static const ai_characteristic_t *ai_character_definition_checked_slot(
+	const bot_character_t *character,
 	int index)
 {
-	const ai_character_definition_t *definition = ai_definition(profile);
-	if (definition == NULL ||
+	const ai_character_definition_t *definition = character;
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL ||
 		index < 0 ||
 		index >= ai_character_public_count(definition) ||
-		index >= definition->num_characteristics)
+		index >= metadata->num_characteristics)
 	{
 		BotLib_Print(PRT_ERROR,
 			"characteristic %d does not exist\n",
@@ -1928,31 +2068,33 @@ static const ai_characteristic_t *ai_character_checked_slot(const ai_character_p
 
 /*
 =============
-AI_CharacteristicCount
+AI_CharacteristicDefinitionCount
 
-Returns the number of addressable characteristic slots in a profile.
+Returns the retail-visible count stored in a packed definition.
 =============
 */
-int AI_CharacteristicCount(const ai_character_profile_t *profile)
+int AI_CharacteristicDefinitionCount(const bot_character_t *character)
 {
-	const ai_character_definition_t *definition = ai_definition(profile);
-	return ai_character_public_count(definition);
+	return ai_character_public_count(character);
 }
 
 /*
 =============
-AI_CharacteristicType
+AI_CharacteristicDefinitionType
 
-Returns the stored type for an initialized characteristic slot.
+Returns a packed definition's characteristic type without diagnostics.
 =============
 */
-ai_character_value_type_t AI_CharacteristicType(const ai_character_profile_t *profile, int index)
+ai_character_value_type_t AI_CharacteristicDefinitionType(const bot_character_t *character,
+	int index)
 {
-	const ai_character_definition_t *definition = ai_definition(profile);
-	if (definition == NULL ||
+	const ai_character_definition_t *definition = character;
+	ai_character_definition_metadata_t *metadata =
+		ai_character_definition_metadata(definition);
+	if (metadata == NULL ||
 		index < 0 ||
 		index >= ai_character_public_count(definition) ||
-		index >= definition->num_characteristics)
+		index >= metadata->num_characteristics)
 	{
 		return AI_CHARACTER_VALUE_NONE;
 	}
@@ -1962,14 +2104,15 @@ ai_character_value_type_t AI_CharacteristicType(const ai_character_profile_t *pr
 
 /*
 =============
-AI_CharacteristicAsFloat
+AI_CharacteristicDefinitionAsFloat
 
-Returns a float characteristic, converting integers like retail botlib.
+Returns a packed float characteristic, converting integers like retail.
 =============
 */
-float AI_CharacteristicAsFloat(const ai_character_profile_t *profile, int index)
+float AI_CharacteristicDefinitionAsFloat(const bot_character_t *character, int index)
 {
-	const ai_characteristic_t *slot = ai_character_checked_slot(profile, index);
+	const ai_characteristic_t *slot =
+		ai_character_definition_checked_slot(character, index);
 	if (slot == NULL)
 	{
 		return 0.0f;
@@ -1992,14 +2135,15 @@ float AI_CharacteristicAsFloat(const ai_character_profile_t *profile, int index)
 
 /*
 =============
-AI_CharacteristicAsInteger
+AI_CharacteristicDefinitionAsInteger
 
-Returns an integer characteristic, truncating floats like the original code.
+Returns a packed integer characteristic, truncating floats like retail.
 =============
 */
-int AI_CharacteristicAsInteger(const ai_character_profile_t *profile, int index)
+int AI_CharacteristicDefinitionAsInteger(const bot_character_t *character, int index)
 {
-	const ai_characteristic_t *slot = ai_character_checked_slot(profile, index);
+	const ai_characteristic_t *slot =
+		ai_character_definition_checked_slot(character, index);
 	if (slot == NULL)
 	{
 		return 0;
@@ -2011,7 +2155,7 @@ int AI_CharacteristicAsInteger(const ai_character_profile_t *profile, int index)
 	}
 	if (slot->type == AI_CHARACTER_VALUE_FLOAT)
 	{
-		return (int)slot->value.float_value;
+		return ai_character_retail_ftol(slot->value.float_value);
 	}
 
 	BotLib_Print(PRT_ERROR,
@@ -2022,17 +2166,18 @@ int AI_CharacteristicAsInteger(const ai_character_profile_t *profile, int index)
 
 /*
 =============
-AI_CharacteristicAsString
+AI_CharacteristicDefinitionAsString
 
-Returns a string characteristic pointer or NULL for non-string slots.
+Returns a packed string, the retail writable empty sentinel, or a type-error NULL.
 =============
 */
-const char *AI_CharacteristicAsString(const ai_character_profile_t *profile, int index)
+const char *AI_CharacteristicDefinitionAsString(const bot_character_t *character, int index)
 {
-	const ai_characteristic_t *slot = ai_character_checked_slot(profile, index);
+	const ai_characteristic_t *slot =
+		ai_character_definition_checked_slot(character, index);
 	if (slot == NULL)
 	{
-		return "";
+		return &g_ai_character_empty_string;
 	}
 
 	if (slot->type == AI_CHARACTER_VALUE_STRING)
@@ -2044,4 +2189,64 @@ const char *AI_CharacteristicAsString(const ai_character_profile_t *profile, int
 		"characteristic %d is not a string\n",
 		index);
 	return NULL;
+}
+
+/*
+=============
+AI_CharacteristicCount
+
+Returns the number of addressable characteristic slots in a profile.
+=============
+*/
+int AI_CharacteristicCount(const ai_character_profile_t *profile)
+{
+	return AI_CharacteristicDefinitionCount(ai_definition(profile));
+}
+
+/*
+=============
+AI_CharacteristicType
+
+Returns the stored type for an initialized characteristic slot.
+=============
+*/
+ai_character_value_type_t AI_CharacteristicType(const ai_character_profile_t *profile, int index)
+{
+	return AI_CharacteristicDefinitionType(ai_definition(profile), index);
+}
+
+/*
+=============
+AI_CharacteristicAsFloat
+
+Returns a float characteristic, converting integers like retail botlib.
+=============
+*/
+float AI_CharacteristicAsFloat(const ai_character_profile_t *profile, int index)
+{
+	return AI_CharacteristicDefinitionAsFloat(ai_definition(profile), index);
+}
+
+/*
+=============
+AI_CharacteristicAsInteger
+
+Returns an integer characteristic, truncating floats like the original code.
+=============
+*/
+int AI_CharacteristicAsInteger(const ai_character_profile_t *profile, int index)
+{
+	return AI_CharacteristicDefinitionAsInteger(ai_definition(profile), index);
+}
+
+/*
+=============
+AI_CharacteristicAsString
+
+Returns a string characteristic pointer or NULL for non-string slots.
+=============
+*/
+const char *AI_CharacteristicAsString(const ai_character_profile_t *profile, int index)
+{
+	return AI_CharacteristicDefinitionAsString(ai_definition(profile), index);
 }

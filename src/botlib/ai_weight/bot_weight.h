@@ -44,13 +44,13 @@ typedef struct bot_weight_s {
 typedef struct bot_weight_config_s {
 	int num_weights;
 	bot_weight_t weights[BOTLIB_MAX_WEIGHTS];
-	char source_file[260];
 } bot_weight_config_t;
 
 bot_weight_config_t *ReadWeightConfigWithDefines(const char *filename,
 	const char *const *global_defines,
 	size_t global_define_count);
 bot_weight_config_t *ReadWeightConfig(const char *filename);
+bot_weight_config_t *ReadWeightConfigUncached(const char *filename);
 void FreeWeightConfig(bot_weight_config_t *config);
 void FreeWeightConfig2(bot_weight_config_t *config);
 int WriteWeightConfig(const char *filename, bot_weight_config_t *config);

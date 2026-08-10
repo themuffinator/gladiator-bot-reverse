@@ -4,7 +4,6 @@
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 
-#include <ctype.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -13,17 +12,23 @@
 
 #define BOT_CHARACTER_INVALID_HANDLE 0
 #define BOT_CHARACTER_FILENAME_MAX 256
-#define BOT_CHARACTER_NAME_MAX 128
-#define BOT_CHARACTER_MAX_HANDLES (MAX_CLIENTS + 16)
+#define BOT_CHARACTER_NAME_MAX MAX_CHARACTERNAME
+#define BOT_CHARACTER_MAX_HANDLES (MAX_CLIENTS + 1)
 #define BOT_CHARACTER_SKILL_EPSILON 0.01f
 #define BOT_CHARACTER_Q3_DEFAULT_FILE "bots/default_c.c"
+
+typedef enum bot_character_format_e {
+	BOT_CHARACTER_FORMAT_NONE = 0,
+	BOT_CHARACTER_FORMAT_GLADIATOR,
+	BOT_CHARACTER_FORMAT_Q3,
+} bot_character_format_t;
 
 typedef struct bot_character_cache_entry_s {
 	ai_character_profile_t *profile;
 	char filename[BOT_CHARACTER_FILENAME_MAX];
 	char character_name[BOT_CHARACTER_NAME_MAX];
 	float skill;
-	unsigned int refcount;
+	bot_character_format_t format;
 } bot_character_cache_entry_t;
 
 static bot_character_cache_entry_t g_bot_character_cache[BOT_CHARACTER_MAX_HANDLES];
@@ -32,7 +37,7 @@ static bot_character_cache_entry_t g_bot_character_cache[BOT_CHARACTER_MAX_HANDL
 =============
 bot_character_compare_filename
 
-Compares cache filenames case-insensitively while normalising slashes.
+Compares cache filenames exactly like Q3's BotFindCachedCharacter.
 =============
 */
 static int bot_character_compare_filename(const char *lhs, const char *rhs)
@@ -42,39 +47,7 @@ static int bot_character_compare_filename(const char *lhs, const char *rhs)
 		return (lhs == rhs) ? 0 : (lhs != NULL ? 1 : -1);
 	}
 
-	while (*lhs != '\0' && *rhs != '\0')
-	{
-		unsigned char left = (unsigned char)*lhs;
-		unsigned char right = (unsigned char)*rhs;
-
-		left = (left == '\\') ? '/' : (unsigned char)tolower(left);
-		right = (right == '\\') ? '/' : (unsigned char)tolower(right);
-
-		if (left != right)
-		{
-			return (int)left - (int)right;
-		}
-
-		lhs++;
-		rhs++;
-	}
-
-	unsigned char left = (*lhs == '\\') ? '/' : (unsigned char)tolower((unsigned char)*lhs);
-	unsigned char right = (*rhs == '\\') ? '/' : (unsigned char)tolower((unsigned char)*rhs);
-	return (int)left - (int)right;
-}
-
-/*
-=============
-bot_character_is_q3_default_file
-
-Checks whether a filename refers to the Q3 default character.
-=============
-*/
-static bool bot_character_is_q3_default_file(const char *character_file)
-{
-	return bot_character_compare_filename(character_file,
-		BOT_CHARACTER_Q3_DEFAULT_FILE) == 0;
+	return strcmp(lhs, rhs);
 }
 
 /*
@@ -130,7 +103,7 @@ static bool bot_character_handles_equal(const bot_character_cache_entry_t *entry
 		return false;
 	}
 
-	if (skill >= 0.0f && fabsf(entry->skill - skill) > BOT_CHARACTER_SKILL_EPSILON)
+	if (skill >= 0.0f && fabsf(entry->skill - skill) >= BOT_CHARACTER_SKILL_EPSILON)
 	{
 		return false;
 	}
@@ -274,46 +247,30 @@ static bool bot_character_should_reload(void)
 
 /*
 =============
-bot_character_cached_handle
+bot_character_checked_entry
 
-Reports a matching cached character handle.
+Validates a Q3 character handle and returns its occupied cache entry.
 =============
 */
-static int bot_character_cached_handle(const char *character_file,
-	const char *character_name,
-	float skill)
+static bot_character_cache_entry_t *bot_character_checked_entry(int handle)
 {
-	int cached_handle = bot_character_find_cached_handle(character_file,
-		character_name,
-		skill);
-	if (cached_handle == BOT_CHARACTER_INVALID_HANDLE)
+	bot_character_cache_entry_t *entry = bot_character_entry(handle);
+	if (entry == NULL)
 	{
-		return BOT_CHARACTER_INVALID_HANDLE;
+		BotLib_Print(PRT_FATAL,
+			"character handle %d out of range\n",
+			handle);
+		return NULL;
+	}
+	if (entry->profile == NULL)
+	{
+		BotLib_Print(PRT_FATAL,
+			"invalid character %d\n",
+			handle);
+		return NULL;
 	}
 
-	bot_character_cache_entry_t *entry = bot_character_entry(cached_handle);
-	BotLib_Print(PRT_MESSAGE,
-		"[bot_character] reusing cached character %s:%s (skill %.2f, refs %u)\n",
-		entry->filename,
-		entry->character_name[0] != '\0' ? entry->character_name : "<first>",
-		entry->skill,
-		entry->refcount);
-	return cached_handle;
-}
-
-/*
-=============
-bot_character_log_invalid_handle
-
-Emits the non-fatal diagnostic used by reconstructed handle guards.
-=============
-*/
-static void bot_character_log_invalid_handle(const char *context, int handle)
-{
-	BotLib_Print(PRT_WARNING,
-		"[bot_character] %s: invalid handle %d\n",
-		context != NULL ? context : "operation",
-		handle);
+	return entry;
 }
 
 /*
@@ -326,6 +283,7 @@ Stores a loaded profile in the character cache.
 static int bot_character_store_profile(const char *character_file,
 	const char *character_name,
 	float skill,
+	bot_character_format_t format,
 	ai_character_profile_t *profile)
 {
 	if (profile == NULL)
@@ -336,10 +294,6 @@ static int bot_character_store_profile(const char *character_file,
 	int handle = bot_character_allocate_handle();
 	if (handle == BOT_CHARACTER_INVALID_HANDLE)
 	{
-		BotLib_Print(PRT_ERROR,
-			"[bot_character] no free character slots for %s (skill %.2f)\n",
-			character_file,
-			skill);
 		AI_FreeCharacter(profile);
 		return BOT_CHARACTER_INVALID_HANDLE;
 	}
@@ -347,17 +301,11 @@ static int bot_character_store_profile(const char *character_file,
 	bot_character_cache_entry_t *entry = bot_character_entry(handle);
 	entry->profile = profile;
 	entry->skill = skill;
-	entry->refcount = 1;
+	entry->format = format;
 	bot_character_copy_string(entry->filename, sizeof(entry->filename), character_file);
 	bot_character_copy_string(entry->character_name,
 		sizeof(entry->character_name),
 		bot_character_requested_name(character_name));
-
-	BotLib_Print(PRT_MESSAGE,
-		"[bot_character] loaded bot character %s:%s (skill %.2f)\n",
-		entry->filename,
-		entry->character_name[0] != '\0' ? entry->character_name : "<first>",
-		entry->skill);
 
 	return handle;
 }
@@ -366,7 +314,7 @@ static int bot_character_store_profile(const char *character_file,
 =============
 bot_character_load
 
-Loads or reuses a Gladiator named character cache entry.
+Loads a fresh Gladiator named character entry.
 =============
 */
 static int bot_character_load(const char *character_file,
@@ -380,32 +328,17 @@ static int bot_character_load(const char *character_file,
 		return BOT_CHARACTER_INVALID_HANDLE;
 	}
 
-	float normalised_skill = bot_character_normalise_skill(skill);
-	if (!bot_character_should_reload())
-	{
-		int cached_handle = bot_character_cached_handle(character_file,
-			character_name,
-			normalised_skill);
-		if (cached_handle != BOT_CHARACTER_INVALID_HANDLE)
-		{
-			return cached_handle;
-		}
-	}
-
 	ai_character_profile_t *profile =
-		AI_LoadCharacterNamed(character_file, character_name, normalised_skill);
+		AI_LoadCharacterNamed(character_file, character_name, skill);
 	if (profile == NULL)
 	{
-		BotLib_Print(PRT_ERROR,
-			"[bot_character] couldn't load bot character %s from %s\n",
-			character_name != NULL && character_name[0] != '\0' ? character_name : character_file,
-			character_file);
 		return BOT_CHARACTER_INVALID_HANDLE;
 	}
 
 	return bot_character_store_profile(character_file,
 		character_name,
-		normalised_skill,
+		skill,
+		BOT_CHARACTER_FORMAT_GLADIATOR,
 		profile);
 }
 
@@ -440,7 +373,7 @@ static int bot_character_load_q3_skill_internal(const char *character_file,
 	bool force_cache,
 	bool clamp_skill)
 {
-	if (character_file == NULL || character_file[0] == '\0')
+	if (character_file == NULL)
 	{
 		BotLib_Print(PRT_WARNING,
 			"[bot_character] BotLoadCharacterSkill: missing filename.\n");
@@ -449,12 +382,9 @@ static int bot_character_load_q3_skill_internal(const char *character_file,
 
 	float requested_skill = clamp_skill ? bot_character_normalise_skill(skill) : skill;
 	int rounded_skill_block = bot_character_round_skill(requested_skill);
-	bool is_default_file = bot_character_is_q3_default_file(character_file);
 	bool use_cache = force_cache || !bot_character_should_reload();
 	int default_handle = BOT_CHARACTER_INVALID_HANDLE;
-	if (preload_default &&
-		!is_default_file &&
-		AI_CharacterDefaultFileUsesSkillBlocks())
+	if (preload_default)
 	{
 		default_handle = bot_character_load_q3_skill_internal(BOT_CHARACTER_Q3_DEFAULT_FILE,
 			requested_skill,
@@ -463,13 +393,23 @@ static int bot_character_load_q3_skill_internal(const char *character_file,
 			false);
 	}
 
+	/* Q3 checks for a free handle before attempting any cache lookup. */
+	if (bot_character_allocate_handle() == BOT_CHARACTER_INVALID_HANDLE)
+	{
+		return BOT_CHARACTER_INVALID_HANDLE;
+	}
+
 	if (use_cache)
 	{
-		int cached_handle = bot_character_cached_handle(character_file,
+		int cached_handle = bot_character_find_cached_handle(character_file,
 			NULL,
 			requested_skill);
 		if (cached_handle != BOT_CHARACTER_INVALID_HANDLE)
 		{
+			BotLib_Print(PRT_MESSAGE,
+				"loaded cached skill %f from %s\n",
+				requested_skill,
+				character_file);
 			return cached_handle;
 		}
 	}
@@ -492,10 +432,15 @@ static int bot_character_load_q3_skill_internal(const char *character_file,
 		{
 			loaded_skill = requested_skill;
 		}
+		BotLib_Print(PRT_MESSAGE,
+			"loaded skill %d from %s\n",
+			rounded_skill_block,
+			character_file);
 
 		return bot_character_store_profile(character_file,
 			NULL,
 			loaded_skill,
+			BOT_CHARACTER_FORMAT_Q3,
 			profile);
 	}
 
@@ -504,43 +449,54 @@ static int bot_character_load_q3_skill_internal(const char *character_file,
 		rounded_skill_block,
 		character_file);
 
-	if (!is_default_file)
+	if (use_cache)
 	{
-		if (use_cache)
+		int cached_default = bot_character_find_cached_handle(BOT_CHARACTER_Q3_DEFAULT_FILE,
+			NULL,
+			requested_skill);
+		if (cached_default != BOT_CHARACTER_INVALID_HANDLE)
 		{
-			int cached_default = bot_character_cached_handle(BOT_CHARACTER_Q3_DEFAULT_FILE,
-				NULL,
-				requested_skill);
-			if (cached_default != BOT_CHARACTER_INVALID_HANDLE)
-			{
-				return cached_default;
-			}
+			BotLib_Print(PRT_MESSAGE,
+				"loaded cached default skill %d from %s\n",
+				rounded_skill_block,
+				character_file);
+			return cached_default;
 		}
+	}
 
-		profile = AI_LoadCharacterSkillProfileBlock(BOT_CHARACTER_Q3_DEFAULT_FILE,
-			requested_skill,
+	profile = AI_LoadCharacterSkillProfileBlock(BOT_CHARACTER_Q3_DEFAULT_FILE,
+		requested_skill,
+		rounded_skill_block,
+		false);
+	if (profile != NULL)
+	{
+		float loaded_skill = AI_CharacterProfileSkill(profile);
+		if (loaded_skill < 0.0f)
+		{
+			loaded_skill = requested_skill;
+		}
+		BotLib_Print(PRT_MESSAGE,
+			"loaded default skill %d from %s\n",
 			rounded_skill_block,
-			false);
-		if (profile != NULL)
-		{
-			float loaded_skill = AI_CharacterProfileSkill(profile);
-			if (loaded_skill < 0.0f)
-			{
-				loaded_skill = requested_skill;
-			}
+			character_file);
 
-			return bot_character_store_profile(BOT_CHARACTER_Q3_DEFAULT_FILE,
-				NULL,
-				loaded_skill,
-				profile);
-		}
+		return bot_character_store_profile(BOT_CHARACTER_Q3_DEFAULT_FILE,
+			NULL,
+			loaded_skill,
+			BOT_CHARACTER_FORMAT_Q3,
+			profile);
 	}
 
 	if (use_cache)
 	{
-		int cached_any = bot_character_cached_handle(character_file, NULL, -1.0f);
+		int cached_any = bot_character_find_cached_handle(character_file, NULL, -1.0f);
 		if (cached_any != BOT_CHARACTER_INVALID_HANDLE)
 		{
+			bot_character_cache_entry_t *cached_entry = bot_character_entry(cached_any);
+			BotLib_Print(PRT_MESSAGE,
+				"loaded cached skill %f from %s\n",
+				cached_entry->skill,
+				character_file);
 			return cached_any;
 		}
 	}
@@ -562,51 +518,60 @@ static int bot_character_load_q3_skill_internal(const char *character_file,
 		{
 			loaded_skill = requested_skill;
 		}
+		BotLib_Print(PRT_MESSAGE,
+			"loaded skill %f from %s\n",
+			loaded_skill,
+			character_file);
 
 		return bot_character_store_profile(character_file,
 			NULL,
 			loaded_skill,
+			BOT_CHARACTER_FORMAT_Q3,
 			profile);
 	}
 
-	if (!is_default_file)
+	if (use_cache)
 	{
-		if (use_cache)
+		int cached_default_any = bot_character_find_cached_handle(BOT_CHARACTER_Q3_DEFAULT_FILE,
+			NULL,
+			-1.0f);
+		if (cached_default_any != BOT_CHARACTER_INVALID_HANDLE)
 		{
-			int cached_default_any = bot_character_cached_handle(BOT_CHARACTER_Q3_DEFAULT_FILE,
-				NULL,
-				-1.0f);
-			if (cached_default_any != BOT_CHARACTER_INVALID_HANDLE)
-			{
-				return cached_default_any;
-			}
+			bot_character_cache_entry_t *cached_entry =
+				bot_character_entry(cached_default_any);
+			BotLib_Print(PRT_MESSAGE,
+				"loaded cached default skill %f from %s\n",
+				cached_entry->skill,
+				character_file);
+			return cached_default_any;
 		}
+	}
 
-		profile = AI_LoadCharacterSkillProfileBlock(BOT_CHARACTER_Q3_DEFAULT_FILE,
-			requested_skill,
-			-1,
-			false);
-		if (profile != NULL)
+	profile = AI_LoadCharacterSkillProfileBlock(BOT_CHARACTER_Q3_DEFAULT_FILE,
+		requested_skill,
+		-1,
+		false);
+	if (profile != NULL)
+	{
+		float loaded_skill = AI_CharacterProfileSkill(profile);
+		if (loaded_skill < 0.0f)
 		{
-			float loaded_skill = AI_CharacterProfileSkill(profile);
-			if (loaded_skill < 0.0f)
-			{
-				loaded_skill = requested_skill;
-			}
-
-			return bot_character_store_profile(BOT_CHARACTER_Q3_DEFAULT_FILE,
-				NULL,
-				loaded_skill,
-				profile);
+			loaded_skill = requested_skill;
 		}
+		BotLib_Print(PRT_MESSAGE,
+			"loaded default skill %f from %s\n",
+			loaded_skill,
+			character_file);
+
+		return bot_character_store_profile(BOT_CHARACTER_Q3_DEFAULT_FILE,
+			NULL,
+			loaded_skill,
+			BOT_CHARACTER_FORMAT_Q3,
+			profile);
 	}
 
 	BotLib_Print(PRT_WARNING,
 		"couldn't load any skill from %s\n",
-		character_file);
-	BotLib_Print(PRT_ERROR,
-		"[bot_character] couldn't load bot character skill %.2f from %s\n",
-		requested_skill,
 		character_file);
 	return BOT_CHARACTER_INVALID_HANDLE;
 }
@@ -631,10 +596,35 @@ static int bot_character_load_q3_skill(const char *character_file, float skill)
 =============
 BotLoadCharacter
 
-Loads the first character block from a file for Q3-style callers.
+Loads a fresh retail named-character definition.
 =============
 */
-int BotLoadCharacter(const char *character_file, float skill)
+bot_character_t *BotLoadCharacter(const char *character_file,
+	const char *character_name)
+{
+	return AI_LoadCharacterDefinition(character_file, character_name);
+}
+
+/*
+=============
+BotFreeCharacter
+
+Frees a retail character definition.
+=============
+*/
+void BotFreeCharacter(bot_character_t *character)
+{
+	AI_FreeCharacterDefinition(character);
+}
+
+/*
+=============
+BotLoadCharacterHandle
+
+Loads the first character block from a file for Q3-style handle callers.
+=============
+*/
+int BotLoadCharacterHandle(const char *character_file, float skill)
 {
 	if (bot_character_uses_q3_skill_loader(character_file))
 	{
@@ -651,11 +641,15 @@ int BotLoadCharacter(const char *character_file, float skill)
 			return bot_character_load_q3_skill(character_file, normalised_skill);
 		}
 
-		int cached_handle = bot_character_cached_handle(character_file,
+		int cached_handle = bot_character_find_cached_handle(character_file,
 			NULL,
 			normalised_skill);
 		if (cached_handle != BOT_CHARACTER_INVALID_HANDLE)
 		{
+			BotLib_Print(PRT_MESSAGE,
+				"loaded cached skill %f from %s\n",
+				normalised_skill,
+				character_file);
 			return cached_handle;
 		}
 
@@ -707,6 +701,7 @@ int BotLoadCharacter(const char *character_file, float skill)
 		return bot_character_store_profile(interpolated_file,
 			NULL,
 			normalised_skill,
+			BOT_CHARACTER_FORMAT_Q3,
 			profile);
 	}
 
@@ -715,24 +710,26 @@ int BotLoadCharacter(const char *character_file, float skill)
 
 /*
 =============
-BotLoadNamedCharacter
+BotLoadNamedCharacterHandle
 
-Loads a specific Gladiator character block from a character file.
+Loads a specific Gladiator character block into the handle table.
 =============
 */
-int BotLoadNamedCharacter(const char *character_file, const char *character_name, float skill)
+int BotLoadNamedCharacterHandle(const char *character_file,
+	const char *character_name,
+	float skill)
 {
 	return bot_character_load(character_file, character_name, skill);
 }
 
 /*
 =============
-BotLoadCharacterSkill
+BotLoadCharacterSkillHandle
 
-Loads a character for direct skill-specific callers.
+Loads a character for direct skill-specific handle callers.
 =============
 */
-int BotLoadCharacterSkill(const char *character_file, float skill)
+int BotLoadCharacterSkillHandle(const char *character_file, float skill)
 {
 	if (character_file == NULL ||
 		character_file[0] == '\0' ||
@@ -746,70 +743,51 @@ int BotLoadCharacterSkill(const char *character_file, float skill)
 
 /*
 =============
-BotFreeCharacter
+BotFreeCharacterHandle
 
-Releases a character handle, respecting cache reference counts.
+Releases Gladiator entries directly and Q3 entries according to the reload flag.
 =============
 */
-void BotFreeCharacter(int handle)
+void BotFreeCharacterHandle(int handle)
 {
 	bot_character_cache_entry_t *entry = bot_character_entry(handle);
-	if (entry == NULL || entry->profile == NULL)
-	{
-		bot_character_log_invalid_handle("BotFreeCharacter", handle);
-		return;
-	}
-
 	if (!bot_character_should_reload())
 	{
-		BotLib_Print(PRT_MESSAGE,
-			"[bot_character] retained cached character %s:%s (skill %.2f)\n",
-			entry->filename,
-			entry->character_name[0] != '\0' ? entry->character_name : "<first>",
-			entry->skill);
-		return;
+		if (entry == NULL ||
+			entry->profile == NULL ||
+			entry->format == BOT_CHARACTER_FORMAT_Q3)
+		{
+			return;
+		}
 	}
-
-	if (entry->refcount > 0)
+	else
 	{
-		entry->refcount--;
+		entry = bot_character_checked_entry(handle);
+		if (entry == NULL)
+		{
+			return;
+		}
 	}
 
-	if (entry->refcount == 0)
-	{
-		BotLib_Print(PRT_MESSAGE,
-			"[bot_character] freed bot character %s:%s (skill %.2f)\n",
-			entry->filename,
-			entry->character_name[0] != '\0' ? entry->character_name : "<first>",
-			entry->skill);
-		AI_FreeCharacter(entry->profile);
-		memset(entry, 0, sizeof(*entry));
-		return;
-	}
-
-	BotLib_Print(PRT_MESSAGE,
-		"[bot_character] decremented %s:%s (skill %.2f) to %u references\n",
-		entry->filename,
-		entry->character_name[0] != '\0' ? entry->character_name : "<first>",
-		entry->skill,
-		entry->refcount);
+	AI_FreeCharacter(entry->profile);
+	memset(entry, 0, sizeof(*entry));
 }
 
 /*
 =============
-BotFreeCharacterStrings
+BotFreeCharacterStringsHandle
 
-Frees a transient reconstructed profile.
+Releases only the string characteristics in a transient profile.
 =============
 */
-void BotFreeCharacterStrings(ai_character_profile_t *profile)
+void BotFreeCharacterStringsHandle(ai_character_profile_t *profile)
 {
 	if (profile == NULL)
 	{
 		return;
 	}
 
-	AI_FreeCharacter(profile);
+	AI_FreeCharacterStrings(profile);
 }
 
 /*
@@ -821,10 +799,9 @@ Returns the profile pointer for a cache handle.
 */
 ai_character_profile_t *BotCharacterFromHandle(int handle)
 {
-	bot_character_cache_entry_t *entry = bot_character_entry(handle);
+	bot_character_cache_entry_t *entry = bot_character_checked_entry(handle);
 	if (entry == NULL)
 	{
-		bot_character_log_invalid_handle("BotCharacterFromHandle", handle);
 		return NULL;
 	}
 
@@ -840,44 +817,13 @@ Resolves a character handle for characteristic accessors.
 */
 static ai_character_profile_t *bot_character_profile_for_queries(int handle)
 {
-	bot_character_cache_entry_t *entry = bot_character_entry(handle);
-	if (entry == NULL || entry->profile == NULL)
+	bot_character_cache_entry_t *entry = bot_character_checked_entry(handle);
+	if (entry == NULL)
 	{
-		bot_character_log_invalid_handle("Characteristic query", handle);
 		return NULL;
 	}
 
 	return entry->profile;
-}
-
-/*
-=============
-bot_character_check_index
-
-Mirrors the retail characteristic index and initialization diagnostics.
-=============
-*/
-static ai_character_value_type_t bot_character_check_index(const ai_character_profile_t *profile,
-	int index)
-{
-	int count = AI_CharacteristicCount(profile);
-	if (index < 0 || index >= count)
-	{
-		BotLib_Print(PRT_ERROR,
-			"characteristic %d does not exist\n",
-			index);
-		return AI_CHARACTER_VALUE_NONE;
-	}
-
-	ai_character_value_type_t type = AI_CharacteristicType(profile, index);
-	if (type == AI_CHARACTER_VALUE_NONE)
-	{
-		BotLib_Print(PRT_ERROR,
-			"characteristic %d is not initialized\n",
-			index);
-	}
-
-	return type;
 }
 
 /*
@@ -887,27 +833,9 @@ Characteristic_Float
 Returns a float characteristic with integer conversion.
 =============
 */
-float Characteristic_Float(int handle, int index)
+float Characteristic_Float(const bot_character_t *character, int index)
 {
-	ai_character_profile_t *profile = bot_character_profile_for_queries(handle);
-	if (profile == NULL)
-	{
-		return 0.0f;
-	}
-
-	ai_character_value_type_t type = bot_character_check_index(profile, index);
-	if (type == AI_CHARACTER_VALUE_INTEGER || type == AI_CHARACTER_VALUE_FLOAT)
-	{
-		return AI_CharacteristicAsFloat(profile, index);
-	}
-
-	if (type != AI_CHARACTER_VALUE_NONE)
-	{
-		BotLib_Print(PRT_ERROR,
-			"characteristic %d is not a float\n",
-			index);
-	}
-	return 0.0f;
+	return AI_CharacteristicDefinitionAsFloat(character, index);
 }
 
 /*
@@ -917,7 +845,10 @@ Characteristic_BFloat
 Returns a bounded float characteristic.
 =============
 */
-float Characteristic_BFloat(int handle, int index, float minimum, float maximum)
+float Characteristic_BFloat(const bot_character_t *character,
+	int index,
+	float minimum,
+	float maximum)
 {
 	if (minimum > maximum)
 	{
@@ -929,8 +860,8 @@ float Characteristic_BFloat(int handle, int index, float minimum, float maximum)
 		return 0.0f;
 	}
 
-	float value = Characteristic_Float(handle, index);
-	if (value < minimum)
+	float value = Characteristic_Float(character, index);
+	if (isnan(value) || isnan(minimum) || value < minimum)
 	{
 		return minimum;
 	}
@@ -948,27 +879,9 @@ Characteristic_Integer
 Returns an integer characteristic with float truncation.
 =============
 */
-int Characteristic_Integer(int handle, int index)
+int Characteristic_Integer(const bot_character_t *character, int index)
 {
-	ai_character_profile_t *profile = bot_character_profile_for_queries(handle);
-	if (profile == NULL)
-	{
-		return 0;
-	}
-
-	ai_character_value_type_t type = bot_character_check_index(profile, index);
-	if (type == AI_CHARACTER_VALUE_INTEGER || type == AI_CHARACTER_VALUE_FLOAT)
-	{
-		return AI_CharacteristicAsInteger(profile, index);
-	}
-
-	if (type != AI_CHARACTER_VALUE_NONE)
-	{
-		BotLib_Print(PRT_ERROR,
-			"characteristic %d is not a integer\n",
-			index);
-	}
-	return 0;
+	return AI_CharacteristicDefinitionAsInteger(character, index);
 }
 
 /*
@@ -978,7 +891,10 @@ Characteristic_BInteger
 Returns a bounded integer characteristic.
 =============
 */
-int Characteristic_BInteger(int handle, int index, int minimum, int maximum)
+int Characteristic_BInteger(const bot_character_t *character,
+	int index,
+	int minimum,
+	int maximum)
 {
 	if (minimum > maximum)
 	{
@@ -990,7 +906,7 @@ int Characteristic_BInteger(int handle, int index, int minimum, int maximum)
 		return 0;
 	}
 
-	int value = Characteristic_Integer(handle, index);
+	int value = Characteristic_Integer(character, index);
 	if (value < minimum)
 	{
 		return minimum;
@@ -1006,17 +922,108 @@ int Characteristic_BInteger(int handle, int index, int minimum, int maximum)
 =============
 Characteristic_String
 
-Copies a string characteristic into the caller's buffer.
+Returns a string characteristic pointer.
 =============
 */
-void Characteristic_String(int handle, int index, char *buffer, int buffer_size)
+char *Characteristic_String(const bot_character_t *character, int index)
+{
+	return (char *)AI_CharacteristicDefinitionAsString(character, index);
+}
+
+/*
+=============
+Characteristic_FloatHandle
+
+Resolves a Q3 character handle and returns a float characteristic.
+=============
+*/
+float Characteristic_FloatHandle(int handle, int index)
+{
+	ai_character_profile_t *profile = bot_character_profile_for_queries(handle);
+	if (profile == NULL)
+	{
+		return 0.0f;
+	}
+
+	return Characteristic_Float(profile->definition_blob, index);
+}
+
+/*
+=============
+Characteristic_BFloatHandle
+
+Resolves a Q3 character handle and returns a bounded float characteristic.
+=============
+*/
+float Characteristic_BFloatHandle(int handle,
+	int index,
+	float minimum,
+	float maximum)
+{
+	ai_character_profile_t *profile = bot_character_profile_for_queries(handle);
+	if (profile == NULL)
+	{
+		return 0.0f;
+	}
+
+	return Characteristic_BFloat(profile->definition_blob, index, minimum, maximum);
+}
+
+/*
+=============
+Characteristic_IntegerHandle
+
+Resolves a Q3 character handle and returns an integer characteristic.
+=============
+*/
+int Characteristic_IntegerHandle(int handle, int index)
+{
+	ai_character_profile_t *profile = bot_character_profile_for_queries(handle);
+	if (profile == NULL)
+	{
+		return 0;
+	}
+
+	return Characteristic_Integer(profile->definition_blob, index);
+}
+
+/*
+=============
+Characteristic_BIntegerHandle
+
+Resolves a Q3 character handle and returns a bounded integer characteristic.
+=============
+*/
+int Characteristic_BIntegerHandle(int handle,
+	int index,
+	int minimum,
+	int maximum)
+{
+	ai_character_profile_t *profile = bot_character_profile_for_queries(handle);
+	if (profile == NULL)
+	{
+		return 0;
+	}
+
+	return Characteristic_BInteger(profile->definition_blob, index, minimum, maximum);
+}
+
+/*
+=============
+Characteristic_StringHandle
+
+Copies a Q3 handle string characteristic into the caller's buffer.
+=============
+*/
+void Characteristic_StringHandle(int handle,
+	int index,
+	char *buffer,
+	int buffer_size)
 {
 	if (buffer == NULL || buffer_size <= 0)
 	{
 		return;
 	}
-
-	buffer[0] = '\0';
 
 	ai_character_profile_t *profile = bot_character_profile_for_queries(handle);
 	if (profile == NULL)
@@ -1024,33 +1031,24 @@ void Characteristic_String(int handle, int index, char *buffer, int buffer_size)
 		return;
 	}
 
-	ai_character_value_type_t type = bot_character_check_index(profile, index);
-	if (type == AI_CHARACTER_VALUE_STRING)
+	const char *value = Characteristic_String(profile->definition_blob, index);
+	if (value != NULL &&
+		AI_CharacteristicDefinitionType(profile->definition_blob, index) ==
+			AI_CHARACTER_VALUE_STRING)
 	{
-		const char *value = AI_CharacteristicAsString(profile, index);
-		if (value != NULL)
-		{
-			snprintf(buffer, (size_t)buffer_size, "%s", value);
-		}
-		return;
-	}
-
-	if (type != AI_CHARACTER_VALUE_NONE)
-	{
-		BotLib_Print(PRT_ERROR,
-			"characteristic %d is not a string\n",
-			index);
+		strncpy(buffer, value, (size_t)buffer_size - 1U);
+		buffer[buffer_size - 1] = '\0';
 	}
 }
 
 /*
 =============
-BotShutdownCharacters
+BotShutdownCharacterHandles
 
 Frees all cached character handles.
 =============
 */
-void BotShutdownCharacters(void)
+void BotShutdownCharacterHandles(void)
 {
 	for (int handle = 1; handle < BOT_CHARACTER_MAX_HANDLES; ++handle)
 	{

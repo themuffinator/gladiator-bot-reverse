@@ -21,6 +21,7 @@
 #include "botlib/ai_move/mover_catalogue.h"
 #include "botlib/ai/goal_move_orchestrator.h"
 #include "botlib/ai_goal/bot_goal.h"
+#include "botlib/ai_weapon/bot_weapon.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_crc.h"
 #include "botlib/common/l_memory.h"
@@ -188,6 +189,29 @@ static const import_field_descriptor_t g_retail_export_layout[] = {
 	{ "Test", offsetof(bot_export_t, Test) },
 };
 
+static const import_field_descriptor_t g_extended_retail_export_layout[] = {
+	{ "BotVersion", offsetof(bot_export_extended_t, BotVersion) },
+	{ "BotSetupLibrary", offsetof(bot_export_extended_t, BotSetupLibrary) },
+	{ "BotShutdownLibrary", offsetof(bot_export_extended_t, BotShutdownLibrary) },
+	{ "BotLibraryInitialized", offsetof(bot_export_extended_t, BotLibraryInitialized) },
+	{ "BotLibVarSet", offsetof(bot_export_extended_t, BotLibVarSet) },
+	{ "BotDefine", offsetof(bot_export_extended_t, BotDefine) },
+	{ "BotLoadMap", offsetof(bot_export_extended_t, BotLoadMap) },
+	{ "BotSetupClient", offsetof(bot_export_extended_t, BotSetupClient) },
+	{ "BotShutdownClient", offsetof(bot_export_extended_t, BotShutdownClient) },
+	{ "BotMoveClient", offsetof(bot_export_extended_t, BotMoveClient) },
+	{ "BotClientSettings", offsetof(bot_export_extended_t, BotClientSettings) },
+	{ "BotSettings", offsetof(bot_export_extended_t, BotSettings) },
+	{ "BotStartFrame", offsetof(bot_export_extended_t, BotStartFrame) },
+	{ "BotUpdateClient", offsetof(bot_export_extended_t, BotUpdateClient) },
+	{ "BotUpdateEntity", offsetof(bot_export_extended_t, BotUpdateEntity) },
+	{ "BotAddSound", offsetof(bot_export_extended_t, BotAddSound) },
+	{ "BotAddPointLight", offsetof(bot_export_extended_t, BotAddPointLight) },
+	{ "BotAI", offsetof(bot_export_extended_t, BotAI) },
+	{ "BotConsoleMessage", offsetof(bot_export_extended_t, BotConsoleMessage) },
+	{ "Test", offsetof(bot_export_extended_t, Test) },
+};
+
 typedef struct bot_interface_test_context_s
 {
     asset_env_t assets;
@@ -211,9 +235,92 @@ static int g_mock_import_libvar_set_status = BLERR_NOERROR;
 static int g_mock_import_libvar_set_count = 0;
 static bool ensure_map_fixture(const asset_env_t *assets, const char *stem);
 const aas_bspentity_t *BotAI_EntityToActivate(const aas_bspentity_t *entities,
-	int modelindex);
+	int blockentity);
 static allocator_callback_capture_t g_primary_allocator_capture;
 static allocator_callback_capture_t g_alternate_allocator_capture;
+
+typedef struct setup_order_capture_s
+{
+	char names[64][64];
+	bool library_initialised[64];
+	size_t count;
+} setup_order_capture_t;
+
+static setup_order_capture_t g_setup_order_capture;
+
+/*
+=============
+Mock_CaptureSetupLibVarGet
+
+Records the setup libvar sequence and the committed library state at each read.
+=============
+*/
+static void Mock_CaptureSetupLibVarGet(const char *var_name,
+	const char *value,
+	int status)
+{
+	(void)value;
+	(void)status;
+
+	if (var_name == NULL ||
+		g_setup_order_capture.count >= ARRAY_LEN(g_setup_order_capture.names))
+	{
+		return;
+	}
+
+	size_t index = g_setup_order_capture.count++;
+	snprintf(g_setup_order_capture.names[index],
+		sizeof(g_setup_order_capture.names[index]),
+		"%s",
+		var_name);
+	g_setup_order_capture.library_initialised[index] =
+		BotLibraryInitialized();
+}
+
+/*
+=============
+Mock_ConfigureLibraryImports
+
+Restores the baseline asset libvars after acquiring a fresh public API table.
+=============
+*/
+static void Mock_ConfigureLibraryImports(bot_interface_test_context_t *context)
+{
+	assert_non_null(context);
+	assert_non_null(context->api);
+	assert_int_equal(context->api->BotLibVarSet("basedir",
+		context->assets.asset_root), BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("gamedir", ""),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("cddir", ""),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("gladiator_asset_dir", ""),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("weaponconfig", "weapons.c"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("max_weaponinfo", "64"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("max_projectileinfo", "64"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("itemconfig", "items.c"),
+		BLERR_NOERROR);
+}
+
+/*
+=============
+Mock_ReacquireAPI
+
+Reacquires tables and imports after retail shutdown has zeroed the adapters.
+=============
+*/
+static void Mock_ReacquireAPI(bot_interface_test_context_t *context)
+{
+	assert_non_null(context);
+	context->api = GetBotAPIEx(&context->mock.table,
+		sizeof(context->mock.table));
+	assert_non_null(context->api);
+	Mock_ConfigureLibraryImports(context);
+}
 
 /*
 =============
@@ -310,11 +417,15 @@ Pins the original twenty exports to the leading contiguous ABI slots.
 static void test_export_table_preserves_retail_prefix_layout(void **state)
 {
 	(void)state;
+	assert_int_equal(ARRAY_LEN(g_extended_retail_export_layout),
+		ARRAY_LEN(g_retail_export_layout));
 
 	for (size_t index = 0; index < ARRAY_LEN(g_retail_export_layout); ++index)
 	{
 		const import_field_descriptor_t *field =
 			&g_retail_export_layout[index];
+		const import_field_descriptor_t *extended_field =
+			&g_extended_retail_export_layout[index];
 		size_t expected_offset = index * sizeof(void (*)(void));
 		if (field->offset != expected_offset)
 		{
@@ -322,6 +433,15 @@ static void test_export_table_preserves_retail_prefix_layout(void **state)
 				field->name,
 				field->offset,
 				expected_offset);
+		}
+		if (strcmp(extended_field->name, field->name) != 0 ||
+			extended_field->offset != field->offset)
+		{
+			fail_msg("extended export '%s' offset %zu diverges from retail '%s' offset %zu",
+				extended_field->name,
+				extended_field->offset,
+				field->name,
+				field->offset);
 		}
 	}
 }
@@ -1106,6 +1226,7 @@ static int setup_bot_interface(void **state)
 	context->api = GetBotAPIEx(&context->mock.table,
 		sizeof(context->mock.table));
     assert_non_null(context->api);
+	Mock_ConfigureLibraryImports(context);
 
     *state = context;
     return 0;
@@ -1140,6 +1261,7 @@ static int teardown_bot_interface(void **state)
 	}
 
 	BotState_ShutdownAll();
+	BotInterface_SetImportCapture(NULL);
 	g_active_mock = NULL;
 	BotInterface_SetImportTable(NULL);
 	if (context != NULL)
@@ -1352,7 +1474,7 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 	const bot_mover_catalogue_entry_t *catalogue_entry =
 		BotMove_MoverCatalogueFindByModel(1);
 	assert_non_null(catalogue_entry);
-	assert_int_equal(catalogue_entry->modelindex, 1);
+	assert_int_equal(catalogue_entry->modelindex, -1);
 
 	vec3_t origin = {0.0f, 0.0f, 0.0f};
 	status = context->api->BotAddSound(origin, 0, 0, 0, 1.0f, 1.0f, 0.0f);
@@ -1403,7 +1525,7 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 
 	catalogue_entry = BotMove_MoverCatalogueFindByModel(1);
 	assert_non_null(catalogue_entry);
-	assert_int_equal(catalogue_entry->modelindex, 2);
+	assert_int_equal(catalogue_entry->modelindex, -1);
 
 	status = context->api->BotAddSound(origin, 0, 0, 1, 1.0f, 1.0f, 0.0f);
 	assert_int_equal(status, BLERR_NOERROR);
@@ -1513,6 +1635,109 @@ static void test_bot_setup_failure_retains_retail_setup_flag(void **state)
 
 /*
 =============
+test_bot_goal_setup_failure_retains_loaded_weapon_config
+
+Pins retail's partial AI setup lifetime: a goal-config failure returns without
+unloading the weapon config that was successfully loaded immediately before it.
+=============
+*/
+static void test_bot_goal_setup_failure_retains_loaded_weapon_config(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+	assert_null(AI_GetActiveWeaponConfig());
+	assert_int_equal(context->api->BotLibVarSet("itemconfig",
+		"definitely_missing_setup_items.c"),
+		BLERR_NOERROR);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_CANNOTLOADITEMCONFIG);
+	assert_true(BotLibraryInitialized());
+	assert_true(AAS_Initialized());
+	assert_non_null(AI_GetActiveWeaponConfig());
+	assert_false(EA_IsInitialised());
+
+	int weapon_state = context->api->BotAllocWeaponState();
+	assert_true(weapon_state > 0);
+	const bot_weaponstate_t *retained = BotWeaponStatePeek(weapon_state);
+	assert_non_null(retained);
+	assert_ptr_equal(retained->config, AI_GetActiveWeaponConfig());
+	context->api->BotFreeWeaponState(weapon_state);
+
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
+	assert_null(AI_GetActiveWeaponConfig());
+}
+
+/*
+=============
+test_bot_setup_commits_before_retail_libvar_sequence
+
+Pins the retail setup flag and max-client, movement-libvar, then AAS ordering.
+=============
+*/
+static void test_bot_setup_commits_before_retail_libvar_sequence(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	static const char *expected_names[] = {
+		"maxclients",
+		"maxentities",
+		"sv_friction",
+		"sv_stopspeed",
+		"sv_gravity",
+		"sv_waterfriction",
+		"sv_watergravity",
+		"sv_maxvelocity",
+		"sv_maxwalkvelocity",
+		"sv_maxcrouchvelocity",
+		"sv_maxswimvelocity",
+		"sv_maxacceleration",
+		"sv_airaccelerate",
+		"sv_step",
+		"sv_maxbarrier",
+		"sv_maxsteepness",
+		"sv_jumpvel",
+		"sv_maxwaterjump",
+	};
+	const botlib_import_capture_t capture = {
+		.BotLibVarGet = Mock_CaptureSetupLibVarGet,
+	};
+
+	memset(&g_setup_order_capture, 0, sizeof(g_setup_order_capture));
+	BotInterface_SetImportCapture(&capture);
+	int status = context->api->BotSetupLibrary();
+	BotInterface_SetImportCapture(NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+
+	size_t prefix_start = g_setup_order_capture.count;
+	for (size_t index = 0; index < g_setup_order_capture.count; ++index)
+	{
+		if (strcmp(g_setup_order_capture.names[index], expected_names[0]) == 0)
+		{
+			prefix_start = index;
+			break;
+		}
+	}
+	assert_true(prefix_start < g_setup_order_capture.count);
+	assert_true(g_setup_order_capture.count - prefix_start >=
+		ARRAY_LEN(expected_names));
+
+	for (size_t index = 0; index < ARRAY_LEN(expected_names); ++index)
+	{
+		size_t captured_index = prefix_start + index;
+		assert_string_equal(g_setup_order_capture.names[captured_index],
+			expected_names[index]);
+		assert_true(g_setup_order_capture.library_initialised[captured_index]);
+	}
+
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+}
+
+/*
+=============
 test_bot_shutdown_library_guard_emits_message
 
 Validates the shutdown export emits the HLIL guard diagnostic.
@@ -1563,7 +1788,54 @@ static void test_bot_library_initialized_reports_aas_state(void **state)
 
 	status = context->api->BotShutdownLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(context->api->BotLibraryInitialized(), qfalse);
+	assert_null(context->api->BotLibraryInitialized);
+	assert_false(BotLibraryInitialized());
+}
+
+/*
+=============
+test_bot_shutdown_clears_public_adapter_tables
+
+Pins the DLL lifetime contract: shutdown clears the copied import/export
+blocks, and a later host setup must reacquire and rebind the API table.
+=============
+*/
+static void test_bot_shutdown_clears_public_adapter_tables(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_import_t retail_import;
+	memcpy(&retail_import, &context->mock.table, sizeof(retail_import));
+
+	bot_export_t *retail_api = GetBotAPI(&retail_import);
+	assert_non_null(retail_api);
+	Mock_ConfigureLibraryImports(context);
+	assert_int_equal(retail_api->BotSetupLibrary(), BLERR_NOERROR);
+	const botlib_import_capture_t capture = {0};
+	BotInterface_SetImportCapture(&capture);
+	assert_ptr_equal(BotInterface_GetImportCapture(), &capture);
+	int (*shutdown_library)(void) = retail_api->BotShutdownLibrary;
+	assert_non_null(shutdown_library);
+	assert_int_equal(shutdown_library(), BLERR_NOERROR);
+
+	bot_export_t cleared_retail = {0};
+	bot_export_extended_t cleared_extended = {0};
+	assert_memory_equal(retail_api, &cleared_retail, sizeof(cleared_retail));
+	assert_memory_equal(context->api, &cleared_extended, sizeof(cleared_extended));
+	assert_null(BotInterface_GetImportTable());
+	assert_null(BotInterface_GetImportCapture());
+	assert_null(Q2Bridge_GetImportTable());
+	assert_false(BotLibraryInitialized());
+
+	retail_api = GetBotAPI(&retail_import);
+	assert_non_null(retail_api);
+	context->api = GetBotAPIEx(&context->mock.table,
+		sizeof(context->mock.table));
+	assert_non_null(context->api);
+	Mock_ConfigureLibraryImports(context);
+	assert_int_equal(retail_api->BotSetupLibrary(), BLERR_NOERROR);
+	assert_true(BotLibraryInitialized());
+	assert_int_equal(retail_api->BotShutdownLibrary(), BLERR_NOERROR);
 }
 
 /*
@@ -1752,7 +2024,10 @@ static void test_bot_setup_client_preserves_retail_boolean_abi(void **state)
 	Mock_ClearPrints(&context->mock);
 	status = context->api->BotSetupClient(1, &missing_settings);
 	assert_false(status);
-	assert_null(BotState_Get(1));
+	bot_client_state_t *partial_state = BotState_Get(1);
+	assert_non_null(partial_state);
+	assert_false(partial_state->active);
+	assert_null(partial_state->character);
 	qboolean found_retail_client_diagnostic = qfalse;
 	for (size_t index = 0; index < context->mock.print_count; ++index)
 	{
@@ -1784,24 +2059,7 @@ static void test_bot_setup_client_preserves_retail_boolean_abi(void **state)
 	assert_ptr_equal(BotState_Get(1), active_state);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
 	assert_int_equal(CRC_SourceChecksumCount(),
-		source_count_before_duplicate + 1U);
-	uint16_t source_checksum = 0;
-	char source_name[64];
-	qboolean found_map_checksum = qfalse;
-	for (size_t index = 0; index < CRC_SourceChecksumCount(); ++index)
-	{
-		assert_true(CRC_SourceChecksumAt(index,
-			&source_checksum,
-			source_name,
-			sizeof(source_name)));
-		if (strcmp(source_name, "__gladiator_client_setup_map") == 0)
-		{
-			assert_int_equal(source_checksum, 0xD218U);
-			found_map_checksum = qtrue;
-			break;
-		}
-	}
-	assert_true(found_map_checksum);
+		source_count_before_duplicate);
 	Mock_AssertPrintContains(&context->mock,
 		"client 1 already setup\n",
 		PRT_FATAL);
@@ -1853,6 +2111,7 @@ static void test_bot_shutdown_library_releases_weapon_state_handles(void **state
 	status = context->api->BotShutdownLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
 
+	Mock_ReacquireAPI(context);
 	status = context->api->BotSetupLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
 
@@ -1900,6 +2159,7 @@ static void test_shutdown_library_releases_client_weapon_wiring(void **state)
 	assert_null(BotState_Get(1));
 	assert_int_equal(BotState_ActiveClientCount(), 0);
 
+	Mock_ReacquireAPI(context);
 	status = context->api->BotSetupLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_int_equal(BotState_ActiveClientCount(), 0);
@@ -2044,11 +2304,7 @@ static void test_weapon_info_export_zeroes_invalid_queries(void **state)
 	Mock_ClearPrints(&context->mock);
 	status = context->api->BotShutdownLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
-	context->api->BotGetWeaponInfo(handle, 0, &info);
-	assert_memory_equal(&info, &zero, sizeof(info));
-	Mock_AssertPrintContains(&context->mock,
-	                         "BotGetWeaponInfo: bot library used before being setup\n",
-	                         PRT_ERROR);
+	assert_null(context->api->BotGetWeaponInfo);
 }
 
 /*
@@ -2507,6 +2763,56 @@ static void test_bot_client_capacity_uses_setup_maxclients(void **state)
 		assert_false(aasworld.entities[entnum].inuse);
 	}
 
+	bot_client_state_t *state_slot_zero = BotState_Get(0);
+	bot_client_state_t *state_slot_one = BotState_Get(1);
+	bot_client_state_t *state_sentinel = BotState_Get(2);
+	const bot_clientsettings_t *settings_slot_zero =
+		BotState_ClientSettings(0);
+	const bot_clientsettings_t *settings_slot_one =
+		BotState_ClientSettings(1);
+	const bot_clientsettings_t *settings_sentinel =
+		BotState_ClientSettings(2);
+	assert_non_null(state_slot_zero);
+	assert_non_null(state_slot_one);
+	assert_non_null(state_sentinel);
+	assert_non_null(settings_slot_zero);
+	assert_non_null(settings_slot_one);
+	assert_non_null(settings_sentinel);
+	assert_int_equal((unsigned char *)state_slot_one -
+		(unsigned char *)state_slot_zero,
+		BOT_STATE_RETAIL_RECORD_SIZE);
+	assert_int_equal((const unsigned char *)settings_slot_one -
+		(const unsigned char *)settings_slot_zero,
+		BOT_STATE_RETAIL_CLIENT_SETTINGS_SIZE);
+	assert_ptr_not_equal(state_sentinel,
+		(unsigned char *)state_slot_zero +
+			2U * BOT_STATE_RETAIL_RECORD_SIZE);
+	assert_ptr_not_equal(settings_sentinel,
+		(const unsigned char *)settings_slot_zero +
+			2U * BOT_STATE_RETAIL_CLIENT_SETTINGS_SIZE);
+
+	const size_t state_payload_size =
+		2U * BOT_STATE_RETAIL_RECORD_SIZE;
+	const size_t settings_payload_size =
+		2U * BOT_STATE_RETAIL_CLIENT_SETTINGS_SIZE;
+	const size_t state_total_size = MemoryByteSize(state_slot_zero);
+	const size_t settings_total_size = MemoryByteSize(settings_slot_zero);
+	assert_true(state_total_size >= state_payload_size);
+	assert_true(settings_total_size >= settings_payload_size);
+	assert_int_equal(state_total_size - state_payload_size,
+		settings_total_size - settings_payload_size);
+
+	unsigned char zero_record[BOT_STATE_RETAIL_RECORD_SIZE];
+	memset(zero_record, 0, sizeof(zero_record));
+	assert_memory_equal(state_slot_one, zero_record, sizeof(zero_record));
+	assert_ptr_equal(BotState_Create(1), state_slot_one);
+	assert_memory_equal(state_slot_one, zero_record, sizeof(zero_record));
+	assert_int_equal(state_slot_one->team, 0);
+	assert_int_equal(state_slot_one->ltg_teammate, 0);
+	assert_float_equal(state_slot_one->combat.enemy_visible_time,
+		0.0f,
+		0.0001f);
+
 	bot_clientsettings_t live_settings;
 	memset(&live_settings, 0, sizeof(live_settings));
 	snprintf(live_settings.netname, sizeof(live_settings.netname), "Capacity Babe");
@@ -2516,6 +2822,8 @@ static void test_bot_client_capacity_uses_setup_maxclients(void **state)
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_string_equal(BotState_ClientName(1), "Capacity Babe");
 	assert_int_equal(BotState_FindClientByName("Capacity Babe"), 1);
+	assert_int_equal(BotState_FindClientByName("capacity babe"), 1);
+	assert_int_equal(BotState_FindClientByName("pAcItY"), 1);
 
 	snprintf(live_settings.netname, sizeof(live_settings.netname), "Sentinel Babe");
 	Mock_ClearPrints(&context->mock);
@@ -2525,7 +2833,7 @@ static void test_bot_client_capacity_uses_setup_maxclients(void **state)
 	assert_non_null(BotState_ClientSettings(2));
 	assert_string_equal(BotState_ClientName(2), "Sentinel Babe");
 	assert_int_equal(BotState_FindClientByName("Capacity Babe"), 1);
-	assert_int_equal(BotState_FindClientByName("Sentinel Babe"), 0);
+	assert_int_equal(BotState_FindClientByName("Sentinel Babe"), -1);
 
 	Mock_ClearPrints(&context->mock);
 	status = context->api->BotClientSettings(3, &live_settings);
@@ -2556,27 +2864,38 @@ static void test_bot_client_capacity_uses_setup_maxclients(void **state)
 	status = context->api->BotSetupClient(2, &setup_settings);
 	assert_true(status);
 	assert_null(Mock_FindPrint(&context->mock, "invalid client number"));
-	assert_non_null(BotState_Get(2));
+	assert_ptr_equal(BotState_Get(2), state_sentinel);
+	assert_int_equal(state_sentinel->client_number, 2);
+	assert_int_equal(state_sentinel->entity_number, 3);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
 
 	status = context->api->BotShutdownClient(2);
 	assert_int_equal(status, BLERR_NOERROR);
+	assert_ptr_equal(BotState_Get(2), state_sentinel);
+	assert_memory_equal(state_sentinel, zero_record, sizeof(zero_record));
 	assert_int_equal(BotState_ActiveClientCount(), 0);
 
 	status = context->api->BotSetupClient(1, &setup_settings);
 	assert_true(status);
+	assert_ptr_equal(BotState_Get(1), state_slot_one);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
 
 	Mock_ClearPrints(&context->mock);
 	status = context->api->BotMoveClient(1, 2);
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_null(Mock_FindPrint(&context->mock, "invalid client number"));
-	assert_null(BotState_Get(1));
-	assert_non_null(BotState_Get(2));
+	assert_ptr_equal(BotState_Get(1), state_slot_one);
+	assert_memory_equal(state_slot_one, zero_record, sizeof(zero_record));
+	assert_ptr_equal(BotState_Get(2), state_sentinel);
+	assert_true(state_sentinel->active);
+	assert_int_equal(state_sentinel->client_number, 1);
+	assert_int_equal(state_sentinel->entity_number, 2);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
 
 	status = context->api->BotShutdownClient(2);
 	assert_int_equal(status, BLERR_NOERROR);
+	assert_ptr_equal(BotState_Get(2), state_sentinel);
+	assert_memory_equal(state_sentinel, zero_record, sizeof(zero_record));
 	assert_int_equal(BotState_ActiveClientCount(), 0);
 
 	status = context->api->BotShutdownLibrary();
@@ -2821,6 +3140,7 @@ static void test_pointlight_heap_is_not_initialised_by_library_setup(void **stat
 	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
 
 	Mock_Reset(&context->mock);
+	Mock_ReacquireAPI(context);
 	assert_int_equal(context->api->BotLibVarSet("max_aaslights", "0"),
 		BLERR_NOERROR);
 	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
@@ -2851,8 +3171,10 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 
     Mock_Reset(&context->mock);
 
-    LibVarSet("max_soundinfo", "64");
-    LibVarSet("max_aassounds", "4");
+    assert_int_equal(context->api->BotLibVarSet("max_soundinfo", "64"),
+		BLERR_NOERROR);
+    assert_int_equal(context->api->BotLibVarSet("max_aassounds", "4"),
+		BLERR_NOERROR);
 
     assert_string_equal(context->api->BotVersion(), "BotLib v0.96");
 
@@ -2961,6 +3283,8 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 
     bot_client_state_t *enemy_state = BotState_Create(2);
     assert_non_null(enemy_state);
+	enemy_state->client_number = 2;
+	enemy_state->entity_number = 3;
     enemy_state->active = true;
     enemy_state->team = 2;
 
@@ -3020,9 +3344,12 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     Mock_Reset(&context->mock);
 
     context->api->BotShutdownLibrary();
+	Mock_ReacquireAPI(context);
 
-    LibVarSet("max_soundinfo", "1");
-    LibVarSet("max_aassounds", "2");
+    assert_int_equal(context->api->BotLibVarSet("max_soundinfo", "1"),
+		BLERR_NOERROR);
+    assert_int_equal(context->api->BotLibVarSet("max_aassounds", "2"),
+		BLERR_NOERROR);
 
     status = context->api->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
@@ -3035,12 +3362,16 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     assert_int_equal((int)AAS_SoundSubsystem_InfoCount(), 1);
 
     context->api->BotShutdownLibrary();
+	Mock_ReacquireAPI(context);
 
     Mock_Reset(&context->mock);
 
-    LibVarSet("max_soundinfo", "0");
-    LibVarSet("max_aassounds", "0");
-	LibVarSet("max_aaslights", "1");
+    assert_int_equal(context->api->BotLibVarSet("max_soundinfo", "0"),
+		BLERR_NOERROR);
+    assert_int_equal(context->api->BotLibVarSet("max_aassounds", "0"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotLibVarSet("max_aaslights", "1"),
+		BLERR_NOERROR);
 
     status = context->api->BotSetupLibrary();
     assert_int_equal(status, BLERR_NOERROR);
@@ -3063,8 +3394,10 @@ static void test_bot_load_map_and_sensory_queues(void **state)
 		"BotAddPointLight: point light queue capacity exceeded"));
 
 	context->api->BotShutdownLibrary();
+	Mock_ReacquireAPI(context);
 	Mock_Reset(&context->mock);
-	LibVarSet("max_aaslights", "0");
+	assert_int_equal(context->api->BotLibVarSet("max_aaslights", "0"),
+		BLERR_NOERROR);
 	status = context->api->BotSetupLibrary();
 	assert_int_equal(status, BLERR_NOERROR);
 	status = context->api->BotLoadMap("maps/test1.bsp", 0, NULL, 2, sounds, 0, NULL);
@@ -3139,6 +3472,8 @@ static void test_bot_usehook_defaults_disabled(void **state)
 
     bot_client_state_t *enemy_state = BotState_Create(2);
     assert_non_null(enemy_state);
+	enemy_state->client_number = 2;
+	enemy_state->entity_number = 3;
     enemy_state->active = true;
     enemy_state->team = 2;
 
@@ -3302,7 +3637,7 @@ static void test_bot_console_message_flood_preserves_deferred_head(void **state)
 	assert_int_equal(context->api->BotAI(1, 0.05f), BLERR_NOERROR);
 
 	assert_int_equal(BotNumConsoleMessages(client_state->chat_state), 9);
-	const bot_console_message_node_t *head = BotNextConsoleMessageNode(
+	const bot_console_message_node_t *head = BotNextConsoleMessage(
 		client_state->chat_state);
 	assert_non_null(head);
 	assert_int_equal(head->type, CMS_CHAT);
@@ -3348,6 +3683,10 @@ static void test_bot_console_message_classifies_death_updates(void **state)
 	memset(&presentation, 0, sizeof(presentation));
 	snprintf(presentation.netname, sizeof(presentation.netname), "Enemy");
 	assert_int_equal(context->api->BotClientSettings(2, &presentation), BLERR_NOERROR);
+	assert_int_equal(ClientFromName("Babe"), 1);
+	assert_int_equal(ClientFromName("babe"), 0);
+	assert_int_equal(ClientFromName("missing"), 0);
+	assert_int_equal(BotState_FindClientByName("babe"), 1);
 
 	bot_client_state_t *client_state = BotState_Get(1);
 	assert_non_null(client_state);
@@ -3368,8 +3707,10 @@ static void test_bot_console_message_classifies_death_updates(void **state)
 	assert_int_equal(context->api->BotUpdateClient(1, &update), BLERR_NOERROR);
 	assert_int_equal(context->api->BotAI(1, 0.05f), BLERR_NOERROR);
 
-	assert_int_equal(client_state->bot_death_type, 11);
-	assert_int_equal(client_state->enemy_death_type, 11);
+	/* Retail's no-space template captures the separator on the victim name.
+	 * Exact ClientFromName lookup aliases both misses to client zero. */
+	assert_int_equal(client_state->bot_death_type, 0);
+	assert_int_equal(client_state->enemy_death_type, 0);
 	assert_int_equal(BotNumConsoleMessages(client_state->chat_state), 0);
 
 	context->api->BotShutdownClient(1);
@@ -3535,6 +3876,7 @@ static bot_client_state_t *setup_console_team_command_fixture(
 {
 	Mock_Reset(&context->mock);
 	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+	BotInitLevelItems();
 
 	bot_settings_t settings;
 	memset(&settings, 0, sizeof(settings));
@@ -3559,6 +3901,8 @@ static bot_client_state_t *setup_console_team_command_fixture(
 	bot->team = 1;
 	bot_client_state_t *teammate = BotState_Create(2);
 	assert_non_null(teammate);
+	teammate->client_number = 2;
+	teammate->entity_number = 3;
 	teammate->team = 1;
 	BotState_SetActive(teammate, true);
 	if (teammate_out != NULL)
@@ -3594,9 +3938,8 @@ static void process_console_team_command(bot_interface_test_context_t *context,
 	bot_client_state_t *bot = BotState_Get(1);
 	assert_non_null(bot);
 	/* Keep parser tests out of the enter-game and LTG scheduler paths. */
-	bot->enter_game_chat_attempted = true;
+	bot->enter_game_time = -1000.0f;
 	bot->chat_standing = false;
-	bot->stand_chat_pending = false;
 	bot->ai_node = BOT_AI_NODE_STAND;
 	assert_int_equal(context->api->BotAI(1, 0.05f), BLERR_NOERROR);
 }
@@ -3636,8 +3979,11 @@ static bool find_constructed_team_chat(const mock_bot_import_t *mock,
 	for (size_t index = 0; index < mock->client_command_count; ++index)
 	{
 		const char *command = mock->client_commands[index].command;
-		if (strncmp(command, "say_team ", 9U) == 0 &&
-			strstr(command, text) != NULL)
+		const char *argument = mock->client_commands[index].argument;
+		if ((strcmp(command, "say_team") == 0 &&
+				strstr(argument, text) != NULL) ||
+			(strncmp(command, "say_team ", 9U) == 0 &&
+				strstr(command, text) != NULL))
 		{
 			return true;
 		}
@@ -3663,6 +4009,10 @@ static const char *latest_constructed_team_chat(const mock_bot_import_t *mock)
 	for (size_t index = mock->client_command_count; index > 0U; --index)
 	{
 		const char *command = mock->client_commands[index - 1U].command;
+		if (strcmp(command, "say_team") == 0)
+		{
+			return mock->client_commands[index - 1U].argument;
+		}
 		if (strncmp(command, "say_team ", 9U) == 0)
 		{
 			return command;
@@ -3699,6 +4049,7 @@ static void setup_console_command_aas_world(void)
 		PRESENCE_NORMAL | PRESENCE_CROUCH;
 	aasworld.areasettings[1].numreachableareas = 1;
 	TranslateEntity_SetWorldLoaded(qtrue);
+	BotInitLevelItems();
 }
 
 /*
@@ -3881,9 +4232,11 @@ static void test_bot_console_what_are_you_doing_reports_every_ltg_type(
 	size_t constructed_count = 0U;
 	for (size_t index = 0; index < context->mock.client_command_count; ++index)
 	{
-		if (strncmp(context->mock.client_commands[index].command,
-			"say_team ",
-			9U) == 0)
+		if (strcmp(context->mock.client_commands[index].command,
+			"say_team") == 0 ||
+			strncmp(context->mock.client_commands[index].command,
+				"say_team ",
+				9U) == 0)
 		{
 			assert_int_equal(context->mock.client_commands[index].client, 1);
 			++constructed_count;
@@ -3912,7 +4265,7 @@ static void test_bot_console_what_are_you_doing_preserves_gates_and_empty_source
 		&teammate);
 	assert_int_equal(context->api->BotLibVarSet("nochat", "1"), BLERR_NOERROR);
 	assert_int_equal(bot->ltg_type, 0);
-	assert_int_equal(bot->ltg_teammate, -1);
+	assert_int_equal(bot->ltg_teammate, 0);
 	assert_int_equal(bot->team_goal_number, 0);
 
 	BotState_SetLongTermGoal(bot, 1, -1, 0);
@@ -3977,10 +4330,14 @@ static void test_bot_console_what_are_you_doing_preserves_gates_and_empty_source
 	assert_null(strstr(reply, "123456"));
 	assert_int_equal(BotChatLength(bot->chat_state), 0);
 
+	bot->enter_game_time = 123.0f;
+	bot->get_flag_away_time = 456.0f;
 	BotState_ResetForNewMap(bot);
 	assert_int_equal(bot->ltg_type, 0);
-	assert_int_equal(bot->ltg_teammate, -1);
+	assert_int_equal(bot->ltg_teammate, 0);
 	assert_int_equal(bot->team_goal_number, 0);
+	assert_float_equal(bot->enter_game_time, 0.0f, 0.0001f);
+	assert_float_equal(bot->get_flag_away_time, 0.0f, 0.0001f);
 
 	context->api->BotShutdownClient(1);
 	BotState_Destroy(2);
@@ -4116,8 +4473,8 @@ static void test_bot_console_formation_damage_cases_are_ungated(void **state)
 =============
 test_bot_console_formation_space_preserves_conversion_and_limits
 
-Pins case 16's three gates, unit factors, inclusive endpoints, and 100-unit
-fallback for both sides of the valid range.
+Pins case 16's three gates, unit factors, punctuation normalization, and the
+100-unit fallback for values outside the valid range.
 =============
 */
 static void test_bot_console_formation_space_preserves_conversion_and_limits(
@@ -4151,11 +4508,12 @@ static void test_bot_console_formation_space_preserves_conversion_and_limits(
 	process_console_team_command(context,
 		12.0f,
 		"(Commander): Babe the formation intervening space is 1.5 meter");
-	assert_float_equal(bot->formation_dist, 48.0f, 0.0001f);
+	/* Retail UnifyWhiteSpaces converts the period to a space before atof. */
+	assert_float_equal(bot->formation_dist, 100.0f, 0.0001f);
 	process_console_team_command(context,
 		15.0f,
 		"(Commander): Babe the formation intervening space is 15.625 meter");
-	assert_float_equal(bot->formation_dist, 500.0f, 0.0001f);
+	assert_float_equal(bot->formation_dist, 480.0f, 0.0001f);
 	process_console_team_command(context,
 		18.0f,
 		"(Commander): Babe the formation intervening space is 1.49 meter");
@@ -4163,7 +4521,7 @@ static void test_bot_console_formation_space_preserves_conversion_and_limits(
 	process_console_team_command(context,
 		21.0f,
 		"(Commander): Babe the formation intervening space is 15.626 meter");
-	assert_float_equal(bot->formation_dist, 100.0f, 0.0001f);
+	assert_float_equal(bot->formation_dist, 480.0f, 0.0001f);
 	process_console_team_command(context,
 		24.0f,
 		"(Commander): Babe the formation intervening space is 5 feet");
@@ -4325,7 +4683,9 @@ static void test_bot_console_camp_preserves_retail_goal_branches_and_deadlines(
 	assert_int_equal(bot->team_goal.entitynum, 2);
 	assert_int_equal(bot->team_goal.areanum, 1);
 	assert_int_equal(bot->team_goal.number, 302);
-	assert_int_equal(bot->team_goal.flags, GFL_ITEM);
+	/* Retail level-item lookup leaves flags untouched; the initial zero survives
+	 * the subsequent in-place camp-there point update. */
+	assert_int_equal(bot->team_goal.flags, 0);
 	assert_float_equal(bot->team_goal.origin[0], 0.0f, 0.0001f);
 	assert_float_equal(bot->team_goal.mins[0], -8.0f, 0.0001f);
 	assert_float_equal(bot->team_goal.maxs[2], 8.0f, 0.0001f);
@@ -4395,6 +4755,14 @@ static void test_bot_console_checkpoint_stores_independently_of_addressing(
 		6.0f,
 		"(Commander): Other checkpoint Alpha is at 16 0 32");
 	assert_non_null(bot->checkpoints);
+	assert_ptr_equal(bot->checkpoints->name,
+		bot->checkpoints->name_storage);
+	void *allocation_probe = GetMemory(1U);
+	assert_non_null(allocation_probe);
+	assert_int_equal(MemoryByteSize(bot->checkpoints) -
+		MemoryByteSize(allocation_probe),
+		sizeof(*bot->checkpoints) + strlen("Alpha"));
+	FreeMemory(allocation_probe);
 	assert_string_equal(bot->checkpoints->name, "Alpha");
 	assert_float_equal(bot->checkpoints->goal.origin[2], 32.5f, 0.0001f);
 	assert_int_equal(count_team_chat_commands(&context->mock), 0U);
@@ -4414,13 +4782,15 @@ static void test_bot_console_checkpoint_stores_independently_of_addressing(
 		"(Commander): Babe checkpoint alpha is at 48 0 32.6");
 	assert_string_equal(bot->checkpoints->name, "alpha");
 	assert_float_equal(bot->checkpoints->goal.origin[0], 48.0f, 0.0001f);
-	assert_float_equal(bot->checkpoints->goal.origin[2], 33.1f, 0.0001f);
+	/* The decimal point is normalized to a separator before sscanf, so only the
+	 * first three integer fields are consumed before the retail +0.5 offset. */
+	assert_float_equal(bot->checkpoints->goal.origin[2], 32.5f, 0.0001f);
 	assert_non_null(bot->checkpoints->next);
 	assert_string_equal(bot->checkpoints->next->name, "Rival");
 	assert_null(bot->checkpoints->next->next);
 	assert_int_equal(count_team_chat_commands(&context->mock), 1U);
 	assert_true(find_constructed_team_chat(&context->mock,
-		"checkpoint alpha at 48 0 33 confirmed"));
+		"checkpoint alpha at 48 0 32 confirmed"));
 
 	process_console_team_command(context,
 		15.0f,
@@ -4456,6 +4826,25 @@ static void test_bot_console_checkpoint_stores_independently_of_addressing(
 
 /*
 =============
+allocate_test_console_waypoint
+
+Allocates a tracked flexible-name waypoint for direct state-machine fixtures.
+=============
+*/
+static bot_console_waypoint_t *allocate_test_console_waypoint(const char *name)
+{
+	const char *waypoint_name = name != NULL ? name : "";
+	size_t name_bytes = strlen(waypoint_name) + 1U;
+	bot_console_waypoint_t *waypoint = GetClearedMemory(
+		sizeof(*waypoint) + name_bytes);
+	assert_non_null(waypoint);
+	waypoint->name = waypoint->name_storage;
+	memcpy(waypoint->name, waypoint_name, name_bytes);
+	return waypoint;
+}
+
+/*
+=============
 test_bot_console_patrol_preserves_lists_flags_failures_and_deadlines
 
 Pins case 21's gates, one-point preservation, key-area failure clear, ordered
@@ -4478,9 +4867,7 @@ static void test_bot_console_patrol_preserves_lists_flags_failures_and_deadlines
 	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
 		BLERR_NOERROR);
 
-	bot_console_waypoint_t *old = calloc(1, sizeof(*old));
-	assert_non_null(old);
-	strcpy(old->name, "Old Patrol");
+	bot_console_waypoint_t *old = allocate_test_console_waypoint("Old Patrol");
 	bot->patrol_points = old;
 	bot->current_patrol_point = old;
 	bot->patrol_flags = 99;
@@ -4519,7 +4906,7 @@ static void test_bot_console_patrol_preserves_lists_flags_failures_and_deadlines
 	assert_int_equal(bot->patrol_flags, 99);
 	assert_int_equal(bot->ltg_type, 4);
 	assert_true(find_constructed_team_chat(&context->mock, "Missing Place"));
-	free(old);
+	FreeMemory(old);
 	old = NULL;
 
 	srand(2);
@@ -4601,6 +4988,8 @@ static void test_bot_console_help_accompany_preserves_retail_target_and_goal_bou
 		BLERR_NOERROR);
 	bot_client_state_t *ally = BotState_Create(3);
 	assert_non_null(ally);
+	ally->client_number = 3;
+	ally->entity_number = 4;
 	ally->team = 1;
 	BotState_SetActive(ally, true);
 
@@ -4812,13 +5201,14 @@ static void test_bot_console_defend_key_area_preserves_retail_gates_and_deadline
 
 /*
 =============
-test_bot_console_ctf_orders_require_both_flags_and_preserve_exact_resets
+test_bot_console_ctf_rush_base_is_dormant_but_enemy_flag_order_runs
 
-Pins cases 6/7 to the ctf/two-flag/address gate, including operation with the
-teamplay cvar off, fixed LTG durations, and case-6-only rush-away clearing.
+Pins retail preprocessing and matching together: `base` is canonicalized to a
+flag name before the literal rush-base template can match, leaving case 6
+dormant. The addressed case-7 enemy-flag order remains live and exact.
 =============
 */
-static void test_bot_console_ctf_orders_require_both_flags_and_preserve_exact_resets(
+static void test_bot_console_ctf_rush_base_is_dormant_but_enemy_flag_order_runs(
 	void **state)
 {
 	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
@@ -4868,34 +5258,35 @@ static void test_bot_console_ctf_orders_require_both_flags_and_preserve_exact_re
 	assert_int_equal(bot->ltg_type, 9);
 	commander->team = 1;
 
-	srand(5);
+	bot->ltg_type = 9;
+	bot->team_message_time = 44.0f;
+	bot->team_goal_time = 77.0f;
+	bot->rush_base_away_time = 55.0f;
 	process_console_team_command(context,
 		15.0f,
 		"(Commander): Other rush base");
-	assert_int_equal(bot->ltg_type, 5);
-	assert_true(bot->team_message_time >= 15.0f);
-	assert_true(bot->team_message_time <= 17.0f);
-	assert_float_equal(bot->team_goal_time, 135.0f, 0.0001f);
-	assert_float_equal(bot->rush_base_away_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->ltg_type, 9);
+	assert_float_equal(bot->team_message_time, 44.0f, 0.0001f);
+	assert_float_equal(bot->team_goal_time, 77.0f, 0.0001f);
+	assert_float_equal(bot->rush_base_away_time, 55.0f, 0.0001f);
 
-	bot->ltg_type = 9;
-	bot->rush_base_away_time = 55.0f;
 	process_console_team_command(context,
 		18.0f,
 		"(Commander): Babe rush base");
-	assert_int_equal(bot->ltg_type, 5);
-	assert_true(bot->team_message_time >= 18.0f);
-	assert_true(bot->team_message_time <= 20.0f);
-	assert_float_equal(bot->team_goal_time, 138.0f, 0.0001f);
-	assert_float_equal(bot->rush_base_away_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->ltg_type, 9);
+	assert_float_equal(bot->team_message_time, 44.0f, 0.0001f);
+	assert_float_equal(bot->team_goal_time, 77.0f, 0.0001f);
+	assert_float_equal(bot->rush_base_away_time, 55.0f, 0.0001f);
 
 	process_console_team_command(context,
 		21.0f,
 		"(Commander): Other get the enemy flag");
-	assert_int_equal(bot->ltg_type, 5);
-	assert_float_equal(bot->rush_base_away_time, 0.0f, 0.0001f);
+	assert_int_equal(bot->ltg_type, 9);
+	assert_float_equal(bot->team_message_time, 44.0f, 0.0001f);
+	assert_float_equal(bot->team_goal_time, 77.0f, 0.0001f);
+	assert_float_equal(bot->rush_base_away_time, 55.0f, 0.0001f);
 
-	bot->rush_base_away_time = 55.0f;
+	srand(5);
 	process_console_team_command(context,
 		24.0f,
 		"(Commander): Babe get the enemy flag");
@@ -4989,8 +5380,11 @@ static void test_bot_console_reply_enters_and_completes_stand(void **state)
 	bool found_reply_command = false;
 	for (size_t index = 0; index < context->mock.client_command_count; ++index)
 	{
+		const char *command = context->mock.client_commands[index].command;
+		const char *argument = context->mock.client_commands[index].argument;
 		if (context->mock.client_commands[index].client == 1 &&
-			strncmp(context->mock.client_commands[index].command, "say ", 4U) == 0)
+			((strcmp(command, "say") == 0 && argument[0] != '\0') ||
+				strncmp(command, "say ", 4U) == 0))
 		{
 			found_reply_command = true;
 			break;
@@ -5004,13 +5398,13 @@ static void test_bot_console_reply_enters_and_completes_stand(void **state)
 
 /*
 =============
-test_chat_initial_exports_preserve_raw_type_aliases
+test_q3_compat_chat_exports_preserve_type_aliases
 
-Checks the bridge exposes the reconstructed initial-chat count and construction
-helpers without disturbing existing chat state ownership.
+Checks the extended bridge keeps its successor-shaped chat adapters without
+conflating them with the retail-exact direct entry points.
 =============
 */
-static void test_chat_initial_exports_preserve_raw_type_aliases(void **state)
+static void test_q3_compat_chat_exports_preserve_type_aliases(void **state)
 {
 	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 
@@ -5067,13 +5461,16 @@ static void test_chat_initial_exports_preserve_raw_type_aliases(void **state)
 	assert_int_equal(match.subtype, 11);
 	char variable[256];
 	context->api->BotMatchVariable(&match, 0, variable, sizeof(variable));
-	assert_string_equal(variable, "Alice");
+	assert_string_equal(variable, "Alice ");
 	context->api->BotMatchVariable(&match, 1, variable, sizeof(variable));
 	assert_string_equal(variable, "Bob");
 
 	bot_chatstate_t *chat = context->api->BotAllocChatState();
 	assert_non_null(chat);
-	assert_true(context->api->BotLoadChatFile(chat, "bots/babe_t.c", "babe"));
+	assert_int_equal(context->api->BotLoadChatFile(chat,
+		"bots/babe_t.c",
+		"babe"),
+		BLERR_NOERROR);
 
 	const int exit_count = context->api->BotNumInitialChats(chat, "exit_game");
 	assert_true(exit_count > 0);
@@ -5138,8 +5535,8 @@ static void test_bot_setup_library_wires_chat_setup(void **state)
 	assert_int_equal(status, BLERR_NOERROR);
 
 	Mock_AssertPrintContains(&context->mock,
-		"BotSetupChatAI: couldn't load reply chats definitely_missing_rchat.c",
-		PRT_WARNING);
+		"couldn't find definitely_missing_rchat.c\n",
+		PRT_ERROR);
 
 	context->api->BotShutdownLibrary();
 }
@@ -5425,11 +5822,8 @@ static void test_bot_interface_mover_parity(void **state)
 
     char model_name[] = "*8";
     char *model_entries[] = {model_name};
-    botinterface_asset_list_t asset_models = {
-        .entries = model_entries,
-        .count = ARRAY_LEN(model_entries),
-    };
-    assert_true(BotMove_MoverCatalogueFinalize(&asset_models));
+	assert_true(BotMove_MoverCatalogueFinalize(model_entries,
+		ARRAY_LEN(model_entries)));
 
     bot_updateentity_t mover_update;
     memset(&mover_update, 0, sizeof(mover_update));
@@ -5514,20 +5908,26 @@ static void test_bot_interface_mover_parity(void **state)
 	assert_float_equal(move_state->avoidreachtimes[0], 0.0f, 0.0001f);
 	assert_int_equal(move_state->avoidreachtries[0], 0);
 
-    Mock_AssertPrintContains(&context->mock, "without reachability", PRT_MESSAGE);
-
-    BotDumpAvoidGoals(client_state->goal_handle);
-    Mock_AssertPrintContains(&context->mock, "BotDumpAvoidGoals", PRT_MESSAGE);
+	Mock_ClearPrints(&context->mock);
+	BotDumpAvoidGoals(client_state->goal_handle);
+	assert_int_equal(context->mock.print_count, 0);
 
     ai_avoid_list_t *avoid = AI_GoalState_GetAvoidList(client_state->goal_state);
     assert_non_null(avoid);
 	assert_false(AI_AvoidList_Contains(avoid, mover_goal.number, 0.1f));
 
-    Mock_Reset(&context->mock);
+	Mock_Reset(&context->mock);
 
-    fixture.reachability[1].traveltype = TRAVEL_ELEVATOR;
-    fixture.reachability[1].facenum = mover_entry.modelnum;
-    AAS_InvalidateRouteCache();
+	(void)context->api->BotPopGoal(client_state->goal_handle);
+	mover_goal.areanum = 2;
+	VectorSet(mover_goal.origin, 128.0f, 0.0f, 32.0f);
+	assert_true(context->api->BotPushGoal(client_state->goal_handle,
+		&mover_goal));
+
+	fixture.reachability[1].traveltype = TRAVEL_ELEVATOR;
+	fixture.reachability[1].facenum = mover_entry.modelnum;
+	AAS_InitTravelFlagFromType();
+	assert_int_equal(AAS_PrepareReachability(), BLERR_NOERROR);
 	client_state->long_term_goal_time = 26.0f;
 
     status = context->api->BotStartFrame(6.0f);
@@ -5550,12 +5950,12 @@ static void test_bot_interface_mover_parity(void **state)
         &context->mock.inputs[context->mock.bot_input_count - 1U];
     assert_float_equal(final_input->thinktime, 0.05f, 0.0001f);
 
-    assert_true(client_state->has_move_result);
-    assert_int_equal(client_state->last_move_result.traveltype, TRAVEL_ELEVATOR);
+	assert_true(client_state->has_move_result);
+	assert_int_equal(client_state->last_move_result.traveltype, 0);
     assert_int_equal(client_state->last_move_result.type, RESULTTYPE_ELEVATORUP);
     assert_true((client_state->last_move_result.flags & MOVERESULT_WAITING) != 0);
 
-    assert_float_equal(final_input->speed, 0.0f, 0.0001f);
+	assert_float_equal(final_input->speed, 360.0f, 0.0001f);
     assert_float_equal(final_input->dir[0], -1.0f, 0.0001f);
     assert_float_equal(final_input->dir[1], 0.0f, 0.0001f);
     assert_float_equal(final_input->dir[2], 0.0f, 0.0001f);
@@ -5619,18 +6019,18 @@ static void test_ai_battle_chase_preserves_mover_set_view(void **state)
 
 	bot->ai_node = BOT_AI_NODE_BATTLE_CHASE;
 	bot->combat.current_enemy = 2;
-	bot->combat.last_enemy_area = 3;
+	bot->combat.last_enemy_area = 2;
 	bot->combat.chase_time = aasworld.time + 10.0f;
 	bot->long_term_goal_time = aasworld.time + 20.0f;
 	bot->nearby_goal_time = aasworld.time + 5.0f;
 	bot->nearby_goal_check_time = aasworld.time + 30.0f;
-	VectorSet(bot->combat.last_enemy_origin, 256.0f, 0.0f, 32.0f);
+	VectorSet(bot->combat.last_enemy_origin, 128.0f, 0.0f, 32.0f);
 	vec3_t ninety_degree_delta = {0.0f, 90.0f, 0.0f};
 	AI_DMState_ApplyDeltaAngles(bot->dm_state, ninety_degree_delta);
 
 	assert_int_equal(context->api->BotAI(1, 0.1f), BLERR_NOERROR);
 	assert_true(bot->has_move_result);
-	assert_int_equal(bot->last_move_result.traveltype, TRAVEL_ROCKETJUMP);
+	assert_int_equal(bot->last_move_result.traveltype, 0);
 	assert_true((bot->last_move_result.flags &
 		MOVERESULT_MOVEMENTVIEWSET) != 0);
 	assert_true(context->mock.bot_input_count > 0U);
@@ -5784,14 +6184,35 @@ static void test_ai_battle_nbg_records_enemy_location(void **state)
 test_ai_entity_to_activate_follows_trigger_target_chain
 
 Pins retail BotEntityToActivate's reverse target traversal: an unshootable
-blocked door resolves through trigger_counter and trigger_relay to the button
-that activates it. The fixture stays in memory so it never writes assets under
-dev_tools.
+blocked door backtracks out of an unrecognized nested branch before selecting
+the next root activator. The blocked entity's engine model index is resolved
+through the retail model-name table rather than treated as an inline suffix.
 =============
 */
 static void test_ai_entity_to_activate_follows_trigger_target_chain(void **state)
 {
 	(void)state;
+	bot_mover_fixture_t fixture;
+	memset(&fixture, 0, sizeof(fixture));
+	bot_mover_fixture_init(&fixture);
+	fixture.entities[1].inuse = qtrue;
+	fixture.entities[1].number = 1;
+	fixture.entities[1].solid = SOLID_BSP;
+	fixture.entities[1].modelindex = 2;
+
+	char empty_model[] = "";
+	char world_model[] = "maps/test.bsp";
+	char inline_model[] = "*1";
+	char *models[] = {empty_model, world_model, inline_model};
+	assert_int_equal(AAS_LoadMap(NULL,
+		ARRAY_LEN(models),
+		models,
+		0,
+		NULL,
+		0,
+		NULL),
+		BLERR_NOERROR);
+
 	static const char entity_lump[] =
 		"{\n"
 		"\"classname\" \"worldspawn\"\n"
@@ -5807,6 +6228,10 @@ static void test_ai_entity_to_activate_follows_trigger_target_chain(void **state
 		"\"targetname\" \"counter_signal\"\n"
 		"}\n"
 		"{\n"
+		"\"classname\" \"target_speaker\"\n"
+		"\"target\" \"counter_signal\"\n"
+		"}\n"
+		"{\n"
 		"\"classname\" \"trigger_relay\"\n"
 		"\"target\" \"counter_signal\"\n"
 		"\"targetname\" \"relay_signal\"\n"
@@ -5816,6 +6241,11 @@ static void test_ai_entity_to_activate_follows_trigger_target_chain(void **state
 		"\"model\" \"*2\"\n"
 		"\"target\" \"relay_signal\"\n"
 		"\"health\" \"10\"\n"
+		"}\n"
+		"{\n"
+		"\"classname\" \"trigger_once\"\n"
+		"\"model\" \"*3\"\n"
+		"\"target\" \"door_signal\"\n"
 		"}\n";
 
 	aas_bspentity_t *entities = AAS_ParseBSPEntities(entity_lump,
@@ -5824,9 +6254,10 @@ static void test_ai_entity_to_activate_follows_trigger_target_chain(void **state
 	const aas_bspentity_t *activation = BotAI_EntityToActivate(entities, 1);
 	assert_non_null(activation);
 	assert_string_equal(AAS_ValueForBSPEpairKey(activation, "classname"),
-		"func_button");
-	assert_string_equal(AAS_ValueForBSPEpairKey(activation, "model"), "*2");
+		"trigger_once");
+	assert_string_equal(AAS_ValueForBSPEpairKey(activation, "model"), "*3");
 	AAS_FreeBSPEntities(entities);
+	bot_mover_fixture_shutdown(&fixture);
 }
 
 /*
@@ -5848,10 +6279,9 @@ static void test_ai_battle_chase_handles_blocked_move(void **state)
 	bot_mover_fixture_t fixture;
 	memset(&fixture, 0, sizeof(fixture));
 	bot_mover_fixture_init(&fixture);
-	/* Keep BotAIBlocked's perpendicular retry in the swim dispatcher: this
-	 * fixture models routing data only, not the collision geometry required by
-	 * the walk predictor. */
-	fixture.area_settings[1].contents = AAS_AREACONTENTS_WATER;
+	/* Retail derives swimming from the engine point-contents callback rather
+	 * than the AAS area's contents flags. */
+	context->mock.point_contents_result = CONTENTS_WATER;
 
 	bot_settings_t settings;
 	memset(&settings, 0, sizeof(settings));
@@ -5877,12 +6307,12 @@ static void test_ai_battle_chase_handles_blocked_move(void **state)
 
 	bot->ai_node = BOT_AI_NODE_BATTLE_CHASE;
 	bot->combat.current_enemy = 2;
-	bot->combat.last_enemy_area = 3;
+	bot->combat.last_enemy_area = 2;
 	bot->combat.chase_time = aasworld.time + 10.0f;
 	bot->long_term_goal_time = aasworld.time + 20.0f;
 	bot->nearby_goal_time = aasworld.time + 5.0f;
 	bot->nearby_goal_check_time = aasworld.time + 30.0f;
-	VectorSet(bot->combat.last_enemy_origin, 256.0f, 0.0f, 32.0f);
+	VectorSet(bot->combat.last_enemy_origin, 128.0f, 0.0f, 32.0f);
 	context->mock.trace_blocked = true;
 	context->mock.trace_entity = 7;
 
@@ -6742,7 +7172,7 @@ static void test_battle_rocket_jump_retail_gate_boundaries(void **state)
 	bot_client_state_t bot;
 	memset(&bot, 0, sizeof(bot));
 	int *inventory = bot.last_client_update.inventory;
-	bot.character_handle = profile_states[1]->character_handle;
+	bot.character = profile_states[1]->character;
 	inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = 1;
 	inventory[RETAIL_INVENTORY_ROCKETS] = 3;
 	inventory[RETAIL_INVENTORY_HEALTH] = 90;
@@ -6771,7 +7201,7 @@ static void test_battle_rocket_jump_retail_gate_boundaries(void **state)
 	inventory[RETAIL_INVENTORY_ARMORBODY] = -100;
 	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = -100;
 	inventory[RETAIL_INVENTORY_ARMORJACKET] = -100;
-	bot.character_handle = 0;
+	bot.character = NULL;
 	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
 	inventory[RETAIL_INVENTORY_ROCKETLAUNCHER] = 0;
 	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
@@ -6783,7 +7213,7 @@ static void test_battle_rocket_jump_retail_gate_boundaries(void **state)
 	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
 	inventory[RETAIL_USING_QUAD] = 0;
 	inventory[RETAIL_USING_INVULNERABILITY] = 0;
-	bot.character_handle = profile_states[1]->character_handle;
+	bot.character = profile_states[1]->character;
 
 	inventory[RETAIL_INVENTORY_HEALTH] = 59;
 	inventory[RETAIL_INVENTORY_ARMORBODY] = 100;
@@ -6825,11 +7255,11 @@ static void test_battle_rocket_jump_retail_gate_boundaries(void **state)
 	inventory[RETAIL_INVENTORY_ARMORBODY] = 0;
 	inventory[RETAIL_INVENTORY_ARMORCOMBAT] = 0;
 	inventory[RETAIL_INVENTORY_ARMORJACKET] = 0;
-	bot.character_handle = profile_states[0]->character_handle;
+	bot.character = profile_states[0]->character;
 	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qfalse);
-	bot.character_handle = profile_states[1]->character_handle;
+	bot.character = profile_states[1]->character;
 	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
-	bot.character_handle = profile_states[2]->character_handle;
+	bot.character = profile_states[2]->character;
 	assert_int_equal(BotAI_CanAndWantsToRocketJump(&bot), qtrue);
 
 	bot_client_state_t snapshot = bot;
@@ -7501,7 +7931,6 @@ static void BotAINode_PrepareFrame(bot_interface_test_context_t *context,
 	bot->ai_node_switches = -1;
 	bot->ai_node_overflow = true;
 	bot->chat_standing = false;
-	bot->stand_chat_pending = false;
 	bot->enter_game_time = -1000.0f;
 	bot->ltg_type = 0;
 	bot->nearby_goal_time = 0.0f;
@@ -7765,6 +8194,7 @@ static void test_ai_activate_entity_goal_lifetime_contact_failure_and_enemy_scan
 		75,
 		true,
 		false);
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
 	memset(&bot->activation_goal, 0, sizeof(bot->activation_goal));
 	bot->activation_goal.areanum = 1;
 	VectorSet(bot->activation_goal.origin, 128.0f, 0.0f, 0.0f);
@@ -7790,6 +8220,7 @@ static void test_ai_activate_entity_goal_lifetime_contact_failure_and_enemy_scan
 		100,
 		true,
 		false);
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
 	memset(&bot->activation_goal, 0, sizeof(bot->activation_goal));
 	bot->activation_goal.areanum = 1;
 	VectorSet(bot->activation_goal.origin, 128.0f, 0.0f, 0.0f);
@@ -8298,8 +8729,10 @@ static void test_ai_battle_fight_initialises_move_state_after_attack_gates(void 
 		"babe");
 
 	BotAINode_ClearEnemyEntities();
-	/* Zero distance keeps this setup-order test out of direct-movement tracing. */
+	/* Use the retail swim dispatcher so this setup-order test needs no walk
+	 * collision fixture. */
 	BotFindEnemy_PrepareEntity(2, 0.0f, 0.0f, 0.0f);
+	context->mock.point_contents_result = CONTENTS_WATER;
 	aasworld.time = 117.0f;
 	BotAINode_PrepareFrame(context,
 		bot,
@@ -8442,7 +8875,6 @@ static void test_ai_battle_fight_dead_enemy_enters_kill_chat_stand(void **state)
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
 	assert_true(bot->stand_time > aasworld.time);
 	assert_true(BotChatLength(bot->chat_state) > 0);
 
@@ -8451,7 +8883,6 @@ static void test_ai_battle_fight_dead_enemy_enters_kill_chat_stand(void **state)
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
 	assert_true(BotChatLength(bot->chat_state) > 0);
 
 	aasworld.time += 0.001f;
@@ -8459,7 +8890,6 @@ static void test_ai_battle_fight_dead_enemy_enters_kill_chat_stand(void **state)
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
 	assert_false(bot->chat_standing);
-	assert_false(bot->stand_chat_pending);
 	assert_int_equal(BotChatLength(bot->chat_state), 0);
 
 	assert_int_equal(context->api->BotLibVarSet("fastchat", "0"),
@@ -8494,20 +8924,18 @@ static void test_ai_stand_acquires_enemy_before_pending_chat_wait(void **state)
 		100,
 		true,
 		false);
-	assert_true(BotInitialChat(bot->chat_state,
+	BotInitialChat(bot->chat_state,
 		"kill_telefrag",
-		0UL,
 		"",
-		NULL) != 0);
+		NULL);
+	assert_true(BotChatLength(bot->chat_state) > 0);
 	bot->chat_standing = true;
-	bot->stand_chat_pending = true;
 	bot->stand_time = aasworld.time + 30.0f;
 
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
 	assert_int_equal(bot->combat.current_enemy, 2);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
 	assert_true(BotChatLength(bot->chat_state) > 0);
 }
 
@@ -8582,7 +9010,6 @@ static void test_ai_stand_expiry_advances_view_before_seek_ltg(void **state)
 		true,
 		false);
 	bot->chat_standing = true;
-	bot->stand_chat_pending = false;
 	bot->stand_time = aasworld.time - 0.001f;
 	AI_DMState_SetIdealViewAngles(bot->dm_state, ideal_viewangles);
 
@@ -8624,20 +9051,18 @@ static void test_ai_stand_squatt_guard_removes_bot(void **state)
 		100,
 		true,
 		false);
-	assert_true(BotInitialChat(bot->chat_state,
+	BotInitialChat(bot->chat_state,
 		"kill_telefrag",
-		0UL,
 		"",
-		NULL) != 0);
+		NULL);
+	assert_true(BotChatLength(bot->chat_state) > 0);
 	bot->chat_standing = true;
-	bot->stand_chat_pending = true;
 	bot->stand_time = aasworld.time - 0.001f;
 	Mock_Reset(&context->mock);
 
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
 	assert_true(BotChatLength(bot->chat_state) > 0);
 
 	bool said_guard_message = false;
@@ -8791,6 +9216,98 @@ static void test_ai_battle_nbg_expiry_pops_nearby_goal(void **state)
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
 	assert_int_equal(context->api->BotGetTopGoal(bot->goal_handle, &nearby_goal),
 		0);
+}
+
+/*
+=============
+test_ai_battle_nbg_uses_touch_without_static_item_visibility_completion
+
+Pins the node-specific nearby-goal gate. A clear trace to an untouching static
+item completes Seek NBG, but Battle NBG retains that same goal until contact.
+=============
+*/
+static void test_ai_battle_nbg_uses_touch_without_static_item_visibility_completion(
+	void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	bot_goal_t long_term_goal = {0};
+	bot_goal_t static_goal = {0};
+	bot_goal_t top_goal = {0};
+	vec3_t eye = {0.0f, 0.0f, 0.0f};
+	vec3_t viewangles = {0.0f, 0.0f, 0.0f};
+
+	long_term_goal.number = 760;
+	long_term_goal.areanum = 1;
+	VectorSet(long_term_goal.origin, 192.0f, 0.0f, 0.0f);
+	VectorSet(long_term_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(long_term_goal.maxs, 8.0f, 8.0f, 8.0f);
+	static_goal.number = 761;
+	static_goal.entitynum = 0;
+	static_goal.areanum = 1;
+	static_goal.flags = GFL_ITEM;
+	VectorSet(static_goal.origin, 128.0f, 0.0f, 0.0f);
+	VectorSet(static_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(static_goal.maxs, 8.0f, 8.0f, 8.0f);
+
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 121.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_NBG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	assert_true(context->api->BotPushGoal(bot->goal_handle,
+		&long_term_goal) != 0);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &static_goal) != 0);
+	bot->long_term_goal_time = aasworld.time + 20.0f;
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+	assert_false(context->api->BotTouchingGoal(
+		bot->last_client_update.origin,
+		&static_goal));
+	assert_true(context->api->BotItemGoalInVisButNotVisible(0,
+		eye,
+		viewangles,
+		&static_goal));
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, long_term_goal.number);
+
+	BotAINode_ClearEnemyEntities();
+	BotFindEnemy_PrepareEntity(2, 100.0f, 0.0f, 0.0f);
+	aasworld.time = 122.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_BATTLE_NBG,
+		2,
+		121.0f,
+		75,
+		true,
+		false);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &static_goal) != 0);
+	bot->nearby_goal_time = aasworld.time + 5.0f;
+	assert_false(context->api->BotTouchingGoal(
+		bot->last_client_update.origin,
+		&static_goal));
+	assert_true(context->api->BotItemGoalInVisButNotVisible(0,
+		eye,
+		viewangles,
+		&static_goal));
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_NBG);
+	memset(&top_goal, 0, sizeof(top_goal));
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, static_goal.number);
 }
 
 /*
@@ -8967,6 +9484,7 @@ static void test_ai_battle_retreat_failed_move_preserves_nearby_lease(void **sta
 		30,
 		false,
 		false);
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
 	retreat_goal.number = 74;
 	retreat_goal.areanum = 1;
 	VectorSet(retreat_goal.origin, 200.0f, 0.0f, 0.0f);
@@ -9084,7 +9602,7 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 		0);
 	assert_true(bot->respawn_requested);
 	assert_false(bot->respawn_action_sent);
-	assert_true(bot->respawn_chat_pending);
+	assert_true(BotChatLength(bot->chat_state) > 0);
 	assert_true(bot->respawn_time > aasworld.time);
 	assert_int_equal(bot->combat.current_enemy, 2);
 
@@ -9096,7 +9614,7 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 		context->mock.bot_input_count - 1].actionflags,
 		0);
 	assert_false(bot->respawn_action_sent);
-	assert_true(bot->respawn_chat_pending);
+	assert_true(BotChatLength(bot->chat_state) > 0);
 	assert_int_equal(bot->combat.current_enemy, 2);
 
 	aasworld.time += 0.001f;
@@ -9107,7 +9625,7 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 		context->mock.bot_input_count - 1].actionflags,
 		ACTION_RESPAWN);
 	assert_true(bot->respawn_action_sent);
-	assert_false(bot->respawn_chat_pending);
+	assert_int_equal(BotChatLength(bot->chat_state), 0);
 	assert_int_equal(bot->combat.current_enemy, 0);
 
 	bot->client_update_valid = true;
@@ -9118,7 +9636,6 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 	BotAINode_ClearEnemyEntities();
 	aasworld.time = 20.0f;
 	bot->enter_game_time = aasworld.time;
-	bot->enter_game_chat_attempted = false;
 	bot->ai_node = BOT_AI_NODE_SEEK_LTG;
 	bot->client_update_valid = true;
 	bot->last_client_update.pm_type = PM_NORMAL;
@@ -9126,9 +9643,7 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 	context->mock.trace_blocked = false;
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
-	assert_true(bot->enter_game_chat_attempted);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
 	assert_true(BotChatLength(bot->chat_state) > 0);
 
 	aasworld.time = bot->stand_time;
@@ -9137,15 +9652,28 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 	bot->last_client_update.pm_flags = PMF_ON_GROUND;
 	BotAINode_RunFrame(context);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
+	assert_true(BotChatLength(bot->chat_state) > 0);
 
 	aasworld.time += 0.001f;
 	bot->client_update_valid = true;
 	bot->last_client_update.pm_type = PM_NORMAL;
 	bot->last_client_update.pm_flags = PMF_ON_GROUND;
 	BotAINode_RunFrame(context);
+	/* Retail retries the enter-game gate on every frame inside the setup-time
+	 * window. A successful retry reconstructs the pending line and renews the
+	 * Stand deadline; there is no successor-only "attempted" latch. */
+	assert_true(bot->chat_standing);
+	assert_true(BotChatLength(bot->chat_state) > 0);
+
+	aasworld.time = fmaxf(bot->stand_time,
+		bot->enter_game_time + 8.0f) + 0.001f;
+	bot->client_update_valid = true;
+	bot->last_client_update.pm_type = PM_NORMAL;
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
+	BotAINode_RunFrame(context);
 	assert_false(bot->chat_standing);
-	assert_false(bot->stand_chat_pending);
+	assert_int_equal(BotChatLength(bot->chat_state), 0);
+	bot->enter_game_time = -1000.0f;
 
 	bot->client_update_valid = true;
 	bot->last_client_update.pm_type = PM_FREEZE;
@@ -9163,22 +9691,22 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
 	assert_true(bot->stand_time > aasworld.time);
+	assert_true(BotChatLength(bot->chat_state) > 0);
 
 	aasworld.time = bot->stand_time;
 	bot->client_update_valid = true;
 	bot->last_client_update.pm_type = PM_NORMAL;
 	BotAINode_RunFrame(context);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
+	assert_true(BotChatLength(bot->chat_state) > 0);
 
 	aasworld.time += 0.001f;
 	bot->client_update_valid = true;
 	bot->last_client_update.pm_type = PM_NORMAL;
 	BotAINode_RunFrame(context);
 	assert_false(bot->chat_standing);
-	assert_false(bot->stand_chat_pending);
+	assert_int_equal(BotChatLength(bot->chat_state), 0);
 
 	assert_int_equal(context->api->BotLibVarSet("fastchat", "0"),
 		BLERR_NOERROR);
@@ -9219,12 +9747,12 @@ static void test_ai_seek_ltg_random_chat_gates(void **state)
 	BotAINode_RunFrameWithThinktime(context, 10.0f);
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_STAND);
 	assert_true(bot->chat_standing);
-	assert_true(bot->stand_chat_pending);
 	assert_true(bot->stand_time > aasworld.time);
 	assert_true(BotChatLength(bot->chat_state) > 0);
 
+	(void)BotEnterChat(bot->chat_state, bot->client_number, 0);
+	assert_int_equal(BotChatLength(bot->chat_state), 0);
 	bot->chat_standing = false;
-	bot->stand_chat_pending = false;
 	bot->ai_node = BOT_AI_NODE_SEEK_LTG;
 	bot->ltg_type = 1;
 	bot->client_update_valid = true;
@@ -9420,7 +9948,63 @@ static void test_ai_seek_ltg_nearby_goal_schedule(void **state)
 	aasworld.time = 620.001f;
 	bot->client_update_valid = true;
 	BotAINode_RunFrame(context);
-	assert_false(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	/* The registered item is selectable again, so retail commits it as the new LTG. */
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, 730);
+}
+
+/*
+=============
+test_ai_seek_ltg_failed_reselection_preserves_lower_stack
+
+Pins the failed-selector branch independently of roam/item success: expiring
+the top LTG pops only that entry and leaves the older stack goal available.
+=============
+*/
+static void test_ai_seek_ltg_failed_reselection_preserves_lower_stack(void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+	bot_client_state_t *bot = BotFindEnemy_SetupHarness(context,
+		4,
+		"bots/babe_c.c",
+		"babe");
+	bot_goal_t retained_goal = {0};
+	bot_goal_t expired_goal = {0};
+	bot_goal_t top_goal = {0};
+
+	setup_console_command_aas_world();
+	BotAINode_ClearEnemyEntities();
+	aasworld.time = 606.0f;
+	BotAINode_PrepareFrame(context,
+		bot,
+		BOT_AI_NODE_SEEK_LTG,
+		0,
+		-1000.0f,
+		100,
+		true,
+		false);
+	retained_goal.number = 771;
+	retained_goal.areanum = 1;
+	VectorSet(retained_goal.origin, 192.0f, 0.0f, 32.0f);
+	VectorSet(retained_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(retained_goal.maxs, 8.0f, 8.0f, 8.0f);
+	expired_goal.number = 772;
+	expired_goal.areanum = 1;
+	VectorSet(expired_goal.origin, 128.0f, 0.0f, 32.0f);
+	VectorSet(expired_goal.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(expired_goal.maxs, 8.0f, 8.0f, 8.0f);
+	assert_true(context->api->BotPushGoal(bot->goal_handle,
+		&retained_goal) != 0);
+	assert_true(context->api->BotPushGoal(bot->goal_handle, &expired_goal) != 0);
+	bot->long_term_goal_time = aasworld.time - 0.001f;
+	bot->nearby_goal_check_time = aasworld.time + 10.0f;
+	aasworld.areasettings[1].numreachableareas = 0;
+
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ai_node, BOT_AI_NODE_SEEK_LTG);
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, retained_goal.number);
 }
 
 /*
@@ -9452,6 +10036,7 @@ static void test_ai_seek_nbg_failed_move_preserves_ltg_deadline(void **state)
 		100,
 		true,
 		true);
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
 
 	long_term_goal.number = 741;
 	long_term_goal.areanum = 1;
@@ -9504,6 +10089,7 @@ static void test_ai_battle_chase_failed_move_preserves_nearby_lease(void **state
 		100,
 		true,
 		true);
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
 	bot->long_term_goal_time = aasworld.time + 20.0f;
 	bot->nearby_goal_time = aasworld.time + 5.0f;
 	bot->nearby_goal_check_time = aasworld.time + 30.0f;
@@ -9755,17 +10341,13 @@ static void test_ai_team_goal_scheduler_direct_branches(void **state)
 	assert_true((context->mock.inputs[
 		context->mock.bot_input_count - 1U].actionflags & ACTION_CROUCH) != 0);
 
-	bot_console_waypoint_t *first = calloc(1, sizeof(*first));
-	bot_console_waypoint_t *second = calloc(1, sizeof(*second));
-	assert_non_null(first);
-	assert_non_null(second);
-	snprintf(first->name, sizeof(first->name), "%s", "First");
+	bot_console_waypoint_t *first = allocate_test_console_waypoint("First");
+	bot_console_waypoint_t *second = allocate_test_console_waypoint("Second");
 	first->goal.number = 403;
 	first->goal.areanum = 1;
 	VectorClear(first->goal.origin);
 	VectorSet(first->goal.mins, -8.0f, -8.0f, -8.0f);
 	VectorSet(first->goal.maxs, 8.0f, 8.0f, 8.0f);
-	snprintf(second->name, sizeof(second->name), "%s", "Second");
 	second->goal.number = 404;
 	second->goal.areanum = 1;
 	VectorSet(second->goal.origin, 200.0f, 0.0f, 0.0f);
@@ -9819,6 +10401,8 @@ static void test_ai_team_help_scheduler_tracks_live_teammate(void **state)
 	aasworld.areas[1].maxs[0] = 256.0f;
 	bot_client_state_t *teammate = BotState_Create(1);
 	assert_non_null(teammate);
+	teammate->client_number = 1;
+	teammate->entity_number = 2;
 	BotFindEnemy_PrepareEntity(2, 200.0f, 0.0f, 0.0f);
 
 	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
@@ -9875,6 +10459,8 @@ static void test_ai_team_accompany_scheduler_tracks_formation_and_loss(void **st
 	aasworld.areas[1].maxs[0] = 256.0f;
 	bot_client_state_t *teammate = BotState_Create(1);
 	assert_non_null(teammate);
+	teammate->client_number = 1;
+	teammate->entity_number = 2;
 	BotFindEnemy_PrepareEntity(2, 200.0f, 0.0f, 0.0f);
 
 	assert_int_equal(context->api->BotLibVarSet("nochat", "1"),
@@ -10638,13 +11224,12 @@ static void test_bot_start_frame_updates_goal_time(void **state)
 
 /*
 =============
-test_bot_add_avoid_spot_export_wires_move_state
+test_bot_add_avoid_spot_export_is_compatibility_noop
 
-Verifies the Quake III movement avoid-spot export is present and mutates the
-underlying reconstructed move state.
+Verify the extended Quake III avoid-spot export cannot mutate the retail state.
 =============
 */
-static void test_bot_add_avoid_spot_export_wires_move_state(void **state)
+static void test_bot_add_avoid_spot_export_is_compatibility_noop(void **state)
 {
 	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 
@@ -10658,19 +11243,17 @@ static void test_bot_add_avoid_spot_export_wires_move_state(void **state)
 
 	vec3_t origin;
 	VectorSet(origin, 12.0f, 24.0f, 36.0f);
-	context->api->BotAddAvoidSpot(handle, origin, 64.0f, AVOID_ALWAYS);
 
 	bot_movestate_t *ms = BotMoveStateFromHandle(handle);
 	assert_non_null(ms);
-	assert_int_equal(ms->numavoidspots, 1);
-	assert_float_equal(ms->avoidspots[0].origin[0], 12.0f, 0.0001f);
-	assert_float_equal(ms->avoidspots[0].origin[1], 24.0f, 0.0001f);
-	assert_float_equal(ms->avoidspots[0].origin[2], 36.0f, 0.0001f);
-	assert_float_equal(ms->avoidspots[0].radius, 64.0f, 0.0001f);
-	assert_int_equal(ms->avoidspots[0].type, AVOID_ALWAYS);
+	ms->lastreachnum = 17;
+	ms->reachability_time = 23.0f;
+	bot_movestate_t before = *ms;
+	context->api->BotAddAvoidSpot(handle, origin, 64.0f, AVOID_ALWAYS);
+	assert_memory_equal(ms, &before, sizeof(*ms));
 
 	context->api->BotAddAvoidSpot(handle, origin, 0.0f, AVOID_CLEAR);
-	assert_int_equal(ms->numavoidspots, 0);
+	assert_memory_equal(ms, &before, sizeof(*ms));
 
 	context->api->BotFreeMoveState(handle);
 	context->api->BotShutdownLibrary();
@@ -10709,10 +11292,19 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_bot_setup_failure_retains_retail_setup_flag,
 							setup_bot_interface,
 							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_goal_setup_failure_retains_loaded_weapon_config,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_setup_commits_before_retail_libvar_sequence,
+							setup_bot_interface,
+							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_shutdown_library_guard_emits_message,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_library_initialized_reports_aas_state,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_shutdown_clears_public_adapter_tables,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_define_preserves_retail_failure_contract,
@@ -10833,13 +11425,13 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_bot_console_defend_key_area_preserves_retail_gates_and_deadlines,
 							setup_bot_interface,
 							teardown_bot_interface),
-		cmocka_unit_test_setup_teardown(test_bot_console_ctf_orders_require_both_flags_and_preserve_exact_resets,
+		cmocka_unit_test_setup_teardown(test_bot_console_ctf_rush_base_is_dormant_but_enemy_flag_order_runs,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_console_reply_enters_and_completes_stand,
 							setup_bot_interface,
 							teardown_bot_interface),
-		cmocka_unit_test_setup_teardown(test_chat_initial_exports_preserve_raw_type_aliases,
+		cmocka_unit_test_setup_teardown(test_q3_compat_chat_exports_preserve_type_aliases,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_setup_library_wires_chat_setup,
@@ -10983,6 +11575,10 @@ int main(void)
 			setup_bot_interface,
 			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(
+			test_ai_battle_nbg_uses_touch_without_static_item_visibility_completion,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
 			test_ai_battle_retreat_exits_to_chase_when_safe,
 			setup_bot_interface,
 			teardown_bot_interface),
@@ -11012,6 +11608,10 @@ int main(void)
 			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(
 			test_ai_seek_ltg_nearby_goal_schedule,
+			setup_bot_interface,
+			teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_ai_seek_ltg_failed_reselection_preserves_lower_stack,
 			setup_bot_interface,
 			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(
@@ -11085,7 +11685,7 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_goal_time,
 							setup_bot_interface,
 							teardown_bot_interface),
-		cmocka_unit_test_setup_teardown(test_bot_add_avoid_spot_export_wires_move_state,
+		cmocka_unit_test_setup_teardown(test_bot_add_avoid_spot_export_is_compatibility_noop,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,

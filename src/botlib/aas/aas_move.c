@@ -1,6 +1,8 @@
 #include "aas_local.h"
 
+#include <limits.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "aas_debug.h"
@@ -511,6 +513,111 @@ void AAS_JumpReachRunStart(const aas_reachability_t *reach, vec3_t runstart)
 
 /*
 =============
+AAS_AgainstLadder
+
+Check whether the origin touches a ladder face in a normal-presence ladder
+area, including the retail one-unit area-boundary probes.
+=============
+*/
+int AAS_AgainstLadder(const vec3_t origin)
+{
+	if (origin == NULL)
+	{
+		return qfalse;
+	}
+
+	vec3_t area_origin;
+	VectorCopy(origin, area_origin);
+	int areanum = AAS_PointAreaNum(area_origin);
+	if (areanum == 0)
+	{
+		area_origin[0] += 1.0f;
+		areanum = AAS_PointAreaNum(area_origin);
+		if (areanum == 0)
+		{
+			area_origin[1] += 1.0f;
+			areanum = AAS_PointAreaNum(area_origin);
+			if (areanum == 0)
+			{
+				area_origin[0] -= 2.0f;
+				areanum = AAS_PointAreaNum(area_origin);
+				if (areanum == 0)
+				{
+					area_origin[1] -= 2.0f;
+					areanum = AAS_PointAreaNum(area_origin);
+				}
+			}
+		}
+	}
+
+	if (areanum <= 0 ||
+		aasworld.areas == NULL ||
+		aasworld.areasettings == NULL ||
+		aasworld.faceIndex == NULL ||
+		aasworld.faces == NULL ||
+		aasworld.planes == NULL ||
+		areanum >= aasworld.numAreas ||
+		areanum >= aasworld.numAreaSettings)
+	{
+		return qfalse;
+	}
+
+	const aas_areasettings_t *settings = &aasworld.areasettings[areanum];
+	if ((settings->areaflags & AAS_AREA_LADDER) == 0 ||
+		(settings->presencetype & PRESENCE_NORMAL) == 0)
+	{
+		return qfalse;
+	}
+
+	const aas_area_t *area = &aasworld.areas[areanum];
+	if (area->firstface < 0 ||
+		area->numfaces < 0 ||
+		area->numfaces > aasworld.faceIndexSize ||
+		area->firstface > aasworld.faceIndexSize - area->numfaces)
+	{
+		return qfalse;
+	}
+
+	for (int index = 0; index < area->numfaces; ++index)
+	{
+		int signed_facenum = aasworld.faceIndex[area->firstface + index];
+		if (signed_facenum == INT_MIN)
+		{
+			continue;
+		}
+
+		int side = signed_facenum < 0;
+		int facenum = abs(signed_facenum);
+		if (facenum < 0 || facenum >= aasworld.numFaces)
+		{
+			continue;
+		}
+
+		const aas_face_t *face = &aasworld.faces[facenum];
+		if ((face->faceflags & AAS_FACE_LADDER) == 0)
+		{
+			continue;
+		}
+
+		int planenum = face->planenum ^ side;
+		if (planenum < 0 || planenum >= aasworld.numPlanes)
+		{
+			continue;
+		}
+
+		const aas_plane_t *plane = &aasworld.planes[planenum];
+		if (fabsf(DotProduct(plane->normal, origin) - plane->dist) < 3.0f &&
+			AAS_PointInsideFace(facenum, origin, 0.1f))
+		{
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+=============
 AAS_HorizontalVelocityForJump
 
 Calculate the horizontal speed needed to fall from start to end.
@@ -597,7 +704,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 	float phys_gravity = AAS_MovePositiveLibVarValue(Bridge_Gravity(), 800.0f);
 	float phys_watergravity = AAS_MovePositiveLibVarValue(Bridge_WaterGravity(), 400.0f);
 	float phys_waterfriction = AAS_MovePositiveLibVarValue(Bridge_WaterFriction(), 1.0f);
-	float phys_maxwalkvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxWalkVelocity(), 320.0f);
+	float phys_maxwalkvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxWalkVelocity(), 300.0f);
 	float phys_maxcrouchvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxCrouchVelocity(), 100.0f);
 	float phys_maxswimvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxSwimVelocity(), 150.0f);
 	float phys_maxacceleration = AAS_MoveLibVarValue(Bridge_MaxAcceleration(), 2200.0f);

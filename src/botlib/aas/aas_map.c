@@ -34,7 +34,9 @@
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_utils.h"
 #include "botlib/interface/botlib_interface.h"
+#include "botlib/precomp/l_script.h"
 #include "q2bridge/bridge.h"
+#include "shared/q_platform.h"
 
 static void AAS_UnlinkEntityFromAreas(aas_entity_t *entity);
 static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs);
@@ -69,6 +71,17 @@ static int g_aasLinkHeapSize;
 static bsp_link_t *g_bspLinkHeap;
 static bsp_link_t *g_bspLinkFreeList;
 static int g_bspLinkHeapSize;
+
+typedef struct aas_indexlist_s
+{
+	int numindexes;
+	char **indexes;
+} aas_indexlist_t;
+
+static aas_indexlist_t *g_aasModelIndexes;
+static aas_indexlist_t *g_aasSoundIndexes;
+static aas_indexlist_t *g_aasImageIndexes;
+static qboolean g_aasIndexesLoaded;
 
 #define AAS_AREA_STACK_SIZE 128
 #define AAS_CLIENT_TRACE_STACK_SIZE 64
@@ -2882,6 +2895,347 @@ aas_face_t *AAS_TraceEndFace(const aas_trace_t *trace)
 	return NULL;
 }
 
+/*
+=============
+AAS_FreeIndexList
+
+Release one copied retail asset-index table.
+=============
+*/
+static void AAS_FreeIndexList(aas_indexlist_t *list)
+{
+	if (list == NULL)
+	{
+		return;
+	}
+
+	for (int index = 0; index < list->numindexes; ++index)
+	{
+		if (list->indexes[index] != NULL)
+		{
+			FreeMemory(list->indexes[index]);
+		}
+	}
+	FreeMemory(list);
+}
+
+/*
+=============
+AAS_CreateIndexList
+
+Copy an engine asset-index table into botlib-owned storage.
+=============
+*/
+static aas_indexlist_t *AAS_CreateIndexList(int numindexes, char *names[])
+{
+	if (numindexes < 0 ||
+		(size_t)numindexes > (SIZE_MAX - sizeof(aas_indexlist_t)) / sizeof(char *))
+	{
+		return NULL;
+	}
+
+	size_t allocation = sizeof(aas_indexlist_t) +
+		(size_t)numindexes * sizeof(char *);
+	aas_indexlist_t *list = GetClearedMemory(allocation);
+	if (list == NULL)
+	{
+		return NULL;
+	}
+
+	list->numindexes = numindexes;
+	list->indexes = (char **)(list + 1);
+	for (int index = 0; index < numindexes; ++index)
+	{
+		const char *name = names != NULL ? names[index] : NULL;
+		if (name == NULL)
+		{
+			continue;
+		}
+
+		size_t length = strlen(name) + 1U;
+		list->indexes[index] = GetMemory(length);
+		if (list->indexes[index] == NULL)
+		{
+			AAS_FreeIndexList(list);
+			return NULL;
+		}
+		memcpy(list->indexes[index], name, length);
+	}
+	return list;
+}
+
+/*
+=============
+AAS_ClearIndexTables
+
+Release the three AAS-owned retail asset-index tables.
+=============
+*/
+static void AAS_ClearIndexTables(void)
+{
+	AAS_FreeIndexList(g_aasModelIndexes);
+	AAS_FreeIndexList(g_aasSoundIndexes);
+	AAS_FreeIndexList(g_aasImageIndexes);
+	g_aasModelIndexes = NULL;
+	g_aasSoundIndexes = NULL;
+	g_aasImageIndexes = NULL;
+	g_aasIndexesLoaded = qfalse;
+}
+
+/*
+=============
+AAS_ReplaceIndexTables
+
+Replace all retail asset-index tables for a named map load.
+=============
+*/
+static qboolean AAS_ReplaceIndexTables(int modelindexes,
+	char *modelindex[],
+	int soundindexes,
+	char *soundindex[],
+	int imageindexes,
+	char *imageindex[])
+{
+	AAS_ClearIndexTables();
+	g_aasModelIndexes = AAS_CreateIndexList(modelindexes, modelindex);
+	g_aasSoundIndexes = AAS_CreateIndexList(soundindexes, soundindex);
+	g_aasImageIndexes = AAS_CreateIndexList(imageindexes, imageindex);
+	if (g_aasModelIndexes == NULL || g_aasSoundIndexes == NULL ||
+		g_aasImageIndexes == NULL)
+	{
+		AAS_ClearIndexTables();
+		return qfalse;
+	}
+	g_aasIndexesLoaded = qtrue;
+	return qtrue;
+}
+
+/*
+=============
+AAS_RefreshIndexList
+
+Fill previously unused entries during a NULL-map asset refresh.
+=============
+*/
+static qboolean AAS_RefreshIndexList(aas_indexlist_t **destination,
+	int numindexes,
+	char *names[])
+{
+	if (destination == NULL || numindexes < 0)
+	{
+		return qfalse;
+	}
+	if (*destination == NULL || numindexes > (*destination)->numindexes)
+	{
+		aas_indexlist_t *replacement = AAS_CreateIndexList(numindexes, names);
+		if (replacement == NULL)
+		{
+			return qfalse;
+		}
+		AAS_FreeIndexList(*destination);
+		*destination = replacement;
+		return qtrue;
+	}
+
+	for (int index = 0; index < numindexes; ++index)
+	{
+		const char *name = names != NULL ? names[index] : NULL;
+		if ((*destination)->indexes[index] != NULL || name == NULL)
+		{
+			continue;
+		}
+
+		size_t length = strlen(name) + 1U;
+		char *copy = GetMemory(length);
+		if (copy == NULL)
+		{
+			return qfalse;
+		}
+		memcpy(copy, name, length);
+		(*destination)->indexes[index] = copy;
+	}
+	return qtrue;
+}
+
+/*
+=============
+AAS_RefreshIndexTables
+
+Apply retail's fill-only update for late engine asset registrations.
+=============
+*/
+static qboolean AAS_RefreshIndexTables(int modelindexes,
+	char *modelindex[],
+	int soundindexes,
+	char *soundindex[],
+	int imageindexes,
+	char *imageindex[])
+{
+	if (!AAS_RefreshIndexList(&g_aasModelIndexes,
+		modelindexes,
+		modelindex) ||
+		!AAS_RefreshIndexList(&g_aasSoundIndexes,
+			soundindexes,
+			soundindex) ||
+		!AAS_RefreshIndexList(&g_aasImageIndexes,
+			imageindexes,
+			imageindex))
+	{
+		return qfalse;
+	}
+	g_aasIndexesLoaded = qtrue;
+	return qtrue;
+}
+
+/*
+=============
+AAS_StringFromIndex
+
+Resolve a retail asset name while preserving index-zero empty semantics.
+=============
+*/
+static const char *AAS_StringFromIndex(const char *indexname,
+	const aas_indexlist_t *list,
+	int index)
+{
+	static const char empty[] = "";
+	if (!g_aasIndexesLoaded)
+	{
+		BotLib_Print(PRT_ERROR, "%s: index %d not setup\n", indexname, index);
+		return empty;
+	}
+	if (list == NULL || index < 0 || index >= list->numindexes)
+	{
+		BotLib_Print(PRT_ERROR, "%s: index %d out of range\n", indexname, index);
+		return empty;
+	}
+	if (list->indexes[index] != NULL)
+	{
+		return list->indexes[index];
+	}
+	if (index != 0)
+	{
+		BotLib_Print(PRT_ERROR,
+			"%s: reference to unused index %d\n",
+			indexname,
+			index);
+	}
+	return empty;
+}
+
+/*
+=============
+AAS_IndexFromString
+
+Find a copied retail asset name using the original case-insensitive match.
+=============
+*/
+static int AAS_IndexFromString(const char *indexname,
+	const aas_indexlist_t *list,
+	const char *name)
+{
+	if (!g_aasIndexesLoaded)
+	{
+		BotLib_Print(PRT_ERROR,
+			"%s: index not setup \"%s\"\n",
+			indexname,
+			name != NULL ? name : "");
+		return 0;
+	}
+	if (list == NULL || name == NULL)
+	{
+		return 0;
+	}
+	for (int index = 0; index < list->numindexes; ++index)
+	{
+		if (list->indexes[index] != NULL &&
+			Q_stricmp(list->indexes[index], name) == 0)
+		{
+			return index;
+		}
+	}
+	return 0;
+}
+
+/*
+=============
+AAS_ModelFromIndex
+
+Resolve a model name from the AAS-owned retail index table.
+=============
+*/
+const char *AAS_ModelFromIndex(int index)
+{
+	return AAS_StringFromIndex("ModelFromIndex", g_aasModelIndexes, index);
+}
+
+/*
+=============
+IndexFromModel
+
+Resolve a model index from the AAS-owned retail index table.
+=============
+*/
+int IndexFromModel(const char *model)
+{
+	return AAS_IndexFromString("IndexFromModel", g_aasModelIndexes, model);
+}
+
+/*
+=============
+AAS_SoundFromIndex
+
+Resolve a sound name from the AAS-owned retail index table.
+=============
+*/
+const char *AAS_SoundFromIndex(int index)
+{
+	return AAS_StringFromIndex("SoundFromIndex", g_aasSoundIndexes, index);
+}
+
+/*
+=============
+AAS_IndexFromSound
+
+Resolve a sound index from the AAS-owned retail index table.
+=============
+*/
+int AAS_IndexFromSound(const char *sound)
+{
+	return AAS_IndexFromString("IndexFromSound", g_aasSoundIndexes, sound);
+}
+
+/*
+=============
+AAS_ImageFromIndex
+
+Resolve an image name from the AAS-owned retail index table.
+=============
+*/
+const char *AAS_ImageFromIndex(int index)
+{
+	return AAS_StringFromIndex("ImageFromIndex", g_aasImageIndexes, index);
+}
+
+/*
+=============
+AAS_IndexFromImage
+
+Resolve an image index from the AAS-owned retail index table.
+=============
+*/
+int AAS_IndexFromImage(const char *image)
+{
+	return AAS_IndexFromString("IndexFromImage", g_aasImageIndexes, image);
+}
+
+/*
+=============
+AAS_Init
+
+Initialize the retained AAS world.
+=============
+*/
 int AAS_Init(void)
 {
     if (g_aasLibraryInitialized)
@@ -3330,6 +3684,7 @@ enum
 
 static qboolean AAS_ParseFloatValue(const char *value, float *outValue);
 static qboolean AAS_ParseIntValue(const char *value, int *outValue);
+static void AAS_SkipEntityWhitespace(const char **cursor, const char *end);
 static qboolean AAS_ParseQuotedToken(const char **cursor, const char *end, char **outToken);
 static void AAS_SkipMalformedEntity(const char **cursor, const char *end);
 static void AAS_ParseEntityKeyValue(aas_parsed_entity_t *entity, const char *key, const char *value);
@@ -3422,6 +3777,71 @@ static void AAS_CopyStringField(char *destination,
     destination[length] = '\0';
 }
 
+/*
+=============
+AAS_SkipEntityWhitespace
+
+Skip the whitespace and C/C++ comments accepted by the retail script lexer.
+=============
+*/
+static void AAS_SkipEntityWhitespace(const char **cursor, const char *end)
+{
+	if (cursor == NULL || *cursor == NULL)
+	{
+		return;
+	}
+
+	const char *position = *cursor;
+	for (;;)
+	{
+		while (position < end && isspace((unsigned char)*position))
+		{
+			++position;
+		}
+		if ((size_t)(end - position) < 2U || position[0] != '/')
+		{
+			break;
+		}
+		if (position[1] == '/')
+		{
+			position += 2;
+			while (position < end && *position != '\n')
+			{
+				++position;
+			}
+			continue;
+		}
+		if (position[1] == '*')
+		{
+			position += 2;
+			while ((size_t)(end - position) >= 2U &&
+				!(position[0] == '*' && position[1] == '/'))
+			{
+				++position;
+			}
+			if ((size_t)(end - position) >= 2U)
+			{
+				position += 2;
+			}
+			else
+			{
+				position = end;
+			}
+			continue;
+		}
+		break;
+	}
+
+	*cursor = position;
+}
+
+/*
+=============
+AAS_ParseQuotedToken
+
+Read one quoted mover-catalogue token with retail's literal-backslash flag.
+=============
+*/
 static qboolean AAS_ParseQuotedToken(const char **cursor, const char *end, char **outToken)
 {
     if (cursor == NULL || *cursor == NULL || outToken == NULL)
@@ -3429,11 +3849,8 @@ static qboolean AAS_ParseQuotedToken(const char **cursor, const char *end, char 
         return qfalse;
     }
 
-    const char *position = *cursor;
-    while (position < end && isspace((unsigned char)*position))
-    {
-        ++position;
-    }
+	AAS_SkipEntityWhitespace(cursor, end);
+	const char *position = *cursor;
 
     if (position >= end || *position != '"')
     {
@@ -3441,22 +3858,20 @@ static qboolean AAS_ParseQuotedToken(const char **cursor, const char *end, char 
         return qfalse;
     }
 
-    ++position;
-    const char *start = position;
-    qboolean escape = qfalse;
-    while (position < end)
-    {
-        char ch = *position;
-        if (!escape && ch == '\\')
-        {
-            escape = qtrue;
-            ++position;
-            continue;
-        }
-
-        if (!escape && ch == '"')
-        {
-            size_t rawLength = (size_t)(position - start);
+	++position;
+	const char *start = position;
+	while (position < end)
+	{
+		if (*position == '\n')
+		{
+			BotLib_Print(PRT_WARNING,
+				"AAS_ParseEntityLump: newline inside quoted string\n");
+			*cursor = position;
+			return qfalse;
+		}
+		if (*position == '"')
+		{
+			size_t rawLength = (size_t)(position - start);
             char *token = (char *)malloc(rawLength + 1U);
             if (token == NULL)
             {
@@ -3466,22 +3881,8 @@ static qboolean AAS_ParseQuotedToken(const char **cursor, const char *end, char 
                 return qfalse;
             }
 
-            const char *reader = start;
-            char *writer = token;
-            escape = qfalse;
-            while (reader < position)
-            {
-                char rc = *reader++;
-                if (!escape && rc == '\\')
-                {
-                    escape = qtrue;
-                    continue;
-                }
-
-                *writer++ = rc;
-                escape = qfalse;
-            }
-            *writer = '\0';
+			memcpy(token, start, rawLength);
+			token[rawLength] = '\0';
 
             ++position;
             *cursor = position;
@@ -3489,8 +3890,7 @@ static qboolean AAS_ParseQuotedToken(const char **cursor, const char *end, char 
             return qtrue;
         }
 
-        escape = qfalse;
-        ++position;
+		++position;
     }
 
     BotLib_Print(PRT_WARNING,
@@ -3824,12 +4224,9 @@ static void AAS_ParseEntityLump(const char *data, size_t length)
     const char *cursor = data;
     const char *end = data + length;
 
-    while (cursor < end)
-    {
-        while (cursor < end && isspace((unsigned char)*cursor))
-        {
-            ++cursor;
-        }
+	while (cursor < end)
+	{
+		AAS_SkipEntityWhitespace(&cursor, end);
 
         if (cursor >= end)
         {
@@ -3846,12 +4243,9 @@ static void AAS_ParseEntityLump(const char *data, size_t length)
         aas_parsed_entity_t entity = {0};
         qboolean malformed = qfalse;
 
-        while (cursor < end)
-        {
-            while (cursor < end && isspace((unsigned char)*cursor))
-            {
-                ++cursor;
-            }
+		while (cursor < end)
+		{
+			AAS_SkipEntityWhitespace(&cursor, end);
 
             if (cursor >= end)
             {
@@ -3881,10 +4275,7 @@ static void AAS_ParseEntityLump(const char *data, size_t length)
                 break;
             }
 
-            while (cursor < end && isspace((unsigned char)*cursor))
-            {
-                ++cursor;
-            }
+			AAS_SkipEntityWhitespace(&cursor, end);
 
             char *value = NULL;
             if (!AAS_ParseQuotedToken(&cursor, end, &value))
@@ -5430,6 +5821,19 @@ static qboolean AAS_DiscoverZipAAS(const char *mapname,
 
 /*
 =============
+AAS_ReturnMapLoadFailure
+
+Discard mover metadata parsed for a map that did not reach a successful load.
+=============
+*/
+static int AAS_ReturnMapLoadFailure(int errorCode)
+{
+	BotMove_MoverCatalogueReset();
+	return errorCode;
+}
+
+/*
+=============
 AAS_ReturnAASLoadFailure
 
 Preserve the retail ZIP helper's final no-AAS status after member load errors.
@@ -5440,11 +5844,11 @@ static int AAS_ReturnAASLoadFailure(const aas_map_file_source_t *source,
 {
 	if (source == NULL || !source->zipped)
 	{
-		return errorCode;
+		return AAS_ReturnMapLoadFailure(errorCode);
 	}
 
 	BotLib_Print(PRT_FATAL, "no AAS file available\n");
-	return BLERR_NOAASFILE;
+	return AAS_ReturnMapLoadFailure(BLERR_NOAASFILE);
 }
 
 /*
@@ -5544,12 +5948,18 @@ void AAS_FreeBSPEntities(aas_bspentity_t *entities)
 		while (epair != NULL)
 		{
 			aas_bspepair_t *nextepair = epair->next;
-			free(epair->key);
-			free(epair->value);
-			free(epair);
+			if (epair->key != NULL)
+			{
+				FreeMemory(epair->key);
+			}
+			if (epair->value != NULL)
+			{
+				FreeMemory(epair->value);
+			}
+			FreeMemory(epair);
 			epair = nextepair;
 		}
-		free(entities);
+		FreeMemory(entities);
 		entities = nextentity;
 	}
 }
@@ -5564,95 +5974,124 @@ by the retail reachability generators.
 */
 aas_bspentity_t *AAS_ParseBSPEntities(const char *data, size_t length)
 {
-	if (data == NULL || length == 0U)
+	if (data == NULL || length == 0U || length > (size_t)INT_MAX)
 	{
 		return NULL;
 	}
 
-	const char *cursor = data;
-	const char *end = data + length;
-	aas_bspentity_t *entities = NULL;
-	aas_bspentity_t **nextentity = &entities;
-	while (cursor < end)
+	pc_script_t *script = LoadScriptMemory((char *)data,
+		(int)length,
+		"entdata");
+	if (script == NULL)
 	{
-		while (cursor < end && isspace((unsigned char)*cursor))
+		return NULL;
+	}
+	/* Retail calls SetScriptFlags(script, 12) before reading dentdata. */
+	script->flags = SCFL_NOSTRINGWHITESPACES |
+		SCFL_NOSTRINGESCAPECHARS;
+
+	aas_bspentity_t *entities = NULL;
+	pc_token_t token;
+	while (PS_ReadToken(script, &token))
+	{
+		if (strcmp(token.string, "{") != 0)
 		{
-			++cursor;
-		}
-		if (cursor >= end)
-		{
-			break;
-		}
-		if (*cursor != '{')
-		{
-			BotLib_Print(PRT_ERROR, "AAS_ParseBSPEntities: invalid %c\n", *cursor);
+			BotLib_Print(PRT_ERROR,
+				"AAS_ParseBSPEntities: invalid %s\n",
+				token.string);
 			AAS_FreeBSPEntities(entities);
+			FreeScript(script);
 			return NULL;
 		}
-		++cursor;
 
-		aas_bspentity_t *entity = (aas_bspentity_t *)calloc(1U, sizeof(*entity));
+		aas_bspentity_t *entity = GetClearedMemory(sizeof(*entity));
 		if (entity == NULL)
 		{
 			AAS_FreeBSPEntities(entities);
+			FreeScript(script);
 			return NULL;
 		}
-		aas_bspepair_t **nextepair = &entity->epairs;
+		entity->next = entities;
+		entities = entity;
 		qboolean closed = qfalse;
-		while (cursor < end)
+		while (PS_ReadToken(script, &token))
 		{
-			while (cursor < end && isspace((unsigned char)*cursor))
+			if (strcmp(token.string, "}") == 0)
 			{
-				++cursor;
-			}
-			if (cursor >= end)
-			{
-				break;
-			}
-			if (*cursor == '}')
-			{
-				++cursor;
 				closed = qtrue;
 				break;
 			}
 
-			char *key = NULL;
-			char *value = NULL;
-			if (!AAS_ParseQuotedToken(&cursor, end, &key) ||
-				!AAS_ParseQuotedToken(&cursor, end, &value))
+			aas_bspepair_t *epair = GetClearedMemory(sizeof(*epair));
+			if (epair == NULL)
 			{
-				free(key);
-				free(value);
-				AAS_FreeBSPEntities(entity);
 				AAS_FreeBSPEntities(entities);
+				FreeScript(script);
+				return NULL;
+			}
+			epair->next = entity->epairs;
+			entity->epairs = epair;
+
+			if (token.type != TT_STRING)
+			{
+				BotLib_Print(PRT_ERROR,
+					"AAS_ParseBSPEntities: invalid %s\n",
+					token.string);
+				AAS_FreeBSPEntities(entities);
+				FreeScript(script);
 				return NULL;
 			}
 
-			aas_bspepair_t *epair = (aas_bspepair_t *)calloc(1U, sizeof(*epair));
-			if (epair == NULL)
+			size_t tokenlength = strlen(token.string);
+			if (tokenlength < 2U)
 			{
-				free(key);
-				free(value);
-				AAS_FreeBSPEntities(entity);
 				AAS_FreeBSPEntities(entities);
+				FreeScript(script);
 				return NULL;
 			}
-			epair->key = key;
-			epair->value = value;
-			*nextepair = epair;
-			nextepair = &epair->next;
+			token.string[tokenlength - 1U] = '\0';
+			epair->key = GetMemory(tokenlength - 1U);
+			if (epair->key == NULL)
+			{
+				AAS_FreeBSPEntities(entities);
+				FreeScript(script);
+				return NULL;
+			}
+			memcpy(epair->key, token.string + 1, tokenlength - 1U);
+
+			if (!PS_ExpectTokenType(script, TT_STRING, 0, &token))
+			{
+				AAS_FreeBSPEntities(entities);
+				FreeScript(script);
+				return NULL;
+			}
+			tokenlength = strlen(token.string);
+			if (tokenlength < 2U)
+			{
+				AAS_FreeBSPEntities(entities);
+				FreeScript(script);
+				return NULL;
+			}
+			token.string[tokenlength - 1U] = '\0';
+			epair->value = GetMemory(tokenlength - 1U);
+			if (epair->value == NULL)
+			{
+				AAS_FreeBSPEntities(entities);
+				FreeScript(script);
+				return NULL;
+			}
+			memcpy(epair->value, token.string + 1, tokenlength - 1U);
 		}
 
 		if (!closed)
 		{
 			BotLib_Print(PRT_ERROR, "AAS_ParseBSPEntities: missing }\n");
-			AAS_FreeBSPEntities(entity);
 			AAS_FreeBSPEntities(entities);
+			FreeScript(script);
 			return NULL;
 		}
-		*nextentity = entity;
-		nextentity = &entity->next;
 	}
+	FreeScript(script);
 	return entities;
 }
 
@@ -5696,13 +6135,17 @@ qboolean AAS_VectorForBSPEpairKey(const aas_bspentity_t *entity,
 	{
 		return qfalse;
 	}
-	VectorClear(value);
 	const char *text = AAS_ValueForBSPEpairKey(entity, key);
 	if (text == NULL)
 	{
 		return qfalse;
 	}
-	return sscanf(text, "%f %f %f", &value[0], &value[1], &value[2]) == 3;
+	double parsed[3] = {0.0, 0.0, 0.0};
+	(void)sscanf(text, "%lf %lf %lf", &parsed[0], &parsed[1], &parsed[2]);
+	value[0] = (float)parsed[0];
+	value[1] = (float)parsed[1];
+	value[2] = (float)parsed[2];
+	return qtrue;
 }
 
 /*
@@ -5731,6 +6174,16 @@ int AAS_IntForBSPEpairKey(const aas_bspentity_t *entity, const char *key)
 	return text != NULL ? (int)strtol(text, NULL, 10) : 0;
 }
 
+static int AAS_ReadLump(FILE *file,
+	const q2_lump_t *lump,
+	size_t elementSize,
+	void **outBuffer,
+	int *outCount,
+	long baseOffset,
+	long fileSize,
+	int readError,
+	const char *lumpName);
+
 /*
 =============
 AAS_LoadBSPEntities
@@ -5740,19 +6193,47 @@ Read and parse the current Quake II map's entity lump for generator passes.
 */
 aas_bspentity_t *AAS_LoadBSPEntities(void)
 {
-	char bsppath[MAX_FILEPATH];
-	if (!AAS_BuildPath(bsppath, sizeof(bsppath), aasworld.mapName, ".bsp"))
+	if (aasworld.bspEntityData != NULL && aasworld.bspEntityDataSize > 0)
 	{
-		return NULL;
+		return AAS_ParseBSPEntities(aasworld.bspEntityData,
+			(size_t)aasworld.bspEntityDataSize);
 	}
-	FILE *file = fopen(bsppath, "rb");
-	if (file == NULL)
+
+	char bspcandidate[MAX_FILEPATH];
+	if (!AAS_BuildPath(bspcandidate,
+		sizeof(bspcandidate),
+		aasworld.mapName,
+		".bsp"))
 	{
 		return NULL;
 	}
 
+	aas_map_file_source_t source;
+	if (!AAS_DiscoverMapFile(bspcandidate, &source))
+	{
+		return NULL;
+	}
+
+	FILE *file = fopen(source.physicalPath, "rb");
+	if (file == NULL)
+	{
+		return NULL;
+	}
+	if (fseek(file, source.offset, SEEK_SET) != 0)
+	{
+		fclose(file);
+		return NULL;
+	}
+
+	long filesize = source.length;
+	if (!source.archived)
+	{
+		filesize = AAS_GetFileSize(file);
+	}
+
 	q2_bsp_header_t header;
-	if (fread(&header, sizeof(header), 1U, file) != 1U)
+	if (filesize < (long)sizeof(header) ||
+		fread(&header, sizeof(header), 1U, file) != 1U)
 	{
 		fclose(file);
 		return NULL;
@@ -5770,33 +6251,26 @@ aas_bspentity_t *AAS_LoadBSPEntities(void)
 		return NULL;
 	}
 
-	const q2_lump_t *lump = &header.lumps[Q2_BSP_LUMP_ENTITIES];
-	long filesize = AAS_GetFileSize(file);
-	if (lump->offset < 0 || lump->length <= 0 || filesize < 0 ||
-		(long long)lump->offset + (long long)lump->length > (long long)filesize ||
-		fseek(file, lump->offset, SEEK_SET) != 0)
+	char *data = NULL;
+	int length = 0;
+	int status = AAS_ReadLump(file,
+		&header.lumps[Q2_BSP_LUMP_ENTITIES],
+		1U,
+		(void **)&data,
+		&length,
+		source.offset,
+		filesize,
+		BLERR_CANNOTREADBSPLUMP,
+		"entity");
+	fclose(file);
+	if (status != BLERR_NOERROR || data == NULL || length <= 0)
 	{
-		fclose(file);
+		FreeMemory(data);
 		return NULL;
 	}
 
-	size_t length = (size_t)lump->length;
-	char *data = (char *)malloc(length + 1U);
-	if (data == NULL)
-	{
-		fclose(file);
-		return NULL;
-	}
-	if (fread(data, 1U, length, file) != length)
-	{
-		free(data);
-		fclose(file);
-		return NULL;
-	}
-	fclose(file);
-	data[length] = '\0';
-	aas_bspentity_t *entities = AAS_ParseBSPEntities(data, length);
-	free(data);
+	aas_bspentity_t *entities = AAS_ParseBSPEntities(data, (size_t)length);
+	FreeMemory(data);
 	return entities;
 }
 
@@ -7481,6 +7955,13 @@ Release the Quake II BSP data at the same point retail's BSP loader starts.
 */
 static void AAS_ClearBSPData(void)
 {
+	if (aasworld.bspEntityData != NULL)
+	{
+		FreeMemory(aasworld.bspEntityData);
+		aasworld.bspEntityData = NULL;
+	}
+	aasworld.bspEntityDataSize = 0;
+
 	if (aasworld.bspLeafEntityLists != NULL)
 	{
 		free(aasworld.bspLeafEntityLists);
@@ -7608,7 +8089,6 @@ been found.
 */
 static void AAS_ClearAASData(void)
 {
-	BotMove_MoverCatalogueReset();
 	AAS_RouteFrameResetDiagnostics();
 	AAS_ReachabilityFrameResetDiagnostics();
 	AAS_ShutDownReachabilityHeap();
@@ -7741,6 +8221,8 @@ static void AAS_ClearWorld(void)
 	AAS_FreeEntityArray();
 	AAS_ClearAASData();
 	AAS_ClearBSPData();
+	AAS_ClearIndexTables();
+	BotMove_MoverCatalogueReset();
 	AAS_SoundSubsystem_ClearMapAssets();
 	memset(&aasworld, 0, sizeof(aasworld));
 	TranslateEntity_SetCurrentTime(0.0f);
@@ -7759,19 +8241,39 @@ int AAS_LoadMap(const char *mapname,
 	int soundindexes, char *soundindex[],
 	int imageindexes, char *imageindex[])
 {
-	(void)modelindexes;
-	(void)modelindex;
-	(void)imageindexes;
-	(void)imageindex;
-
 	if (mapname == NULL)
 	{
+		if (!AAS_RefreshIndexTables(modelindexes,
+			modelindex,
+			soundindexes,
+			soundindex,
+			imageindexes,
+			imageindex))
+		{
+			BotLib_Print(PRT_WARNING,
+				"AAS_LoadMap: failed to refresh asset indexes\n");
+			return BLERR_INVALIDIMPORT;
+		}
 		if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
 		{
 			BotLib_Print(PRT_WARNING,
 				"AAS_LoadMap: failed to refresh sound asset indexes\n");
 		}
 		return BLERR_NOERROR;
+	}
+
+	BotMove_MoverCatalogueReset();
+	if (!AAS_ReplaceIndexTables(modelindexes,
+		modelindex,
+		soundindexes,
+		soundindex,
+		imageindexes,
+		imageindex))
+	{
+		BotLib_Print(PRT_FATAL,
+			"AAS_LoadMap: failed to register asset indexes for %s\n",
+			mapname);
+		return AAS_ReturnMapLoadFailure(BLERR_INVALIDIMPORT);
 	}
 
 	aasworld.initialized = qfalse;
@@ -7784,7 +8286,7 @@ int AAS_LoadMap(const char *mapname,
 		BotLib_Print(PRT_FATAL,
 			"AAS_LoadMap: failed to register sound assets for %s\n",
 			mapname);
-		return BLERR_INVALIDIMPORT;
+		return AAS_ReturnMapLoadFailure(BLERR_INVALIDIMPORT);
 	}
 
     strncpy(aasworld.mapName, mapname, sizeof(aasworld.mapName) - 1U);
@@ -7799,9 +8301,9 @@ int AAS_LoadMap(const char *mapname,
 		sizeof(bspCandidate),
 		mapname,
 		".bsp"))
-    {
+	{
         BotLib_Print(PRT_ERROR, "AAS_LoadMap: BSP path too long for %s\n", mapname);
-        return BLERR_NOAASFILE;
+		return AAS_ReturnMapLoadFailure(BLERR_NOAASFILE);
     }
 
 	if (!AAS_DiscoverMapFile(bspCandidate, &bspSource))
@@ -7809,7 +8311,7 @@ int AAS_LoadMap(const char *mapname,
 		BotLib_Print(PRT_FATAL,
 			"couldn't find the bsp file %s\n",
 			bspCandidate);
-		return BLERR_NOBSPFILE;
+		return AAS_ReturnMapLoadFailure(BLERR_NOBSPFILE);
 	}
 	AAS_ClearBSPData();
 
@@ -7819,7 +8321,7 @@ int AAS_LoadMap(const char *mapname,
 		BotLib_Print(PRT_FATAL,
 			"can't open bsp file %s\n",
 			bspSource.physicalPath);
-		return BLERR_CANNOTOPENBSPFILE;
+		return AAS_ReturnMapLoadFailure(BLERR_CANNOTOPENBSPFILE);
     }
 	if (fseek(bspFile, bspSource.offset, SEEK_SET) != 0)
 	{
@@ -7827,7 +8329,7 @@ int AAS_LoadMap(const char *mapname,
 			"can't seek to bsp file %s\n",
 			bspSource.physicalPath);
 		fclose(bspFile);
-		return BLERR_CANNOTSEEKTOBSPFILE;
+		return AAS_ReturnMapLoadFailure(BLERR_CANNOTSEEKTOBSPFILE);
 	}
 	long bspFileSize = bspSource.length;
 	if (!bspSource.archived)
@@ -7843,7 +8345,7 @@ int AAS_LoadMap(const char *mapname,
 			"can't read header of bsp file %s\n",
 			bspSource.physicalPath);
 		fclose(bspFile);
-		return BLERR_CANNOTREADBSPHEADER;
+		return AAS_ReturnMapLoadFailure(BLERR_CANNOTREADBSPHEADER);
     }
 
     bspHeader.ident = AAS_LittleLong(bspHeader.ident);
@@ -7860,7 +8362,7 @@ int AAS_LoadMap(const char *mapname,
 			"%s is not an BSP file\n",
 			bspSource.physicalPath);
 		fclose(bspFile);
-		return BLERR_WRONGBSPFILEID;
+		return AAS_ReturnMapLoadFailure(BLERR_WRONGBSPFILEID);
     }
 
     if (bspHeader.version != Q2_BSP_VERSION)
@@ -7871,7 +8373,7 @@ int AAS_LoadMap(const char *mapname,
 			bspHeader.version,
 			Q2_BSP_VERSION);
 		fclose(bspFile);
-		return BLERR_WRONGBSPFILEVERSION;
+		return AAS_ReturnMapLoadFailure(BLERR_WRONGBSPFILEVERSION);
     }
 
     if (bspFileSize < 0L)
@@ -7880,7 +8382,7 @@ int AAS_LoadMap(const char *mapname,
 			"can't seek to bsp file %s\n",
 			bspSource.physicalPath);
 		fclose(bspFile);
-		return BLERR_CANNOTSEEKTOBSPFILE;
+		return AAS_ReturnMapLoadFailure(BLERR_CANNOTSEEKTOBSPFILE);
 	}
 
 	char *entityData = NULL;
@@ -7897,7 +8399,7 @@ int AAS_LoadMap(const char *mapname,
 	if (entityStatus != BLERR_NOERROR)
 	{
 		fclose(bspFile);
-		return entityStatus;
+		return AAS_ReturnMapLoadFailure(entityStatus);
 	}
 
 	aasworld.bspEntityChecksum = CRC_ProcessString((uint8_t *)entityData,
@@ -7905,7 +8407,8 @@ int AAS_LoadMap(const char *mapname,
 	if (entityData != NULL)
 	{
 		AAS_ParseEntityLump(entityData, (size_t)entityLength);
-		FreeMemory(entityData);
+		aasworld.bspEntityData = entityData;
+		aasworld.bspEntityDataSize = entityLength;
 	}
 
     fclose(bspFile);
@@ -7919,7 +8422,7 @@ int AAS_LoadMap(const char *mapname,
 		BotLib_Print(PRT_ERROR,
 			"AAS_LoadMap: failed to compute BSP checksum for %s\n",
 			bspSource.physicalPath);
-        return BLERR_CANNOTREADBSPHEADER;
+		return AAS_ReturnMapLoadFailure(BLERR_CANNOTREADBSPHEADER);
     }
 	AAS_PrintLoadedMapFile(&bspSource);
 
@@ -7951,7 +8454,7 @@ int AAS_LoadMap(const char *mapname,
 	if (!aasDiscovered)
 	{
 		BotLib_Print(PRT_FATAL, "no AAS file available\n");
-		return BLERR_NOAASFILE;
+		return AAS_ReturnMapLoadFailure(BLERR_NOAASFILE);
 	}
 	AAS_ClearAASData();
 
@@ -8471,7 +8974,7 @@ int AAS_LoadMap(const char *mapname,
 		FreeMemory(portals);
 		FreeMemory(portalIndex);
 		FreeMemory(clusters);
-		return result;
+		return AAS_ReturnMapLoadFailure(result);
 	}
 
 	vec3_t *bspVertexes = NULL;
@@ -8529,7 +9032,7 @@ int AAS_LoadMap(const char *mapname,
 		FreeMemory(portals);
 		FreeMemory(portalIndex);
 		FreeMemory(clusters);
-		return result;
+		return AAS_ReturnMapLoadFailure(result);
 	}
 	unsigned char *bspVisibility = NULL;
 	size_t bspVisibilitySize = 0U;
@@ -8630,14 +9133,14 @@ int AAS_LoadMap(const char *mapname,
 	if (reachStatus != BLERR_NOERROR)
 	{
 		AAS_ClearAASData();
-		return reachStatus;
+		return AAS_ReturnMapLoadFailure(reachStatus);
     }
 
     int areaStatus = AAS_EnsureAreaListArray();
 	if (areaStatus != BLERR_NOERROR)
 	{
 		AAS_ClearAASData();
-        return areaStatus;
+		return AAS_ReturnMapLoadFailure(areaStatus);
     }
 
     AAS_InvalidateRouteCache();

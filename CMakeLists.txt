@@ -63,6 +63,32 @@ set_target_properties(gladiator
         WINDOWS_EXPORT_ALL_SYMBOLS OFF
 )
 
+if(UNIX)
+    set_target_properties(gladiator
+        PROPERTIES
+            C_VISIBILITY_PRESET hidden
+    )
+endif()
+
+if(APPLE)
+    set(gladiator_export_list
+        "${CMAKE_CURRENT_BINARY_DIR}/gladiator.exports"
+    )
+    file(GENERATE
+        OUTPUT "${gladiator_export_list}"
+        CONTENT "_GetBotAPI\n"
+    )
+    target_link_options(gladiator
+        PRIVATE
+            "LINKER:-exported_symbols_list,${gladiator_export_list}"
+    )
+elseif(UNIX)
+    target_link_options(gladiator
+        PRIVATE
+            "LINKER:--exclude-libs,ALL"
+    )
+endif()
+
 audit_gladiator_sources(
     SOURCE_ROOT "${PROJECT_SOURCE_DIR}/src"
     TARGETS

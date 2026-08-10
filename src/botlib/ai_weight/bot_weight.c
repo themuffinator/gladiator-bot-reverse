@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 #ifndef WEIGHT_TYPE_BALANCE
 #define WEIGHT_TYPE_BALANCE BOTLIB_WEIGHT_TYPE_BALANCE
@@ -15,6 +16,7 @@
 
 typedef struct bot_weight_handle_s {
 	bot_weight_config_t *config;
+	char source_file[260];
 } bot_weight_handle_t;
 
 static bot_weight_handle_t *g_weight_handles[BOT_WEIGHT_MAX_HANDLES];
@@ -186,6 +188,8 @@ int BotLoadWeights(int handle, const char *filename)
 	}
 
 	entry->config = config;
+	strncpy(entry->source_file, filename, sizeof(entry->source_file) - 1U);
+	entry->source_file[sizeof(entry->source_file) - 1U] = '\0';
 	return 1;
 }
 
@@ -458,7 +462,7 @@ int BotSetWeight(int handle, const char *name, float value)
 		BotLib_Print(PRT_WARNING,
 			"BotSetWeight: unknown weight '%s' in %s\n",
 			name,
-			entry->config->source_file);
+			entry->source_file);
 		return 0;
 	}
 

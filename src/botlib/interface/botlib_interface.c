@@ -44,17 +44,22 @@ static const botlib_import_capture_t *g_import_capture = NULL;
 static bool g_library_initialised = false;
 static botlib_library_variables_t g_library_variables;
 static botlib_subsystem_state_t g_subsystem_state;
-static ai_weapon_library_t *g_weapon_library = NULL;
 
 static const char *Botlib_DefaultWeaponConfig(void)
 {
     return BOTLIB_DEFAULT_WEAPONCONFIG;
 }
 
+/*
+=============
+Botlib_ResetSubsystemState
+
+Clears the local subsystem lifecycle bookkeeping.
+=============
+*/
 static void Botlib_ResetSubsystemState(void)
 {
-    memset(&g_subsystem_state, 0, sizeof(g_subsystem_state));
-    g_weapon_library = NULL;
+	memset(&g_subsystem_state, 0, sizeof(g_subsystem_state));
 }
 
 static void Botlib_ResetLibraryVariables(void)
@@ -72,53 +77,61 @@ static float Botlib_ReadFloatLibVarCached(libvar_t *var, float fallback)
     return (var != NULL) ? var->value : fallback;
 }
 
+/*
+=============
+Botlib_CacheLibraryVariables
+
+Copies the configured botlib values into the compatibility cache.
+=============
+*/
 static void Botlib_CacheLibraryVariables(void)
 {
-    g_library_variables.maxclients = Botlib_ReadIntLibVarCached(Bridge_MaxClients(), 4);
-    g_library_variables.maxentities = Botlib_ReadIntLibVarCached(Bridge_MaxEntities(), 1024);
-    g_library_variables.sv_gravity = Botlib_ReadFloatLibVarCached(Bridge_Gravity(), 800.0f);
-    g_library_variables.sv_maxvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxVelocity(), 300.0f);
-    g_library_variables.sv_airaccelerate = Botlib_ReadFloatLibVarCached(Bridge_AirAccelerate(), 0.0f);
-    g_library_variables.sv_maxwalkvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxWalkVelocity(), 300.0f);
-    g_library_variables.sv_maxcrouchvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxCrouchVelocity(), 100.0f);
-    g_library_variables.sv_maxswimvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxSwimVelocity(), 150.0f);
-    g_library_variables.sv_jumpvel = Botlib_ReadFloatLibVarCached(Bridge_JumpVelocity(), 224.0f);
-    g_library_variables.sv_maxacceleration = Botlib_ReadFloatLibVarCached(Bridge_MaxAcceleration(), 2200.0f);
-    g_library_variables.sv_friction = Botlib_ReadFloatLibVarCached(Bridge_Friction(), 6.0f);
-    g_library_variables.sv_stopspeed = Botlib_ReadFloatLibVarCached(Bridge_StopSpeed(), 100.0f);
-    g_library_variables.sv_maxstep = Botlib_ReadFloatLibVarCached(Bridge_MaxStep(), 18.0f);
-    g_library_variables.sv_maxbarrier = Botlib_ReadFloatLibVarCached(Bridge_MaxBarrier(), 50.0f);
-    g_library_variables.sv_maxsteepness = Botlib_ReadFloatLibVarCached(Bridge_MaxSteepness(), 0.7f);
-    g_library_variables.sv_maxwaterjump = Botlib_ReadFloatLibVarCached(Bridge_MaxWaterJump(), 20.0f);
-    g_library_variables.sv_watergravity = Botlib_ReadFloatLibVarCached(Bridge_WaterGravity(), 400.0f);
-    g_library_variables.sv_waterfriction = Botlib_ReadFloatLibVarCached(Bridge_WaterFriction(), 1.0f);
-    g_library_variables.max_weaponinfo = Botlib_ReadIntLibVarCached(Bridge_MaxWeaponInfo(), 32);
-    g_library_variables.max_projectileinfo = Botlib_ReadIntLibVarCached(Bridge_MaxProjectileInfo(), 32);
-    g_library_variables.max_soundinfo = Botlib_ReadIntLibVarCached(Bridge_MaxSoundInfo(), 256);
-    g_library_variables.max_aassounds = Botlib_ReadIntLibVarCached(Bridge_MaxAASSounds(), 256);
-    g_library_variables.forceclustering = Botlib_ReadIntLibVarCached(Bridge_ForceClustering(), 0);
-    g_library_variables.forcereachability = Botlib_ReadIntLibVarCached(Bridge_ForceReachability(), 0);
-    g_library_variables.forcewrite = Botlib_ReadIntLibVarCached(Bridge_ForceWrite(), 0);
-    g_library_variables.framereachability = Botlib_ReadIntLibVarCached(Bridge_FrameReachability(), 0);
+	g_library_variables.maxclients = Botlib_ReadIntLibVarCached(Bridge_MaxClients(), 4);
+	g_library_variables.maxentities = Botlib_ReadIntLibVarCached(Bridge_MaxEntities(), 1024);
+	g_library_variables.sv_gravity = Botlib_ReadFloatLibVarCached(Bridge_Gravity(), 800.0f);
+	g_library_variables.sv_maxvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxVelocity(), 300.0f);
+	g_library_variables.sv_airaccelerate = Botlib_ReadFloatLibVarCached(Bridge_AirAccelerate(), 0.0f);
+	g_library_variables.sv_maxwalkvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxWalkVelocity(), 300.0f);
+	g_library_variables.sv_maxcrouchvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxCrouchVelocity(), 100.0f);
+	g_library_variables.sv_maxswimvelocity = Botlib_ReadFloatLibVarCached(Bridge_MaxSwimVelocity(), 150.0f);
+	g_library_variables.sv_jumpvel = Botlib_ReadFloatLibVarCached(Bridge_JumpVelocity(), 224.0f);
+	g_library_variables.sv_maxacceleration = Botlib_ReadFloatLibVarCached(Bridge_MaxAcceleration(), 2200.0f);
+	g_library_variables.sv_friction = Botlib_ReadFloatLibVarCached(Bridge_Friction(), 6.0f);
+	g_library_variables.sv_stopspeed = Botlib_ReadFloatLibVarCached(Bridge_StopSpeed(), 100.0f);
+	g_library_variables.sv_maxstep = Botlib_ReadFloatLibVarCached(Bridge_MaxStep(), 18.0f);
+	g_library_variables.sv_maxbarrier = Botlib_ReadFloatLibVarCached(Bridge_MaxBarrier(), 50.0f);
+	g_library_variables.sv_maxsteepness = Botlib_ReadFloatLibVarCached(Bridge_MaxSteepness(), 0.7f);
+	g_library_variables.sv_maxwaterjump = Botlib_ReadFloatLibVarCached(Bridge_MaxWaterJump(), 21.0f);
+	g_library_variables.sv_watergravity = Botlib_ReadFloatLibVarCached(Bridge_WaterGravity(), 400.0f);
+	g_library_variables.sv_waterfriction = Botlib_ReadFloatLibVarCached(Bridge_WaterFriction(), 1.0f);
+	g_library_variables.max_weaponinfo = Botlib_ReadIntLibVarCached(Bridge_MaxWeaponInfo(), 32);
+	g_library_variables.max_projectileinfo = Botlib_ReadIntLibVarCached(Bridge_MaxProjectileInfo(), 32);
+	g_library_variables.max_soundinfo = Botlib_ReadIntLibVarCached(Bridge_MaxSoundInfo(), 256);
+	g_library_variables.max_aassounds = Botlib_ReadIntLibVarCached(Bridge_MaxAASSounds(), 256);
+	g_library_variables.forceclustering = Botlib_ReadIntLibVarCached(Bridge_ForceClustering(), 0);
+	g_library_variables.forcereachability = Botlib_ReadIntLibVarCached(Bridge_ForceReachability(), 0);
+	g_library_variables.forcewrite = Botlib_ReadIntLibVarCached(Bridge_ForceWrite(), 0);
+	g_library_variables.framereachability = Botlib_ReadIntLibVarCached(Bridge_FrameReachability(), 0);
 
-    const libvar_t *weaponconfig = Bridge_WeaponConfig();
-    const char *weaponconfig_string = (weaponconfig != NULL && weaponconfig->string != NULL && weaponconfig->string[0] != '\0')
-                                          ? weaponconfig->string
-                                          : Botlib_DefaultWeaponConfig();
-    strncpy(g_library_variables.weaponconfig,
-            weaponconfig_string,
-            sizeof(g_library_variables.weaponconfig) - 1);
-    g_library_variables.weaponconfig[sizeof(g_library_variables.weaponconfig) - 1] = '\0';
+	const libvar_t *weaponconfig = Bridge_WeaponConfig();
+	const char *weaponconfig_string =
+		(weaponconfig != NULL && weaponconfig->string != NULL && weaponconfig->string[0] != '\0')
+			? weaponconfig->string
+			: Botlib_DefaultWeaponConfig();
+	strncpy(g_library_variables.weaponconfig,
+		weaponconfig_string,
+		sizeof(g_library_variables.weaponconfig) - 1);
+	g_library_variables.weaponconfig[sizeof(g_library_variables.weaponconfig) - 1] = '\0';
 
-    const libvar_t *soundconfig = Bridge_SoundConfig();
-    const char *soundconfig_string = (soundconfig != NULL && soundconfig->string != NULL
-                                      && soundconfig->string[0] != '\0')
-                                         ? soundconfig->string
-                                         : "sounds.c";
-    strncpy(g_library_variables.soundconfig,
-            soundconfig_string,
-            sizeof(g_library_variables.soundconfig) - 1);
-    g_library_variables.soundconfig[sizeof(g_library_variables.soundconfig) - 1] = '\0';
+	const libvar_t *soundconfig = Bridge_SoundConfig();
+	const char *soundconfig_string = (soundconfig != NULL && soundconfig->string != NULL
+		&& soundconfig->string[0] != '\0')
+		? soundconfig->string
+		: "sounds.c";
+	strncpy(g_library_variables.soundconfig,
+		soundconfig_string,
+		sizeof(g_library_variables.soundconfig) - 1);
+	g_library_variables.soundconfig[sizeof(g_library_variables.soundconfig) - 1] = '\0';
 }
 
 static int Botlib_SetupAASSubsystem(void)
@@ -161,6 +174,13 @@ static int Botlib_SetupEASubsystem(void)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+Botlib_SetupAISubsystem
+
+Runs the retail weapon, goal, chat, and client-state setup sequence.
+=============
+*/
 static int Botlib_SetupAISubsystem(void)
 {
 	if (g_subsystem_state.ai_initialised) {
@@ -169,37 +189,18 @@ static int Botlib_SetupAISubsystem(void)
 
 	BotState_ResetClientSettings();
 
-	const char *weapon_config_path =
-		(g_library_variables.weaponconfig[0] != '\0') ? g_library_variables.weaponconfig : NULL;
-
-	g_weapon_library = AI_LoadWeaponLibrary(weapon_config_path);
-	if (g_weapon_library == NULL) {
-		return BLERR_CANNOTLOADWEAPONCONFIG;
-	}
-
-	int status = BotSetupGoalAI();
+	int status = BotSetupWeaponAI();
 	if (status != BLERR_NOERROR) {
-		AI_UnloadWeaponLibrary(g_weapon_library);
-		g_weapon_library = NULL;
 		return status;
 	}
 
-	status = BotSetupChatAI();
+	status = BotSetupGoalAI();
 	if (status != BLERR_NOERROR) {
-		BotShutdownGoalAI();
-		AI_UnloadWeaponLibrary(g_weapon_library);
-		g_weapon_library = NULL;
 		return status;
 	}
 
-	status = BotSetupMoveAI();
-	if (status != BLERR_NOERROR) {
-		BotShutdownChatAI();
-		BotShutdownGoalAI();
-		AI_UnloadWeaponLibrary(g_weapon_library);
-		g_weapon_library = NULL;
-		return status;
-	}
+	/* Retail discards the chat setup return value and continues setup. */
+	(void)BotSetupChatAI();
 
 	BotState_ConfigureClientCapacity(g_library_variables.maxclients);
 	g_subsystem_state.ai_initialised = true;
@@ -259,22 +260,26 @@ static void Botlib_ShutdownUtilities(void)
     g_subsystem_state.utilities_initialised = false;
 }
 
+/*
+=============
+Botlib_ShutdownAISubsystem
+
+Releases client adapters before the shared retail AI subsystems.
+=============
+*/
 static void Botlib_ShutdownAISubsystem(void)
 {
 	BotState_ShutdownAll();
 	BotState_ResetClientSettings();
 	BotState_ConfigureClientCapacity(0);
-	BotShutdownMoveAI();
+	BotShutdownChatStateAdapters();
+	BotShutdownCharacterHandles();
+	AI_ShutdownCharacterDefinitions();
 	BotShutdownChatAI();
 	BotShutdownGoalAI();
-	BotShutdownCharacters();
 	BotShutdownWeaponAI();
 	BotShutdownWeights();
-
-	if (g_weapon_library != NULL) {
-		AI_UnloadWeaponLibrary(g_weapon_library);
-		g_weapon_library = NULL;
-	}
+	BotShutdownMoveAI();
 
 	if (!g_subsystem_state.ai_initialised) {
 		return;
@@ -376,23 +381,24 @@ int BotSetupLibrary(void)
 	LibVar_ResetCache();
 	CRC_ResetSourceChecksums();
 
-	int status = Botlib_SetupUtilities();
-	if (status != BLERR_NOERROR)
-	{
-		Botlib_ResetLibraryVariables();
-		Botlib_ResetSubsystemState();
-		LibVar_Shutdown();
-		CRC_ResetSourceChecksums();
-		BotMemory_Shutdown();
-		return status;
-	}
-
-	/* Retail 0x10037c04 commits setup before reading limits or starting AAS. */
+	/* Retail 0x10037c04 commits setup before its first libvar lookup. */
 	g_library_initialised = true;
-	Botlib_CacheLibraryVariables();
+	g_library_variables.maxclients = (int)LibVarValue("maxclients", "4");
+	g_library_variables.maxentities = (int)LibVarValue("maxentities", "1024");
+
+	/* Retail 0x10037c36 registers movement physics variables before AAS. */
+	(void)BotSetupMoveAI();
 
 	/* Retail 0x10037c48 calls AAS setup, then forces the checked status to zero. */
 	(void)Botlib_SetupAASSubsystem();
+
+	/* Compatibility caches are populated only after the retail setup prefix. */
+	int status = Botlib_SetupUtilities();
+	if (status != BLERR_NOERROR)
+	{
+		return status;
+	}
+	Botlib_CacheLibraryVariables();
 
 	/*
 	 * Retail 0x10029c90 sets up shared AI data before 0x10037660 allocates
@@ -452,6 +458,7 @@ int BotShutdownLibrary(void)
 	g_library_initialised = false;
 
 	BotMemory_Shutdown();
+	BotGoal_ForgetLevelItemAllocations();
 	return BLERR_NOERROR;
 }
 
