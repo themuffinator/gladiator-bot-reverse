@@ -56,6 +56,23 @@ static void BotState_ResetCombat(bot_combat_state_t *combat)
 
 /*
 =============
+BotState_InitCombatSentinels
+
+Applies the combat block's "never happened" values to a client being set up.
+The record slab itself stays zero-cleared like retail's, so these reconstruction
+timestamps are seeded per client rather than at allocation.
+=============
+*/
+void BotState_InitCombatSentinels(bot_client_state_t *state)
+{
+	if (state != NULL)
+	{
+		BotState_ResetCombat(&state->combat);
+	}
+}
+
+/*
+=============
 BotState_PhysicalIndexInRange
 
 Validates an index against the fixed storage backing the reconstructed tables.

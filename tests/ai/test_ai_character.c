@@ -201,6 +201,24 @@ static bool test_log_contains(const char *needle)
 
 /*
 =============
+retail_client_slot_released
+
+Retail allocates its client records as one fixed-stride slab at library setup
+and keeps that slab until library shutdown, so shutting a client down clears
+its record in place rather than releasing a per-client allocation.  A released
+client is therefore recognised by a retained slot whose record is cleared, not
+by a null slot pointer.
+=============
+*/
+static bool retail_client_slot_released(int client)
+{
+	const bot_client_state_t *state = BotState_Get(client);
+	return state != NULL && !state->active && state->character == NULL &&
+		state->chat_state == NULL;
+}
+
+/*
+=============
 test_log_occurrences
 
 Counts every occurrence of a substring across captured diagnostics.
@@ -2070,7 +2088,7 @@ static void test_retail_setup_rejects_empty_or_missing_item_weights(void **state
 		{
 			retry_shutdown_status = env->exports->BotShutdownClient(0);
 		}
-		retry_state_cleaned = BotState_Get(0) == NULL;
+		retry_state_cleaned = retail_client_slot_released(0);
 	}
 
 	if (env->library_setup)
@@ -2315,7 +2333,7 @@ static void test_retail_setup_rejects_empty_or_missing_weapon_weights(void **sta
 		{
 			retry_shutdown_status = env->exports->BotShutdownClient(0);
 		}
-		retry_state_cleaned = BotState_Get(0) == NULL;
+		retry_state_cleaned = retail_client_slot_released(0);
 	}
 
 	if (env->library_setup)
@@ -2520,7 +2538,7 @@ static void test_retail_move_overwrites_inactive_partial_destination(void **stat
 				bot_client_state_t *moved_state = BotState_Get(1);
 				move_count_neutral = active_before_move == 1 &&
 					BotState_ActiveClientCount() == active_before_move;
-				move_wiring_matches = BotState_Get(0) == NULL &&
+				move_wiring_matches = retail_client_slot_released(0) &&
 					moved_state != NULL && moved_state->active &&
 					moved_state->client_number == 0 &&
 					moved_state->entity_number == 1;
@@ -2528,7 +2546,7 @@ static void test_retail_move_overwrites_inactive_partial_destination(void **stat
 					BotGoalStatePeek(partial_goal_handle) != NULL &&
 					BotWeaponStatePeek(partial_weapon_handle) != NULL;
 				shutdown_status = env->exports->BotShutdownClient(1);
-				destination_cleaned = BotState_Get(1) == NULL &&
+				destination_cleaned = retail_client_slot_released(1) &&
 					BotState_ActiveClientCount() == 0;
 			}
 		}
@@ -2811,7 +2829,7 @@ static void test_bot_setup_client_owns_resources(void **state)
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
 	env->client_active = false;
-	assert_null(BotState_Get(0));
+	assert_true(retail_client_slot_released(0));
 	state_slot = BotState_Get(1);
 	assert_non_null(state_slot);
 	assert_int_equal(state_slot->client_number, 0);
@@ -3073,7 +3091,7 @@ static void test_same_character_clients_own_isolated_resources(void **state)
 	status = env->exports->BotShutdownClient(0);
 	assert_int_equal(status, BLERR_NOERROR);
 	env->client_active = false;
-	assert_null(BotState_Get(0));
+	assert_true(retail_client_slot_released(0));
 	assert_int_equal(BotState_ActiveClientCount(), 1);
 	second = BotState_Get(1);
 	assert_non_null(second);
@@ -3093,7 +3111,7 @@ static void test_same_character_clients_own_isolated_resources(void **state)
 
 	status = env->exports->BotShutdownClient(1);
 	assert_int_equal(status, BLERR_NOERROR);
-	assert_null(BotState_Get(1));
+	assert_true(retail_client_slot_released(1));
 	assert_int_equal(BotState_ActiveClientCount(), 0);
 	env->exports->BotLibVarSet("bot_reloadcharacters", "0");
 }

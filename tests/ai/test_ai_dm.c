@@ -2040,6 +2040,119 @@ static void test_dm_aim_uses_retail_muzzle_trace_and_linear_lead(void)
 
 /*
 =============
+test_dm_aim_leads_from_last_visible_sample_over_update_time
+
+Pins the retail lead source: the horizontal delta between the enemy origin and
+its last visible sample, divided by the AAS update interval, scaled by the
+projectile time of flight.  Also pins the flattening that drops the vertical
+component before the travel direction is built.
+=============
+*/
+static void test_dm_aim_leads_from_last_visible_sample_over_update_time(void)
+{
+	const int client = 0;
+	g_dm_characteristics[DM_CHARACTERISTIC_PIZZA_PREFERENCE] = 1.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_AIM_SKILL] = 0.5f;
+	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
+	g_dm_weapon_available = true;
+	strcpy(g_dm_weapon_info.name, "Blaster");
+	g_dm_weapon_info.speed = 100.0f;
+	g_dm_trace_result.fraction = 1.0f;
+	g_dm_trace_result.ent = 2;
+
+	ai_dm_state_t *dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+	bot_client_state_t client_state;
+	dm_prepare_client_state(&client_state, client);
+	client_state.weapon_state = 9;
+	ai_dm_enemy_info_t enemy;
+	vec3_t enemy_origin = {100.0f, 0.0f, 0.0f};
+	dm_prepare_enemy(&enemy, 2, enemy_origin, 100.0f, 1.0f);
+	/*
+	 * The tracked per-frame velocity must be ignored while the AAS sample is
+	 * present, so it is seeded with a value the retail formula cannot produce.
+	 */
+	enemy.velocity[0] = 7.0f;
+	enemy.lastvisorigin[0] = 90.0f;
+	enemy.lastvisorigin[2] = -50.0f;
+	enemy.update_time = 0.1f;
+	bot_input_t move_command = {0};
+	move_command.thinktime = 0.1f;
+	bot_input_t base = {0};
+	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
+	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
+	AI_DMState_Update(dm_state,
+		&client_state,
+		NULL,
+		&enemy,
+		&move_command,
+		1.0f);
+	dm_consume_input(client, 0.1f);
+
+	ai_dm_metrics_t metrics;
+	AI_DMState_GetMetrics(dm_state, &metrics);
+	/* 10 units over 0.1s is 100 u/s; a 100 unit gap at 100 u/s flies for 1s. */
+	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[0], 200.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[1], 0.0f, 0.0001f);
+	/* The dropped vertical component leaves the raw enemy height in place. */
+	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[2], 0.0f, 0.0001f);
+	AI_DMState_Destroy(dm_state);
+}
+
+/*
+=============
+test_dm_aim_flattens_vertical_only_last_visible_motion
+
+Pins that a purely vertical last-visible delta produces no lead at all, because
+retail clears the vertical component before it measures the travel direction.
+=============
+*/
+static void test_dm_aim_flattens_vertical_only_last_visible_motion(void)
+{
+	const int client = 0;
+	g_dm_characteristics[DM_CHARACTERISTIC_PIZZA_PREFERENCE] = 1.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_AIM_SKILL] = 0.5f;
+	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
+	g_dm_weapon_available = true;
+	strcpy(g_dm_weapon_info.name, "Blaster");
+	g_dm_weapon_info.speed = 100.0f;
+	g_dm_trace_result.fraction = 1.0f;
+	g_dm_trace_result.ent = 2;
+
+	ai_dm_state_t *dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+	bot_client_state_t client_state;
+	dm_prepare_client_state(&client_state, client);
+	client_state.weapon_state = 9;
+	ai_dm_enemy_info_t enemy;
+	vec3_t enemy_origin = {100.0f, 0.0f, 0.0f};
+	dm_prepare_enemy(&enemy, 2, enemy_origin, 100.0f, 1.0f);
+	enemy.lastvisorigin[0] = 100.0f;
+	enemy.lastvisorigin[2] = -80.0f;
+	enemy.update_time = 0.1f;
+	bot_input_t move_command = {0};
+	move_command.thinktime = 0.1f;
+	bot_input_t base = {0};
+	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
+	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
+	AI_DMState_Update(dm_state,
+		&client_state,
+		NULL,
+		&enemy,
+		&move_command,
+		1.0f);
+	dm_consume_input(client, 0.1f);
+
+	ai_dm_metrics_t metrics;
+	AI_DMState_GetMetrics(dm_state, &metrics);
+	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[0], 100.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[1], 0.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[2], 0.0f, 0.0001f);
+	AI_DMState_Destroy(dm_state);
+}
+
+/*
+=============
 test_dm_aim_preserves_trace_raise_and_skill_threshold
 
 Pins the always-true fraction<=1 obstruction quirk and strict skill > 0.4 gate.
@@ -3081,6 +3194,8 @@ int main(void)
 		{"view_snap", dm_test_setup, test_dm_view_turn_preserves_retail_accuracy_snap_threshold, dm_test_teardown},
 		{"view_fraction", dm_test_setup, test_dm_view_turn_truncates_fractional_angle_difference, dm_test_teardown},
 		{"aim_lead", dm_test_setup, test_dm_aim_uses_retail_muzzle_trace_and_linear_lead, dm_test_teardown},
+		{"aim_lead_sample", dm_test_setup, test_dm_aim_leads_from_last_visible_sample_over_update_time, dm_test_teardown},
+		{"aim_lead_flatten", dm_test_setup, test_dm_aim_flattens_vertical_only_last_visible_motion, dm_test_teardown},
 		{"aim_trace_raise", dm_test_setup, test_dm_aim_preserves_trace_raise_and_skill_threshold, dm_test_teardown},
 		{"aim_rocket_accuracy", dm_test_setup, test_dm_aim_applies_rocket_accuracy_square_root, dm_test_teardown},
 		{"aim_rail_spread", dm_test_setup, test_dm_aim_applies_railgun_direction_noise_and_spread, dm_test_teardown},

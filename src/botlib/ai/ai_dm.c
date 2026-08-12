@@ -451,6 +451,17 @@ static void AI_DMAimAtEnemy(ai_dm_state_t *state,
 		return;
 	}
 
+	/*
+	 * Retail dereferences this weapon and its projectile without a guard.  The
+	 * guards below are therefore dead code on any correctly initialised
+	 * library rather than a behavioural divergence: the current weapon index
+	 * is cleared to zero by the reset helper and otherwise only ever assigned
+	 * a loaded weapon's own number, the weaponconfig is a hard requirement of
+	 * library setup, and the config loader rejects any weapon whose projectile
+	 * name does not resolve, so every loaded weapon carries a projectile.
+	 * They exist so a host that reaches this path mid-teardown degrades
+	 * instead of faulting the way retail would.
+	 */
 	const bot_weapon_info_t *weapon = NULL;
 	if (client_state->weapon_state > 0)
 	{
@@ -497,18 +508,48 @@ static void AI_DMAimAtEnemy(ai_dm_state_t *state,
 
 		if (weapon->speed != 0.0f && aim_skill > 0.4f)
 		{
-			vec3_t distance_vector;
+			/*
+			 * Retail measures the full three-dimensional separation first,
+			 * then reuses the same scratch vector for the horizontal-only
+			 * travel direction.  Clearing the vertical component before the
+			 * horizontal components are written keeps the lead flat and lets
+			 * VectorMA restore the unadjusted enemy height.
+			 */
+			vec3_t lead_direction;
 			VectorSubtract(enemy->origin,
 				client_state->last_client_update.origin,
-				distance_vector);
-			float distance = sqrtf(DotProduct(distance_vector,
-				distance_vector));
-			float lead_time = distance / weapon->speed;
+				lead_direction);
+			float distance = sqrtf(DotProduct(lead_direction,
+				lead_direction));
+			lead_direction[2] = 0.0f;
+
+			float enemy_speed;
+			if (enemy->update_time > 0.0f)
+			{
+				lead_direction[0] = enemy->origin[0] - enemy->lastvisorigin[0];
+				lead_direction[1] = enemy->origin[1] - enemy->lastvisorigin[1];
+				enemy_speed = AI_DMVectorNormalise(lead_direction) /
+					enemy->update_time;
+			}
+			else
+			{
+				/*
+				 * Hosts without an AAS entity record cannot supply the
+				 * retail last-visible sample, so fall back to the tracked
+				 * per-second enemy velocity and normalise it the same way.
+				 */
+				lead_direction[0] = state->last_enemy_velocity[0];
+				lead_direction[1] = state->last_enemy_velocity[1];
+				enemy_speed = AI_DMVectorNormalise(lead_direction);
+			}
+
+			float lead_scale = (distance / weapon->speed) * enemy_speed;
 			best_origin[0] = enemy->origin[0] +
-				state->last_enemy_velocity[0] * lead_time;
+				lead_direction[0] * lead_scale;
 			best_origin[1] = enemy->origin[1] +
-				state->last_enemy_velocity[1] * lead_time;
-			best_origin[2] = enemy->origin[2];
+				lead_direction[1] * lead_scale;
+			best_origin[2] = enemy->origin[2] +
+				lead_direction[2] * lead_scale;
 		}
 
 		const bot_weapon_projectile_t *projectile = weapon->projectileinfo;

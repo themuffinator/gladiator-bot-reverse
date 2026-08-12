@@ -48,7 +48,23 @@ static bot_weaponstate_t *BotWeapon_StateForHandle(int handle)
 	bot_weaponstate_t *state = g_bot_weapon_states[handle];
 	if (state == NULL)
 	{
-		BotLib_Print(PRT_FATAL, "invalid weapon state %d\n", handle);
+		/*
+		 * The retail export surface only publishes the one-based client band.
+		 * Handles above it are reserved for weapon cores embedded in retail
+		 * client slabs and exist solely while a client owns one, so an unbound
+		 * handle there came from a caller using the published range and gets
+		 * the same out-of-range diagnostic rather than the invalid-state one.
+		 */
+		if (handle > MAX_CLIENTS)
+		{
+			BotLib_Print(PRT_FATAL,
+						 "weapon state handle %d out of range\n",
+						 handle);
+		}
+		else
+		{
+			BotLib_Print(PRT_FATAL, "invalid weapon state %d\n", handle);
+		}
 		return NULL;
 	}
 
@@ -525,12 +541,14 @@ static int BotWeapon_LoadWeightsInternal(int weaponstate,
 		AI_LoadWeaponWeightsFresh(resolved) : AI_LoadWeaponWeights(resolved);
 	if (weights == NULL)
 	{
-		if (fresh)
-		{
-			BotLib_Print(PRT_FATAL,
-				"couldn't load weapon config %s\n",
-				resolved != NULL ? resolved : "");
-		}
+		/*
+		 * Retail reports the failed weight config on every load path, not
+		 * just the per-client one, so the cached loader emits the same fatal
+		 * diagnostic with whichever filename was actually attempted.
+		 */
+		BotLib_Print(PRT_FATAL,
+			"couldn't load weapon config %s\n",
+			resolved != NULL ? resolved : "");
 		return BLERR_CANNOTLOADWEAPONWEIGHTS;
 	}
 
@@ -807,10 +825,18 @@ const bot_weapon_info_t *BotCurrentWeaponInfo(int weaponstate)
 		return NULL;
 	}
 
+	/*
+	 * Retail `sub_100354b0` rejects only a negative index and an absent
+	 * weaponconfig, then returns `&weaponinfo[weaponindex]` with no upper
+	 * bound.  That is safe because the array is always allocated and cleared
+	 * at `max_weaponinfo` entries, not at the declared weapon count, so a
+	 * cached index left over from a larger config still lands on a zeroed row
+	 * rather than past the allocation.  This reconstruction allocates the same
+	 * way, so it reproduces both checks exactly instead of adding a count
+	 * bound retail does not have.
+	 */
 	const bot_weapon_config_t *config = BotWeapon_ConfigForState(state);
-	if (config == NULL ||
-		state->current_weapon < 0 ||
-		state->current_weapon >= config->num_weapons)
+	if (state->current_weapon < 0 || config == NULL)
 	{
 		return NULL;
 	}
@@ -832,13 +858,13 @@ void BotGetWeaponInfo(int weaponstate, int weapon, bot_weapon_info_t *weaponinfo
 
 	memset(weaponinfo, 0, sizeof(*weaponinfo));
 
+	/*
+	 * Retail validates the requested weapon number before it resolves the
+	 * weapon-state handle.  Without a loaded weaponconfig every number is out
+	 * of range, so the diagnostic is emitted rather than silently skipped.
+	 */
 	const bot_weapon_config_t *config = AI_GetActiveWeaponConfig();
-	if (config == NULL)
-	{
-		return;
-	}
-
-	if (weapon < 0 || weapon >= config->num_weapons)
+	if (config == NULL || weapon < 0 || weapon >= config->num_weapons)
 	{
 		BotLib_Print(PRT_ERROR, "weapon number out of range\n");
 		return;

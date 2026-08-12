@@ -3623,6 +3623,50 @@ static void test_bot_travel_grapple_uses_raw_two_degree_gate(void **state)
 
 /*
 =============
+test_bot_travel_grapple_attaches_with_retail_distance_sentinel
+
+Pin the aligned-view hook-on branch, including the raw 0x497423f0 pattern the
+original writes into lastgrappledist so the first attached frame always reads
+as closing distance.
+=============
+*/
+static void test_bot_travel_grapple_attaches_with_retail_distance_sentinel(void **state)
+{
+	(void)state;
+
+	bot_movestate_t movestate;
+	memset(&movestate, 0, sizeof(movestate));
+	movestate.client = 0;
+	movestate.entitynum = 5;
+	movestate.presencetype = PRESENCE_NORMAL;
+	movestate.lastgrappledist = 12.0f;
+
+	aas_reachability_t reach;
+	memset(&reach, 0, sizeof(reach));
+	reach.traveltype = TRAVEL_GRAPPLEHOOK;
+	VectorSet(reach.start, 4.0f, 0.0f, 0.0f);
+	VectorSet(reach.end, 100.0f, 0.0f, 0.0f);
+
+	bot_moveresult_t result = BotTravel_Grapple(&movestate, &reach);
+
+	assert_true((result.flags & MOVERESULT_MOVEMENTVIEW) != 0);
+	assert_true((movestate.moveflags & MFL_GRAPPLEATTACHED) != 0);
+	assert_int_equal(g_command_count, 1);
+	assert_string_equal(g_command_log[0], "hookon");
+	assert_float_equal(movestate.lastgrappledist, 999999.0f, 0.0f);
+
+	unsigned int pattern = 0;
+	memcpy(&pattern, &movestate.lastgrappledist, sizeof(pattern));
+	assert_int_equal((int)pattern, (int)0x497423f0u);
+
+	/* The hook-on branch never steers, so no movement direction is produced. */
+	assert_float_equal(result.movedir[0], 0.0f, 0.0001f);
+	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
+	assert_float_equal(result.movedir[2], 0.0f, 0.0001f);
+}
+
+/*
+=============
 test_bot_travel_swim_targets_start_at_retail_speed
 
 Pins Q3 swim travel's reach-start steering and fixed 400 speed.
@@ -4766,7 +4810,7 @@ static void test_bot_reachability_area_ground_pass_finds_lower_reachable_area(vo
 =============
 test_bot_movement_view_target_uses_retail_route_context
 
-Pins retail route preview from the previous reach end to the next reach start,
+Pins retail route preview from the previous reach end to the next reach end,
 including the original fifteen-unit vertical target offset.
 =============
 */
@@ -4828,7 +4872,7 @@ static void test_bot_movement_view_target_uses_retail_route_context(void **state
 	vec3_t target;
 	VectorClear(target);
 	assert_true(BotMovementViewTargetHandle(handle, &goal, TFL_DEFAULT, 96.0f, target));
-	assert_float_equal(target[0], 96.0f, 0.0001f);
+	assert_float_equal(target[0], 128.0f, 0.0001f);
 	assert_float_equal(target[1], 0.0f, 0.0001f);
 	assert_float_equal(target[2], -15.0f, 0.0001f);
 
@@ -4999,6 +5043,9 @@ int main(void)
                                         test_setup,
                                         test_teardown),
 		cmocka_unit_test_setup_teardown(test_bot_travel_grapple_uses_raw_two_degree_gate,
+			test_setup,
+			test_teardown),
+		cmocka_unit_test_setup_teardown(test_bot_travel_grapple_attaches_with_retail_distance_sentinel,
 			test_setup,
 			test_teardown),
         cmocka_unit_test_setup_teardown(test_bot_travel_swim_targets_start_at_retail_speed,

@@ -242,6 +242,8 @@ static void BotAI_InitEnemyInfo(ai_dm_enemy_info_t *info)
     info->entity = -1;
     VectorClear(info->origin);
     VectorClear(info->velocity);
+    VectorClear(info->lastvisorigin);
+    info->update_time = 0.0f;
     info->distance = 0.0f;
     info->last_seen_time = -FLT_MAX;
     info->field_of_view = 0.0f;
@@ -522,6 +524,8 @@ static int BotAI_AcceptEnemy(bot_client_state_t *state,
 		VectorSubtract(entity_info->origin,
 			entity_info->old_origin,
 			enemy->velocity);
+		VectorCopy(entity_info->lastvisorigin, enemy->lastvisorigin);
+		enemy->update_time = entity_info->update_time;
 		enemy->distance = distance;
 		enemy->last_seen_time = now;
 		enemy->field_of_view = field_of_view;
@@ -2600,6 +2604,14 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 		return qfalse;
 	}
 
+	/*
+	 * The record slab is zero-cleared like retail's, so the combat block's
+	 * reconstruction timestamps still read as an enemy sighted, killed, and
+	 * damage taken at time zero.  Seed their "never happened" values before
+	 * any setup step can record a real combat event.
+	 */
+	BotState_InitCombatSentinels(state);
+
 	int status = BLERR_NOERROR;
 
 	bot_character_t *character = BotLoadCharacter(settings->characterfile,
@@ -2803,6 +2815,19 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 	state->entity_number = client + 1;
 	state->client_commands_pending = true;
 	state->enter_game_time = AAS_Time();
+	/*
+	 * Retail keeps presentation settings in a table separate from the client
+	 * record, so they outlive a client shutdown that clears the record and are
+	 * only replaced by an explicit BotClientSettings call.  Re-seed the record's
+	 * mirror from that table so a client set up again reports the settings the
+	 * game last supplied rather than a cleared name and skin.
+	 */
+	const bot_clientsettings_t *retained_settings =
+		BotState_ClientSettings(client);
+	if (retained_settings != NULL)
+	{
+		state->client_settings = *retained_settings;
+	}
 	BotState_SetActive(state, true);
 	Bridge_ClearClientSlot(client);
 	Bridge_SetClientActive(client, qtrue);
@@ -5702,6 +5727,8 @@ static int BotAI_ResolveCurrentEnemy(const bot_client_state_t *state,
 	enemy->entity = entity_info.number;
 	VectorCopy(entity_info.origin, enemy->origin);
 	VectorSubtract(entity_info.origin, entity_info.old_origin, enemy->velocity);
+	VectorCopy(entity_info.lastvisorigin, enemy->lastvisorigin);
+	enemy->update_time = entity_info.update_time;
 	vec3_t direction;
 	VectorSubtract(entity_info.origin,
 		state->last_client_update.origin,
@@ -5812,6 +5839,41 @@ static void BotAI_BuildBattleChaseGoal(const bot_client_state_t *state,
 	VectorSet(goal->mins, -8.0f, -8.0f, -8.0f);
 	VectorSet(goal->maxs, 8.0f, 8.0f, 8.0f);
 }
+
+/*
+ * Retail composes the battle travel mask from two literals: 102334 on its own
+ * and 118718 once `usehook` is set, with the rocket-jump bit ORed in
+ * afterwards.  Gladiator's `travelflagfortype` table defines exactly fourteen
+ * entries, TFL_INVALID through TFL_GRAPPLEHOOK, and this reconstruction uses
+ * bit-identical values for all of them, so those are the only mask bits a
+ * reachability can ever match.  The masks below restrict both sides to that
+ * set and assert the reconstruction accepts precisely the retail travel types.
+ *
+ * Inside the mask the two sides are already equal: retail's 102334 reduces to
+ * 0xfbe and so does this tree's default.  They differ only above it, where
+ * retail carries 0x18000 and this tree carries 0x11c0000 for the jump-pad,
+ * air, water, and func_bobbing types Gladiator's reachability writer never
+ * emits.  Neither group maps to a Gladiator travel type, so neither can change
+ * which retail reachability the battle nodes accept.
+ */
+#define BOT_GLADIATOR_TRAVELFLAG_MASK                                          \
+	(TFL_INVALID | TFL_WALK | TFL_CROUCH | TFL_BARRIERJUMP | TFL_JUMP          \
+	 | TFL_LADDER | TFL_WALKOFFLEDGE | TFL_SWIM | TFL_WATERJUMP                \
+	 | TFL_TELEPORT | TFL_ELEVATOR | TFL_ROCKETJUMP | TFL_BFGJUMP              \
+	 | TFL_GRAPPLEHOOK)
+#define BOT_GLADIATOR_BATTLE_TRAVELFLAGS 102334
+#define BOT_GLADIATOR_BATTLE_TRAVELFLAGS_HOOK 118718
+
+typedef char bot_assert_battle_travelflags[
+	(TFL_DEFAULT & BOT_GLADIATOR_TRAVELFLAG_MASK) ==
+	(BOT_GLADIATOR_BATTLE_TRAVELFLAGS & BOT_GLADIATOR_TRAVELFLAG_MASK) ? 1 : -1];
+typedef char bot_assert_battle_travelflags_hook[
+	((TFL_DEFAULT | TFL_GRAPPLEHOOK) & BOT_GLADIATOR_TRAVELFLAG_MASK) ==
+	(BOT_GLADIATOR_BATTLE_TRAVELFLAGS_HOOK & BOT_GLADIATOR_TRAVELFLAG_MASK) ? 1 : -1];
+typedef char bot_assert_battle_travelflags_rocketjump[
+	((TFL_DEFAULT | TFL_ROCKETJUMP) & BOT_GLADIATOR_TRAVELFLAG_MASK) ==
+	((BOT_GLADIATOR_BATTLE_TRAVELFLAGS | 0x1000) &
+	 BOT_GLADIATOR_TRAVELFLAG_MASK) ? 1 : -1];
 
 /*
 =============
@@ -6284,8 +6346,13 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 			state->ai_node = BOT_AI_NODE_SEEK_LTG;
 			return qfalse;
 		}
-		BotAI_UpdateEnemyBattleInventory(state, frame->enemy.entity);
+		/*
+		 * Retail commits the reachable enemy area and origin before it
+		 * projects the enemy into the battle inventory, so Battle Chase sees
+		 * the newest sample even when the visibility test diverts this frame.
+		 */
 		BotAI_RecordLastEnemyLocation(state, &frame->enemy);
+		BotAI_UpdateEnemyBattleInventory(state, frame->enemy.entity);
 		if (!frame->enemy.visible)
 		{
 			if (BotAI_WantsToChase(state))

@@ -404,7 +404,7 @@ static int BotGetReachabilityToGoal(const vec3_t origin,
 =============
 BotMovementViewTarget
 
-Return the next reachability start beyond the currently active reach.
+Return the next reachability end beyond the currently active reach.
 =============
 */
 int BotMovementViewTarget(bot_movestate_t *movestate,
@@ -435,8 +435,16 @@ int BotMovementViewTarget(bot_movestate_t *movestate,
 	}
 
 	AAS_ReachabilityFromNum(reachnum, &reach);
-	VectorCopy(reach.start, target);
-	target[2] -= 15.0f;
+	/*
+	 * Retail aims the preview at the far side of the next reachability, not
+	 * at its entry point: 0x10031270 stores reach dwords 6, 7 and 8 into the
+	 * target, which is `end`, and lowers the vertical component by fifteen
+	 * units.  The Quake III successor copies `start` instead, so the shared
+	 * lookahead shape must not be borrowed here.
+	 */
+	target[0] = reach.end[0];
+	target[2] = reach.end[2] - 15.0f;
+	target[1] = reach.end[1];
 	return 1;
 }
 
@@ -628,13 +636,28 @@ static int BotWalkInDirection(bot_movestate_t *ms,
 				predictiontime = 2.0f;
 			}
 
+			/*
+			 * Retail divides straight into the frame time.  A zero think
+			 * time only reaches the predictor through a host that never
+			 * filled in the frame input, where the original truncation
+			 * yields a negative frame count and the frame-count guard
+			 * below rejects the move anyway, so short-circuiting here
+			 * keeps the retail outcome without the undefined conversion.
+			 */
 			if (ms->thinktime <= 0.0f)
 			{
 				return 0;
 			}
 			int maxframes = (int)(predictiontime / ms->thinktime);
+			/*
+			 * The retail predictor returns its result by value and reports
+			 * a failed prediction as an all-zero record, which this port
+			 * reproduces by clearing the caller's storage.  Retail keeps
+			 * evaluating the guards below in that case, so the return code
+			 * is deliberately discarded here.
+			 */
 			aas_clientmove_t move;
-			if (!AAS_PredictClientMovement(&move,
+			AAS_PredictClientMovement(&move,
 				ms->entitynum,
 				ms->origin,
 				presencetype,
@@ -646,10 +669,7 @@ static int BotWalkInDirection(bot_movestate_t *ms,
 				ms->thinktime,
 				0x3d,
 				0,
-				0))
-			{
-				return 0;
-			}
+				0);
 			if (move.frames >= maxframes || (move.stopevent & 0x38) != 0)
 			{
 				return 0;
@@ -748,7 +768,12 @@ static int BotCheckBlocked(bot_movestate_t *ms,
 	vec3_t maxs;
 	vec3_t end;
 	AAS_PresenceTypeBoundingBox(ms->presencetype, mins, maxs);
-	if (fabsf(dir[2]) < 0.7f)
+	/*
+	 * Retail compares against a double literal, so the vertical component
+	 * widens before the test.  Keeping the float form here would reject a
+	 * direction of exactly 0.7f that the original accepts.
+	 */
+	if (fabs(dir[2]) < 0.7)
 	{
 		mins[2] += BotMove_LibVarValue(libvar_sv_step, 18.0f);
 		maxs[2] -= 10.0f;
@@ -983,7 +1008,12 @@ bot_moveresult_t BotTravel_WaterJump(bot_movestate_t *ms,
 	VectorSubtract(reach->end, ms->origin, dir);
 	VectorCopy(dir, hordir);
 	hordir[2] = 0.0f;
-	dir[2] += BotMove_RandomSigned() * 40.0f + 15.0f;
+	/*
+	 * Retail folds the random rise into the vertical component before the
+	 * fixed fifteen-unit lift, so the accumulation order is kept exactly as
+	 * the original wrote it.
+	 */
+	dir[2] = BotMove_RandomSigned() * 40.0f + dir[2] + 15.0f;
 	BotMove_VectorNormalize(dir);
 	float distance = BotMove_VectorNormalize(hordir);
 	EA_MoveForward(ms->client);
@@ -1018,9 +1048,9 @@ bot_moveresult_t BotFinishTravel_WaterJump(bot_movestate_t *ms,
 		{
 			vec3_t dir;
 			VectorSubtract(reach->end, ms->origin, dir);
-			dir[0] += BotMove_RandomSigned() * 10.0f;
-			dir[1] += BotMove_RandomSigned() * 10.0f;
-			dir[2] += BotMove_RandomSigned() * 10.0f + 70.0f;
+			dir[0] = BotMove_RandomSigned() * 10.0f + dir[0];
+			dir[1] = BotMove_RandomSigned() * 10.0f + dir[1];
+			dir[2] = BotMove_RandomSigned() * 10.0f + dir[2] + 70.0f;
 			BotMove_VectorNormalize(dir);
 			EA_Move(ms->client, dir, 400.0f);
 			Vector2Angles(dir, moveresult.ideal_viewangles);
@@ -1169,7 +1199,8 @@ bot_moveresult_t BotTravel_Jump(bot_movestate_t *ms,
 	VectorSubtract(ms->origin, runstart, dir2);
 	dir2[2] = 0.0f;
 	float runstartdistance = BotMove_VectorNormalize(dir2);
-	if (DotProduct(dir1, dir2) < -0.8f || runstartdistance < 5.0f)
+	/* Retail compares the dot product against a double literal. */
+	if (DotProduct(dir1, dir2) < -0.8 || runstartdistance < 5.0f)
 	{
 		hordir[0] = reach->end[0] - ms->origin[0];
 		hordir[1] = reach->end[1] - ms->origin[1];
@@ -1571,7 +1602,8 @@ bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms,
 				return moveresult;
 			}
 		}
-		if (AAS_Time() - 0.4f <= ms->grapplevisible_time)
+		/* Retail subtracts a double literal, so the compare widens too. */
+		if (AAS_Time() - 0.4 <= ms->grapplevisible_time)
 		{
 			ms->lastgrappledist = distance;
 			return moveresult;
@@ -1611,8 +1643,12 @@ bot_moveresult_t BotTravel_Grapple(bot_movestate_t *ms,
 	else
 	{
 		EA_Command(ms->client, "hookon", (char *)NULL);
-		unsigned int sentinel = 0x4969ffb0u;
-		memcpy(&ms->lastgrappledist, &sentinel, sizeof(sentinel));
+		/*
+		 * Retail writes the raw pattern 0x497423f0 into lastgrappledist,
+		 * which is exactly 999999.0f: a sentinel far enough away that the
+		 * first attached frame always registers as closing distance.
+		 */
+		ms->lastgrappledist = 999999.0f;
 		ms->moveflags |= MFL_GRAPPLEATTACHED;
 	}
 
@@ -2048,6 +2084,15 @@ void BotResetLastAvoidReach(bot_movestate_t *movestate)
 	if (latesttime != 0.0f)
 	{
 		movestate->avoidreachtimes[latest] = 0.0f;
+		/*
+		 * Retail guards the decrement with a load from movestate + 0x80,
+		 * one dword past the single avoid-reach retry slot and past the end
+		 * of the 128-byte movement state itself.  In the original the state
+		 * is embedded in the larger per-client record, so that read lands on
+		 * an unrelated neighbouring field; here the movement state is
+		 * allocated on its own, so the guard reads the slot the original
+		 * source clearly meant and that the decrement itself uses.
+		 */
 		if (movestate->avoidreachtries[latest] > 0)
 		{
 			--movestate->avoidreachtries[latest];
@@ -2417,6 +2462,12 @@ int BotSetupMoveAI(void)
 	libvar_sv_maxsteepness = LibVar("sv_maxsteepness", "0.7");
 	libvar_sv_jumpvel = LibVar("sv_jumpvel", "224");
 	libvar_sv_maxwaterjump = LibVar("sv_maxwaterjump", "21");
+	/*
+	 * The original falls off the end without a return statement, so it hands
+	 * back whatever the last LibVar call left in the return register.  Every
+	 * caller only tests the result for zero, so report success through the
+	 * same libvar instead of reproducing the missing return.
+	 */
 	return libvar_sv_maxwaterjump != NULL;
 }
 

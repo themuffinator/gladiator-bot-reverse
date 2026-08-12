@@ -1190,8 +1190,11 @@ static int BotGoal_PointAreaNum(const vec3_t origin)
 =============
 BotGoal_StartAreaForState
 
-Resolve the bot's current reachability area. Gladiator rejects a missing or
-unreachable result directly; it does not retain the Q3 last-area fallback.
+Resolve the bot's current reachability area. Retail selection calls
+BotReachabilityArea with the inverted swim test, so the extra drop-to-floor
+pass runs for a bot standing in air or on ground and is suppressed while it is
+submerged in lava, slime, or water. Gladiator rejects a missing or unreachable
+result directly; it does not retain the Q3 last-area fallback.
 =============
 */
 static int BotGoal_StartAreaForState(bot_goalstate_t *gs, const vec3_t origin)
@@ -1201,10 +1204,7 @@ static int BotGoal_StartAreaForState(bot_goalstate_t *gs, const vec3_t origin)
 		return 0;
 	}
 
-	vec3_t contents_origin;
-	VectorCopy(origin, contents_origin);
-	contents_origin[2] -= 2.0f;
-	int testground = ((Q2_PointContents(contents_origin) & 0x38) != 0);
+	int testground = !AAS_Swimming(origin);
 	int areanum = BotReachabilityArea(origin, testground);
 	if (areanum <= 0 || AAS_AreaReachability(areanum) == 0)
 	{
@@ -2013,6 +2013,16 @@ int BotChooseLTGItem(int handle, const vec3_t origin, const int *inventory, int 
 		return 0;
 	}
 
+	/*
+	 * Retail samples the global item config before walking the level-item list
+	 * and returns zero when it is absent. The roam fallback lives inside that
+	 * branch, so a library without an item config never produces a roam goal.
+	 */
+	if (!g_itemdefs_loaded)
+	{
+		return 0;
+	}
+
 	float now = BotGoal_CurrentTime();
 	float best_score = 0.0f;
 	const bot_levelitem_t *best_item = NULL;
@@ -2117,10 +2127,11 @@ int BotChooseNBGItem(int handle,
 		return 0;
 	}
 
-	float now = BotGoal_CurrentTime();
-	float best_score = 0.0f;
-	const bot_levelitem_t *best_item = NULL;
-	bot_goal_t best_goal = {0};
+	/*
+	 * The retail leaf resolves the direct long-term travel time before it
+	 * samples the global item config, then returns zero when that config is
+	 * absent.
+	 */
 	int ltg_time = 99999;
 	if (ltg != NULL)
 	{
@@ -2129,6 +2140,16 @@ int BotChooseNBGItem(int handle,
 			ltg->areanum,
 			travelflags);
 	}
+
+	if (!g_itemdefs_loaded)
+	{
+		return 0;
+	}
+
+	float now = BotGoal_CurrentTime();
+	float best_score = 0.0f;
+	const bot_levelitem_t *best_item = NULL;
+	bot_goal_t best_goal = {0};
 
 	for (const bot_levelitem_t *item = g_levelitem_head; item != NULL; item = item->next)
 	{
@@ -2763,7 +2784,11 @@ BotGoal_RegisterItemDef
 */
 static bot_itemdef_t *BotGoal_RegisterItemDef(const char *classname)
 {
-	if (classname == NULL || classname[0] == '\0')
+	/*
+	 * The retail loader copies the token following iteminfo without testing it
+	 * for content, so an explicitly empty classname is a valid declaration.
+	 */
+	if (classname == NULL)
 	{
 		return NULL;
 	}
@@ -3018,12 +3043,24 @@ static bool BotGoal_BeginLevelItemLoad(void)
 		BotGoal_ClearLevelItems();
 		return false;
 	}
-	int usable = (capacity >= 2) ? capacity - 1 : 1;
-	for (int i = 0; i < usable - 1; ++i)
+	/*
+	 * Retail source shape. Its link loop stops two records short of the pool,
+	 * so record capacity - 2 stays reachable from the free list with an
+	 * uninitialized next pointer while the terminator lands on the detached
+	 * final record. Every reachable link below matches retail; the single
+	 * substitution is the explicit terminator on record capacity - 2, which
+	 * replaces retail's read of uninitialized GetMemory bytes with the value a
+	 * zeroed heap would have supplied. The usable slot count is unchanged.
+	 */
+	for (int i = 0; i < capacity - 2; ++i)
 	{
 		g_levelitems[i].next = &g_levelitems[i + 1];
 	}
-	g_levelitems[usable - 1].next = NULL;
+	g_levelitems[capacity - 1].next = NULL;
+	if (capacity >= 2)
+	{
+		g_levelitems[capacity - 2].next = NULL;
+	}
 	g_levelitem_free = g_levelitems;
 
 	return true;
@@ -3125,9 +3162,22 @@ static bool BotGoal_LoadItemDefs(void)
 	bool parsed = true;
 	while (PC_ReadToken(source, &token))
 	{
-		if (token.type != TT_NAME || strcmp(token.string, "iteminfo") != 0)
+		if (strcmp(token.string, "iteminfo") != 0)
 		{
 			SourceError(source, "unknown definition %s\n", token.string);
+			parsed = false;
+			break;
+		}
+
+		/*
+		 * Retail rejects an over-capacity config on the iteminfo keyword
+		 * itself, before it consumes the classname token, so the capacity
+		 * diagnostic wins over any later token error on the same definition.
+		 */
+		if (g_itemdefs == NULL || g_itemdef_count >= g_itemdef_capacity)
+		{
+			SourceError(source, "more than %d item info defined\n",
+				g_itemdef_capacity);
 			parsed = false;
 			break;
 		}
@@ -3143,8 +3193,6 @@ static bool BotGoal_LoadItemDefs(void)
 		bot_itemdef_t *itemdef = BotGoal_RegisterItemDef(classname_token.string);
 		if (itemdef == NULL)
 		{
-			SourceError(source, "more than %d item info defined\n",
-				g_itemdef_capacity);
 			parsed = false;
 			break;
 		}
@@ -3556,6 +3604,12 @@ static void BotGoal_RebuildWeightIndices(bot_goalstate_t *gs)
 /*
 =============
 BotInitLevelItems
+
+Retail parses its own BSP entity list here and never releases it. The separate
+map-load leaf keeps a distinct global list that it does free before re-parsing,
+so this list really is abandoned once per map load. The reconstruction keeps
+that ownership exactly: releasing it here would hand every caller a different
+heap profile than retail.
 =============
 */
 void BotInitLevelItems(void)
@@ -3581,7 +3635,6 @@ void BotInitLevelItems(void)
 		BotGoal_AddRawLevelItemFromBSPEntity(entity, notspawnflags);
 	}
 	BotGoal_AddCompatibilityInfoEntities(entities);
-	AAS_FreeBSPEntities(entities);
 	if (!g_levelitem_scan_aborted)
 	{
 		BotLib_Print(PRT_MESSAGE, "found %d level items\n", g_static_levelitem_count);

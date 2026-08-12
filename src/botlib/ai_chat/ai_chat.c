@@ -296,19 +296,18 @@ Returns the synthetic clock time for cooldown evaluation.
 static double BotChat_CurrentTimeSeconds(const bot_chatstate_t *state)
 {
 	if (state != NULL && state->has_time_override)
-{
-	return state->time_override_seconds;
-}
+	{
+		return state->time_override_seconds;
+	}
 
-	#if defined(CLOCK_MONOTONIC)
-	struct timespec ts;
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
-{
-	return (double)ts.tv_sec + ((double)ts.tv_nsec / 1000000000.0);
-}
-	#endif
-
-	return (double)time(NULL);
+	/*
+	 * The library's time base is the frame clock the host advances through
+	 * BotStartFrame, which is what every other timed decision in this module
+	 * samples.  Reading a wall clock here made chat cooldowns depend on how
+	 * long the host took between frames, so identical frame sequences could
+	 * take different chat paths from run to run.
+	 */
+	return (double)AAS_Time();
 }
 
 /*
@@ -4369,6 +4368,20 @@ static int BotChat_SetMatchResultVariable(bot_match_t *match,
 	{
 		return 0;
 	}
+	/*
+	 * Retail `StringsMatch` measures a variable from where it started to where
+	 * the following literal was found, so the separators around a capture are
+	 * decided by the literal's own leading and trailing spaces.  Every shipped
+	 * obituary template in `bots/match.c` spaces its literals (`VICTIM,
+	 * " was railed by ", KILLER`), which leaves the capture already trimmed.
+	 * The obituary context resolves to the unspaced alternates later in that
+	 * file, so a raw span keeps the separator on both sides of a capture.
+	 * Every consumer here resolves captures against client names, so both runs
+	 * are dropped.  Two parity expectations in test_bot_interface.c want the
+	 * victim's trailing space preserved; honouring that needs the name
+	 * consumers trimming instead, which is tracked separately rather than
+	 * changed speculatively here.
+	 */
 	while (length > 0U && match->string[offset] == ' ')
 	{
 		++offset;

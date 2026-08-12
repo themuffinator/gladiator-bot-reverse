@@ -172,6 +172,8 @@ static bot_weapon_config_t *AI_Weapon_AllocateConfig(int max_weaponinfo,
 	config->num_projectiles = 0;
 	config->projectiles = projectile_array;
 	config->weapons = weapon_array;
+	config->max_weapons = max_weaponinfo;
+	config->max_projectiles = max_projectileinfo;
 	return config;
 }
 

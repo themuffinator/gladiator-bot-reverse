@@ -16,6 +16,16 @@ typedef struct ai_dm_enemy_info_s {
     int entity;
     vec3_t origin;
     vec3_t velocity;
+    /*
+     * Retail BotAimAtEnemy leads the shot from the AAS entity record rather
+     * than from a per-frame displacement: it normalises `origin -
+     * lastvisorigin`, divides the recovered length by `update_time`, and
+     * multiplies the result by the projectile time of flight.  Both inputs
+     * travel with the enemy hand-off so the aim helper can apply that formula
+     * without reaching back into AAS.
+     */
+    vec3_t lastvisorigin;
+    float update_time;
     float distance;
     float last_seen_time;
     float field_of_view;

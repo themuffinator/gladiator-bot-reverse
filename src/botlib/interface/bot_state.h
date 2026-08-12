@@ -233,6 +233,7 @@ int BotState_ClientCapacity(void);
 bool BotState_ClientInRange(int client);
 void BotState_ResetClientSettings(void);
 void BotState_SetActive(bot_client_state_t *state, bool active);
+void BotState_InitCombatSentinels(bot_client_state_t *state);
 void BotState_SetLongTermGoal(bot_client_state_t *state,
 	int type,
 	int teammate,

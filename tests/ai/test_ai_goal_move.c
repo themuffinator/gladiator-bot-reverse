@@ -1148,6 +1148,108 @@ static void test_goal_itemconfig_enforces_max_iteminfo(void **state)
 
 /*
 =============
+test_goal_itemconfig_capacity_precedes_classname_and_allows_empty
+
+Pins two strict-loader token-order details of sub_1002ed20. The capacity test
+runs on the iteminfo keyword itself, before the classname token is consumed, so
+an over-capacity definition reports the capacity diagnostic even when its
+classname token is not a string. The loader also copies the classname token
+without testing it for content, so an explicitly empty classname is a valid
+declaration that still occupies its own ordered record.
+=============
+*/
+static void test_goal_itemconfig_capacity_precedes_classname_and_allows_empty(
+	void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path, sizeof(fixture_path),
+		"%s/tests/support/assets/goal_iteminfo_token_order_tmp.c",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	/* The second definition's classname is a number, not a string. */
+	write_goal_text_fixture(fixture_path,
+		"iteminfo \"goal_token_order_first\"\n"
+		"{\n"
+		"name \"First\"\n"
+		"}\n"
+		"iteminfo 42\n"
+		"{\n"
+		"}\n");
+
+	assert_int_equal(env->exports->BotLibVarSet("max_iteminfo", "1"),
+		BLERR_NOERROR);
+	LibVarSet("max_iteminfo", "1");
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", fixture_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", fixture_path);
+	test_reset_log();
+
+	assert_int_equal(BotSetupGoalAI(), BLERR_CANNOTLOADITEMCONFIG);
+	bool reported_capacity = false;
+	for (int i = 0; i < g_test_log.count; ++i)
+	{
+		if (strstr(g_test_log.entries[i].text,
+			"more than 1 item info defined") != NULL)
+		{
+			reported_capacity = true;
+			break;
+		}
+	}
+	assert_true(reported_capacity);
+
+	/* An explicitly empty classname remains a legal retail declaration. */
+	char empty_path[PATH_MAX];
+	char weight_path[PATH_MAX];
+	written = snprintf(empty_path, sizeof(empty_path),
+		"%s/tests/support/assets/goal_iteminfo_empty_name_tmp.c",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(empty_path));
+	written = snprintf(weight_path, sizeof(weight_path),
+		"%s/tests/support/assets/goal_iteminfo_empty_name_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(weight_path));
+
+	write_goal_text_fixture(empty_path,
+		"iteminfo \"\"\n"
+		"{\n"
+		"name \"Nameless\"\n"
+		"}\n");
+	write_goal_weight_fixture(weight_path,
+		"weight \"unused_empty_classname\"\n"
+		"{\n"
+		"return balance(1,1,1);\n"
+		"}\n");
+
+	assert_int_equal(env->exports->BotLibVarSet("max_iteminfo", "256"),
+		BLERR_NOERROR);
+	LibVarSet("max_iteminfo", "256");
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", empty_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", empty_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+
+	int handle = env->exports->BotAllocGoalState(7);
+	assert_true(handle > 0);
+	assert_int_equal(env->exports->BotLoadItemWeights(handle, weight_path),
+		BLERR_NOERROR);
+	/* One declared record, so the index block covers exactly one entry. */
+	assert_int_equal(BotGoal_ItemWeightIndexByteSize(handle), sizeof(int));
+	BotFreeItemWeights(handle);
+	env->exports->BotFreeGoalState(handle);
+
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", "items.c"),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", "items.c");
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(remove(fixture_path), 0);
+	assert_int_equal(remove(empty_path), 0);
+	assert_int_equal(remove(weight_path), 0);
+}
+
+/*
+=============
 test_goal_itemconfig_uses_retail_inline_allocation
 
 Pins the setup allocation shape: an eight-byte logical config header followed
@@ -1679,6 +1781,30 @@ static void test_goal_level_item_pool_honors_max_levelitems(void **state)
 
 	BotGoal_UnregisterLevelItem(721);
 	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 722);
+
+	/*
+	 * Retail's link loop stops two records short, so a pool of N exposes
+	 * exactly N - 1 reachable slots. N = 3 is the smallest count that runs the
+	 * loop at all, and its terminator sits on record N - 2 -- the one field
+	 * retail leaves uninitialized. Reaching the diagnostic on the N-th request
+	 * proves the free list ends where retail's reachable set ends, so that
+	 * field is never followed.
+	 */
+	assert_int_equal(env->exports->BotLibVarSet("max_levelitems", "3"), BLERR_NOERROR);
+	LibVarSet("max_levelitems", "3");
+	BotInitLevelItems();
+
+	setup.goal.number = 731;
+	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 731);
+	setup.goal.number = 732;
+	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 732);
+
+	setup.goal.number = 733;
+	test_reset_log();
+	assert_int_equal(env->exports->BotRegisterLevelItem(&setup), 0);
+	assert_true(g_test_log.count > 0);
+	assert_int_equal(g_test_log.entries[0].priority, PRT_FATAL);
+	assert_string_equal(g_test_log.entries[0].text, "out of level items\n");
 
 	assert_int_equal(env->exports->BotLibVarSet("max_levelitems", "512"), BLERR_NOERROR);
 	LibVarSet("max_levelitems", "512");
@@ -2902,6 +3028,89 @@ static void test_goal_ltg_uses_expired_avoid_and_random_roam_fallback(void **sta
 
 /*
 =============
+test_goal_selection_requires_global_item_config
+
+Pins the retail item-config gate shared by sub_1002feb0 and sub_10030260. Both
+selectors sample the global item config after resolving the start area and
+return zero when it is absent. The LTG roam fallback lives inside that branch,
+so a library without an item config must not push a roam goal.
+=============
+*/
+static void test_goal_selection_requires_global_item_config(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+	activate_test_client(env);
+
+	bot_client_state_t *slot = BotState_Get(0);
+	assert_non_null(slot);
+	assert_true(slot->goal_handle > 0);
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 4);
+	aasworld.areasettings[1].areaflags = AAS_AREA_LIQUID;
+	VectorSet(aasworld.areas[1].center, 40.0f, 0.0f, 16.0f);
+
+	char fixture_path[PATH_MAX];
+	int written = snprintf(fixture_path,
+		sizeof(fixture_path),
+		"%s/tests/support/assets/bots/goal_no_itemconfig_tmp.w",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	write_goal_weight_fixture(fixture_path,
+		"weight \"goal_no_itemconfig_item\"\n"
+		"{\n"
+		"return balance(100,100,100);\n"
+		"}\n");
+	assert_int_equal(env->exports->BotLoadItemWeights(slot->goal_handle,
+		fixture_path),
+		BLERR_NOERROR);
+
+	int inventory[MAX_ITEMS];
+	memset(inventory, 0, sizeof(inventory));
+	vec3_t origin;
+	VectorClear(origin);
+	bot_goal_t chosen;
+
+	/* No level item is registered, so a loaded config reaches the roam leaf. */
+	BotGoal_SetCurrentTime(1.0f);
+	env->exports->BotEmptyGoalStack(slot->goal_handle);
+	assert_int_equal(env->exports->BotChooseLTGItem(slot->goal_handle,
+		origin,
+		inventory,
+		TFL_DEFAULT),
+		1);
+	memset(&chosen, 0, sizeof(chosen));
+	assert_true(env->exports->BotGetTopGoal(slot->goal_handle, &chosen));
+	assert_int_equal(chosen.flags, GFL_ROAM);
+
+	/* Dropping the global item config removes the roam fallback with it. */
+	BotShutdownGoalAI();
+	env->exports->BotEmptyGoalStack(slot->goal_handle);
+	assert_int_equal(env->exports->BotChooseLTGItem(slot->goal_handle,
+		origin,
+		inventory,
+		TFL_DEFAULT),
+		0);
+	memset(&chosen, 0, sizeof(chosen));
+	assert_false(env->exports->BotGetTopGoal(slot->goal_handle, &chosen));
+
+	assert_int_equal(env->exports->BotChooseNBGItem(slot->goal_handle,
+		origin,
+		inventory,
+		TFL_DEFAULT,
+		NULL,
+		500.0f),
+		0);
+	assert_false(env->exports->BotGetTopGoal(slot->goal_handle, &chosen));
+
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	test_goal_aas_fixture_end(&fixture);
+	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
 test_goal_nbg_uses_retail_strict_maxtime
 
 Pins the retail nearby-goal selector contract: travel time must be strictly
@@ -3087,8 +3296,10 @@ static void test_goal_choose_rejects_start_area_without_reachability(void **stat
 =============
 test_goal_start_area_uses_retail_contents_ground_test
 
-Pins the retail start-area contents query at origin minus two units. A masked
-0x38 content bit enables BotReachabilityArea's ground pass; zero does not.
+Pins the retail start-area contents query at origin minus two units. Retail
+calls BotReachabilityArea with the inverted swim test, so a clear 0x38 contents
+mask enables the drop-to-floor pass and a lava, slime, or water bit suppresses
+it.
 =============
 */
 static void test_goal_start_area_uses_retail_contents_ground_test(void **state)
@@ -3144,11 +3355,11 @@ static void test_goal_start_area_uses_retail_contents_ground_test(void **state)
 		int contents;
 		int expected_selection;
 	} cases[] = {
-		{0x08, 1},
-		{0x10, 1},
-		{0x20, 1},
-		{0x00, 0},
-		{0x40, 0},
+		{0x08, 0},
+		{0x10, 0},
+		{0x20, 0},
+		{0x00, 1},
+		{0x40, 1},
 	};
 	for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index)
 	{
@@ -3171,6 +3382,89 @@ static void test_goal_start_area_uses_retail_contents_ground_test(void **state)
 
 	test_goal_aas_fixture_end(&fixture);
 	assert_int_equal(remove(fixture_path), 0);
+}
+
+/*
+=============
+test_goal_init_retains_parsed_bsp_entity_list
+
+Pins sub_1002f360's BSP entity ownership. Retail parses its own list here and
+abandons it; only the separate map-load leaf frees and re-parses its distinct
+global copy. Each call therefore retains one more parsed list, and the
+map-scoped item pool churn nets to zero across repeated calls.
+=============
+*/
+static void test_goal_init_retains_parsed_bsp_entity_list(void **state)
+{
+	test_environment_t *env = (test_environment_t *)(*state);
+
+	char fixture_root[PATH_MAX];
+	int written = snprintf(fixture_root,
+		sizeof(fixture_root),
+		"%s/tests/support/assets",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_root));
+
+	char maps_dir[PATH_MAX];
+	written = snprintf(maps_dir, sizeof(maps_dir), "%s/maps", fixture_root);
+	assert_true(written > 0 && written < (int)sizeof(maps_dir));
+	(void)ensure_goal_fixture_directory(maps_dir);
+
+	char bsp_path[PATH_MAX];
+	written = snprintf(bsp_path,
+		sizeof(bsp_path),
+		"%s/goal_bsp_retain_tmp.bsp",
+		maps_dir);
+	assert_true(written > 0 && written < (int)sizeof(bsp_path));
+	write_goal_bsp_entity_fixture(bsp_path,
+		"{\n"
+		"\"classname\" \"weapon_rocketlauncher\"\n"
+		"\"origin\" \"64 0 16\"\n"
+		"}\n");
+
+	char itemconfig_path[PATH_MAX];
+	written = snprintf(itemconfig_path, sizeof(itemconfig_path),
+		"%s/goal_bsp_retain_items_tmp.c", fixture_root);
+	assert_true(written > 0 && written < (int)sizeof(itemconfig_path));
+	write_goal_text_fixture(itemconfig_path,
+		"iteminfo \"weapon_rocketlauncher\"\n"
+		"{\n"
+		"name \"Rocket Launcher\"\n"
+		"model \"models/weapons/g_rocket/tris.md2\"\n"
+		"mins {-15, -15, -15}\n"
+		"maxs {15, 15, 15}\n"
+		"}\n");
+
+	char previous_cwd[PATH_MAX];
+	assert_non_null(getcwd(previous_cwd, sizeof(previous_cwd)));
+
+	test_goal_aas_fixture_t fixture;
+	test_goal_aas_fixture_begin(&fixture, 8);
+	snprintf(aasworld.mapName, sizeof(aasworld.mapName), "goal_bsp_retain_tmp");
+	assert_int_equal(env->exports->BotLibVarSet("itemconfig", itemconfig_path),
+		BLERR_NOERROR);
+	LibVarSet("itemconfig", itemconfig_path);
+	assert_int_equal(BotSetupGoalAI(), BLERR_NOERROR);
+	assert_int_equal(chdir(fixture_root), 0);
+
+	/* Prime the pool so later deltas exclude first-time pool allocation. */
+	BotInitLevelItems();
+	const size_t blocks_after_first = BotMemory_BlockCount();
+	BotInitLevelItems();
+	const size_t blocks_after_second = BotMemory_BlockCount();
+	BotInitLevelItems();
+	const size_t blocks_after_third = BotMemory_BlockCount();
+
+	assert_int_equal(chdir(previous_cwd), 0);
+	test_goal_aas_fixture_end(&fixture);
+	assert_int_equal(unlink(bsp_path), 0);
+	assert_int_equal(unlink(itemconfig_path), 0);
+	(void)rmdir(maps_dir);
+
+	/* A released list would leave the count flat across repeated map loads. */
+	const size_t retained = blocks_after_second - blocks_after_first;
+	assert_true(retained > 0);
+	assert_int_equal(blocks_after_third - blocks_after_second, retained);
 }
 
 /*
@@ -4755,6 +5049,9 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_goal_itemconfig_enforces_max_iteminfo,
 									goal_move_setup,
 									goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_itemconfig_capacity_precedes_classname_and_allows_empty,
+									goal_move_setup,
+									goal_move_teardown),
 		cmocka_unit_test_setup_teardown(test_goal_itemconfig_uses_retail_inline_allocation,
 									goal_move_setup,
 									goal_move_teardown),
@@ -4791,6 +5088,9 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_goal_choose_skips_unlinked_static_items_except_roam,
                                         goal_move_setup,
                                         goal_move_teardown),
+		cmocka_unit_test_setup_teardown(test_goal_selection_requires_global_item_config,
+									goal_move_setup,
+									goal_move_teardown),
 		cmocka_unit_test_setup_teardown(test_goal_ltg_uses_expired_avoid_and_random_roam_fallback,
 										goal_move_setup,
 										goal_move_teardown),
@@ -4830,6 +5130,9 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_goal_item_vis_uses_retail_trace_and_entity_validity,
                                         goal_move_setup,
                                         goal_move_teardown),
+        cmocka_unit_test_setup_teardown(test_goal_init_retains_parsed_bsp_entity_list,
+                                    goal_move_setup,
+                                    goal_move_teardown),
         cmocka_unit_test_setup_teardown(test_goal_init_filters_notspawnflags_entities,
                                         goal_move_setup,
                                         goal_move_teardown),

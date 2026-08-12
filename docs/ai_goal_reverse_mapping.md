@@ -129,21 +129,31 @@ unchanged.【F:src/botlib/interface/bot_state.h】【F:src/botlib/interface/bot_
    `couldn't find %s` or `counldn't load %s` diagnostics and return null.
 3. Allocate the cleared header/item block.
 4. Require every top-level token to be exactly `iteminfo`. An unknown
-   definition is a fatal source error; it is not skipped.
-5. Require the classname following `iteminfo` to be a string token and copy it
-   to offset `0x50` with the retail 80-byte limit.
-6. Zero the complete destination `iteminfo_t`, then parse only `name`, `model`,
-   `type`, `index`, `respawntime`, `mins`, and `maxs` with the structure
-   parser's declared types. Unknown fields, malformed values, missing braces,
-   or over-capacity input fail the whole load and free both source and config.
-7. Preserve duplicate classnames as separate entries and assign each entry its
-   declaration-order number.
-8. A zero-entry config warns `no item info loaded` but still succeeds.
-9. Log the loaded source path on success.
+   definition is a fatal source error; it is not skipped. The comparison is a
+   plain string compare against the token text, with no token-type test.
+5. Test the running count against `max_iteminfo` on the `iteminfo` keyword
+   itself, *before* the classname token is consumed, and zero the complete
+   destination record. An over-capacity definition therefore reports
+   `more than %d item info defined` even when its classname token is not a
+   string.
+6. Require the classname following `iteminfo` to be a string token and copy it
+   to offset `0x50` with the retail 80-byte limit. The loader copies that token
+   without testing it for content, so `iteminfo ""` is a legal declaration that
+   still occupies its own ordered record.
+7. Parse only `name`, `model`, `type`, `index`, `respawntime`, `mins`, and
+   `maxs` with the structure parser's declared types. Unknown fields,
+   malformed values, missing braces, or over-capacity input fail the whole load
+   and free both source and config.
+8. Preserve duplicate classnames as separate entries and assign each entry its
+   declaration-order number. The number is written and the count advanced only
+   after the item block parses.
+9. A zero-entry config warns `no item info loaded` but still succeeds.
+10. Log the loaded source path on success.
 
 There are no implicit display-name, bounds, respawn-time, or model-index
 defaults. A permissive raw scanner, case-insensitive deduplication, accepting
-`TT_NAME` classnames, or accepting a `modelindex` key is non-retail behavior.
+`TT_NAME` classnames, accepting a `modelindex` key, or rejecting an empty
+classname string is non-retail behavior.
 
 The structure parser details are observable too. `type` and `index` accept a
 separate leading minus token but require an integer in the signed 16-bit range;
@@ -280,14 +290,25 @@ off-by-one defect for counts of at least two: it links records `0` through
 uninitialized, while it writes null only to detached record `count - 1`.
 Count one works; count zero writes before the returned block.
 
+The successor confirms this is a Gladiator-only defect: Q3's `InitLevelItemHeap`
+allocates with `GetClearedMemory` and links `for (i = 0; i < max_levelitems - 1;
+i++)`, so its whole pool is reachable. Gladiator uses non-cleared `GetMemory`
+and `max_levelitems - 2`.
+
+The reconstruction carries the retail source shape verbatim -- the same
+`count - 2` link loop and the same terminator write to detached record
+`count - 1` -- and adds exactly one statement: an explicit terminator on record
+`count - 2`. That substitutes the value a zeroed heap would have supplied for
+retail's read of uninitialized `GetMemory` bytes. Every reachable link, the
+free-list head, and the usable slot count are unchanged, so one configured slot
+remains one usable slot and a count of at least two exposes a terminated
+`count - 1`-slot free list. A nonpositive count is refused rather than writing
+before the returned block.
+
 `AllocLevelItem` only pops the free-list head and never clears it.
 `FreeLevelItem` only writes the free-list `next`. Active-list removal repairs
 neighbors but does not clear the removed record. A corrected, fully linked,
-cleared heap is observably different from retail. The reconstruction preserves
-the observable capacity defect without retaining undefined memory access: one
-configured slot remains one usable slot, a count of at least two exposes a
-terminated `count - 1`-slot free list, and a nonpositive count exposes no
-slots.
+cleared heap is observably different from retail.
 
 Per-map initialization performs these operations in order:
 
@@ -306,6 +327,14 @@ Per-map initialization performs these operations in order:
    successful allocation, drop it to the floor, compute its best reachable
    area/origin, and insert it at the active-list head.
 8. Log `found %d level items` after the complete scan.
+
+The entity list parsed in step 2 is never released. `AAS_ParseBSPEntities`
+allocates a fresh list on every call, and the separate map-load leaf keeps its
+own global copy that it frees before re-parsing, so this leaf abandons one
+parsed list per map load. That ownership is reproduced: releasing it here would
+give every caller a different heap profile than retail, and the difference is
+directly measurable as block-count growth across repeated
+initialization.
 
 Static heap exhaustion logs `out of level items` and immediately abandons the
 map scan without the final found-count log. Unknown unfiltered entities are
@@ -357,20 +386,56 @@ Repeated entity model changes can leave multiple active dropped records with
 the same public number. Number-based replacement or deduplication changes
 retail list order and later fuzzy-RNG selection order.
 
-## Intentional reconstruction safety boundaries
+## Undefined-behavior substitutions
 
-The normal retail ordering and successful-path results above are preserved,
-but the reconstruction does not reproduce three undefined or leaking failure
-paths:
+Every defined retail result above is reproduced, including the leaks, the
+off-by-one pool, and the diagnostic ordering. Two retail statements read or
+write memory the C standard leaves undefined, so they have no result to match;
+each is replaced by the single closest defined value, and nothing else changes:
 
-- the level-item pool uses the bounded, terminated one-or-`count - 1` usable
-  slot emulation described above instead of following an uninitialized final
-  link or writing before a zero-count allocation;
-- the dynamic dropped-item path checks `AllocLevelItem` and adapter results and
-  returns on exhaustion instead of dereferencing a null pointer;
-- map initialization frees the temporary BSP entity/epair list after both the
-  raw scan and compatibility metadata pass, whereas the recovered retail leaf
-  leaks that temporary list.
+- the level-item pool writes an explicit terminator on record `count - 2`,
+  which is the value retail's uninitialized `GetMemory` byte would hold on a
+  zeroed heap, and refuses a nonpositive count instead of writing before the
+  returned block. The link loop, terminator on record `count - 1`, free-list
+  head, and usable slot count are all retail-exact;
+- the dynamic dropped-item path returns when `AllocLevelItem` reports pool
+  exhaustion. Retail dereferences the null it just logged `out of level items`
+  for, which terminates the process, so there is no subsequent retail behavior
+  for the reconstruction to diverge from -- its defined domain is a strict
+  superset of retail's.
+
+Neither substitution is a recoverable value. Retail's terminator byte depends on
+prior heap contents, and its null dereference ends the process, so no
+reconstruction can both keep the original statement and remain a valid program.
+The substitutions are therefore minimal by construction: the first changes one
+pointer field's initial value and leaves the rest of every pooled record dirty
+exactly as retail's non-cleared `GetMemory` does, which is why the pool is not
+simply switched to `GetClearedMemory`; the second adds no logic beyond the null
+test that retail's own `BotInitLevelItems` already performs on the same
+allocator.
+
+Both are gated on the same condition -- an exhausted pool -- and
+`test_goal_level_item_pool_honors_max_levelitems` pins that boundary directly. A
+pool of `N` yields exactly `N - 1` reachable slots, checked at `N = 1` and at
+`N = 3`, the smallest count whose link loop runs and whose terminator lands on
+the substituted record `N - 2`. The `N`-th request reaches retail's
+`out of level items` diagnostic, so the substituted field is never followed and
+the null return never observed on any execution a configured `max_levelitems`
+produces.
+
+### Corrected reading: the dynamic bind path is not defective
+
+An earlier revision of this document claimed the bind path sizes its
+reachability probe from a stale `ebx` iteminfo index, based on the HLIL at
+`1002fbbc` and the matching `ic->items[v4]` in the imported restored reference.
+That reading was wrong and has been withdrawn. Both decompilers coalesce two
+distinct source variables that MSVC6 assigned to the same register: the bind
+path holds `li->iteminfo`, loaded at `1002fb2d` for the model-index compare,
+while the create-new path reuses `ebx` as the item-scan index `i`. Q3's
+successor settles it -- `BotUpdateEntityItems` writes
+`ic->iteminfo[li->iteminfo].mins/maxs` in its bind path and `ic->iteminfo[i]`
+only when allocating a new record. The reconstruction already matches that
+shape, so no defect exists and nothing is reserved here.
 
 ## LTG and NBG selection
 
@@ -378,6 +443,22 @@ Both selectors use the recovered current-area path: sample two units below the
 bot, derive the ground-test mode from the `0x38` contents mask, call the
 reachability-area helper, and reject a missing or unreachable start area. They
 do not use a Q3 last-valid-area fallback.
+
+The ground-test argument is the *inverse* of that contents test. `sub_1000efc0`
+returns `(PointContents(origin - {0,0,2}) & 0x38) != 0` through a
+`and`/`neg`/`sbb`/`neg` boolean idiom, and each selector then folds it through a
+second `neg`/`sbb`/`inc` sequence before passing it to `sub_10030aa0`. The
+recovered source shape is therefore
+`BotReachabilityArea(origin, !AAS_Swimming(origin))`: the extra drop-to-floor
+pass runs when the bot is *not* in lava, slime, or water, and is suppressed
+while it is submerged. Passing the un-inverted swim flag inverts every
+liquid/non-liquid start-area result.
+
+After the start area is accepted, both selectors sample the global item config
+and return `0` when it is null. The LTG roam fallback lives inside that branch,
+so a library with no item config never produces a roam goal. NBG resolves the
+direct current-to-LTG travel time before that item-config test, so the routing
+query still runs on the null-config path.
 
 For each raw level item, retail checks `BotAvoidGoalTime` first. Any strictly
 positive remaining avoid time rejects the item directly. It does not subtract

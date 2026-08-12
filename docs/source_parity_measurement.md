@@ -97,6 +97,93 @@ No source reconstruction was promoted in this pass, so implementation parity is
 unchanged. The measurement improved confidence and identified three immediate
 residual parity failures plus missing asset prerequisites for full CTest.
 
+## Scoped pass: bot weapon and combat
+
+This subsystem was audited routine-by-routine against the imported reference
+reconstruction and the HLIL. Every routine below was read side by side with its
+retail counterpart; the result column records whether the reconstruction's
+observable behaviour matches for all inputs the retail routine can receive.
+
+| Retail routine | Reconstruction | Result |
+| --- | --- | --- |
+| `LoadWeaponConfig` / `sub_10034bb0` | `AI_LoadWeaponLibrary` | match |
+| `WeaponWeightIndex` / `sub_10035280` | `AI_WeaponWeightsBindConfig` | match |
+| `BotFreeWeaponWeights` / `sub_10035300` | `BotWeapon_ClearWeights` | match |
+| `BotLoadWeaponWeights` / `sub_10035340` | `BotWeapon_LoadWeightsInternal` | fixed: missing fatal on the cached path |
+| `sub_100353c0` | `AI_WeaponNumberForModel` | match |
+| `sub_10035430` | `AI_WeaponNameForModel` | match |
+| `sub_100354b0` | `BotCurrentWeaponInfo` | fixed: removed an upper bound retail omits |
+| `BotChooseBestFightWeapon` / `sub_10035500` | `BotSelectBestFightWeapon` | match |
+| `BotResetWeaponState` / `sub_10035640` | `BotResetWeaponState` | match |
+| `BotSetupWeaponAI` / `sub_10035680` | `BotSetupWeaponAI` | match |
+| `BotShutdownWeaponAI` / `sub_100356d0` | `BotShutdownWeaponAI` | match |
+| `sub_10020fe0` | `BotWeaponStateSyncFrame` | match |
+| `BotGetWeaponInfo` | `BotGetWeaponInfo` | fixed: silent skip without a config; handle-band diagnostic |
+| `BotAimAtEnemy` | `AI_DMAimAtEnemy` | fixed: lead derived from the wrong velocity source |
+| `BotCheckAttack` / `sub_10024590` | `AI_DMCheckAttack` | match |
+| `BotAttackMove` | `AI_DMAttackMove` | match |
+| `BotUpdateInventory` / `sub_10021020` | `BotAI_UpdateBattleInventory` | match |
+| `BotUpdateBattleInventory` / `sub_10021290` | `BotAI_UpdateEnemyBattleInventory` | match |
+| `BotBattleUseItems` / `sub_10021500` | `BotAI_UseItems` | match |
+| `sub_100215e0` | `BotAI_BattleUseItems` | match |
+| `BotAggression` | `BotAI_Aggression` | match |
+| `BotWantsToRetreat` / `sub_100228c0` | `BotAI_WantsToRetreat` | match |
+| `BotWantsToChase` / `sub_10022930` | `BotAI_WantsToChase` | match |
+| `BotCanAndWantsToRocketJump` / `sub_10022990` | `BotAI_CanAndWantsToRocketJump` | match |
+| `AINode_Battle_Fight` / `sub_1001fd30` | Battle Fight node step and driver | fixed: enemy-location commit ordered after the inventory projection |
+| `BotChangeViewAngles` / `sub_10029150` | `AI_DMChangeViewAngles` | match |
+
+Twenty-six routines audited, six defects across five routines, all fixed and
+covered by regression tests. No intentional behavioural difference against the
+retail reference remains in this subsystem. The guards that survive in the
+combat path either match retail's own guards or are unreachable given the
+library's initialisation invariants, and the battle travel mask is pinned equal
+to retail's literals by compile-time assertion over the fourteen travel types
+Gladiator defines.
+
+This is source-level correspondence against the authoritative reference, which
+is the same standard every other row in `docs/be_ai_parity_matrix.md` is held
+to; it is not a byte-identity measurement. A byte oracle for these routines is
+blocked on the repository-wide prerequisite in item 3 below and is not specific
+to weapon or combat: this tree is a modular reconstruction that compiles for
+64-bit hosts, so per-routine object comparison needs an MSVC6-compatible
+monolithic build before any byte-match percentage can be claimed for any
+subsystem.
+
+## Defects found outside weapon and combat
+
+Closing the weapon and combat pass surfaced five defects in adjacent code. All
+are fixed except where noted.
+
+1. `BotState_Get` returns a stable fixed-stride slot for any in-range client
+   while the library is up, because retail keeps its client records in one slab
+   allocated at library setup. Four assertions in `tests/ai/test_ai_character.c`
+   still tested for a null slot after shutdown, which was the pre-slab
+   per-client-allocation contract. They now assert a retained slot whose record
+   is cleared.
+2. Presentation settings live in a table separate from the client record and
+   outlive a client shutdown that clears the record. `BotSetupClient` did not
+   re-seed the record's mirror from that table, so a client set up again
+   reported a cleared name and skin.
+3. `BotState_ResetCombat` was defined but never called, so the combat block's
+   reconstruction timestamps stayed at zero instead of their `-FLT_MAX` "never
+   happened" value. A freshly set-up client therefore read as having sighted an
+   enemy, killed one, and taken damage at time zero. Seeding now happens per
+   client in `BotSetupClient`; the record slab itself stays zero-cleared,
+   matching retail and the capacity test that pins it.
+4. Chat cooldowns sampled a wall clock rather than the frame clock the host
+   advances through `BotStartFrame`, so identical frame sequences could take
+   different chat paths depending on how long the host took between frames.
+   Every other timed decision in that module already used `AAS_Time()`.
+5. Not fixed: `BotFindMatch` trims both separators from a capture, while retail
+   measures a variable from its start to where the following literal was found.
+   The shipped obituary context resolves to the unspaced alternates in
+   `bots/match.c`, so a raw span keeps the separator on both sides. Two
+   expectations in `tests/parity/test_bot_interface.c` want the victim's
+   trailing space preserved. Honouring them requires the name-resolving
+   consumers to trim instead, so the span semantics and those consumers need to
+   change together rather than one at a time.
+
 ## Next measurement improvements
 
 1. Stage the missing mover BSP/AAS assets under `dev_tools/assets/maps/` and

@@ -838,6 +838,61 @@ static void test_weapon_selection_rebinds_unbound_state_weights(void **state)
 	teardown_botlib_environment();
 }
 
+/*
+=============
+test_weapon_config_capacity_backs_unbounded_current_weapon_fetch
+
+Retail `sub_100354b0` fetches `weaponinfo[weaponindex]` with no upper bound.
+That is only safe because `LoadWeaponConfig` sizes and clears both arrays from
+`max_weaponinfo` / `max_projectileinfo` rather than from the declared counts, so
+a cached index left over from a larger config still lands on a zeroed row.
+Pins that allocation contract and the fetch that depends on it.
+=============
+*/
+static void test_weapon_config_capacity_backs_unbounded_current_weapon_fetch(void **state)
+{
+	(void)state;
+
+	char weapon_config_path[512];
+	asset_path_or_skip("dev_tools/assets/weapons.c",
+		weapon_config_path,
+		sizeof(weapon_config_path));
+
+	setup_botlib_environment();
+	LibVarSet("max_weaponinfo", "48");
+
+	ai_weapon_library_t *library = AI_LoadWeaponLibrary(NULL);
+	assert_non_null(library);
+	const bot_weapon_config_t *weapon_config = AI_GetWeaponConfig(library);
+	assert_non_null(weapon_config);
+
+	/* The array is sized from the libvar, not from the parsed weapon count. */
+	assert_int_equal(weapon_config->max_weapons, 48);
+	assert_true(weapon_config->num_weapons > 0);
+	assert_true(weapon_config->max_weapons > weapon_config->num_weapons);
+
+	/* Every slot past the declared count is still allocated and cleared. */
+	for (int index = weapon_config->num_weapons;
+		index < weapon_config->max_weapons;
+		++index)
+	{
+		assert_int_equal(weapon_config->weapons[index].number, 0);
+		assert_int_equal(weapon_config->weapons[index].name[0], '\0');
+		assert_null(weapon_config->weapons[index].projectileinfo);
+	}
+
+	int weapon_handle = BotAllocWeaponState();
+	assert_true(weapon_handle > 0);
+	/* A cleared weapon state reports index zero, matching retail's memset. */
+	assert_ptr_equal(BotCurrentWeaponInfo(weapon_handle),
+		&weapon_config->weapons[0]);
+
+	BotFreeWeaponState(weapon_handle);
+	AI_UnloadWeaponLibrary(library);
+	LibVarSet("max_weaponinfo", "32");
+	teardown_botlib_environment();
+}
+
 static void test_weapon_model_lookup_and_info_copy_match_hlil_helpers(void **state)
 {
     (void)state;
@@ -1253,6 +1308,7 @@ int main(void)
         cmocka_unit_test(test_weapon_weights_cache_uses_caller_filename),
         cmocka_unit_test(test_weapon_weight_binding_preserves_hlil_load_order),
         cmocka_unit_test(test_weapon_selection_rebinds_unbound_state_weights),
+        cmocka_unit_test(test_weapon_config_capacity_backs_unbounded_current_weapon_fetch),
         cmocka_unit_test(test_weapon_model_lookup_and_info_copy_match_hlil_helpers),
         cmocka_unit_test(test_bot_choose_best_fight_weapon_matches_reference),
         cmocka_unit_test(test_weapon_selector_queues_use_command_like_hlil),

@@ -102,6 +102,16 @@ typedef struct bot_weapon_config_s {
 	int num_projectiles;
 	bot_weapon_projectile_t *projectiles;
 	bot_weapon_info_t *weapons;
+	/*
+	 * Retail sizes both arrays from `max_weaponinfo` / `max_projectileinfo`
+	 * and clears them at allocation, independently of how many definitions the
+	 * config file actually declares.  That is what makes its unbounded
+	 * `weaponinfo[weaponindex]` fetch memory-safe.  Recording the capacities
+	 * keeps that contract explicit and checkable instead of implied by the
+	 * allocator.
+	 */
+	int max_weapons;
+	int max_projectiles;
 } bot_weapon_config_t;
 
 typedef struct ai_weapon_library_s {
