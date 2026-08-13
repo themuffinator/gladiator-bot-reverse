@@ -1083,6 +1083,58 @@ static void test_bridge_client_move_and_deactivate_preserve_retail_cache_lifecyc
 	assert_false(Bridge_ReadClientFrame(2, &moved));
 }
 
+/*
+=============
+test_bridge_map_load_reset_preserves_client_active_flag
+
+Pins sub_10029a40's save/restore of the record head across the map-load memset.
+=============
+*/
+static void test_bridge_map_load_reset_preserves_client_active_flag(void **state)
+{
+	translator_test_context_t *context = (translator_test_context_t *)*state;
+
+	Bridge_SetClientActive(1, qtrue);
+	Bridge_SetFrameTime(1.25f);
+
+	bot_updateclient_t update = {0};
+	update.pm_type = PM_NORMAL;
+	VectorSet(update.origin, 64.0f, -32.0f, 16.0f);
+	assert_int_equal(Bridge_UpdateClient(1, &update), BLERR_NOERROR);
+
+	AASClientFrame frame = {0};
+	assert_true(Bridge_ReadClientFrame(1, &frame));
+
+	/*
+	 * Retail's map-load reset (sub_10029c10 -> sub_10029a40) wipes the cached
+	 * payload but reads *arg1 at 0x10029a97 and writes it back at 0x10029b42,
+	 * so the flag BotUpdateClient tests at 0x1002989d survives the level
+	 * change and the very next update succeeds without a PRT_FATAL print.
+	 */
+	Bridge_ResetCachedFrames();
+	assert_false(Bridge_ReadClientFrame(1, &frame));
+
+	context->print_count = 0U;
+	Bridge_SetFrameTime(0.5f);
+	assert_int_equal(Bridge_UpdateClient(1, &update), BLERR_NOERROR);
+	assert_int_equal(context->print_count, 0U);
+	assert_true(Bridge_ReadClientFrame(1, &frame));
+
+	/* Slots that were never set up stay inactive across the same reset. */
+	context->print_count = 0U;
+	assert_int_equal(Bridge_UpdateClient(2, &update), BLERR_AIUPDATEINACTIVECLIENT);
+	assert_int_equal(context->print_count, 1U);
+
+	/*
+	 * The library-lifecycle reset still drops the flag: retail frees and
+	 * reallocates the whole table (sub_10029da0 / sub_10029c90, 0x10029d1e).
+	 */
+	Bridge_ResetCachedUpdates();
+	context->print_count = 0U;
+	assert_int_equal(Bridge_UpdateClient(1, &update), BLERR_AIUPDATEINACTIVECLIENT);
+	assert_int_equal(context->print_count, 1U);
+}
+
 static void test_bridge_entity_cache_tracks_maxentities(void **state)
 {
     (void)state;
@@ -1171,6 +1223,9 @@ int main(void)
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_client_move_and_deactivate_preserve_retail_cache_lifecycle,
+                                        translator_setup,
+                                        translator_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_map_load_reset_preserves_client_active_flag,
                                         translator_setup,
                                         translator_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_entity_cache_tracks_maxentities,

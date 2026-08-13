@@ -38,14 +38,16 @@
 #include "q2bridge/bridge.h"
 #include "shared/q_platform.h"
 
+/*
+ * Implemented in src/botlib/precomp/l_script.c but not yet exported by
+ * l_script.h. Retail sub_100069a0 routes every entity-lump parse failure
+ * through it (j_sub_1003e2c0 at 10006bda / 10006bed / 10006c34).
+ */
+void ScriptError(pc_script_t *script, char *str, ...);
+
 static void AAS_UnlinkEntityFromAreas(aas_entity_t *entity);
 static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs);
 static int AAS_LinkEntityToBSPLeaves(aas_entity_t *entity, const vec3_t absmins, const vec3_t absmaxs);
-static int AAS_BSPModelPointContents(const vec3_t point,
-                                     int modelnum,
-                                     const vec3_t origin,
-                                     const vec3_t angles,
-                                     qboolean includeentities);
 static void AAS_ResetEntityBitset(aas_entity_t *entity);
 static int AAS_PrepareEntityBitset(aas_entity_t *entity);
 static int AAS_EnsureAreaListArray(void);
@@ -209,12 +211,19 @@ bsp_trace_t AAS_Trace(const vec3_t start,
 =============
 AAS_PointContents
 
-Return the world BSP and linked-entity contents at a point.
+Return the engine's contents at a point.
 =============
 */
 int AAS_PointContents(const vec3_t point)
 {
-	return AAS_BSPModelPointContents(point, 0, NULL, NULL, qtrue);
+	/*
+	 * Retail sub_10003080 is a single tail call into the bot_import
+	 * PointContents slot ("1000308e  return data_10063ff0(arg1)"), which the
+	 * host wires to gi.pointcontents. The DLL's own BSP walk (sub_10005a10 /
+	 * sub_100057a0) has no reachable callers. AAS_BSPModelPointContents is
+	 * kept as that reconstruction but is no longer on this path.
+	 */
+	return Q2_PointContents((vec_t *)point);
 }
 
 /*
@@ -546,28 +555,53 @@ Return the retail AAS bounding box for a presence type.
 */
 void AAS_PresenceTypeBoundingBox(int presencetype, vec3_t mins, vec3_t maxs)
 {
+	/*
+	 * Retail sub_1000dda0 builds two 3-entry stack tables and indexes them by
+	 * a selector that is 1 for presence type 4 and 2 for everything else:
+	 *   1000ddc2  mins[1] = mins[2] = {-16,-16,-24}   (0xC1800000/0xC1C00000)
+	 *   1000de0a  maxs[1] = {16,16,32}, maxs[2] = {16,16,8}
+	 *   1000de3a  if (arg1 != 4) { if (arg1 != 2) PRT_FATAL; index = 2; }
+	 *   1000de3c  else index = 1
+	 * The half extents are +/-16 (Q2's 32x32 player), not Q3's +/-15, and the
+	 * literal 4 selects the TALL box while 2 selects the crouch box - the
+	 * opposite of the Q3 be_aas_sample.c mapping. The bare literals are used
+	 * on purpose: PRESENCE_NORMAL/PRESENCE_CROUCH keep the values retail's
+	 * areasettings presence mask needs (sub_100115d0), and retail is simply
+	 * inconsistent between the mask and this table.
+	 */
+	static const vec3_t boxmins[3] = {
+		{ 0.0f, 0.0f, 0.0f },
+		{ -16.0f, -16.0f, -24.0f },
+		{ -16.0f, -16.0f, -24.0f }
+	};
+	static const vec3_t boxmaxs[3] = {
+		{ 0.0f, 0.0f, 0.0f },
+		{ 16.0f, 16.0f, 32.0f },
+		{ 16.0f, 16.0f, 8.0f }
+	};
+	int index;
+
 	if (mins == NULL || maxs == NULL)
 	{
 		return;
 	}
 
-	if (presencetype == PRESENCE_NORMAL)
+	if (presencetype == 4)
 	{
-		VectorSet(mins, -15.0f, -15.0f, -24.0f);
-		VectorSet(maxs, 15.0f, 15.0f, 32.0f);
-		return;
+		index = 1;
+	}
+	else
+	{
+		if (presencetype != 2)
+		{
+			BotLib_Print(PRT_FATAL,
+				"AAS_PresenceTypeBoundingBox: unknown presence type\n");
+		}
+		index = 2;
 	}
 
-	if (presencetype == PRESENCE_CROUCH)
-	{
-		VectorSet(mins, -15.0f, -15.0f, -24.0f);
-		VectorSet(maxs, 15.0f, 15.0f, 8.0f);
-		return;
-	}
-
-	BotLib_Print(PRT_FATAL, "AAS_PresenceTypeBoundingBox: unknown presence type\n");
-	VectorSet(mins, -15.0f, -15.0f, -24.0f);
-	VectorSet(maxs, 15.0f, 15.0f, 8.0f);
+	VectorCopy(boxmins[index], mins);
+	VectorCopy(boxmaxs[index], maxs);
 }
 
 /*
@@ -1863,11 +1897,11 @@ AAS_BSPModelPointContents
 Mirror sub_100057a0 for static model brushes and world-leaf linked entities.
 =============
 */
-static int AAS_BSPModelPointContents(const vec3_t point,
-                                     int modelnum,
-                                     const vec3_t origin,
-                                     const vec3_t angles,
-                                     qboolean includeentities)
+int AAS_BSPModelPointContents(const vec3_t point,
+                              int modelnum,
+                              const vec3_t origin,
+                              const vec3_t angles,
+                              qboolean includeentities)
 {
 	if (point == NULL || !AAS_BSPModelValid(modelnum))
 	{
@@ -3580,15 +3614,23 @@ int AAS_EntityVisible(int viewer,
 			{
 				return qtrue;
 			}
-		}
 
-		if (sampleindex == 0)
-		{
-			sample[2] += entity->mins[2];
-		}
-		else if (sampleindex == 1)
-		{
-			sample[2] += entity->maxs[2] - entity->mins[2];
+			/*
+			 * Retail advances the sample point INSIDE the PVS-gated block:
+			 * the z-adjust at 1000b98d-1000b9af sits at the same HLIL
+			 * indentation as the trace and the success return, while only the
+			 * loop counter update at 1000b9b8 is one level out. So when the
+			 * PVS test fails, retail re-tests the same bbox midpoint on
+			 * iterations 1 and 2 and never reaches the feet/head samples.
+			 */
+			if (sampleindex == 0)
+			{
+				sample[2] += entity->mins[2];
+			}
+			else if (sampleindex == 1)
+			{
+				sample[2] += entity->maxs[2] - entity->mins[2];
+			}
 		}
 	}
 
@@ -5855,10 +5897,12 @@ static int AAS_ReturnAASLoadFailure(const aas_map_file_source_t *source,
 =============
 AAS_PrintLoadedMapFile
 
-Reports a loose physical path or an archive/logical path pair like retail.
+Reports an archive/logical path pair, or for a loose file either the logical
+"maps\<map>.<ext>" name or the resolved physical path, like retail.
 =============
 */
-static void AAS_PrintLoadedMapFile(const aas_map_file_source_t *source)
+static void AAS_PrintLoadedMapFile(const aas_map_file_source_t *source,
+	qboolean looseUsesLogical)
 {
 	if (source == NULL)
 	{
@@ -5897,7 +5941,19 @@ static void AAS_PrintLoadedMapFile(const aas_map_file_source_t *source)
 		return;
 	}
 
-	BotLib_Print(PRT_MESSAGE, "loaded %s\n", source->physicalPath);
+	/*
+	 * Retail sub_1000e880 deliberately reports different buffers for the two
+	 * loose cases. The BSP prints the logical name it assembled at
+	 * 1000e8d6/1000e8fd/1000e928 ("maps\" + map + ".bsp"):
+	 *   1000e98b  if (var_1b4 == 0)
+	 *   1000e9bb      Print(1, "loaded %s\n", &var_120)
+	 * while the AAS file prints the resolved physical path:
+	 *   1000eae2  if (s == 0)
+	 *   1000eb0f      Print(1, "loaded %s\n", &var_1b0)
+	 */
+	BotLib_Print(PRT_MESSAGE,
+		"loaded %s\n",
+		looseUsesLogical ? source->logicalPath : source->physicalPath);
 }
 
 static long AAS_GetFileSize(FILE *file)
@@ -5996,9 +6052,8 @@ aas_bspentity_t *AAS_ParseBSPEntities(const char *data, size_t length)
 	{
 		if (strcmp(token.string, "{") != 0)
 		{
-			BotLib_Print(PRT_ERROR,
-				"AAS_ParseBSPEntities: invalid %s\n",
-				token.string);
+			/* Retail 10006bda: j_sub_1003e2c0(script, "invalid %s\n"). */
+			ScriptError(script, "invalid %s\n", token.string);
 			AAS_FreeBSPEntities(entities);
 			FreeScript(script);
 			return NULL;
@@ -6034,9 +6089,8 @@ aas_bspentity_t *AAS_ParseBSPEntities(const char *data, size_t length)
 
 			if (token.type != TT_STRING)
 			{
-				BotLib_Print(PRT_ERROR,
-					"AAS_ParseBSPEntities: invalid %s\n",
-					token.string);
+				/* Retail 10006bed: j_sub_1003e2c0(script, "invalid %s\n"). */
+				ScriptError(script, "invalid %s\n", token.string);
 				AAS_FreeBSPEntities(entities);
 				FreeScript(script);
 				return NULL;
@@ -6045,6 +6099,8 @@ aas_bspentity_t *AAS_ParseBSPEntities(const char *data, size_t length)
 			size_t tokenlength = strlen(token.string);
 			if (tokenlength < 2U)
 			{
+				/* 64-bit-safety guard retail lacks; keep it diagnosed. */
+				ScriptError(script, "invalid %s\n", token.string);
 				AAS_FreeBSPEntities(entities);
 				FreeScript(script);
 				return NULL;
@@ -6068,6 +6124,8 @@ aas_bspentity_t *AAS_ParseBSPEntities(const char *data, size_t length)
 			tokenlength = strlen(token.string);
 			if (tokenlength < 2U)
 			{
+				/* 64-bit-safety guard retail lacks; keep it diagnosed. */
+				ScriptError(script, "invalid %s\n", token.string);
 				AAS_FreeBSPEntities(entities);
 				FreeScript(script);
 				return NULL;
@@ -6085,7 +6143,8 @@ aas_bspentity_t *AAS_ParseBSPEntities(const char *data, size_t length)
 
 		if (!closed)
 		{
-			BotLib_Print(PRT_ERROR, "AAS_ParseBSPEntities: missing }\n");
+			/* Retail 10006c34: j_sub_1003e2c0(script, "missing }\n"). */
+			ScriptError(script, "missing }\n");
 			AAS_FreeBSPEntities(entities);
 			FreeScript(script);
 			return NULL;
@@ -8385,6 +8444,24 @@ int AAS_LoadMap(const char *mapname,
 		return AAS_ReturnMapLoadFailure(BLERR_CANNOTSEEKTOBSPFILE);
 	}
 
+	/*
+	 * Retail sub_10007d30 special-cases exactly two lumps whose length may
+	 * legitimately be zero and reports each at PRT_MESSAGE:
+	 *   10007f7d  if (visibility filelen == 0) Print(1, "WARNGING: bsp has no
+	 *             visibility data\n")      (typo is literal, string 0x1005ac70)
+	 *   100080fe  if (lighting filelen == 0) Print(1, "WARNING: bsp has no
+	 *             light data\n")           (string 0x1005ac20)
+	 * No other lump gets zero-length handling.
+	 */
+	if (bspHeader.lumps[Q2_BSP_LUMP_VISIBILITY].length == 0)
+	{
+		BotLib_Print(PRT_MESSAGE, "WARNGING: bsp has no visibility data\n");
+	}
+	if (bspHeader.lumps[Q2_BSP_LUMP_LIGHTING].length == 0)
+	{
+		BotLib_Print(PRT_MESSAGE, "WARNING: bsp has no light data\n");
+	}
+
 	char *entityData = NULL;
 	int entityLength = 0;
 	int entityStatus = AAS_ReadLump(bspFile,
@@ -8424,7 +8501,8 @@ int AAS_LoadMap(const char *mapname,
 			bspSource.physicalPath);
 		return AAS_ReturnMapLoadFailure(BLERR_CANNOTREADBSPHEADER);
     }
-	AAS_PrintLoadedMapFile(&bspSource);
+	/* Retail 1000e9bb prints the logical "maps\<map>.bsp" name here. */
+	AAS_PrintLoadedMapFile(&bspSource, qtrue);
 
 	FILE *aasFile = NULL;
 	qboolean aasDiscovered = qfalse;
@@ -8917,7 +8995,7 @@ int AAS_LoadMap(const char *mapname,
 	if (aasSource.zipped)
 	{
 		(void)unlink(aasSource.physicalPath);
-		AAS_PrintLoadedMapFile(&aasSource);
+		AAS_PrintLoadedMapFile(&aasSource, qfalse);
 		BotLib_LogWrite("found %s in %s",
 			aasSource.logicalPath,
 			aasSource.archivePath);
@@ -9043,7 +9121,8 @@ int AAS_LoadMap(const char *mapname,
 		&numBspVisibilityClusters);
 	if (!aasSuccessReported)
 	{
-		AAS_PrintLoadedMapFile(&aasSource);
+		/* Retail 1000eb0f prints the resolved physical path for the AAS file. */
+		AAS_PrintLoadedMapFile(&aasSource, qfalse);
 	}
 
 	if (aasSource.zipped)
@@ -9356,13 +9435,15 @@ int AAS_WriteAASFile(const char *filename)
 	return success;
 }
 
+/*
+=============
+AAS_Shutdown
+
+Tear the AAS world down and report the shutdown unconditionally.
+=============
+*/
 void AAS_Shutdown(void)
 {
-    if (aasworld.loaded || aasworld.initialized)
-    {
-        BotLib_Print(PRT_MESSAGE, "AAS shutdown.\n");
-    }
-
 	TranslateEntity_SetCurrentTime(0.0f);
 	TranslateEntity_SetWorldLoaded(qfalse);
 	AAS_ClearWorld();
@@ -9371,7 +9452,16 @@ void AAS_Shutdown(void)
 	g_aasEntityLimitsConfigured = qfalse;
 	g_aasConfiguredMaxEntities = 0;
 	g_aasConfiguredMaxClients = 0;
-    g_aasLibraryInitialized = qfalse;
+	g_aasLibraryInitialized = qfalse;
+
+	/*
+	 * Retail sub_1000ee30 prints last and with no predicate at all:
+	 * "1000ee80  return data_10063fe8(1, "AAS shutdown.\n")", reached after the
+	 * memset at 1000ee6f has already zeroed both the loaded and initialized
+	 * flags, so no guard could have referenced them. A shutdown without a map,
+	 * or a second shutdown in a row, still prints.
+	 */
+	BotLib_Print(PRT_MESSAGE, "AAS shutdown.\n");
 }
 
 static int AAS_EnsureEntityCapacity(int ent)
@@ -10012,16 +10102,16 @@ int AAS_UpdateEntity(int ent, const AASEntityFrame *state)
 		}
     }
 
-	if (ent > 0 && state->origin_dirty && entity->solid == SOLID_BSP)
-    {
-        float dx = fabsf(state->origin[0] - state->previous_origin[0]);
-        float dy = fabsf(state->origin[1] - state->previous_origin[1]);
-        float dz = fabsf(state->origin[2] - state->previous_origin[2]);
-        if (dx > 0.125f || dy > 0.125f || dz > 0.125f)
-        {
-            AAS_InvalidateRouteCache();
-        }
-    }
+	/*
+	 * Retail sub_1000a920 does no routing work at all. Its whole mover path is
+	 * relinking - "1000aafd j_sub_1001c3f0(esi[0x1f])", "1000ab14 esi[0x1f] =
+	 * j_sub_1001c620(...)", "1000ab1e j_sub_10006090(esi[0x20])", "1000ab38
+	 * esi[0x20] = j_sub_10006210(...)", "1000ab47 return 0" - so a door, plat
+	 * or elevator moving never touches the routing caches. The only routine
+	 * that tears the cache head tables down is sub_10019550, and its only two
+	 * call sites in the image are 1000ed30 (AAS_LoadMap) and 1000ee30
+	 * (AAS_Shutdown). Retail keeps both cache families alive for the whole map.
+	 */
 
     aasworld.entitiesValid = qtrue;
     return BLERR_NOERROR;

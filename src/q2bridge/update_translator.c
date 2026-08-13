@@ -439,6 +439,39 @@ void Bridge_ResetCachedUpdates(void)
     Bridge_UpdateMaxClientIndex(qtrue);
 }
 
+/*
+=============
+Bridge_ResetCachedFrames
+
+Clears every cached client frame for a map load while keeping each slot set up.
+=============
+*/
+void Bridge_ResetCachedFrames(void)
+{
+	int i;
+
+	/*
+	 * Retail's per-client map-load reset sub_10029a40 reads the record head
+	 * before wiping it (`10029a97  int32_t eax = *arg1`), memsets the whole
+	 * 0x11d0 record (0x10029afc) and writes the head straight back
+	 * (`10029b42  *arg1 = eax`). That head word is the very flag
+	 * BotUpdateClient tests at 0x1002989d, so a client set up before
+	 * BotLoadMap stays active across the level change.
+	 */
+	for (i = 0; i < (int)(sizeof(g_bridge_clients) / sizeof(g_bridge_clients[0])); i++)
+	{
+		qboolean was_active = g_bridge_clients[i].active;
+
+		memset(&g_bridge_clients[i], 0, sizeof(g_bridge_clients[i]));
+		g_bridge_clients[i].active = was_active;
+	}
+
+	Bridge_ResetEntityTable();
+	g_bridge_frame_time = 0.0f;
+
+	Bridge_UpdateMaxClientIndex(qtrue);
+}
+
 void Bridge_ClearClientSlot(int client)
 {
     if (!Bridge_CheckClientNumber(client, "Bridge_ClearClientSlot"))

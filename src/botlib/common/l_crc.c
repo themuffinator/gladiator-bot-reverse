@@ -22,10 +22,11 @@ typedef struct crc_source_checksum_s
 static crc_source_checksum_t *g_crc_source_checksums;
 
 /*
- * The DLL suppresses registration for this embedded 92-record checksum
- * catalogue before it checks source names or allocates a list node.  Although
- * each record carries an adjacent category word in the original data table,
- * sub_100377e0 compares only this 16-bit first field.
+ * The retail 92-record checksum catalogue at 0x1005e678..0x1005e958, kept
+ * verbatim as documentation of the shipped data table (stride 8, only this
+ * 16-bit first field is compared).  Deliberately unreferenced: sub_100377e0
+ * scans it and then throws the result away, calling the list insert at
+ * 0x100377fe on both the match and the exhaustion path, so it filters nothing.
  */
 static const uint16_t g_crc_embedded_source_checksums[] = {
 	0xA991U, 0xA757U, 0x7267U, 0x7A0DU, 0x937CU, 0xCF9BU,
@@ -81,29 +82,6 @@ static const uint16_t g_crc_table[257] = {
     0xef1f, 0xff3e, 0xcf5d, 0xdf7c, 0xaf9b, 0xbfba, 0x8fd9, 0x9ff8,
     0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0
 };
-
-/*
-=============
-CRC_IsEmbeddedSourceChecksum
-
-Matches the retail filter which suppresses checksum-catalogue entries.
-=============
-*/
-static int CRC_IsEmbeddedSourceChecksum(uint16_t checksum)
-{
-	for (size_t index = 0;
-		index < sizeof(g_crc_embedded_source_checksums) /
-			sizeof(g_crc_embedded_source_checksums[0]);
-		++index)
-	{
-		if (g_crc_embedded_source_checksums[index] == checksum)
-		{
-			return 1;
-		}
-	}
-
-	return 0;
-}
 
 /*
 =============
@@ -238,11 +216,14 @@ void CRC_RegisterSourceChecksum(const char *name, uint16_t checksum)
 	{
 		return;
 	}
-	if (CRC_IsEmbeddedSourceChecksum(checksum))
-	{
-		return;
-	}
 
+	/*
+	 * Retail 0x100377e0 walks the embedded checksum catalogue at
+	 * 0x1005e678..0x1005e958 but discards the search result: the list insert at
+	 * 0x100377fe runs on both the match and the exhaustion path, so the scan is
+	 * dead code and registration is unconditional here.  Only the name-ordered
+	 * duplicate scan below (retail 0x100376b0) can reject a record.
+	 */
 	crc_source_checksum_t *previous = NULL;
 	crc_source_checksum_t *current = g_crc_source_checksums;
 	while (current != NULL)

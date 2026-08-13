@@ -1,12 +1,25 @@
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <setjmp.h>
 #include <cmocka.h>
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#include <direct.h>
+#define TEST_MKDIR(path) _mkdir(path)
+#define TEST_RMDIR(path) _rmdir(path)
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define TEST_MKDIR(path) mkdir((path), 0777)
+#define TEST_RMDIR(path) rmdir(path)
+#endif
 
 #ifndef cmocka_skip
 #define cmocka_skip(...) skip()
@@ -14,7 +27,9 @@
 
 #include "botlib/ai_weight/bot_weight.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/interface/botlib_interface.h"
 #include "inv.h"
 
 #ifndef PROJECT_SOURCE_DIR
@@ -126,6 +141,96 @@ static int find_weight_index(const bot_weight_config_t *config, const char *name
 	return -1;
 }
 
+#define TEST_MAX_LOG_MESSAGES 64
+
+typedef struct test_log_message_s {
+	int priority;
+	char text[512];
+} test_log_message_t;
+
+static struct {
+	test_log_message_t entries[TEST_MAX_LOG_MESSAGES];
+	int count;
+} g_test_log;
+
+/*
+=============
+test_reset_log
+
+Drops every diagnostic captured through the installed import table.
+=============
+*/
+static void test_reset_log(void)
+{
+	g_test_log.count = 0;
+	for (int i = 0; i < TEST_MAX_LOG_MESSAGES; ++i) {
+		g_test_log.entries[i].priority = 0;
+		g_test_log.entries[i].text[0] = '\0';
+	}
+}
+
+/*
+=============
+test_capture_print
+
+Records a botlib diagnostic exactly as the engine callback would receive it.
+=============
+*/
+static void test_capture_print(int priority, const char *fmt, ...)
+{
+	if (g_test_log.count >= TEST_MAX_LOG_MESSAGES) {
+		return;
+	}
+
+	test_log_message_t *slot = &g_test_log.entries[g_test_log.count++];
+	slot->priority = priority;
+
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(slot->text, sizeof(slot->text), fmt != NULL ? fmt : "", args);
+	va_end(args);
+}
+
+static const botlib_import_table_t g_test_imports = {
+	.Print = test_capture_print,
+};
+
+/*
+=============
+test_log_matches
+
+Finds one captured diagnostic with the exact priority and rendered text.
+=============
+*/
+static bool test_log_matches(int priority, const char *text)
+{
+	for (int i = 0; i < g_test_log.count; ++i) {
+		if (g_test_log.entries[i].priority == priority &&
+			strcmp(g_test_log.entries[i].text, text) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+=============
+test_log_contains
+
+Reports whether any captured diagnostic embeds the supplied substring.
+=============
+*/
+static bool test_log_contains(int priority, const char *needle)
+{
+	for (int i = 0; i < g_test_log.count; ++i) {
+		if (g_test_log.entries[i].priority == priority &&
+			strstr(g_test_log.entries[i].text, needle) != NULL) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /*
 =============
 write_weight_fixture
@@ -139,6 +244,91 @@ static void write_weight_fixture(const char *path, const char *contents)
 	assert_non_null(file);
 	assert_true(fputs(contents, file) >= 0);
 	assert_int_equal(fclose(file), 0);
+}
+
+/*
+=============
+write_weight_pak_u32
+
+Writes one little-endian directory value for a runtime weight PAK.
+=============
+*/
+static void write_weight_pak_u32(FILE *file, uint32_t value)
+{
+	unsigned char bytes[4];
+
+	bytes[0] = (unsigned char)(value & 0xffU);
+	bytes[1] = (unsigned char)((value >> 8) & 0xffU);
+	bytes[2] = (unsigned char)((value >> 16) & 0xffU);
+	bytes[3] = (unsigned char)((value >> 24) & 0xffU);
+	assert_int_equal(fwrite(bytes, 1U, sizeof(bytes), file), sizeof(bytes));
+}
+
+/*
+=============
+write_weight_pak_fixture
+
+Creates a one-entry Quake PAK for exact weight-load provenance diagnostics.
+=============
+*/
+static void write_weight_pak_fixture(const char *path,
+	const char *entry_name,
+	const char *contents)
+{
+	size_t content_length = strlen(contents);
+	size_t name_length = strlen(entry_name);
+	assert_true(name_length < 56U);
+
+	FILE *file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_int_equal(fwrite("PACK", 1U, 4U, file), 4U);
+	write_weight_pak_u32(file, 12U + (uint32_t)content_length);
+	write_weight_pak_u32(file, 64U);
+	assert_int_equal(fwrite(contents, 1U, content_length, file), content_length);
+
+	unsigned char name[56] = { 0 };
+	memcpy(name, entry_name, name_length);
+	assert_int_equal(fwrite(name, 1U, sizeof(name), file), sizeof(name));
+	write_weight_pak_u32(file, 12U);
+	write_weight_pak_u32(file, (uint32_t)content_length);
+	assert_int_equal(fclose(file), 0);
+}
+
+/*
+=============
+remove_weight_pak_fixture
+
+Removes only the known package, extracted entry, and private fixture folders.
+=============
+*/
+static void remove_weight_pak_fixture(const char *fixture_root)
+{
+	char path[512];
+	int written = snprintf(path,
+						   sizeof(path),
+						   "%s/.pak_cache/pak0/bots/pak_weight_tmp.w",
+						   fixture_root);
+	if (written > 0 && written < (int)sizeof(path)) {
+		(void)remove(path);
+	}
+
+	const char *directories[] = {
+		"/.pak_cache/pak0/bots",
+		"/.pak_cache/pak0",
+		"/.pak_cache",
+	};
+	for (size_t i = 0; i < sizeof(directories) / sizeof(directories[0]); ++i) {
+		written = snprintf(path, sizeof(path), "%s%s", fixture_root, directories[i]);
+		if (written > 0 && written < (int)sizeof(path)) {
+			(void)TEST_RMDIR(path);
+		}
+	}
+
+	written = snprintf(path, sizeof(path), "%s/pak0.pak", fixture_root);
+	if (written > 0 && written < (int)sizeof(path)) {
+		(void)remove(path);
+	}
+	(void)TEST_RMDIR(fixture_root);
 }
 
 /*
@@ -1185,6 +1375,261 @@ static void test_writer_serialises_weights_like_reference(void **state)
 
 /*
 =============
+test_evalfloat_weight_keeps_full_token_precision
+
+Pins retail ReadValue's use of the cached token.floatvalue over the "%1.2f"
+token string produced by $evalfloat.
+=============
+*/
+static void test_evalfloat_weight_keeps_full_token_precision(void **state)
+{
+	(void)state;
+
+	char fixture_path[512];
+	int written = snprintf(fixture_path,
+						   sizeof(fixture_path),
+						   "%s/tests/support/assets/bots/evalfloat_precision_tmp.w",
+						   PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	/* Reproduces dev_tools/assets/bots/omicro_i.c + fw_items.c: FS_ARMOR 0.951,
+	   BR_ARMOR 10 and ARMOR_SCALE(65) evaluate to exactly 0.951 * 65 = 61.815,
+	   which the "%1.2f" token string renders as "61.81". */
+	const char *fixture =
+		"#define FS_ARMOR 0.951\n"
+		"#define BR_ARMOR 10\n"
+		"#define MZ(value) (value) < 0 ? 0 : (value)\n"
+		"#define ARMOR_SCALE(value) balance($evalfloat(FS_ARMOR*value), "
+			"$evalfloat(MZ(FS_ARMOR*value-BR_ARMOR)), "
+			"$evalfloat(MZ(FS_ARMOR*value+BR_ARMOR)))\n"
+		"weight \"item_armor_body\"\n"
+		"{\n"
+		"return ARMOR_SCALE(65);\n"
+		"}\n"
+		"weight \"negative_evalfloat\"\n"
+		"{\n"
+		"return $evalfloat(0 - 5);\n"
+		"}\n";
+
+	write_weight_fixture(fixture_path, fixture);
+	LibVarSet("bot_reloadcharacters", "1");
+
+	bot_weight_config_t *config = ReadWeightConfig(fixture_path);
+	assert_non_null(config);
+
+	int weight_index = find_weight_index(config, "item_armor_body");
+	assert_true(weight_index >= 0);
+
+	const bot_fuzzy_seperator_t *root = config->weights[weight_index].first_seperator;
+	assert_non_null(root);
+	assert_int_equal(root->type, BOTLIB_WEIGHT_TYPE_BALANCE);
+
+	/* Retail 100357ca stores the cached double, so the balance triple keeps the
+	   full-precision value instead of the two-decimal rendering. */
+	assert_true(fabsf(root->weight - 61.814998626708984f) < 1.0e-5f);
+	assert_true(fabsf(root->min_weight - 51.814998626708984f) < 1.0e-5f);
+	assert_true(fabsf(root->max_weight - 71.815002441406250f) < 1.0e-5f);
+	assert_true(fabsf(root->weight - 61.81f) > 1.0e-3f);
+
+	/* $evalfloat prints fabs(value) but caches the signed result (1003d36a vs
+	   1003d390), and retail never negates or re-derives it from the string. */
+	int negative_index = find_weight_index(config, "negative_evalfloat");
+	assert_true(negative_index >= 0);
+
+	const bot_fuzzy_seperator_t *negative_root =
+		config->weights[negative_index].first_seperator;
+	assert_non_null(negative_root);
+	assert_true(fabsf(negative_root->weight - (-5.0f)) < 1.0e-5f);
+
+	FreeWeightConfig(config);
+	LibVarSet("bot_reloadcharacters", "0");
+	remove(fixture_path);
+}
+
+/*
+=============
+test_weight_load_diagnostics_report_logical_filename
+
+Pins retail sub_10035fa0's pinned-filename diagnostics over resolved paths.
+=============
+*/
+static void test_weight_load_diagnostics_report_logical_filename(void **state)
+{
+	(void)state;
+
+	char fixture_root[512];
+	int written = snprintf(fixture_root,
+						   sizeof(fixture_root),
+						   "%s/tests/support/assets",
+						   PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_root));
+
+	char default_root[512];
+	written = snprintf(default_root,
+					   sizeof(default_root),
+					   "%s/dev_tools/assets",
+					   PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(default_root));
+
+	BotShutdownWeights();
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	LibVarSet("bot_reloadcharacters", "1");
+
+	BotInterface_SetImportTable(&g_test_imports);
+	test_reset_log();
+
+	bot_weight_config_t *config = ReadWeightConfig("bots/sample_weight.c");
+	assert_non_null(config);
+
+	/* Retail 10036421 reports the caller's logical name, never the resolved
+	   physical path that BotLib_ResolveAssetPathDetailed produced. */
+	assert_true(test_log_matches(PRT_MESSAGE, "loaded bots/sample_weight.c\n"));
+	for (int i = 0; i < g_test_log.count; ++i) {
+		assert_null(strstr(g_test_log.entries[i].text, fixture_root));
+	}
+
+	FreeWeightConfig(config);
+
+	test_reset_log();
+	assert_null(ReadWeightConfig("bots/no_such_weight_file.w"));
+	assert_true(test_log_matches(PRT_ERROR,
+		"couldn't find bots/no_such_weight_file.w\n"));
+
+	BotInterface_SetImportTable(NULL);
+	LibVarSet("bot_reloadcharacters", "0");
+	LibVarSet("gladiator_asset_dir", default_root);
+	BotShutdownWeights();
+}
+
+/*
+=============
+test_weight_load_diagnostics_report_pak_provenance
+
+Requires a non-empty PAK entry to log its container plus the logical filename.
+=============
+*/
+static void test_weight_load_diagnostics_report_pak_provenance(void **state)
+{
+	(void)state;
+
+	static const char logical_name[] = "bots/pak_weight_tmp.w";
+
+	char fixture_root[512];
+	int written = snprintf(fixture_root,
+						   sizeof(fixture_root),
+						   "%s/tests/support/assets/__gladiator_weight_pak_fixture",
+						   PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_root));
+
+	char pak_path[512];
+	written = snprintf(pak_path, sizeof(pak_path), "%s/pak0.pak", fixture_root);
+	assert_true(written > 0 && written < (int)sizeof(pak_path));
+
+	char default_root[512];
+	written = snprintf(default_root,
+					   sizeof(default_root),
+					   "%s/dev_tools/assets",
+					   PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(default_root));
+
+	remove_weight_pak_fixture(fixture_root);
+	assert_int_equal(TEST_MKDIR(fixture_root), 0);
+	write_weight_pak_fixture(pak_path,
+		logical_name,
+		"weight \"pak_entry\"\n"
+		"{\n"
+		"return 21;\n"
+		"}\n");
+
+	BotShutdownWeights();
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	LibVarSet("bot_reloadcharacters", "1");
+	BotInterface_SetImportTable(&g_test_imports);
+	test_reset_log();
+
+	bot_weight_config_t *config = ReadWeightConfig(logical_name);
+
+	/* Retail 100362e5 reports <container>\<logical name>, never the extraction
+	   cache path the reconstruction stages the entry through. */
+	char expected_log[1024];
+	written = snprintf(expected_log,
+					   sizeof(expected_log),
+					   "loaded %s\\%s\n",
+					   pak_path,
+					   logical_name);
+	assert_true(written > 0 && written < (int)sizeof(expected_log));
+	bool exact_log = test_log_matches(PRT_MESSAGE, expected_log);
+
+	if (config != NULL) {
+		FreeWeightConfig(config);
+	}
+
+	BotInterface_SetImportTable(NULL);
+	LibVarSet("bot_reloadcharacters", "0");
+	LibVarSet("gladiator_asset_dir", default_root);
+	BotShutdownWeights();
+	remove_weight_pak_fixture(fixture_root);
+
+	assert_non_null(config);
+	assert_true(exact_log);
+}
+
+/*
+=============
+test_weight_parser_diagnostics_carry_source_location
+
+Pins the SourceError/SourceWarning "file %s, line %d: " prefix retail emits
+from sub_10039200 / sub_10039270 for every fuzzy weight parser diagnostic.
+=============
+*/
+static void test_weight_parser_diagnostics_carry_source_location(void **state)
+{
+	(void)state;
+
+	char fixture_path[512];
+	int written = snprintf(fixture_path,
+						   sizeof(fixture_path),
+						   "%s/tests/support/assets/bots/diagnostic_tmp.w",
+						   PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && written < (int)sizeof(fixture_path));
+
+	LibVarSet("bot_reloadcharacters", "1");
+	BotInterface_SetImportTable(&g_test_imports);
+
+	write_weight_fixture(fixture_path,
+		"weight \"item_armor_body\"\n"
+		"{\n"
+		"bogus\n"
+		"}\n");
+
+	test_reset_log();
+	assert_null(ReadWeightConfig(fixture_path));
+	assert_true(test_log_contains(PRT_ERROR, "file "));
+	assert_true(test_log_contains(PRT_ERROR, ", line 3: invalid name bogus"));
+
+	write_weight_fixture(fixture_path,
+		"weight \"item_armor_body\"\n"
+		"{\n"
+		"switch(1)\n"
+		"{\n"
+		"case 5: return 10;\n"
+		"}\n"
+		"}\n");
+
+	test_reset_log();
+	bot_weight_config_t *config = ReadWeightConfig(fixture_path);
+	assert_non_null(config);
+	assert_true(test_log_contains(PRT_WARNING, "file "));
+	assert_true(test_log_contains(PRT_WARNING, "switch without default"));
+
+	FreeWeightConfig(config);
+	BotInterface_SetImportTable(NULL);
+	LibVarSet("bot_reloadcharacters", "0");
+	remove(fixture_path);
+}
+
+/*
+=============
 main
 
 Runs the reconstructed ai_weight parity regression suite.
@@ -1201,6 +1646,10 @@ int main(void)
 		cmocka_unit_test(test_switch_without_default_appends_zero_default),
 		cmocka_unit_test(test_parser_keeps_first_128_weights),
 		cmocka_unit_test(test_evalfloat_macro_values_preserve_default_weight_math),
+		cmocka_unit_test(test_evalfloat_weight_keeps_full_token_precision),
+		cmocka_unit_test(test_weight_load_diagnostics_report_logical_filename),
+		cmocka_unit_test(test_weight_load_diagnostics_report_pak_provenance),
+		cmocka_unit_test(test_weight_parser_diagnostics_carry_source_location),
 		cmocka_unit_test(test_scoped_global_defines_do_not_leak_between_weight_loads),
 		cmocka_unit_test(test_merge_weight_configs_averages_balance_nodes),
 		cmocka_unit_test(test_interbreed_weight_configs_preserves_child_self_cross),

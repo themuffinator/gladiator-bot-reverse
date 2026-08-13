@@ -1675,15 +1675,18 @@ int AAS_Reachability_EqualFloorHeight(int area1num, int area2num)
 						continue;
 					}
 
-					vec3_t direction;
-					VectorSubtract(aasworld.vertexes[edge->v[1]],
-						aasworld.vertexes[edge->v[0]],
-						direction);
-					float length = AAS_VectorLength(direction);
+					/*
+					 * Retail takes the length of the summed vertices before
+					 * halving them (0x10011d09 VectorLength, 0x10011d1c
+					 * VectorScale), so the tie-break length is twice the
+					 * midpoint's distance from the world origin rather than
+					 * the edge length.
+					 */
 					vec3_t start;
 					VectorAdd(aasworld.vertexes[edge->v[0]],
 						aasworld.vertexes[edge->v[1]],
 						start);
+					float length = AAS_VectorLength(start);
 					VectorScale(start, 0.5f, start);
 					vec3_t end;
 					VectorCopy(start, end);
@@ -1706,6 +1709,16 @@ int AAS_Reachability_EqualFloorHeight(int area1num, int area2num)
 					VectorMA(start, INSIDEUNITS_WALKSTART, normal, start);
 					end[2] += 0.125f;
 					float height = start[2];
+					/*
+					 * Retail biases the selection height by 200 when nothing
+					 * solid and no gap sits beyond the step edge
+					 * (0x10011e48 / 0x10011e54), which pushes such edges to
+					 * the back of the height ordering.
+					 */
+					if (!AAS_NearbySolidOrGap(start, end))
+					{
+						height += 200.0f;
+					}
 					if (height < bestheight ||
 						(height < bestheight + 1.0f && length > bestlength))
 					{
@@ -1748,6 +1761,19 @@ int AAS_Reachability_EqualFloorHeight(int area1num, int area2num)
 		reachability->traveltime =
 			(unsigned short)(reachability->traveltime + (unsigned short)startcrouch);
 	}
+	/*
+	 * Retail adds two flat 100 unit penalties after prepending the record:
+	 * 0x10012037 when AAS_NearbySolidOrGap(reach->start, reach->end) is false
+	 * and 0x10012040 when AAS_AreaGroundFaceArea(reach->areanum) < 500.
+	 */
+	if (!AAS_NearbySolidOrGap(reachability->start, reachability->end))
+	{
+		reachability->traveltime = (unsigned short)(reachability->traveltime + 100);
+	}
+	if (AAS_AreaGroundFaceArea(reachability->areanum) < 500.0f)
+	{
+		reachability->traveltime = (unsigned short)(reachability->traveltime + 100);
+	}
 	reach_equalfloor++;
 	return qtrue;
 }
@@ -1764,6 +1790,21 @@ static float AAS_ReachLibVarValue(const char *name, float fallback)
 {
 	libvar_t *variable = LibVarGet(name);
 	return variable != NULL ? variable->value : fallback;
+}
+
+/*
+=============
+AAS_ReachAbsTrunc
+
+Reproduce retail's abs() on a float argument, which MSVC resolves to the
+integer abs: the value is truncated to int first, so the magnitude tests in
+AAS_Reachability_Ladder effectively compare against 1.0 rather than 0.1 or 0.7.
+=============
+*/
+static float AAS_ReachAbsTrunc(float value)
+{
+	int truncated = (int)value;
+	return (float)(truncated < 0 ? -truncated : truncated);
 }
 
 /*
@@ -2191,15 +2232,37 @@ int AAS_Reachability_Step_Barrier_WaterJump_WalkOffLedge(int area1num,
 			groundcandidate.normal, start);
 		VectorMA(groundcandidate.end, INSIDEUNITS_WALKEND,
 			groundcandidate.normal, end);
-		unsigned short traveltime = 0;
+		/*
+		 * Retail seeds the step link with traveltime 1 (0x100130c5) and then
+		 * adds 300 for a crouch-only destination (0x100130d5).
+		 */
+		unsigned short traveltime = 1;
 		if (!AAS_AreaCrouch(area1num) && AAS_AreaCrouch(area2num))
 		{
-			traveltime = (unsigned short)AAS_ReachLibVarValue("rs_startcrouch", 300.0f);
+			traveltime = (unsigned short)(traveltime +
+				(unsigned short)AAS_ReachLibVarValue("rs_startcrouch", 300.0f));
 		}
-		if (AAS_LinkAdjacentReachability(area1num, area2num,
-			groundcandidate.edgenum, start, end, TRAVEL_WALK, traveltime) == NULL)
+		aas_lreachability_t *reachability = AAS_LinkAdjacentReachability(area1num,
+			area2num, groundcandidate.edgenum, start, end, TRAVEL_WALK, traveltime);
+		if (reachability == NULL)
 		{
 			return qfalse;
+		}
+		/*
+		 * Retail applies both 400 unit penalties after prepending the record:
+		 * 0x10013116 when AAS_NearbySolidOrGap(reach->start, reach->end) is
+		 * false and 0x1001311f when AAS_AreaGroundFaceArea(reach->areanum)
+		 * is under 500.
+		 */
+		if (!AAS_NearbySolidOrGap(reachability->start, reachability->end))
+		{
+			reachability->traveltime =
+				(unsigned short)(reachability->traveltime + 400);
+		}
+		if (AAS_AreaGroundFaceArea(reachability->areanum) < 500.0f)
+		{
+			reachability->traveltime =
+				(unsigned short)(reachability->traveltime + 400);
 		}
 		reach_step++;
 		return qtrue;
@@ -2220,10 +2283,10 @@ int AAS_Reachability_Step_Barrier_WaterJump_WalkOffLedge(int area1num,
 			vec3_t end;
 			VectorMA(watercandidate.end, INSIDEUNITS_WATERJUMP,
 				watercandidate.normal, end);
+			/* Retail hard-codes 700 for the water jump (0x10013280). */
 			if (AAS_LinkAdjacentReachability(area1num, area2num,
 				watercandidate.edgenum, watercandidate.start, end,
-				TRAVEL_WATERJUMP,
-				(unsigned short)AAS_ReachLibVarValue("rs_waterjump", 400.0f)) == NULL)
+				TRAVEL_WATERJUMP, 700) == NULL)
 			{
 				return qfalse;
 			}
@@ -2244,9 +2307,10 @@ int AAS_Reachability_Step_Barrier_WaterJump_WalkOffLedge(int area1num,
 			groundcandidate.normal, start);
 		VectorMA(groundcandidate.end, INSIDEUNITS_WALKEND,
 			groundcandidate.normal, end);
+		/* Retail hard-codes 400 for the barrier jump (0x100133ad). */
 		if (AAS_LinkAdjacentReachability(area1num, area2num,
 			groundcandidate.edgenum, start, end, TRAVEL_BARRIERJUMP,
-			(unsigned short)AAS_ReachLibVarValue("rs_barrierjump", 100.0f)) == NULL)
+			400) == NULL)
 		{
 			return qfalse;
 		}
@@ -2275,8 +2339,13 @@ int AAS_Reachability_Step_Barrier_WaterJump_WalkOffLedge(int area1num,
 		return qtrue;
 	}
 
-	float maxfallheight = LibVarGetValue("rs_maxfallheight");
-	if (maxfallheight > 0.0f && fabsf(groundcandidate.dist) >= maxfallheight)
+	/*
+	 * Retail gates the walk-off-ledge branch on
+	 * -AAS_FallDamageDistance() < dist or a swimmable destination
+	 * (0x100134bc-0x100134d9). It has no rs_maxfallheight limit.
+	 */
+	if (!(-(float)AAS_FallDamageDistance() < groundcandidate.dist) &&
+		!AAS_AreaSwim(area2num))
 	{
 		return qfalse;
 	}
@@ -2299,35 +2368,14 @@ int AAS_Reachability_Step_Barrier_WaterJump_WalkOffLedge(int area1num,
 		return qfalse;
 	}
 
-	int areas[10];
-	int numareas = AAS_TraceAreas(start, end, areas, NULL,
-		(int)(sizeof(areas) / sizeof(areas[0])));
-	for (int index = 0; index < numareas; ++index)
-	{
-		if (AAS_AreaClusterPortal(areas[index]))
-		{
-			return qfalse;
-		}
-	}
-
-	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
-	float traveltime = AAS_ReachLibVarValue("rs_startwalkoffledge", 70.0f) +
-		fabsf(groundcandidate.dist) * 50.0f / gravity;
-	if (!AAS_AreaSwim(area2num) && !AAS_AreaJumpPad(area2num))
-	{
-		float falldelta = AAS_FallDelta(groundcandidate.dist);
-		if (falldelta > AAS_ReachLibVarValue("phys_falldelta5", 40.0f))
-		{
-			traveltime += AAS_ReachLibVarValue("rs_falldamage5", 300.0f);
-		}
-		if (falldelta > AAS_ReachLibVarValue("phys_falldelta10", 60.0f))
-		{
-			traveltime += AAS_ReachLibVarValue("rs_falldamage10", 500.0f);
-		}
-	}
+	/*
+	 * Retail stores a flat travel time of 100 (0x10013638) with no
+	 * cluster-portal rejection and no fall-damage penalty; the fall damage
+	 * is already accounted for by the gate above.
+	 */
 	if (AAS_LinkAdjacentReachability(area1num, area2num,
 		groundcandidate.edgenum, groundcandidate.start, groundcandidate.end,
-		TRAVEL_WALKOFFLEDGE, (unsigned short)traveltime) == NULL)
+		TRAVEL_WALKOFFLEDGE, 100) == NULL)
 	{
 		return qfalse;
 	}
@@ -2817,94 +2865,80 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 		}
 	}
 
-	vec3_t cmdmove = {0.0f, 0.0f, 0.0f};
-	if ((traveltype & TRAVELTYPE_MASK) == TRAVEL_JUMP)
-	{
-		cmdmove[2] = jumpvelocity;
-	}
-	vec3_t horizontal;
-	VectorSubtract(bestend, beststart, horizontal);
-	horizontal[2] = 0.0f;
-	if (AAS_VectorNormalize(horizontal) == 0.0f)
+	/*
+	 * Retail drives the test jump entirely from the command vector: 0x1001497e
+	 * passes sub_1000f840 the shared zero vector data_100631cc as the initial
+	 * velocity and &var_f4 as cmdmove, where var_f4 is VectorScale(hordir,
+	 * speed) with its Z overwritten by sv_jumpvel for TRAVEL_JUMP and 0
+	 * otherwise (0x10014927 / 0x1001493d / 0x10014946).  The order matters:
+	 * the predictor's on-ground command loop drives frame_test_vel straight at
+	 * cmdmove * frametime, so handing it the speed as a starting velocity with
+	 * a purely vertical cmdmove - the later Quake III arrangement - zeroes the
+	 * horizontal velocity on frame 0 and the probe jump lands back where it
+	 * started.  That is why the generator produced no jump links at all.
+	 */
+	vec3_t direction2d;
+	VectorSubtract(bestend, beststart, direction2d);
+	direction2d[2] = 0.0f;
+	if (AAS_VectorNormalize(direction2d) == 0.0f)
 	{
 		return qfalse;
 	}
-	vec3_t up = {0.0f, 0.0f, 1.0f};
-	vec3_t sidewards;
-	AAS_CrossProduct(horizontal, up, sidewards);
-	int stopevent = SE_HITGROUND | SE_ENTERWATER | SE_ENTERSLIME |
-		SE_ENTERLAVA | SE_HITGROUNDDAMAGE;
-	if (!AAS_AreaClusterPortal(area1num) && !AAS_AreaClusterPortal(area2num))
+	vec3_t cmdmove;
+	VectorScale(direction2d, speed, cmdmove);
+	cmdmove[2] = ((traveltype & TRAVELTYPE_MASK) == TRAVEL_JUMP)
+		? jumpvelocity
+		: 0.0f;
+	vec3_t velocity = {0.0f, 0.0f, 0.0f};
+
+	/*
+	 * Retail predicts exactly once with the literal stop-event mask 0x3d
+	 * (0x1001497e).  There is no sidewards retry sweep and no cluster-portal
+	 * stop event: sub_1000f840 takes the mask in a char parameter, so
+	 * SE_TOUCHCLUSTERPORTAL could never survive the call anyway.
+	 */
+	aas_clientmove_t move;
+	AAS_PredictClientMovement(&move,
+		-1,
+		beststart,
+		PRESENCE_NORMAL,
+		qtrue,
+		velocity,
+		cmdmove,
+		3,
+		30,
+		0.1f,
+		SE_HITGROUND | SE_ENTERWATER | SE_ENTERSLIME | SE_ENTERLAVA |
+			SE_HITGROUNDDAMAGE,
+		0,
+		qfalse);
+	/* 0x100149ac tests move.frames < 30 and (move.stopevent & 0x38) == 0. */
+	if (move.frames >= 30 ||
+		(move.stopevent &
+			(SE_ENTERSLIME | SE_ENTERLAVA | SE_HITGROUNDDAMAGE)) != 0)
 	{
-		stopevent |= SE_TOUCHCLUSTERPORTAL;
+		return qfalse;
 	}
 
-	int attempt;
-	for (attempt = 0; attempt < 3; ++attempt)
+	/*
+	 * Retail walks back from the landing point in 8 unit steps along the
+	 * horizontal direction, a quarter unit above the sample, and accepts the
+	 * link as soon as AAS_PointAreaNum reports the destination area
+	 * (0x100149c8-0x10014a05).  It gives up once the offset passes -32.
+	 */
+	int landed = qfalse;
+	for (int offset = 0; offset >= -32; offset -= 8)
 	{
-		if (attempt == 1)
+		vec3_t sample;
+		VectorMA(move.endpos, (float)offset, direction2d, sample);
+		sample[2] += 0.125f;
+		if (AAS_PointAreaNum(sample) == area2num)
 		{
-			VectorAdd(bestend, sidewards, testend);
-		}
-		else if (attempt == 2)
-		{
-			VectorSubtract(bestend, sidewards, testend);
-		}
-		else
-		{
-			VectorCopy(bestend, testend);
-		}
-		VectorSubtract(testend, beststart, direction);
-		direction[2] = 0.0f;
-		if (AAS_VectorNormalize(direction) == 0.0f)
-		{
-			continue;
-		}
-		vec3_t velocity;
-		VectorScale(direction, speed, velocity);
-		aas_clientmove_t move;
-		AAS_PredictClientMovement(&move,
-			-1,
-			beststart,
-			PRESENCE_NORMAL,
-			qtrue,
-			velocity,
-			cmdmove,
-			3,
-			30,
-			0.1f,
-			stopevent,
-			0,
-			qfalse);
-		if (move.frames >= 30 ||
-			(move.stopevent & (SE_ENTERSLIME | SE_ENTERLAVA)) != 0 ||
-			(move.stopevent & SE_TOUCHCLUSTERPORTAL) != 0)
-		{
-			return qfalse;
-		}
-
-		VectorMA(move.endpos, -64.0f, direction, teststart);
-		teststart[2] += 1.0f;
-		int areas[10];
-		int numareas = AAS_TraceAreas(move.endpos,
-			teststart,
-			areas,
-			NULL,
-			(int)(sizeof(areas) / sizeof(areas[0])));
-		int areaindex;
-		for (areaindex = 0; areaindex < numareas; ++areaindex)
-		{
-			if (areas[areaindex] == area2num)
-			{
-				break;
-			}
-		}
-		if (areaindex < numareas)
-		{
+			landed = qtrue;
 			break;
 		}
 	}
-	if (attempt >= 3)
+	if (!landed)
 	{
 		return qfalse;
 	}
@@ -2921,45 +2955,19 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 	{
 		return qfalse;
 	}
-	VectorSubtract(bestend, beststart, direction);
-	float height = direction[2];
-	direction[2] = 0.0f;
-	float traveltime;
-	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
-	if ((traveltype & TRAVELTYPE_MASK) == TRAVEL_WALKOFFLEDGE &&
-		height > AAS_VectorLength(direction))
-	{
-		traveltime = AAS_ReachLibVarValue("rs_startwalkoffledge", 70.0f) +
-			height * 50.0f / gravity;
-	}
-	else
-	{
-		float maxwalkvelocity = AAS_ReachPositiveLibVarValue(
-			Bridge_MaxWalkVelocity(), 300.0f);
-		traveltime = AAS_ReachLibVarValue("rs_startjump", 300.0f) +
-			AAS_VectorDistance(bestend, beststart) * 240.0f / maxwalkvelocity;
-	}
-	if (!AAS_AreaJumpPad(area2num))
-	{
-		float falldelta = AAS_FallDelta(beststart[2] - bestend[2]);
-		if (falldelta > AAS_ReachLibVarValue("phys_falldelta5", 40.0f))
-		{
-			traveltime += AAS_ReachLibVarValue("rs_falldamage5", 300.0f);
-		}
-		else if (falldelta > AAS_ReachLibVarValue("phys_falldelta10", 60.0f))
-		{
-			traveltime += AAS_ReachLibVarValue("rs_falldamage10", 500.0f);
-		}
-	}
-	reachability->traveltime = (unsigned short)traveltime;
-	if ((traveltype & TRAVELTYPE_MASK) == TRAVEL_JUMP)
-	{
-		reach_jump++;
-	}
-	else
-	{
-		reach_walkoffledge++;
-	}
+	/*
+	 * Retail costs both travel types with one unconditional expression at
+	 * 0x10014a8f: (int)(VectorDistance(bestend, beststart) * 240 /
+	 * sv_maxwalkvelocity + 600). There is no walk-off-ledge special case and
+	 * no fall-damage penalty here.
+	 */
+	float maxwalkvelocity = AAS_ReachPositiveLibVarValue(
+		Bridge_MaxWalkVelocity(), 300.0f);
+	reachability->traveltime = (unsigned short)(int)(
+		AAS_VectorDistance(bestend, beststart) * 240.0f / maxwalkvelocity +
+		600.0f);
+	/* Retail bumps the same counter for both travel types (0x10014ab5). */
+	reach_jump++;
 
 	return qfalse;
 }
@@ -3115,15 +3123,21 @@ int AAS_Reachability_Ladder(int area1num, int area2num)
 	VectorMA(area1point, -32.0f, direction, area1point);
 	VectorMA(area2point, 32.0f, direction, area2point);
 
-	qboolean face1vertical = fabsf(plane1->normal[2]) < 0.1f;
-	qboolean face2vertical = fabsf(plane2->normal[2]) < 0.1f;
+	/*
+	 * Retail truncates each float to int before taking its magnitude
+	 * (0x1001524b and 0x1001527d call __ftol then the integer abs), so any
+	 * normal whose z component is inside (-1, 1) counts as vertical.
+	 */
+	qboolean face1vertical = AAS_ReachAbsTrunc(plane1->normal[2]) < 0.1f;
+	qboolean face2vertical = AAS_ReachAbsTrunc(plane2->normal[2]) < 0.1f;
 	if (!face1vertical && !face2vertical)
 	{
 		return qfalse;
 	}
 	if (face1vertical && face2vertical &&
 		DotProduct(plane1->normal, plane2->normal) > 0.7f &&
-		fabsf(sharededgevector[2]) < 0.7f)
+		/* Retail truncates before the magnitude here too (0x100152e5). */
+		AAS_ReachAbsTrunc(sharededgevector[2]) < 0.7f)
 	{
 		vec3_t end;
 		VectorMA(area2point, -3.0f, plane1->normal, end);
@@ -3269,7 +3283,8 @@ int AAS_Reachability_Ladder(int area1num, int area2num)
 		{
 			continue;
 		}
-		if (fabsf(aasworld.planes[face->planenum].normal[2]) < 0.1f)
+		/* Retail truncates before the magnitude here too (0x1001574c). */
+		if (AAS_ReachAbsTrunc(aasworld.planes[face->planenum].normal[2]) < 0.1f)
 		{
 			floorhasladder = qtrue;
 			break;
@@ -3432,8 +3447,15 @@ int AAS_Reachability_TeleportEntityList(const aas_bspentity_t *entities)
 		for (int index = 0; index < numareas; ++index)
 		{
 			int sourcearea = areas[index];
+			/*
+			 * Retail admits every area overlapping the synthesised trigger box
+			 * whose areaflags say it is grounded: 0x10015f21 calls
+			 * sub_10011670 (AAS_AreaGrounded) on each linked area. Quake II has
+			 * no teleporter brush contents, so an AAS_AreaTeleporter test here
+			 * would reject every area on every shipped map.
+			 */
 			if (sourcearea <= 0 || sourcearea >= reachabilityareacount ||
-				!AAS_AreaTeleporter(sourcearea))
+				!AAS_AreaGrounded(sourcearea))
 			{
 				continue;
 			}
@@ -4473,7 +4495,14 @@ int AAS_ContinueInitReachability(void)
 	{
 		framebudget = 15.0f;
 	}
-	float delay = LibVarGetValue("reachability_delay");
+	/*
+	 * Retail creates reachability_delay from its own "100" default string
+	 * (0x100189ad passes data_1005bddc = "100" to LibVar) and only substitutes
+	 * 200 (0x43480000 at 0x100189c8) when the parsed value is not positive.
+	 * A non-creating lookup would always fall through to 200 because no
+	 * Quake II cvar of that name exists.
+	 */
+	float delay = LibVarValue("reachability_delay", "100");
 	if (delay <= 0.0f)
 	{
 		delay = 200.0f;

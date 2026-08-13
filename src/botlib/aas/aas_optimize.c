@@ -344,7 +344,7 @@ static void AAS_OptimizeStore(aas_optimized_t *optimized)
 =============
 AAS_Optimize
 
-Discard non-ladder geometry and remap non-elevator reachability references.
+Discard non-ladder geometry and remap non-elevator reachability face numbers.
 =============
 */
 void AAS_Optimize(void)
@@ -375,25 +375,17 @@ void AAS_Optimize(void)
 			continue;
 		}
 
-		int sign = reachability->facenum;
-		int facenum = abs(sign);
-		reachability->facenum = facenum < aasworld.numFaces
+		/* Retail (sub_10010e90 @0x10010ef5) performs exactly one store in this
+		   loop: facenum = faceoptimizeindex[facenum], with no abs() and no sign
+		   restore.  reach->edgenum is deliberately left at its pre-optimization
+		   value even though AAS_OptimizeStore then swaps in the compacted edge
+		   arrays.  The range test is the only addition, standing in for retail's
+		   unguarded index; it differs from retail only for a negative or
+		   out-of-range facenum, where retail simply reads out of bounds. */
+		int facenum = reachability->facenum;
+		reachability->facenum = (facenum >= 0 && facenum < aasworld.numFaces)
 			? optimized.faceoptimizeindex[facenum]
 			: 0;
-		if (sign < 0)
-		{
-			reachability->facenum = -reachability->facenum;
-		}
-
-		sign = reachability->edgenum;
-		int edgenum = abs(sign);
-		reachability->edgenum = edgenum < aasworld.numEdges
-			? optimized.edgeoptimizeindex[edgenum]
-			: 0;
-		if (sign < 0)
-		{
-			reachability->edgenum = -reachability->edgenum;
-		}
 	}
 
 	AAS_OptimizeStore(&optimized);

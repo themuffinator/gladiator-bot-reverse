@@ -99,6 +99,10 @@ static int g_point_contents_results[MAX_TEST_POINT_CONTENTS];
 static int g_point_contents_result_count;
 static int g_point_contents_call_count;
 static vec3_t g_point_contents_log[MAX_TEST_POINT_CONTENTS];
+static int g_point_contents_box_active;
+static vec3_t g_point_contents_box_mins;
+static vec3_t g_point_contents_box_maxs;
+static int g_point_contents_box_contents;
 static int g_debug_line_create_count;
 static int g_debug_line_show_count;
 static int g_debug_line_show_id_log[MAX_TEST_DEBUG_LINES];
@@ -117,12 +121,6 @@ static aas_plane_t g_predict_trace_planes[6];
 static aas_entity_t g_predict_trace_entities[4];
 static aas_link_t g_predict_trace_entity_link;
 static aas_link_t *g_predict_trace_area_entities[4];
-static aas_bspmodel_t g_point_contents_models[1];
-static aas_bspleaf_t g_point_contents_leaves[1];
-static unsigned short g_point_contents_leaf_brushes[1];
-static aas_plane_t g_point_contents_planes[6];
-static aas_bspbrushside_t g_point_contents_brush_sides[6];
-static aas_bspbrush_t g_point_contents_brushes[1];
 static aas_bspmodel_t g_mover_models[10];
 
 #define TEST_AAS_AREAFLAG_GROUNDED 1
@@ -158,6 +156,32 @@ static void test_reset_trace_log(void)
 	g_point_contents_call_count = 0;
 	memset(g_point_contents_results, 0, sizeof(g_point_contents_results));
 	memset(g_point_contents_log, 0, sizeof(g_point_contents_log));
+	g_point_contents_box_active = 0;
+	g_point_contents_box_contents = 0;
+	VectorClear(g_point_contents_box_mins);
+	VectorClear(g_point_contents_box_maxs);
+}
+
+/*
+=============
+test_attach_bridge_contents_box
+
+Attach one axis-aligned contents volume to the engine PointContents import.
+
+Retail AAS_PointContents is nothing but a jump through the import table's
+PointContents slot (0x1000308e "return data_10063ff0(arg1)"), so every AAS
+contents probe - the predictor's swim and feet samples, BotGapDistance's water
+exception and AAS_PointContents itself - resolves through this one mock.
+=============
+*/
+static void test_attach_bridge_contents_box(const vec3_t mins,
+	const vec3_t maxs,
+	int contents)
+{
+	VectorCopy(mins, g_point_contents_box_mins);
+	VectorCopy(maxs, g_point_contents_box_maxs);
+	g_point_contents_box_contents = contents;
+	g_point_contents_box_active = 1;
 }
 
 /*
@@ -350,62 +374,6 @@ static void test_setup_stacked_aas_trace_world(float splitheight)
 	VectorSet(g_predict_trace_planes[3].normal, 0.0f, 0.0f, -1.0f);
 	g_predict_trace_settings[1].firstreachablearea = 1;
 	g_predict_trace_settings[1].numreachableareas = 1;
-}
-
-/*
-=============
-test_attach_world_contents_box
-
-Attach one world-BSP contents brush for internal AAS_PointContents probes.
-=============
-*/
-static void test_attach_world_contents_box(const vec3_t mins,
-	const vec3_t maxs,
-	int contents)
-{
-	memset(g_point_contents_models, 0, sizeof(g_point_contents_models));
-	memset(g_point_contents_leaves, 0, sizeof(g_point_contents_leaves));
-	memset(g_point_contents_leaf_brushes, 0, sizeof(g_point_contents_leaf_brushes));
-	memset(g_point_contents_planes, 0, sizeof(g_point_contents_planes));
-	memset(g_point_contents_brush_sides, 0, sizeof(g_point_contents_brush_sides));
-	memset(g_point_contents_brushes, 0, sizeof(g_point_contents_brushes));
-
-	g_point_contents_models[0].headnode = -1;
-	g_point_contents_leaves[0].firstleafbrush = 0;
-	g_point_contents_leaves[0].numleafbrushes = 1;
-	g_point_contents_leaf_brushes[0] = 0;
-	VectorSet(g_point_contents_planes[0].normal, 1.0f, 0.0f, 0.0f);
-	g_point_contents_planes[0].dist = maxs[0];
-	VectorSet(g_point_contents_planes[1].normal, -1.0f, 0.0f, 0.0f);
-	g_point_contents_planes[1].dist = -mins[0];
-	VectorSet(g_point_contents_planes[2].normal, 0.0f, 1.0f, 0.0f);
-	g_point_contents_planes[2].dist = maxs[1];
-	VectorSet(g_point_contents_planes[3].normal, 0.0f, -1.0f, 0.0f);
-	g_point_contents_planes[3].dist = -mins[1];
-	VectorSet(g_point_contents_planes[4].normal, 0.0f, 0.0f, 1.0f);
-	g_point_contents_planes[4].dist = maxs[2];
-	VectorSet(g_point_contents_planes[5].normal, 0.0f, 0.0f, -1.0f);
-	g_point_contents_planes[5].dist = -mins[2];
-	for (int side = 0; side < 6; ++side)
-	{
-		g_point_contents_brush_sides[side].planenum = (unsigned short)side;
-	}
-	g_point_contents_brushes[0].firstside = 0;
-	g_point_contents_brushes[0].numsides = 6;
-	g_point_contents_brushes[0].contents = contents;
-
-	aasworld.numBspModels = 1;
-	aasworld.bspModels = g_point_contents_models;
-	aasworld.numBspLeaves = 1;
-	aasworld.bspLeaves = g_point_contents_leaves;
-	aasworld.bspLeafBrushIndexSize = 1;
-	aasworld.bspLeafBrushes = g_point_contents_leaf_brushes;
-	aasworld.numBspPlanes = 6;
-	aasworld.bspPlanes = g_point_contents_planes;
-	aasworld.numBspBrushSides = 6;
-	aasworld.bspBrushSides = g_point_contents_brush_sides;
-	aasworld.numBspBrushes = 1;
-	aasworld.bspBrushes = g_point_contents_brushes;
 }
 
 /*
@@ -677,6 +645,24 @@ static int test_bridge_point_contents(vec3_t point)
 	if (index >= 0 && index < g_point_contents_result_count)
 	{
 		return g_point_contents_results[index];
+	}
+
+	if (g_point_contents_box_active && point != NULL)
+	{
+		int inside = 1;
+		for (int axis = 0; axis < 3; ++axis)
+		{
+			if (point[axis] < g_point_contents_box_mins[axis] ||
+				point[axis] > g_point_contents_box_maxs[axis])
+			{
+				inside = 0;
+				break;
+			}
+		}
+		if (inside)
+		{
+			return g_point_contents_box_contents;
+		}
 	}
 
 	return 0;
@@ -2791,7 +2777,13 @@ static void test_bot_move_in_direction_gap_over_water_does_not_jump(void **state
 	vec3_t watermaxs;
 	VectorSet(watermins, 4.0f, -100.0f, -200.0f);
 	VectorSet(watermaxs, 12.0f, 100.0f, -1.0f);
-	test_attach_world_contents_box(watermins, watermaxs, CONTENTS_WATER);
+	/*
+	 * Retail AAS_PointContents forwards straight to the engine PointContents
+	 * import (0x10003080: "return data_10063ff0(arg1)"), so the gap water has
+	 * to be visible through the bridge mock rather than through an internal
+	 * AAS BSP brush walk.
+	 */
+	test_attach_bridge_contents_box(watermins, watermaxs, CONTENTS_WATER);
 
 	int handle = BotAllocMoveStateHandle();
 	assert_true(handle > 0);
@@ -2815,7 +2807,15 @@ static void test_bot_move_in_direction_gap_over_water_does_not_jump(void **state
 
 	assert_true(BotMoveInDirectionHandle(handle, dir, 160.0f, MOVE_WALK));
 	assert_int_equal(g_trace_call_count, 0);
-	assert_true(g_point_contents_call_count >= 3);
+	/*
+	 * Two explicit probes above plus exactly four engine probes from the move
+	 * itself: BotMoveInDirection's own AAS_Swimming test, BotGapDistance's
+	 * water exception, and the predictor's frame-0 swim and feet samples
+	 * before AAS_OnGround stops it on SE_HITGROUND.
+	 */
+	assert_int_equal(g_point_contents_call_count, 6);
+	assert_float_equal(g_point_contents_log[3][0], 8.0f, 0.0001f);
+	assert_true(g_point_contents_log[3][2] < -25.0f);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
@@ -2969,7 +2969,15 @@ static void test_bot_travel_walk_targets_start_and_slows_for_gap(void **state)
 	assert_int_equal(g_trace_contentmask_log[0], MASK_PLAYERSOLID);
 	assert_float_equal(g_trace_end_log[0][0], 2.683281f, 0.0001f);
 	assert_float_equal(g_trace_end_log[0][1], 1.341641f, 0.0001f);
-	assert_int_equal(g_point_contents_call_count, 0);
+	/*
+	 * BotGapDistance's water exception probes the engine once for the gap it
+	 * finds. Retail AAS_PointContents is a straight jump through the import
+	 * table's PointContents slot (0x10003080 "return data_10063ff0(arg1)"), so
+	 * that probe reaches the bridge mock; only the pre-fix internal AAS BSP
+	 * brush walk kept the counter at zero here.
+	 */
+	assert_int_equal(g_point_contents_call_count, 1);
+	assert_true(g_point_contents_log[0][2] < 0.0f);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
@@ -3895,6 +3903,12 @@ test_bot_travel_jump_runs_to_runstart
 
 Pins retail jump travel's run-up branch before the bot reaches the launch
 window.
+
+AAS_JumpReachRunStart is real movement prediction in retail (sub_1000f010
+@0x1000f097 hands sub_1000f840 a cmdmove of hordir*400 for one command frame,
+two 0.1s frames, stop-event mask 0x7c), so the fixture has to stand the bot on
+solid AAS ground; without a floor the predictor immediately reports SE_GAP at
+the start position and the run-up direction degenerates.
 =============
 */
 static void test_bot_travel_jump_runs_to_runstart(void **state)
@@ -3902,18 +3916,13 @@ static void test_bot_travel_jump_runs_to_runstart(void **state)
 	(void)state;
 
 	aasworld.numAreas = 2;
-	aasworld.areas = calloc(3, sizeof(aas_area_t));
-	assert_non_null(aasworld.areas);
 	aasworld.numAreaSettings = 3;
 	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
 	assert_non_null(aasworld.areasettings);
 	aasworld.areasettings[1].areaflags = TEST_AAS_AREAFLAG_GROUNDED;
 	aasworld.areasettings[1].firstreachablearea = 1;
 	aasworld.areasettings[1].numreachableareas = 1;
-	VectorSet(aasworld.areas[1].mins, -128.0f, -32.0f, -32.0f);
-	VectorSet(aasworld.areas[1].maxs, 90.0f, 32.0f, 32.0f);
-	VectorSet(aasworld.areas[2].mins, 91.0f, -32.0f, -32.0f);
-	VectorSet(aasworld.areas[2].maxs, 200.0f, 32.0f, 64.0f);
+	test_attach_floor_aas_geometry(0.0f);
 
 	aasworld.numReachability = 2;
 	aasworld.reachability = calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
@@ -3954,13 +3963,17 @@ static void test_bot_travel_jump_runs_to_runstart(void **state)
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	/*
+	 * The predictor carries the run-up point roughly 61 units back along -X, so
+	 * BotTravel_Jump re-extrapolates runstart to reach->start - 80 units and the
+	 * bot is 40 units short of it: 400 - (400 - 40 * 5) = 200.
+	 */
 	assert_float_equal(input.speed, 200.0f, 0.0001f);
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
 	assert_true((input.actionflags & ACTION_DELAYEDJUMP) == 0);
 
 	BotFreeMoveStateHandle(handle);
-	free(aasworld.areas);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areas = NULL;
@@ -3976,6 +3989,13 @@ static void test_bot_travel_jump_runs_to_runstart(void **state)
 test_bot_travel_jump_runstart_hazard_falls_back_to_start
 
 Pins the AAS run-start hazard fallback before active jump travel shortens gaps.
+
+Retail AAS_JumpReachRunStart (sub_1000f010) predicts the run-up with stop-event
+mask 0x7c and then tests the returned stop event against 0x38 at 0x1000f0d0, so
+only SE_ENTERSLIME, SE_ENTERLAVA and SE_HITGROUNDDAMAGE collapse the run-up
+point back onto reach->start (+1 unit of Z, 0x1000f0da-0x1000f0e3). There is no
+fixed 40/80 unit hazard sampling: the predictor's own feet probe, 22 units under
+the frame-0 position, is what sees the slime here.
 =============
 */
 static void test_bot_travel_jump_runstart_hazard_falls_back_to_start(void **state)
@@ -3989,6 +4009,7 @@ static void test_bot_travel_jump_runstart_hazard_falls_back_to_start(void **stat
 	aasworld.areasettings[1].areaflags = TEST_AAS_AREAFLAG_GROUNDED;
 	aasworld.areasettings[1].firstreachablearea = 1;
 	aasworld.areasettings[1].numreachableareas = 1;
+	test_attach_floor_aas_geometry(0.0f);
 
 	aasworld.numReachability = 2;
 	aasworld.reachability = calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
@@ -4000,6 +4021,11 @@ static void test_bot_travel_jump_runstart_hazard_falls_back_to_start(void **stat
 	VectorSet(aasworld.reachability[1].end, 160.0f, 0.0f, 0.0f);
 	aasworld.travelflagfortype[TRAVEL_JUMP] = TFL_JUMP;
 
+	/*
+	 * Probe 0 is the predictor's frame-0 AAS_Swimming sample two units under
+	 * the start; probe 1 is the frame-0 feet sample after the client has been
+	 * carried back along -X and clipped onto the floor.
+	 */
 	g_point_contents_result_count = 2;
 	g_point_contents_results[0] = 0;
 	g_point_contents_results[1] = CONTENTS_SLIME;
@@ -4028,15 +4054,24 @@ static void test_bot_travel_jump_runstart_hazard_falls_back_to_start(void **stat
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_float_equal(result.movedir[1], 0.0f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 0);
+	/* The slime stop event ends the prediction inside frame 0, so exactly the
+	   swim probe and the feet probe reach the engine. */
 	assert_int_equal(g_point_contents_call_count, 2);
-	assert_float_equal(g_point_contents_log[0][0], 40.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[0][2], 1.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[1][0], 0.0f, 0.0001f);
-	assert_float_equal(g_point_contents_log[1][2], 1.0f, 0.0001f);
+	assert_float_equal(g_point_contents_log[0][0], 80.0f, 0.0001f);
+	assert_float_equal(g_point_contents_log[0][2], -0.75f, 0.0001f);
+	/* Feet probe: carried back along -X, then 22 units below the clipped
+	   position that sits a traceplane epsilon above the floor. */
+	assert_true(g_point_contents_log[1][0] < 80.0f);
+	assert_float_equal(g_point_contents_log[1][2], -21.842789f, 0.0001f);
 	assert_int_equal(ms->jumpreach, 0);
 
 	bot_input_t input;
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	/*
+	 * runstart collapsed onto reach->start, so BotTravel_Jump's hordir is zero,
+	 * runstart stays at reach->start and the bot is the full 80 unit clamp away:
+	 * 400 - (400 - 80 * 5) = 400.
+	 */
 	assert_float_equal(input.speed, 400.0f, 0.0001f);
 	assert_float_equal(input.dir[0], 1.0f, 0.0001f);
 	assert_true((input.actionflags & ACTION_JUMP) == 0);
@@ -4064,18 +4099,18 @@ static void test_bot_travel_jump_launches_near_start(void **state)
 	(void)state;
 
 	aasworld.numAreas = 2;
-	aasworld.areas = calloc(3, sizeof(aas_area_t));
-	assert_non_null(aasworld.areas);
 	aasworld.numAreaSettings = 3;
 	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
 	assert_non_null(aasworld.areasettings);
 	aasworld.areasettings[1].areaflags = TEST_AAS_AREAFLAG_GROUNDED;
 	aasworld.areasettings[1].firstreachablearea = 1;
 	aasworld.areasettings[1].numreachableareas = 1;
-	VectorSet(aasworld.areas[1].mins, -128.0f, -32.0f, -32.0f);
-	VectorSet(aasworld.areas[1].maxs, 90.0f, 32.0f, 32.0f);
-	VectorSet(aasworld.areas[2].mins, 91.0f, -32.0f, -32.0f);
-	VectorSet(aasworld.areas[2].maxs, 200.0f, 32.0f, 64.0f);
+	/*
+	 * Retail's run-up point comes from real movement prediction
+	 * (sub_1000f010 @0x1000f097), so the bot needs solid AAS ground to run
+	 * back over; without a floor the predictor stops on SE_GAP at the start.
+	 */
+	test_attach_floor_aas_geometry(0.0f);
 
 	aasworld.numReachability = 2;
 	aasworld.reachability = calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
@@ -4111,6 +4146,11 @@ static void test_bot_travel_jump_launches_near_start(void **state)
 	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
 	assert_int_equal(g_trace_call_count, 0);
+	/*
+	 * The predicted run-up point lies behind reach->start, so the bot at 70 is
+	 * already past it: the start and run-start directions oppose, the dot
+	 * product drops under -0.8 and retail takes the launch branch.
+	 */
 	assert_int_equal(ms->jumpreach, 1);
 
 	bot_input_t input;
@@ -4121,7 +4161,6 @@ static void test_bot_travel_jump_launches_near_start(void **state)
 	assert_true((input.actionflags & ACTION_DELAYEDJUMP) == 0);
 
 	BotFreeMoveStateHandle(handle);
-	free(aasworld.areas);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areas = NULL;
@@ -4145,18 +4184,18 @@ static void test_bot_travel_jump_uses_delayed_jump_window(void **state)
 	(void)state;
 
 	aasworld.numAreas = 2;
-	aasworld.areas = calloc(3, sizeof(aas_area_t));
-	assert_non_null(aasworld.areas);
 	aasworld.numAreaSettings = 3;
 	aasworld.areasettings = calloc((size_t)aasworld.numAreaSettings, sizeof(aas_areasettings_t));
 	assert_non_null(aasworld.areasettings);
 	aasworld.areasettings[1].areaflags = TEST_AAS_AREAFLAG_GROUNDED;
 	aasworld.areasettings[1].firstreachablearea = 1;
 	aasworld.areasettings[1].numreachableareas = 1;
-	VectorSet(aasworld.areas[1].mins, -128.0f, -32.0f, -32.0f);
-	VectorSet(aasworld.areas[1].maxs, 90.0f, 32.0f, 32.0f);
-	VectorSet(aasworld.areas[2].mins, 91.0f, -32.0f, -32.0f);
-	VectorSet(aasworld.areas[2].maxs, 200.0f, 32.0f, 64.0f);
+	/*
+	 * Retail's run-up point comes from real movement prediction
+	 * (sub_1000f010 @0x1000f097), so the bot needs solid AAS ground to run
+	 * back over; without a floor the predictor stops on SE_GAP at the start.
+	 */
+	test_attach_floor_aas_geometry(0.0f);
 
 	aasworld.numReachability = 2;
 	aasworld.reachability = calloc((size_t)aasworld.numReachability, sizeof(aas_reachability_t));
@@ -4191,6 +4230,11 @@ static void test_bot_travel_jump_uses_delayed_jump_window(void **state)
 	assert_false(result.failure);
 	assert_int_equal(result.traveltype, 0);
 	assert_float_equal(result.movedir[0], 1.0f, 0.0001f);
+	/*
+	 * At 52 the bot is 28 units from reach->start, past the predicted run-up
+	 * point: retail takes the launch branch but 28 falls in [24, 32), so the
+	 * jump is queued rather than pressed.
+	 */
 	assert_int_equal(ms->jumpreach, 1);
 
 	bot_input_t input;
@@ -4200,7 +4244,6 @@ static void test_bot_travel_jump_uses_delayed_jump_window(void **state)
 	assert_true((input.actionflags & ACTION_DELAYEDJUMP) != 0);
 
 	BotFreeMoveStateHandle(handle);
-	free(aasworld.areas);
 	free(aasworld.areasettings);
 	free(aasworld.reachability);
 	aasworld.areas = NULL;

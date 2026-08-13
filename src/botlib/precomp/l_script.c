@@ -1190,18 +1190,23 @@ int PS_ReadNumber(pc_script_t *script, pc_token_t *token)
 		octal = qfalse;
 		dot = qfalse;
 		if (*script->script_p == '0') octal = qtrue;
+		//NOTE: retail (0x1003ee37) stores the character FIRST and classifies the
+		//look-ahead character, so the leading character is never tested for '.'.
+		//A token that begins with a dot (".5") therefore never sets TT_FLOAT.
+		//The length check is 'len >= MAX_TOKEN' (retail 0x1003ee51 tests
+		//ecx s>= 0x400), not MAX_TOKEN - 1.
 		while(1)
 		{
-			c = *script->script_p;
-			if (c == '.') dot = qtrue;
-			else if (c == '8' || c == '9') octal = qfalse;
-			else if (c < '0' || c > '9') break;
 			token->string[len++] = *script->script_p++;
-			if (len >= MAX_TOKEN - 1)
+			if (len >= MAX_TOKEN)
 			{
 				ScriptError(script, "number longer than MAX_TOKEN = %d", MAX_TOKEN);
 				return 0;
 			} //end if
+			c = *script->script_p;
+			if (c == '.') dot = qtrue;
+			else if (c == '8' || c == '9') octal = qfalse;
+			else if (c < '0' || c > '9') break;
 		} //end while
 		if (octal) token->subtype |= TT_OCTAL;
 		else token->subtype |= TT_DECIMAL;
@@ -1211,15 +1216,17 @@ int PS_ReadNumber(pc_script_t *script, pc_token_t *token)
 	{
 		c = *script->script_p;
 		//check for a LONG number
-		if ( (c == 'l' || c == 'L') // bk001204 - brackets 
-		     && !(token->subtype & TT_LONG))
+		//NOTE: retail (0x1003eed7) short-circuits on lowercase 'l' without
+		//testing TT_LONG; only 'L' is guarded.  Do not "fix" this.
+		if ((c == 'l') || ((c == 'L') && !(token->subtype & TT_LONG)))
 		{
 			script->script_p++;
 			token->subtype |= TT_LONG;
 		} //end if
 		//check for an UNSIGNED number
-		else if ( (c == 'u' || c == 'U') // bk001204 - brackets 
-			  && !(token->subtype & (TT_UNSIGNED | TT_FLOAT)))
+		//NOTE: retail (0x1003eeeb) short-circuits on lowercase 'u'; only 'U'
+		//is guarded against TT_UNSIGNED|TT_FLOAT (mask 0x4800).
+		else if ((c == 'u') || ((c == 'U') && !(token->subtype & (TT_UNSIGNED | TT_FLOAT))))
 		{
 			script->script_p++;
 			token->subtype |= TT_UNSIGNED;
@@ -2066,7 +2073,12 @@ pc_script_t *LoadScriptFile(const char *filename)
     }
 
     CRC_RegisterSourceData(filename, script->buffer, (int)raw_length);
-    script->length = COM_Compress(script->buffer);
+    //NOTE: retail (0x100401a0) reads the file verbatim and runs no compression
+    //or comment-stripping pass, so length (0x11c) and end_p (0x10c) always
+    //describe the same bytes as the buffer.  Compressing in place here would
+    //leave end_p past the shortened text, so EndOfScript (0x10040060, script_p
+    //>= end_p) would never become true and PC_ReadSourceToken (0x10039501)
+    //would never emit "missing #endif" nor pop the dangling indents.
     return script;
 } //end of the function LoadScriptFile
 //============================================================================

@@ -2966,6 +2966,16 @@ static void test_goal_ltg_uses_expired_avoid_and_random_roam_fallback(void **sta
 	test_goal_aas_fixture_begin(&fixture, 4);
 	aasworld.areasettings[1].areaflags = AAS_AREA_LIQUID;
 	VectorSet(aasworld.areas[1].center, 40.0f, 0.0f, 16.0f);
+	/*
+	 * Retail's roam picker sub_1001a410 has no swim shortcut. 0x1001a53e
+	 * accepts a candidate only when the 300-unit downward AAS_TraceClientBBox
+	 * launched from the area centre does not start solid, and 0x1001a565
+	 * reports the area containing the traced endpoint rather than the
+	 * candidate. The fixture area therefore has to admit a crouching client
+	 * and has to still contain the point 300 units below its centre.
+	 */
+	aasworld.areasettings[1].presencetype = PRESENCE_NORMAL | PRESENCE_CROUCH;
+	aasworld.areas[1].mins[2] = -320.0f;
 
 	char fixture_path[PATH_MAX];
 	int written = snprintf(fixture_path,
@@ -3049,6 +3059,14 @@ static void test_goal_selection_requires_global_item_config(void **state)
 	test_goal_aas_fixture_begin(&fixture, 4);
 	aasworld.areasettings[1].areaflags = AAS_AREA_LIQUID;
 	VectorSet(aasworld.areas[1].center, 40.0f, 0.0f, 16.0f);
+	/*
+	 * Same retail roam-picker contract as the LTG roam test: sub_1001a410
+	 * gates on !startsolid alone (0x1001a53e), so the fixture area must admit
+	 * PRESENCE_CROUCH and must still contain the endpoint 300 units below the
+	 * area centre that 0x1001a565 converts back into an area number.
+	 */
+	aasworld.areasettings[1].presencetype = PRESENCE_NORMAL | PRESENCE_CROUCH;
+	aasworld.areas[1].mins[2] = -320.0f;
 
 	char fixture_path[PATH_MAX];
 	int written = snprintf(fixture_path,

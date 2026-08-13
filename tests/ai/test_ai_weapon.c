@@ -13,17 +13,22 @@
 #include <direct.h>
 #define TEST_MKDIR(path) _mkdir(path)
 #define TEST_RMDIR(path) _rmdir(path)
+#define TEST_SETENV(name, value) _putenv_s((name), (value))
+#define TEST_UNSETENV(name) _putenv_s((name), "")
 #else
 #include <sys/stat.h>
 #include <unistd.h>
 #define TEST_MKDIR(path) mkdir((path), 0777)
 #define TEST_RMDIR(path) rmdir(path)
+#define TEST_SETENV(name, value) setenv((name), (value), 1)
+#define TEST_UNSETENV(name) unsetenv(name)
 #endif
 
 #ifndef cmocka_skip
 #define cmocka_skip(...) skip()
 #endif
 
+#include "botlib/aas/aas_local.h"
 #include "botlib/ai_weapon/bot_weapon.h"
 #include "botlib/ai_goal/bot_goal.h"
 #include "botlib/ea/ea_local.h"
@@ -522,6 +527,250 @@ static void test_pak_only_itemconfig_resolves_sibling_include(void **state)
 	assert_int_equal(setup_status, BLERR_NOERROR);
 	assert_true(main_key_present);
 	assert_true(sibling_key_present);
+}
+
+#define TEST_BASEQ2_FIXTURE_ROOT "__gladiator_baseq2_ai_fixture"
+
+static const char g_baseq2_weapon_script[] =
+	"projectileinfo\n"
+	"{\n"
+	"name \"baseq2_projectile\"\n"
+	"model \"models/objects/baseq2/tris.md2\"\n"
+	"damage 31\n"
+	"}\n"
+	"weaponinfo\n"
+	"{\n"
+	"name \"Baseq2 Slot Weapon\"\n"
+	"model \"models/weapons/baseq2/tris.md2\"\n"
+	"weaponindex 19\n"
+	"projectile \"baseq2_projectile\"\n"
+	"numprojectiles 1\n"
+	"ammoindex 27\n"
+	"}\n";
+
+static const char g_stray_root_weapon_script[] =
+	"projectileinfo\n"
+	"{\n"
+	"name \"stray_projectile\"\n"
+	"model \"models/objects/stray/tris.md2\"\n"
+	"damage 3\n"
+	"}\n"
+	"weaponinfo\n"
+	"{\n"
+	"name \"Stray Root Weapon\"\n"
+	"model \"models/weapons/stray/tris.md2\"\n"
+	"weaponindex 20\n"
+	"projectile \"stray_projectile\"\n"
+	"numprojectiles 1\n"
+	"ammoindex 28\n"
+	"}\n";
+
+/*
+=============
+remove_baseq2_fixture
+
+Removes the loose gamedir/baseq2 layout used by the search-root regressions.
+=============
+*/
+static void remove_baseq2_fixture(void)
+{
+	static const char *files[] = {
+		TEST_BASEQ2_FIXTURE_ROOT "/baseq2/weapons.c",
+		TEST_BASEQ2_FIXTURE_ROOT "/weapons.c",
+	};
+	static const char *directories[] = {
+		TEST_BASEQ2_FIXTURE_ROOT "/baseq2",
+		TEST_BASEQ2_FIXTURE_ROOT "/gamemod",
+		TEST_BASEQ2_FIXTURE_ROOT,
+	};
+
+	for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i)
+	{
+		(void)remove(files[i]);
+	}
+	for (size_t i = 0; i < sizeof(directories) / sizeof(directories[0]); ++i)
+	{
+		(void)TEST_RMDIR(directories[i]);
+	}
+}
+
+/*
+=============
+create_baseq2_fixture
+
+Stages a basedir holding an empty gamedir, a populated baseq2 slot and a stray
+root-level config that retail never probes.
+=============
+*/
+static void create_baseq2_fixture(void)
+{
+	remove_baseq2_fixture();
+	assert_int_equal(TEST_MKDIR(TEST_BASEQ2_FIXTURE_ROOT), 0);
+	assert_int_equal(TEST_MKDIR(TEST_BASEQ2_FIXTURE_ROOT "/gamemod"), 0);
+	assert_int_equal(TEST_MKDIR(TEST_BASEQ2_FIXTURE_ROOT "/baseq2"), 0);
+
+	write_weapon_fixture(TEST_BASEQ2_FIXTURE_ROOT "/baseq2/weapons.c",
+		g_baseq2_weapon_script);
+	write_weapon_fixture(TEST_BASEQ2_FIXTURE_ROOT "/weapons.c",
+		g_stray_root_weapon_script);
+}
+
+/*
+=============
+test_weapon_config_falls_back_to_baseq2_root
+
+Retail sub_10041ba0 fills two game-directory slots, the gamedir libvar and the
+"baseq2" literal stored at 0x10041c3f, and probes both under basedir before
+moving on to cddir (sub_10041f60 at 0x10041f92 and 0x10041fba). A bare basedir
+is never a slot, so the stray root-level config must lose to the baseq2 one.
+=============
+*/
+static void test_weapon_config_falls_back_to_baseq2_root(void **state)
+{
+	(void)state;
+	create_baseq2_fixture();
+
+	char saved_env[PATH_MAX];
+	const char *previous_env = getenv("GLADIATOR_ASSET_DIR");
+	saved_env[0] = '\0';
+	if (previous_env != NULL)
+	{
+		snprintf(saved_env, sizeof(saved_env), "%s", previous_env);
+	}
+	TEST_UNSETENV("GLADIATOR_ASSET_DIR");
+
+	setup_botlib_environment();
+	LibVarSet("basedir", TEST_BASEQ2_FIXTURE_ROOT);
+	LibVarSet("gamedir", "gamemod");
+	LibVarSet("cddir", "");
+	LibVarSet("gladiator_asset_dir", "");
+	CRC_ResetSourceChecksums();
+
+	ai_weapon_library_t *library = AI_LoadWeaponLibrary("weapons.c");
+	const bot_weapon_config_t *config = AI_GetWeaponConfig(library);
+	bool source_is_baseq2 = library != NULL && strstr(library->source_path,
+		TEST_BASEQ2_FIXTURE_ROOT "/baseq2/weapons.c") != NULL;
+	int weapon_count = config != NULL ? config->num_weapons : -1;
+	bool weapon_matches = config != NULL && weapon_count == 1
+		&& strcmp(config->weapons[0].name, "Baseq2 Slot Weapon") == 0;
+
+	AI_UnloadWeaponLibrary(library);
+	teardown_botlib_environment();
+	remove_baseq2_fixture();
+	if (saved_env[0] != '\0')
+	{
+		TEST_SETENV("GLADIATOR_ASSET_DIR", saved_env);
+	}
+
+	assert_true(source_is_baseq2);
+	assert_int_equal(weapon_count, 1);
+	assert_true(weapon_matches);
+}
+
+/*
+=============
+test_asset_libvar_overrides_ambient_environment
+
+The gladiator_asset_dir libvar is a host-side extension with no retail
+equivalent - sub_10041f60 only reads basedir, gamedir and cddir - so an
+explicitly set libvar must not be defeated by an ambient GLADIATOR_ASSET_DIR.
+=============
+*/
+static void test_asset_libvar_overrides_ambient_environment(void **state)
+{
+	(void)state;
+	static const char fixture_root[] = "__gladiator_pak_ai_fixture";
+	create_ai_pak_fixture();
+
+	char saved_env[PATH_MAX];
+	const char *previous_env = getenv("GLADIATOR_ASSET_DIR");
+	saved_env[0] = '\0';
+	if (previous_env != NULL)
+	{
+		snprintf(saved_env, sizeof(saved_env), "%s", previous_env);
+	}
+
+	char ambient_root[PATH_MAX];
+	int written = snprintf(ambient_root,
+		sizeof(ambient_root),
+		"%s/dev_tools/assets",
+		PROJECT_SOURCE_DIR);
+	assert_true(written > 0 && (size_t)written < sizeof(ambient_root));
+	assert_int_equal(TEST_SETENV("GLADIATOR_ASSET_DIR", ambient_root), 0);
+
+	setup_botlib_environment();
+	LibVarSet("basedir", fixture_root);
+	LibVarSet("gamedir", "");
+	LibVarSet("cddir", "");
+	LibVarSet("gladiator_asset_dir", fixture_root);
+	CRC_ResetSourceChecksums();
+
+	ai_weapon_library_t *library = AI_LoadWeaponLibrary("weapons.c");
+	const bot_weapon_config_t *config = AI_GetWeaponConfig(library);
+	bool source_is_pak = library != NULL && strstr(library->source_path,
+		"__gladiator_pak_ai_fixture/.pak_cache/pak0/weapons.c") != NULL;
+	int weapon_count = config != NULL ? config->num_weapons : -1;
+	bool weapon_matches = config != NULL && weapon_count == 1
+		&& strcmp(config->weapons[0].name, "PAK Sibling Weapon") == 0;
+
+	AI_UnloadWeaponLibrary(library);
+	teardown_botlib_environment();
+	remove_ai_pak_fixture();
+	if (saved_env[0] != '\0')
+	{
+		TEST_SETENV("GLADIATOR_ASSET_DIR", saved_env);
+	}
+	else
+	{
+		TEST_UNSETENV("GLADIATOR_ASSET_DIR");
+	}
+
+	assert_true(source_is_pak);
+	assert_int_equal(weapon_count, 1);
+	assert_true(weapon_matches);
+}
+
+/*
+=============
+test_frame_diagnostics_do_not_create_absent_libvars
+
+Retail sub_1000e010 reads showcacheupdates, showmemoryusage and memorydump
+through the non-creating getter sub_10038990 (0x1000e044, 0x1000e076,
+0x1000e0a7), which returns 0.0f without allocating when the name is absent
+(0x1003899f). An untouched start frame must therefore leave the libvar list and
+the memory totals the memorydump branch prints completely alone.
+=============
+*/
+static void test_frame_diagnostics_do_not_create_absent_libvars(void **state)
+{
+	(void)state;
+
+	test_reset_log();
+	BotInterface_SetImportTable(&g_test_imports);
+	LibVar_Init();
+	assert_true(BotMemory_Init(TEST_BOTLIB_HEAP_SIZE));
+
+	const size_t baseline_blocks = BotMemory_BlockCount();
+	AAS_RunFrameDiagnostics();
+
+	assert_int_equal(BotMemory_BlockCount(), baseline_blocks);
+	assert_string_equal(LibVarGetString("showcacheupdates"), "");
+	assert_string_equal(LibVarGetString("showmemoryusage"), "");
+	assert_string_equal(LibVarGetString("memorydump"), "");
+	assert_int_equal(g_test_log.count, 0);
+
+	/* Only the taken branch writes back, matching sub_10038ac0 at 0x1000e0cb. */
+	LibVarSet("memorydump", "1");
+	AAS_RunFrameDiagnostics();
+
+	assert_string_equal(LibVarGetString("memorydump"), "0");
+	assert_string_equal(LibVarGetString("showcacheupdates"), "");
+	assert_string_equal(LibVarGetString("showmemoryusage"), "");
+	assert_true(g_test_log.count > 0);
+
+	LibVar_Shutdown();
+	BotMemory_Shutdown();
+	BotInterface_SetImportTable(NULL);
 }
 
 /*
@@ -1303,6 +1552,9 @@ int main(void)
         cmocka_unit_test(test_weapon_struct_layout_matches_hlil_offsets),
 		cmocka_unit_test(test_pak_only_weapon_config_resolves_sibling_include),
 		cmocka_unit_test(test_pak_only_itemconfig_resolves_sibling_include),
+		cmocka_unit_test(test_weapon_config_falls_back_to_baseq2_root),
+		cmocka_unit_test(test_asset_libvar_overrides_ambient_environment),
+		cmocka_unit_test(test_frame_diagnostics_do_not_create_absent_libvars),
         cmocka_unit_test(test_weapon_library_reports_expected_counts),
         cmocka_unit_test(test_weapon_weights_align_with_reference_values),
         cmocka_unit_test(test_weapon_weights_cache_uses_caller_filename),

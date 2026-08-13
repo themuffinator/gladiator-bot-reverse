@@ -494,7 +494,7 @@ test_sound_heap_schedules_activates_and_expires_retail_records
 
 Pin sub_1001cbe0 through sub_1001cfa0: the 0x34-byte pool, strict delayed
 activation, end-time order, inclusive expiry, fixed-capacity diagnostic, and
-negative-offset replacement of an active entity/sound pair.
+zero-offset replacement of an active entity/sound pair.
 =============
 */
 static void test_sound_heap_schedules_activates_and_expires_retail_records(
@@ -607,6 +607,15 @@ static void test_sound_heap_schedules_activates_and_expires_retail_records(
 	AAS_SoundSubsystem_SetFrameTime(3.0f);
 	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
 	assert_int_equal(AAS_SoundSubsystem_SoundEvent(0)->ent, 44);
+
+	/*
+	 * Retail compares timeofs against 0.0f at 0x1001ce95 and branches on the
+	 * x87 C3 (equal) bit with `test ah, 0x40` at 0x1001ce9a - not on C0
+	 * (`test ah, 1`, '<'). Only an immediate emit drops the record already
+	 * active for this (entity, sound index) pair; a negative offset is just
+	 * another delayed emit, so the active record survives and the new one
+	 * waits in the scheduled list.
+	 */
 	assert_true(AAS_SoundSubsystem_RecordSound(origin,
 		44,
 		0,
@@ -614,11 +623,39 @@ static void test_sound_heap_schedules_activates_and_expires_retail_records(
 		1.0f,
 		1.0f,
 		-0.1f));
-	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
+	assert_int_equal(AAS_SoundSubsystem_SoundEvent(0)->ent, 44);
+	assert_float_equal(AAS_SoundSubsystem_SoundEvent(0)->start, 2.0f, 0.0001f);
+
 	AAS_SoundSubsystem_SetFrameTime(3.0f);
 	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
 	assert_float_equal(AAS_SoundSubsystem_SoundEvent(0)->start, 2.9f, 0.0001f);
+	/*
+	 * End time is (AAS_Time() + duration) + timeofs at 0x1001cee4, which
+	 * re-reads the clock instead of reusing the start value: 3.0 + 0.2 - 0.1.
+	 */
+	assert_float_equal(AAS_SoundSubsystem_SoundEvent(0)->end, 3.1f, 0.0001f);
+
+	/*
+	 * The same pair emitted with timeofs 0 does take the replacement path at
+	 * 0x1001ce9e (sub_1001cdd0), so the active record is unlinked before the
+	 * heap allocation. The replacement starts exactly on this frame and
+	 * sub_1001cfa0 activates on a strict `start < time`, so it stays queued
+	 * until a later frame.
+	 */
+	assert_true(AAS_SoundSubsystem_RecordSound(origin,
+		44,
+		0,
+		0,
+		1.0f,
+		1.0f,
+		0.0f));
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
+	AAS_SoundSubsystem_SetFrameTime(3.001f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1);
+	assert_float_equal(AAS_SoundSubsystem_SoundEvent(0)->start, 3.0f, 0.0001f);
 	float final_end = AAS_SoundSubsystem_SoundEvent(0)->end;
+	assert_float_equal(final_end, 3.2f, 0.0001f);
 	AAS_SoundSubsystem_SetFrameTime(final_end);
 	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
 
@@ -1054,48 +1091,120 @@ static void test_sensory_heaps_use_tracked_allocator_paths(void **state)
 
 /*
 =============
-test_soundinfo_defaults_follow_retail_field_table
+test_load_soundconfig_text
 
-Load a minimal record and pin the defaults encoded beside the raw 0xb0-byte
-field table: volume 80, duration 10, type 0, recognition 1, and an empty
-trailing string.
+Write one throwaway soundconfig, run the retail no-argument initialiser over
+it, and remove the file again before any assertion can leave it behind.
 =============
 */
-static void test_soundinfo_defaults_follow_retail_field_table(void **state)
+static void test_load_soundconfig_text(const char *config_path, const char *text)
 {
-	(void)state;
-	const char *config_path =
-		PROJECT_SOURCE_DIR "/aas_soundinfo_defaults_test.c";
 	FILE *config = fopen(config_path, "wb");
 	assert_non_null(config);
-	assert_true(fputs("#define TEST_DURATION 3.25\n"
+	assert_true(fputs(text, config) >= 0);
+	assert_int_equal(fclose(config), 0);
+
+	test_set_sound_libvars(4, 2, config_path);
+	test_reset_print_capture();
+	int result = AAS_SoundSubsystem_Init();
+	assert_int_equal(unlink(config_path), 0);
+	assert_int_equal(result, BLERR_NOERROR);
+}
+
+/*
+=============
+test_soundinfo_defaults_and_bounds_follow_retail_field_table
+
+Pin the raw 0xb0-byte field table at .data 0x1005c070. Every record is zero
+filled before it is read - 0x1001c904 memfills 0x2c dwords of 0 over the slot
+and there is no default-seeding pass - so an omitted field stays 0. The 80.0f
+at 0x1005c0a0 and the 10.0f at 0x1005c0bc are the FT_BOUNDED maxima of volume
+and duration, whose type words at 0x1005c094/0x1005c0b0 are 0x0203
+(FT_FLOAT | FT_BOUNDED), not initial values. recognition stores 1.0f at
+0x1005c0f4 but its type word at 0x1005c0e8 is a plain 0x0003, so that ceiling
+is dead weight and out-of-range values pass.
+=============
+*/
+static void test_soundinfo_defaults_and_bounds_follow_retail_field_table(
+	void **state)
+{
+	(void)state;
+	BotInterface_SetImportTable(&g_imports);
+	LibVar_Init();
+
+	test_load_soundconfig_text(
+		PROJECT_SOURCE_DIR "/aas_soundinfo_defaults_tmp.c",
+		"#define TEST_DURATION 3.25\n"
 		"#define TEST_TYPE 17\n"
 		"soundinfo\n"
 		"{\n"
 		"\tname \"defaults.wav\"\n"
 		"\tduration TEST_DURATION\n"
 		"\ttype TEST_TYPE\n"
-		"}\n", config) >= 0);
-	assert_int_equal(fclose(config), 0);
-
-	BotInterface_SetImportTable(&g_imports);
-	LibVar_Init();
-	test_set_sound_libvars(2, 2, config_path);
-	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+		"}\n"
+		"soundinfo\n"
+		"{\n"
+		"\tname \"ceilings.wav\"\n"
+		"\tvolume 80.0\n"
+		"\tduration 10.0\n"
+		"\trecognition 5.0\n"
+		"}\n");
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 2U);
 
 	int info_index = AAS_SoundSubsystem_FindInfoIndex("defaults.wav");
 	assert_true(info_index >= 0);
 	const aas_soundinfo_t *info =
 		AAS_SoundSubsystem_Info((size_t)info_index);
 	assert_non_null(info);
-	assert_float_equal(info->volume, 80.0f, 0.0001f);
+	assert_float_equal(info->volume, 0.0f, 0.0001f);
 	assert_float_equal(info->duration, 3.25f, 0.0001f);
 	assert_int_equal(info->type, 17);
-	assert_float_equal(info->recognition, 1.0f, 0.0001f);
+	assert_float_equal(info->recognition, 0.0f, 0.0001f);
 	assert_string_equal(info->string, "");
 
+	info_index = AAS_SoundSubsystem_FindInfoIndex("ceilings.wav");
+	assert_true(info_index >= 0);
+	info = AAS_SoundSubsystem_Info((size_t)info_index);
+	assert_non_null(info);
+	assert_float_equal(info->volume, 80.0f, 0.0001f);
+	assert_float_equal(info->duration, 10.0f, 0.0001f);
+	assert_float_equal(info->recognition, 5.0f, 0.0001f);
+
+	/*
+	 * A bounded field one step past its ceiling aborts the whole config read
+	 * through SourceError, and retail keeps the records already committed:
+	 * ReadStructure failure returns at 0x1001c99a without rewinding
+	 * numsoundinfo (0x100669b4).
+	 */
+	test_load_soundconfig_text(
+		PROJECT_SOURCE_DIR "/aas_soundinfo_volume_bound_tmp.c",
+		"soundinfo\n"
+		"{\n"
+		"\tname \"quiet.wav\"\n"
+		"\tvolume 80.0\n"
+		"}\n"
+		"soundinfo\n"
+		"{\n"
+		"\tname \"loud.wav\"\n"
+		"\tvolume 80.5\n"
+		"}\n");
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 1U);
+	assert_int_equal(AAS_SoundSubsystem_FindInfoIndex("loud.wav"), -1);
+	assert_non_null(strstr(g_print_message,
+		"float out of range [0.000000, 80.000000]"));
+
+	test_load_soundconfig_text(
+		PROJECT_SOURCE_DIR "/aas_soundinfo_duration_bound_tmp.c",
+		"soundinfo\n"
+		"{\n"
+		"\tname \"long.wav\"\n"
+		"\tduration 10.5\n"
+		"}\n");
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 0U);
+	assert_non_null(strstr(g_print_message,
+		"float out of range [0.000000, 10.000000]"));
+
 	test_shutdown_sound_heap();
-	assert_int_equal(unlink(config_path), 0);
 }
 
 /*
@@ -1125,13 +1234,18 @@ static void test_sound_capacity_libvars_follow_retail_ranges(void **state)
 
 /*
 =============
-test_soundindex_table_borrows_assets_and_matches_exact_names
+test_soundindex_table_borrows_assets_and_folds_name_case
 
-Pin the raw sound-index pointer table: it is tracked, maps exact names only,
-and borrows the engine-owned asset string slots rather than copying them.
+Pin the raw sound-index pointer table built by sub_1001d140: it is tracked,
+borrows the engine-owned asset string slots rather than copying them, and
+matches soundinfo names case-insensitively. The compare at 0x1001d1c9 goes
+through j_sub_10043c10, which tail-calls the _stricmp body at sub_10045cb0
+(it folds 'A'..'Z' by adding 0x20 at 0x10045cda/0x10045ce9). Case is the only
+transform: no backslash conversion and no "sound/" prefix stripping. An asset
+with no matching soundinfo keeps its NULL slot from the memset at 0x1001d18a.
 =============
 */
-static void test_soundindex_table_borrows_assets_and_matches_exact_names(
+static void test_soundindex_table_borrows_assets_and_folds_name_case(
 	void **state)
 {
 	(void)state;
@@ -1139,13 +1253,20 @@ static void test_soundindex_table_borrows_assets_and_matches_exact_names(
 	const size_t baseline_blocks = BotMemory_BlockCount();
 	char first_asset[] = "weapons/blastf1a.wav";
 	char second_asset[] = "WEAPONS/BLASTF1A.WAV";
-	char *assets[] = {first_asset, second_asset};
-	assert_true(AAS_SoundSubsystem_RegisterMapAssets(2, assets));
+	char third_asset[] = "weapons\\blastf1a.wav";
+	char fourth_asset[] = "no/such/sound.wav";
+	char *assets[] = {first_asset, second_asset, third_asset, fourth_asset};
+	assert_true(AAS_SoundSubsystem_RegisterMapAssets(4, assets));
 	assert_int_equal(BotMemory_BlockCount(), baseline_blocks + 1U);
 	assert_ptr_equal(AAS_SoundSubsystem_AssetName(0), first_asset);
 	assert_ptr_equal(AAS_SoundSubsystem_AssetName(1), second_asset);
-	assert_non_null(AAS_SoundSubsystem_InfoForSoundIndex(0));
-	assert_null(AAS_SoundSubsystem_InfoForSoundIndex(1));
+	assert_ptr_equal(AAS_SoundSubsystem_AssetName(2), third_asset);
+	assert_ptr_equal(AAS_SoundSubsystem_AssetName(3), fourth_asset);
+	const aas_soundinfo_t *blaster = AAS_SoundSubsystem_InfoForSoundIndex(0);
+	assert_non_null(blaster);
+	assert_ptr_equal(AAS_SoundSubsystem_InfoForSoundIndex(1), blaster);
+	assert_null(AAS_SoundSubsystem_InfoForSoundIndex(2));
+	assert_null(AAS_SoundSubsystem_InfoForSoundIndex(3));
 
 	AAS_SoundSubsystem_ClearMapAssets();
 	assert_int_equal(BotMemory_BlockCount(), baseline_blocks);
@@ -1171,10 +1292,11 @@ int main(void)
 		cmocka_unit_test(test_dynamic_pointlight_uses_static_hit_point),
 		cmocka_unit_test(test_bsp_pointlight_lumps_load_and_validate),
 		cmocka_unit_test(test_sensory_heaps_use_tracked_allocator_paths),
-		cmocka_unit_test(test_soundinfo_defaults_follow_retail_field_table),
+		cmocka_unit_test(
+			test_soundinfo_defaults_and_bounds_follow_retail_field_table),
 		cmocka_unit_test(test_sound_capacity_libvars_follow_retail_ranges),
 		cmocka_unit_test(
-			test_soundindex_table_borrows_assets_and_matches_exact_names),
+			test_soundindex_table_borrows_assets_and_folds_name_case),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

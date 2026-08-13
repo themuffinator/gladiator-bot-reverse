@@ -80,3 +80,20 @@ if(UNIX AND NOT APPLE)
 endif()
 
 add_test(NAME aas_reach_pass_areas COMMAND aas_reach_pass_area_tests)
+
+add_executable(aas_reach_tests
+	test_aas_reach.c
+)
+
+target_link_libraries(aas_reach_tests PRIVATE ${BOTLIB_PARITY_TEST_LIBRARIES})
+target_link_libraries(aas_reach_tests PRIVATE botlib_interface)
+
+target_include_directories(aas_reach_tests PRIVATE
+	${PROJECT_SOURCE_DIR}/src
+)
+
+if(UNIX AND NOT APPLE)
+	target_link_libraries(aas_reach_tests PRIVATE m)
+endif()
+
+add_test(NAME aas_reach COMMAND aas_reach_tests)

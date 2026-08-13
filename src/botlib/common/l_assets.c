@@ -21,6 +21,10 @@
 #define BOTLIB_PAK_NAME_FIELD 56
 #define BOTLIB_MAX_PAK_FILES 10
 
+/* Retail stores this literal in the second game-directory slot of
+   sub_10041ba0 at 0x10041c3f; aas_map.c uses the same spelling. */
+#define BOTLIB_DEFAULT_GAMEDIR "baseq2"
+
 #ifdef _WIN32
 #define BotLib_PlatformMkdir(path) _mkdir(path)
 #else
@@ -186,64 +190,91 @@ static bool BotLib_AddCompoundRoot(const char *lhs,
 /*
 =============
 BotLib_BuildSearchRoots
+
+Reproduces the retail probe order: basedir and cddir each crossed with the
+gamedir libvar and the "baseq2" default, followed by the host-side overrides.
 =============
 */
 static size_t BotLib_BuildSearchRoots(const char **roots,
-                                      bool *override_flags,
-                                      size_t max_roots,
-                                      char legacy_storage[][BOTLIB_ASSET_MAX_PATH],
-                                      size_t legacy_capacity)
+									  bool *override_flags,
+									  size_t max_roots,
+									  char legacy_storage[][BOTLIB_ASSET_MAX_PATH],
+									  size_t legacy_capacity)
 {
-    size_t root_count = 0;
-    size_t legacy_count = 0;
+	size_t root_count = 0;
+	size_t legacy_count = 0;
 
-    const char *basedir = LibVarString("basedir", "");
-    const char *gamedir = LibVarString("gamedir", "");
-    const char *cddir = LibVarString("cddir", "");
+	const char *basedir = LibVarString("basedir", "");
+	const char *gamedir = LibVarString("gamedir", "");
+	const char *cddir = LibVarString("cddir", "");
 
-    BotLib_AddCompoundRoot(basedir,
-                           gamedir,
-                           false,
-                           legacy_storage,
-                           legacy_capacity,
-                           &legacy_count,
-                           roots,
-                           override_flags,
-                           &root_count,
-                           max_roots);
-    BotLib_AddRootCandidate(basedir, false, roots, override_flags, &root_count, max_roots);
+	/* Retail sub_10041ba0 (0x10041ba0) fills exactly two 0x90 byte game
+	   directory slots - the gamedir libvar at 0x10041c2b and the "baseq2"
+	   literal at 0x10041c3f - then iterates both of them (0x10041e24
+	   "var_244 + 1 s< 2") once for basedir and once for cddir, the two calls
+	   sub_10041f60 makes at 0x10041f92 and 0x10041fba. The slot append at
+	   0x10041ca8 is skipped for a zero-length slot, so an empty gamedir
+	   collapses slot 0 onto the bare directory; otherwise a bare basedir,
+	   cddir or gamedir is never probed. */
+	const char *legacy_dirs[2];
+	legacy_dirs[0] = basedir;
+	legacy_dirs[1] = cddir;
 
-    BotLib_AddCompoundRoot(cddir,
-                           gamedir,
-                           false,
-                           legacy_storage,
-                           legacy_capacity,
-                           &legacy_count,
-                           roots,
-                           override_flags,
-                           &root_count,
-                           max_roots);
-    BotLib_AddRootCandidate(cddir, false, roots, override_flags, &root_count, max_roots);
+	for (size_t i = 0; i < sizeof(legacy_dirs) / sizeof(legacy_dirs[0]); ++i) {
+		if (BotLib_IsStringEmpty(gamedir)) {
+			BotLib_AddRootCandidate(legacy_dirs[i],
+									false,
+									roots,
+									override_flags,
+									&root_count,
+									max_roots);
+		} else {
+			BotLib_AddCompoundRoot(legacy_dirs[i],
+								   gamedir,
+								   false,
+								   legacy_storage,
+								   legacy_capacity,
+								   &legacy_count,
+								   roots,
+								   override_flags,
+								   &root_count,
+								   max_roots);
+		}
 
-    BotLib_AddRootCandidate(gamedir, false, roots, override_flags, &root_count, max_roots);
+		BotLib_AddCompoundRoot(legacy_dirs[i],
+							   BOTLIB_DEFAULT_GAMEDIR,
+							   false,
+							   legacy_storage,
+							   legacy_capacity,
+							   &legacy_count,
+							   roots,
+							   override_flags,
+							   &root_count,
+							   max_roots);
+	}
 
-    const char *libvar_root = LibVarString("gladiator_asset_dir", "");
-    BotLib_AddRootCandidate(libvar_root, true, roots, override_flags, &root_count, max_roots);
+	/* Retail has no environment variable at all - only the basedir, gamedir
+	   and cddir libvars exist - so an explicitly set gladiator_asset_dir must
+	   win and GLADIATOR_ASSET_DIR is consulted only when it is empty. */
+	const char *libvar_root = LibVarString("gladiator_asset_dir", "");
+	if (!BotLib_IsStringEmpty(libvar_root)) {
+		BotLib_AddRootCandidate(libvar_root, true, roots, override_flags, &root_count, max_roots);
+	} else {
+		const char *env_root = getenv("GLADIATOR_ASSET_DIR");
+		BotLib_AddRootCandidate(env_root, true, roots, override_flags, &root_count, max_roots);
+	}
 
-    const char *env_root = getenv("GLADIATOR_ASSET_DIR");
-    BotLib_AddRootCandidate(env_root, true, roots, override_flags, &root_count, max_roots);
+	const char *fallbacks[] = {
+		"dev_tools/assets",
+		"../dev_tools/assets",
+		"../../dev_tools/assets",
+	};
 
-    const char *fallbacks[] = {
-        "dev_tools/assets",
-        "../dev_tools/assets",
-        "../../dev_tools/assets",
-    };
+	for (size_t i = 0; i < sizeof(fallbacks) / sizeof(fallbacks[0]); ++i) {
+		BotLib_AddRootCandidate(fallbacks[i], false, roots, override_flags, &root_count, max_roots);
+	}
 
-    for (size_t i = 0; i < sizeof(fallbacks) / sizeof(fallbacks[0]); ++i) {
-        BotLib_AddRootCandidate(fallbacks[i], false, roots, override_flags, &root_count, max_roots);
-    }
-
-    return root_count;
+	return root_count;
 }
 
 static const char *BotLib_FindLastSeparator(const char *path)

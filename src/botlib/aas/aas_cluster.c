@@ -55,7 +55,9 @@ static int AAS_UpdatePortal(int areanum, int clusternum)
 
 	if (portalnum == aasworld.numPortals)
 	{
-		BotLib_Print(PRT_ERROR, "no portal of area %d\n", areanum);
+		/* Retail routes this through AAS_Error (sub_1000d7e0 @0x1000d810), which
+		   prints at PRT_FATAL; the .rdata string at 0x1005ade0 has no newline. */
+		BotLib_Print(PRT_FATAL, "no portal of area %d", areanum);
 		return qtrue;
 	}
 
@@ -75,7 +77,9 @@ static int AAS_UpdatePortal(int areanum, int clusternum)
 	}
 	else
 	{
-		BotLib_LogWrite("portal using area %d is seperating more than two clusters\r\n",
+		/* Retail Log_Write (sub_10038d80 @0x10038da4) appends "\r\n" itself, so
+		   the .rdata format string at 0x1005ad7c carries no terminator. */
+		BotLib_LogWrite("portal using area %d is seperating more than two clusters",
 			areanum);
 		aasworld.areasettings[areanum].contents &= ~AAS_AREACONTENTS_CLUSTERPORTAL;
 		return qfalse;
@@ -83,7 +87,8 @@ static int AAS_UpdatePortal(int areanum, int clusternum)
 
 	if (aasworld.portalIndexSize >= AAS_MAX_PORTALINDEXSIZE)
 	{
-		BotLib_Print(PRT_ERROR, "AAS_MAX_PORTALINDEXSIZE\n");
+		/* AAS_Error (0x100086f1) prints at PRT_FATAL; string 0x1005adc4 has no newline. */
+		BotLib_Print(PRT_FATAL, "AAS_MAX_PORTALINDEXSIZE");
 		return qtrue;
 	}
 
@@ -119,8 +124,9 @@ static int AAS_FloodClusterAreas(int areanum, int clusternum)
 {
 	if (areanum <= 0 || areanum >= aasworld.numAreas)
 	{
-		BotLib_Print(PRT_ERROR,
-			"AAS_FloodClusterAreas_r: areanum out of range\n");
+		/* AAS_Error (0x10008959) prints at PRT_FATAL; string 0x1005adfc has no newline. */
+		BotLib_Print(PRT_FATAL,
+			"AAS_FloodClusterAreas_r: areanum out of range");
 		return qfalse;
 	}
 
@@ -132,7 +138,8 @@ static int AAS_FloodClusterAreas(int areanum, int clusternum)
 			return qtrue;
 		}
 
-		BotLib_LogWrite("cluster %d touched cluster %d at area %d\r\n",
+		/* Log_Write appends "\r\n"; string 0x1005ae34 carries no terminator. */
+		BotLib_LogWrite("cluster %d touched cluster %d at area %d",
 			clusternum,
 			settings->cluster,
 			areanum);
@@ -316,7 +323,8 @@ static int AAS_FindClusters(void)
 
 		if (aasworld.numClusters >= AAS_MAX_CLUSTERS)
 		{
-			BotLib_Print(PRT_ERROR, "AAS_MAX_CLUSTERS\n");
+			/* AAS_Error (0x10008c27) prints at PRT_FATAL; string 0x1005ae68 has no newline. */
+			BotLib_Print(PRT_FATAL, "AAS_MAX_CLUSTERS");
 			return qfalse;
 		}
 
@@ -332,7 +340,8 @@ static int AAS_FindClusters(void)
 		}
 
 		AAS_NumberClusterPortals(aasworld.numClusters);
-		BotLib_LogWrite("cluster %d has %d areas\r\n",
+		/* Log_Write appends "\r\n"; string 0x1005ae7c carries no terminator. */
+		BotLib_LogWrite("cluster %d has %d areas",
 			aasworld.numClusters,
 			cluster->numareas);
 		aasworld.numClusters += 1;
@@ -362,7 +371,8 @@ static void AAS_CreatePortals(void)
 
 		if (aasworld.numPortals >= AAS_MAX_PORTALS)
 		{
-			BotLib_Print(PRT_ERROR, "AAS_MAX_PORTALS\n");
+			/* AAS_Error (0x10008cfa) prints at PRT_FATAL; string 0x1005ae98 has no newline. */
+			BotLib_Print(PRT_FATAL, "AAS_MAX_PORTALS");
 			return;
 		}
 
@@ -372,7 +382,8 @@ static void AAS_CreatePortals(void)
 		portal->backcluster = 0;
 		portal->clusterareanum[0] = 0;
 		portal->clusterareanum[1] = 0;
-		BotLib_LogWrite("portal %d: area %d\r\n", aasworld.numPortals, areanum);
+		/* Log_Write appends "\r\n"; string 0x1005aeac carries no terminator. */
+		BotLib_LogWrite("portal %d: area %d", aasworld.numPortals, areanum);
 		aasworld.numPortals += 1;
 	}
 }
@@ -482,9 +493,14 @@ static int AAS_GetAdjacentAreasWithLessPresenceTypes(int *areanums,
 	int numareas,
 	int currentareanum)
 {
+	/* Retail sub_10008eb0 has no entry guard: it writes areanums[numareas]
+	   immediately and only tests the limit just before recursing (0x10008f6d),
+	   so it can report MAX_PORTALAREAS at most once per overflow.  The guard is
+	   kept here purely as a bounds check - the pre-recursion test below already
+	   caps numareas at MAX_PORTALAREAS-1 - and stays silent so the diagnostic
+	   count matches retail. */
 	if (numareas >= MAX_PORTALAREAS)
 	{
-		BotLib_Print(PRT_ERROR, "MAX_PORTALAREAS\n");
 		return numareas;
 	}
 
@@ -541,9 +557,10 @@ static int AAS_GetAdjacentAreasWithLessPresenceTypes(int *areanums,
 			continue;
 		}
 
+		/* AAS_Error (0x10008fa0) prints at PRT_FATAL; string 0x1005aec4 has no newline. */
 		if (numareas >= MAX_PORTALAREAS)
 		{
-			BotLib_Print(PRT_ERROR, "MAX_PORTALAREAS\n");
+			BotLib_Print(PRT_FATAL, "MAX_PORTALAREAS");
 			return numareas;
 		}
 		numareas = AAS_GetAdjacentAreasWithLessPresenceTypes(areanums,
@@ -761,7 +778,8 @@ static int AAS_CheckAreaForPossiblePortal(int areanum)
 			AAS_AREACONTENTS_CLUSTERPORTAL;
 		aasworld.areasettings[portalarea].contents |=
 			AAS_AREACONTENTS_ROUTEPORTAL;
-		BotLib_LogWrite("possible portal: %d\r\n", portalarea);
+		/* Log_Write appends "\r\n"; string 0x1005aed8 carries no terminator. */
+		BotLib_LogWrite("possible portal: %d", portalarea);
 	}
 
 	return numareas;
@@ -820,7 +838,8 @@ static int AAS_TestPortals(void)
 		{
 			aasworld.areasettings[portal->areanum].contents &=
 				~AAS_AREACONTENTS_CLUSTERPORTAL;
-			BotLib_LogWrite("portal area %d has no front cluster\r\n",
+			/* Retail string 0x1005af38 keeps a bare LF; Log_Write adds the CRLF. */
+			BotLib_LogWrite("portal area %d has no front cluster\n",
 				portal->areanum);
 			return qfalse;
 		}
@@ -828,7 +847,8 @@ static int AAS_TestPortals(void)
 		{
 			aasworld.areasettings[portal->areanum].contents &=
 				~AAS_AREACONTENTS_CLUSTERPORTAL;
-			BotLib_LogWrite("portal area %d has no back cluster\r\n",
+			/* Retail string 0x1005af0c keeps a bare LF; Log_Write adds the CRLF. */
+			BotLib_LogWrite("portal area %d has no back cluster\n",
 				portal->areanum);
 			return qfalse;
 		}

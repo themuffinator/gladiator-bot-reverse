@@ -16,6 +16,8 @@
 #define WEIGHT_MAX_VALUE BOTLIB_WEIGHT_MAX_VALUE
 #define WEIGHT_TYPE_BALANCE BOTLIB_WEIGHT_TYPE_BALANCE
 #define BOT_WEIGHT_MAX_CACHE_FILES 128
+/* Retail 10035fb5 sizes the pinned weight filename buffer at 0x90 bytes. */
+#define BOT_WEIGHT_RETAIL_FILENAME_SIZE 0x90
 
 typedef struct bot_weight_cache_entry_s {
 	bot_weight_config_t *config;
@@ -38,6 +40,7 @@ int PC_ExpectTokenString(pc_source_t *source, char *string);
 int PC_ExpectTokenType(pc_source_t *source, int type, int subtype, pc_token_t *token);
 int PC_CheckTokenString(pc_source_t *source, char *string);
 void StripDoubleQuotes(char *string);
+void SourceWarning(pc_source_t *source, char *format, ...);
 
 // -----------------------------------------------------------------------------
 //  Helper structures
@@ -69,8 +72,7 @@ static bool BotWeight_PushGlobalDefines(const char *const *defines,
 static void BotWeight_PopGlobalDefines(bot_weight_define_scope_t *scope);
 static void BotWeight_FreeFuzzySeperators(bot_fuzzy_seperator_t *fs);
 static void BotWeight_FreeConfig(bot_weight_config_t *config);
-static bool BotWeight_ParseFloatToken(const pc_token_t *token, float *value);
-static bool BotWeight_ParseIntegerToken(const pc_token_t *token, int *value);
+static int BotWeight_TokenIntegerValue(const pc_token_t *token);
 static bool BotWeight_ReadValue(pc_source_t *source, float *value);
 static bool BotWeight_ReadFuzzyWeight(pc_source_t *source, bot_fuzzy_seperator_t *fs);
 static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source);
@@ -421,60 +423,31 @@ static void BotWeight_FreeConfig(bot_weight_config_t *config)
 
 /*
 =============
-BotWeight_ParseFloatToken
+BotWeight_TokenIntegerValue
 
-Converts a numeric precompiler token to a float without relying on NUMBERVALUE.
+Returns a numeric token's cached intvalue with retail's 32-bit truncation.
 =============
 */
-static bool BotWeight_ParseFloatToken(const pc_token_t *token, float *value)
+static int BotWeight_TokenIntegerValue(const pc_token_t *token)
 {
-	if (token == NULL || token->type != TT_NUMBER) {
-		return false;
+	if (token == NULL) {
+		return 0;
 	}
 
-	char *end = NULL;
-	double parsed = strtod(token->string, &end);
-	if (end == token->string || (end != NULL && *end != '\0')) {
-		return false;
-	}
-
-	if (value != NULL) {
-		*value = (float)parsed;
-	}
-	return true;
-}
-
-/*
-=============
-BotWeight_ParseIntegerToken
-
-Converts a numeric precompiler token to an int without relying on NUMBERVALUE.
-=============
-*/
-static bool BotWeight_ParseIntegerToken(const pc_token_t *token, int *value)
-{
-	if (token == NULL || token->type != TT_NUMBER) {
-		return false;
-	}
-
-	char *end = NULL;
-	long parsed = strtol(token->string, &end, 0);
-	if (end == token->string || (end != NULL && *end != '\0')) {
-		return false;
-	}
-
-	if (value != NULL) {
-		*value = (int)parsed;
-	}
-	return true;
+	/* Retail reads the cached token.intvalue straight out of the token
+	   (10035b48 for the switch index, 10035bb7 for a case value) rather than
+	   re-lexing token.string. */
+	uint32_t low = (uint32_t)token->intvalue;
+	return low <= INT32_MAX
+		? (int)low
+		: (int)((int64_t)low - INT64_C(4294967296));
 }
 
 /*
 =============
 BotWeight_ReadValue
 
-Reads the numeric value used by fuzzy weights, preserving integer tokens that
-the reconstructed lexer does not always mirror into floatvalue.
+Reads the numeric value used by fuzzy weights.
 =============
 */
 static bool BotWeight_ReadValue(pc_source_t *source, float *value)
@@ -485,25 +458,24 @@ static bool BotWeight_ReadValue(pc_source_t *source, float *value)
 	}
 
 	if (strcmp(token.string, "-") == 0) {
-		BotLib_Print(PRT_WARNING, "negative value set to zero\n");
+		SourceWarning(source, "negative value set to zero\n");
 		if (!PC_ExpectTokenType(source, TT_NUMBER, 0, &token)) {
 			return false;
 		}
 	}
 
 	if (token.type != TT_NUMBER) {
-		BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
-		return false;
-	}
-
-	float parsed_value;
-	if (!BotWeight_ParseFloatToken(&token, &parsed_value)) {
-		BotLib_Print(PRT_ERROR, "invalid return value %s\n", token.string);
+		SourceError(source, "invalid return value %s\n", token.string);
 		return false;
 	}
 
 	if (value != NULL) {
-		*value = parsed_value;
+		/* Retail 100357ca stores the cached token.floatvalue verbatim. The
+		   $evalfloat producer at 1003d390 caches the full-precision signed
+		   result while token.string (1003d36a) is only its "%1.2f" rendering,
+		   so re-parsing the string would truncate to two decimals and drop the
+		   sign. */
+		*value = (float)token.floatvalue;
 	}
 	return true;
 }
@@ -574,11 +546,9 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
 		return NULL;
 	}
 
-	int index;
-	if (!BotWeight_ParseIntegerToken(&token, &index)) {
-		BotLib_Print(PRT_ERROR, "invalid switch index %s\n", token.string);
-		return NULL;
-	}
+	/* PC_ExpectTokenType already pinned TT_NUMBER|TT_INTEGER, so retail has no
+	   further validation here - 10035b48 just consumes token.intvalue. */
+	int index = BotWeight_TokenIntegerValue(&token);
 
 	if (!PC_ExpectTokenString(source, ")")) {
 		return NULL;
@@ -597,7 +567,7 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
 	do {
 		bool is_default = strcmp(token.string, "default") == 0;
 		if (!is_default && strcmp(token.string, "case") != 0) {
-			BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
+			SourceError(source, "invalid name %s\n", token.string);
 			BotWeight_FreeFuzzySeperators(first);
 			return NULL;
 		}
@@ -618,7 +588,7 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
 
 		if (is_default) {
 			if (found_default) {
-				BotLib_Print(PRT_ERROR, "switch already has a default\n");
+				SourceError(source, "switch already has a default\n");
 				BotWeight_FreeFuzzySeperators(first);
 				return NULL;
 			}
@@ -629,11 +599,8 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
 				BotWeight_FreeFuzzySeperators(first);
 				return NULL;
 			}
-			if (!BotWeight_ParseIntegerToken(&token, &fs->value)) {
-				BotLib_Print(PRT_ERROR, "invalid switch case %s\n", token.string);
-				BotWeight_FreeFuzzySeperators(first);
-				return NULL;
-			}
+			/* Retail 10035bb7 stores the cached token.intvalue directly. */
+			fs->value = BotWeight_TokenIntegerValue(&token);
 		}
 
 		if (!PC_ExpectTokenString(source, ":")) {
@@ -666,7 +633,7 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
 				return NULL;
 			}
 		} else {
-			BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
+			SourceError(source, "invalid name %s\n", token.string);
 			BotWeight_FreeFuzzySeperators(first);
 			return NULL;
 		}
@@ -685,7 +652,7 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
 	} while (strcmp(token.string, "}") != 0);
 
 	if (!found_default) {
-		BotLib_Print(PRT_WARNING, "switch without default\n");
+		SourceWarning(source, "switch without default\n");
 		/* Retail appends an implicit zero-valued default separator. */
 		bot_fuzzy_seperator_t *fs = GetClearedMemory(sizeof(bot_fuzzy_seperator_t));
 		if (fs == NULL) {
@@ -720,12 +687,12 @@ static bool BotWeight_ParseWeights(pc_source_t *source, bot_weight_config_t *con
 	pc_token_t token;
 	while (PC_ReadToken(source, &token)) {
 		if (strcmp(token.string, "weight") != 0) {
-			BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
+			SourceError(source, "invalid name %s\n", token.string);
 			return false;
 		}
 
 		if (config->num_weights >= BOTLIB_MAX_WEIGHTS) {
-			BotLib_Print(PRT_WARNING, "too many fuzzy weights\n");
+			SourceWarning(source, "too many fuzzy weights\n");
 			/* Quake III and Gladiator keep the first 128 weights and stop. */
 			return true;
 		}
@@ -774,7 +741,7 @@ static bool BotWeight_ParseWeights(pc_source_t *source, bot_weight_config_t *con
 				goto parse_failure;
 			}
 		} else {
-			BotLib_Print(PRT_ERROR, "invalid name %s\n", token.string);
+			SourceError(source, "invalid name %s\n", token.string);
 			goto parse_failure;
 		}
 
@@ -837,18 +804,24 @@ static bot_weight_config_t *BotWeight_ReadConfig(const char *filename,
 		return NULL;
 	}
 
-	char resolved_path[BOTLIB_ASSET_MAX_PATH];
-	if (!BotLib_ResolveAssetPath(filename, NULL, resolved_path, sizeof(resolved_path))) {
+	/* Retail 10035fb5-10035fcc pins the caller's logical name in a 0x90-byte
+	   local and reports that buffer - never a resolved physical path - from
+	   every diagnostic (10035ff9, 1003603d, 100362e5, 10036421). */
+	char retail_filename[BOT_WEIGHT_RETAIL_FILENAME_SIZE];
+	strncpy(retail_filename, filename, sizeof(retail_filename) - 1);
+	retail_filename[sizeof(retail_filename) - 1] = '\0';
+
+	botlib_asset_resolution_t resolution;
+	if (!BotLib_ResolveAssetPathDetailed(retail_filename, NULL, &resolution)) {
 		BotWeight_PopGlobalDefines(&define_scope);
-		BotLib_Print(PRT_ERROR, "couldn't find %s\n",
-			resolved_path[0] != '\0' ? resolved_path : filename);
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n", retail_filename);
 		return NULL;
 	}
 
-	pc_source_t *source = PC_LoadSourceFile(filename);
+	pc_source_t *source = PC_LoadSourceFile(retail_filename);
 	BotWeight_PopGlobalDefines(&define_scope);
 	if (source == NULL) {
-		BotLib_Print(PRT_ERROR, "counldn't load %s\n", resolved_path);
+		BotLib_Print(PRT_ERROR, "counldn't load %s\n", retail_filename);
 		return NULL;
 	}
 
@@ -867,7 +840,16 @@ static bot_weight_config_t *BotWeight_ReadConfig(const char *filename,
 		return NULL;
 	}
 
-	BotLib_Print(PRT_MESSAGE, "loaded %s\n", resolved_path);
+	/* Retail 100362cb splits on the bot_fileref_t length: a PAK hit reports
+	   <container>\<logical name> (100362e5), a loose file just the logical
+	   name (10036421). */
+	if (resolution.pak_entry_length != 0) {
+		BotLib_Print(PRT_MESSAGE, "loaded %s\\%s\n",
+			resolution.source_path,
+			retail_filename);
+	} else {
+		BotLib_Print(PRT_MESSAGE, "loaded %s\n", retail_filename);
+	}
 
 	if (cacheable && !BotWeight_CacheConfig(config, filename)) {
 		BotWeight_FreeConfig(config);

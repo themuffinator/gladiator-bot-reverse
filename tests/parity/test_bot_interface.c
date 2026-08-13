@@ -121,6 +121,9 @@ typedef struct mock_bot_import_s
 	bool trace_blocked;
 	int trace_entity;
 	int point_contents_result;
+	bool point_contents_height_split;
+	float point_contents_split_z;
+	int point_contents_result_above;
 	vec3_t point_contents_points[64];
 	size_t point_contents_command_counts[64];
 	size_t point_contents_count;
@@ -551,7 +554,8 @@ static int Mock_ImportBotLibVarSet(const char *var_name, const char *value)
 Mock_BotClientCommand
 
 Captures imported client commands and the single argument used by chat, retail
-item-use/drop actions, and gestures.
+item-use/drop actions, gestures, and the retail `removebot` request, whose one
+argument is the speaking bot's ClientName (0x1001ed0a).
 =============
 */
 static void Mock_BotClientCommand(int client, char *fmt, ...)
@@ -569,7 +573,8 @@ static void Mock_BotClientCommand(int client, char *fmt, ...)
 	if (strcmp(fmt, "say") == 0 || strcmp(fmt, "say_team") == 0 ||
 		strcmp(fmt, "use") == 0 ||
 		strcmp(fmt, "drop") == 0 ||
-		strcmp(fmt, "wave") == 0)
+		strcmp(fmt, "wave") == 0 ||
+		strcmp(fmt, "removebot") == 0)
 	{
 		const char *argument = va_arg(args, const char *);
 		snprintf(g_active_mock->client_commands[index].command,
@@ -627,7 +632,10 @@ static bsp_trace_t Mock_Trace(vec3_t start,
 Mock_PointContents
 
 Records each sampled point and the number of commands already issued so item-
-use tests can pin both eye-position sampling and callback order.
+use tests can pin both eye-position sampling and callback order. The optional
+height split lets a test give the feet and the eye different contents, which is
+what separates retail's eye-sampling camp test from the origin the sibling
+AAS_Swimming call uses.
 =============
 */
 static int Mock_PointContents(vec3_t point)
@@ -645,6 +653,11 @@ static int Mock_PointContents(vec3_t point)
 			g_active_mock->client_command_count;
 	}
 	g_active_mock->point_contents_count += 1U;
+	if (g_active_mock->point_contents_height_split &&
+		point[2] >= g_active_mock->point_contents_split_z)
+	{
+		return g_active_mock->point_contents_result_above;
+	}
 	return g_active_mock->point_contents_result;
 }
 
@@ -911,6 +924,9 @@ static void Mock_Reset(mock_bot_import_t *mock)
 	mock->client_command_count = 0;
 	mock->trace_blocked = false;
 	mock->point_contents_result = 0;
+	mock->point_contents_height_split = false;
+	mock->point_contents_split_z = 0.0f;
+	mock->point_contents_result_above = 0;
 	mock->point_contents_count = 0;
     mock->command_count = 0;
     Mock_ClearCommandArgs(mock);
@@ -2058,8 +2074,13 @@ static void test_bot_setup_client_preserves_retail_boolean_abi(void **state)
 	assert_false(status);
 	assert_ptr_equal(BotState_Get(1), active_state);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
+	/* Retail's export thunk 0x10037f2c calls sub_100085f0 (the map
+	   entity-lump source-checksum registration) unconditionally, after both
+	   guards but before the core sub_10029480 whose "already setup" early-out
+	   lives at 0x100294a0.  The map name changed above, so this first
+	   duplicate call registers exactly one previously unseen record. */
 	assert_int_equal(CRC_SourceChecksumCount(),
-		source_count_before_duplicate);
+		source_count_before_duplicate + 1U);
 	Mock_AssertPrintContains(&context->mock,
 		"client 1 already setup\n",
 		PRT_FATAL);
@@ -2067,6 +2088,10 @@ static void test_bot_setup_client_preserves_retail_boolean_abi(void **state)
 	Mock_ClearPrints(&context->mock);
 	status = context->api->BotSetupClient(1, NULL);
 	assert_false(status);
+	/* The second duplicate registers the same map name and is rejected by
+	   the strcmp==0 path in retail 0x100376b0, so the count is unchanged.
+	   Registration is not conditional on the settings pointer: sub_100085f0
+	   takes no arguments and runs before arg2 is ever read. */
 	assert_int_equal(CRC_SourceChecksumCount(),
 		source_count_before_duplicate + 1U);
 	Mock_AssertSinglePrint(&context->mock,
@@ -3425,6 +3450,165 @@ static void test_bot_load_map_and_sensory_queues(void **state)
     assert_false(L_Utils_IsInitialised());
     assert_false(L_Struct_IsInitialised());
     assert_null(Bridge_MaxClients());
+}
+
+/*
+=============
+test_bot_load_map_keeps_clients_active_and_runs_deathmatch_pass
+
+Pins retail's map-load reset driver 0x10029c10: sub_10029a40 saves the record
+head across the 0x10029afc memset and writes it back at 0x10029b42, so a client
+set up before the load keeps the only active flag BotUpdateClient tests
+(0x1002989d). Also pins the trailing sub_10028c30 pass at 0x10029c63, which
+registers the twelve deathmatch libvars and warns once per unresolved CTF flag.
+=============
+*/
+static void test_bot_load_map_keeps_clients_active_and_runs_deathmatch_pass(
+	void **state)
+{
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)*state;
+
+	if (!ensure_map_fixture(&context->assets, "test1"))
+	{
+		cmocka_skip();
+	}
+
+	Mock_Reset(&context->mock);
+	assert_int_equal(context->api->BotLibVarSet("maxclients", "4"),
+		BLERR_NOERROR);
+	assert_int_equal(context->api->BotSetupLibrary(), BLERR_NOERROR);
+	/* Setup drops the whole variable list (LibVar_ResetCache), so the CTF gate
+	   sub_10028c30 reads has to be armed after it. */
+	assert_int_equal(context->api->BotLibVarSet("ctf", "1"), BLERR_NOERROR);
+
+	bot_settings_t settings;
+	memset(&settings, 0, sizeof(settings));
+	snprintf(settings.characterfile,
+		sizeof(settings.characterfile),
+		"bots/babe_c.c");
+	snprintf(settings.charactername, sizeof(settings.charactername), "babe");
+	assert_true(context->api->BotSetupClient(0, &settings));
+
+	Mock_ClearPrints(&context->mock);
+	assert_int_equal(context->api->BotLoadMap("maps/test1.bsp",
+		0,
+		NULL,
+		0,
+		NULL,
+		0,
+		NULL),
+		BLERR_NOERROR);
+
+	/* The two CTF warnings sit between the map-loading banners, in retail's
+	   red-then-blue order (0x10028d5e then 0x10028d86). */
+	size_t red_warning = context->mock.print_count;
+	size_t blue_warning = context->mock.print_count;
+	size_t opening_banner = context->mock.print_count;
+	size_t closing_banner = context->mock.print_count;
+	for (size_t index = 0; index < context->mock.print_count; ++index)
+	{
+		const captured_print_t *entry = &context->mock.prints[index];
+		if (entry->type == PRT_MESSAGE &&
+			strcmp(entry->message,
+				"------------ Map Loading ------------\n") == 0)
+		{
+			opening_banner = index;
+		}
+		else if (entry->type == PRT_MESSAGE &&
+			strcmp(entry->message,
+				"-------------------------------------\n") == 0 &&
+			closing_banner == context->mock.print_count)
+		{
+			closing_banner = index;
+		}
+		else if (entry->type == PRT_WARNING &&
+			strcmp(entry->message, "CTF without Red Flag\n") == 0)
+		{
+			red_warning = index;
+		}
+		else if (entry->type == PRT_WARNING &&
+			strcmp(entry->message, "CTF without Blue Flag\n") == 0)
+		{
+			blue_warning = index;
+		}
+	}
+	assert_true(opening_banner < context->mock.print_count);
+	assert_true(closing_banner < context->mock.print_count);
+
+	/* The warning is emitted for exactly the flags BotGetLevelItemGoal cannot
+	   resolve after the load, and only then. */
+	bot_goal_t flag_goal;
+	char red_flag_name[] = "Red Flag";
+	char blue_flag_name[] = "Blue Flag";
+	const bool red_missing = context->api->BotGetLevelItemGoal(-1,
+		red_flag_name,
+		&flag_goal) < 0;
+	const bool blue_missing = context->api->BotGetLevelItemGoal(-1,
+		blue_flag_name,
+		&flag_goal) < 0;
+	if (red_missing)
+	{
+		assert_true(red_warning < context->mock.print_count);
+		assert_true(opening_banner < red_warning);
+		assert_true(red_warning < closing_banner);
+	}
+	else
+	{
+		assert_int_equal(red_warning, context->mock.print_count);
+	}
+	if (blue_missing)
+	{
+		assert_true(blue_warning < context->mock.print_count);
+		assert_true(opening_banner < blue_warning);
+		assert_true(blue_warning < closing_banner);
+	}
+	else
+	{
+		assert_int_equal(blue_warning, context->mock.print_count);
+	}
+	if (red_missing && blue_missing)
+	{
+		/* Retail resolves red before blue (0x10028d5e then 0x10028d86). */
+		assert_true(red_warning < blue_warning);
+	}
+
+	/* sub_10028c30 registers the three libvars nothing else in the library
+	   touches; LibVarGetString yields the empty string for a name that was
+	   never registered. */
+	assert_string_equal(LibVarGetString("runes"), "0");
+	assert_string_equal(LibVarGetString("teamplay_shell"), "0");
+	assert_string_equal(LibVarGetString("assimilation"), "0");
+	assert_string_equal(LibVarGetString("rocketjump"), "1");
+	/* LibVar never overwrites an existing value, so the ctf setting above
+	   survives its own registration. */
+	assert_string_equal(LibVarGetString("ctf"), "1");
+
+	/* Retail keeps the record head, so the client set up before the load is
+	   still updatable and no PRT_FATAL inactive diagnostic is emitted. */
+	bot_client_state_t *bot = BotState_Get(0);
+	assert_non_null(bot);
+	assert_true(bot->active);
+
+	bot_updateclient_t update;
+	memset(&update, 0, sizeof(update));
+	update.pm_type = PM_NORMAL;
+	update.pm_flags = PMF_ON_GROUND;
+	VectorSet(update.origin, 8.0f, 16.0f, 24.0f);
+	update.stats[STAT_HEALTH] = 100;
+	Mock_ClearPrints(&context->mock);
+	assert_int_equal(context->api->BotStartFrame(0.1f), BLERR_NOERROR);
+	assert_int_equal(context->api->BotUpdateClient(0, &update), BLERR_NOERROR);
+	assert_null(Mock_FindPrint(&context->mock,
+		"tried to updated inactive bot client\n"));
+	assert_true(bot->client_update_valid);
+	assert_float_equal(bot->last_client_update.origin[0], 8.0f, 0.0001f);
+	assert_float_equal(bot->last_client_update.origin[1], 16.0f, 0.0001f);
+	assert_float_equal(bot->last_client_update.origin[2], 24.0f, 0.0001f);
+
+	assert_int_equal(context->api->BotLibVarSet("ctf", "0"), BLERR_NOERROR);
+	assert_int_equal(context->api->BotShutdownClient(0), BLERR_NOERROR);
+	assert_int_equal(context->api->BotShutdownLibrary(), BLERR_NOERROR);
 }
 
 static void test_bot_usehook_defaults_disabled(void **state)
@@ -5203,9 +5387,13 @@ static void test_bot_console_defend_key_area_preserves_retail_gates_and_deadline
 =============
 test_bot_console_ctf_rush_base_is_dormant_but_enemy_flag_order_runs
 
-Pins retail preprocessing and matching together: `base` is canonicalized to a
-flag name before the literal rush-base template can match, leaving case 6
-dormant. The addressed case-7 enemy-flag order remains live and exact.
+Pins retail preprocessing and matching together. Both CTF phrases that name a
+syn.c flag word are dormant: `base` canonicalizes to a flag name so the literal
+rush-base template can never match (case 6), and `enemy flag` canonicalizes to
+`Red Flag`/`Blue Flag` while retail StringReplaceWords (sub_1002af30) copies
+only strlen(tail) bytes and drops the terminator, leaving a `Flagag`/`Flagg`
+residue that defeats the case-7 template's trailing `flag` literal. Case 7 is
+exercised with a synonym-free phrasing (`get the flag`), which retail accepts.
 =============
 */
 static void test_bot_console_ctf_rush_base_is_dormant_but_enemy_flag_order_runs(
@@ -5280,7 +5468,21 @@ static void test_bot_console_ctf_rush_base_is_dormant_but_enemy_flag_order_runs(
 
 	process_console_team_command(context,
 		21.0f,
-		"(Commander): Other get the enemy flag");
+		"(Commander): Other get the flag");
+	assert_int_equal(bot->ltg_type, 9);
+	assert_float_equal(bot->team_message_time, 44.0f, 0.0001f);
+	assert_float_equal(bot->team_goal_time, 77.0f, 0.0001f);
+	assert_float_equal(bot->rush_base_away_time, 55.0f, 0.0001f);
+
+	/* The addressed `enemy flag` phrasing can never reach case 7 under ctf:
+	   BotReplaceSynonyms rewrites the pair to the group's first phrase
+	   (`Red Flag`/`Blue Flag`, syn.c:63 and :67), and retail
+	   StringReplaceWords' memmove omits the terminator, so the shorter
+	   replacement at end of string leaves a `Flagag`/`Flagg` residue that the
+	   template's trailing `flag` literal cannot consume. */
+	process_console_team_command(context,
+		22.0f,
+		"(Commander): Babe get the enemy flag");
 	assert_int_equal(bot->ltg_type, 9);
 	assert_float_equal(bot->team_message_time, 44.0f, 0.0001f);
 	assert_float_equal(bot->team_goal_time, 77.0f, 0.0001f);
@@ -5289,7 +5491,7 @@ static void test_bot_console_ctf_rush_base_is_dormant_but_enemy_flag_order_runs(
 	srand(5);
 	process_console_team_command(context,
 		24.0f,
-		"(Commander): Babe get the enemy flag");
+		"(Commander): Babe get the flag");
 	assert_int_equal(bot->ltg_type, 4);
 	assert_true(bot->team_message_time >= 24.0f);
 	assert_true(bot->team_message_time <= 26.0f);
@@ -5460,10 +5662,18 @@ static void test_q3_compat_chat_exports_preserve_type_aliases(void **state)
 	assert_int_equal(match.type, 1);
 	assert_int_equal(match.subtype, 11);
 	char variable[256];
+	/* The live MTCONTEXT_CLIENTOBITUARY template is unspaced
+	   (`VICTIM, "was railed by", KILLER`, dev_tools/assets/match.c:198 -- the
+	   spaced 3.14 forms are inside a block comment and never parsed), and
+	   retail StringsMatch (0x1002c800) stores a raw span: ptr is the cursor
+	   where the variable opened and length is (found position of the next
+	   literal) - ptr, or strlen(ptr) for a trailing variable.  So the
+	   separator stays on both sides of a capture -- trailing on VICTIM,
+	   leading on KILLER. */
 	context->api->BotMatchVariable(&match, 0, variable, sizeof(variable));
 	assert_string_equal(variable, "Alice ");
 	context->api->BotMatchVariable(&match, 1, variable, sizeof(variable));
-	assert_string_equal(variable, "Bob");
+	assert_string_equal(variable, " Bob");
 
 	bot_chatstate_t *chat = context->api->BotAllocChatState();
 	assert_non_null(chat);
@@ -8000,6 +8210,33 @@ static void BotAINode_RunFrame(bot_interface_test_context_t *context)
 
 /*
 =============
+BotAINode_QueueConsoleMessages
+
+Fills the client's console queue past retail's ten-entry read-delay threshold so
+one frame drains it whole.
+=============
+*/
+static void BotAINode_QueueConsoleMessages(bot_interface_test_context_t *context,
+	bot_client_state_t *bot,
+	int count)
+{
+	assert_non_null(context);
+	assert_non_null(bot);
+
+	for (int index = 0; index < count; ++index)
+	{
+		char message[32];
+		snprintf(message, sizeof(message), "console %d", index);
+		assert_int_equal(context->api->BotConsoleMessage(bot->client_number,
+			CMS_NORMAL,
+			message),
+			BLERR_NOERROR);
+	}
+	assert_int_equal(BotNumConsoleMessages(bot->chat_state), count);
+}
+
+/*
+=============
 BotAINode_RunFrameWithThinktime
 
 Runs one export-level AI frame with a caller-selected think duration so the
@@ -8360,8 +8597,15 @@ static void test_ai_node_immediate_delayed_and_retreat_transitions(void **state)
 =============
 test_ai_seek_nbg_scans_before_private_view_turn
 
-Pins Seek-NBG's late-frame ordering: it tests a post-movement enemy candidate
-using the pre-turn private view, then advances that view after the scan.
+Pins Seek-NBG's late-frame ordering (0x1001f59d scans, 0x1001f5e1 turns): the
+post-movement enemy candidate is committed before the private view turn, so the
+turn runs at the character's CHARACTERISTIC_VIEW_ACCELERATION (hunk_c.c: 360
+deg/s, i.e. 36 deg per 0.1s think, quantised to 35.996704) rather than the
+no-enemy literal 100 deg/s (9.997559). The bot is placed on ground and the goal
+shares its area so BotMoveToGoal reaches BotMoveInGoalArea and writes a real
+movedir: retail's BotClearMoveResult clears only the 0x18-byte status prefix
+(0x10031e26), so a move result that reaches no travel branch leaves movedir
+uninitialised and the private ideal view angle indeterminate.
 =============
 */
 static void test_ai_seek_nbg_scans_before_private_view_turn(void **state)
@@ -8386,8 +8630,9 @@ static void test_ai_seek_nbg_scans_before_private_view_turn(void **state)
 		75,
 		true,
 		false);
+	bot->last_client_update.pm_flags |= PMF_ON_GROUND;
 	nearby_goal.number = 711;
-	nearby_goal.areanum = 1;
+	nearby_goal.areanum = 0;
 	VectorSet(nearby_goal.origin, 0.0f, 100.0f, 0.0f);
 	VectorSet(nearby_goal.mins, -8.0f, -8.0f, -8.0f);
 	VectorSet(nearby_goal.maxs, 8.0f, 8.0f, 8.0f);
@@ -8398,7 +8643,7 @@ static void test_ai_seek_nbg_scans_before_private_view_turn(void **state)
 	assert_int_equal(bot->ai_node, BOT_AI_NODE_BATTLE_FIGHT);
 	assert_int_equal(bot->combat.current_enemy, 2);
 	AI_DMState_GetViewAngles(bot->dm_state, viewangles);
-	assert_float_equal(viewangles[YAW], 0.0f, 0.0001f);
+	assert_float_equal(viewangles[YAW], 35.996704f, 0.0001f);
 }
 
 /*
@@ -9028,6 +9273,8 @@ test_ai_stand_squatt_guard_removes_bot
 
 Pins Stand's private anti-hack guard: an expired chat stand emits the retail
 message and removebot command without consuming the chat or entering Seek-LTG.
+The removebot request carries the speaking bot's ClientName (0x1001ed0a), so
+the host removes that bot rather than the first in-use bot edict.
 =============
 */
 static void test_ai_stand_squatt_guard_removes_bot(void **state)
@@ -9038,6 +9285,14 @@ static void test_ai_stand_squatt_guard_removes_bot(void **state)
 		4,
 		"bots/babe_c.c",
 		"babe");
+
+	bot_clientsettings_t presentation;
+	memset(&presentation, 0, sizeof(presentation));
+	snprintf(presentation.netname, sizeof(presentation.netname), "Babe");
+	assert_int_equal(context->api->BotClientSettings(bot->client_number,
+		&presentation),
+		BLERR_NOERROR);
+	assert_string_equal(BotState_ClientName(bot->client_number), "Babe");
 
 	assert_int_equal(context->api->BotLibVarSet("__squatt", "1"),
 		BLERR_NOERROR);
@@ -9082,11 +9337,29 @@ static void test_ai_stand_squatt_guard_removes_bot(void **state)
 		{
 			assert_int_equal(context->mock.client_commands[index].client,
 				bot->client_number);
+			/* Retail 0x1001ed0a stores ClientName(bs->client) in the single
+			   argument slot ahead of the NULL sentinel at 0x1001ecff. */
+			assert_string_equal(context->mock.client_commands[index].argument,
+				"Babe");
 			sent_removebot = true;
 		}
 	}
 	assert_true(said_guard_message);
 	assert_true(sent_removebot);
+
+	/* Retail 0x10028f57: an out-of-range client warns and yields the shared
+	   empty string rather than indexing past the name table. */
+	Mock_ClearPrints(&context->mock);
+	assert_string_equal(BotState_ClientName(MAX_CLIENTS), "");
+	Mock_AssertPrintContains(&context->mock,
+		"ClientName: client",
+		PRT_WARNING);
+	Mock_ClearPrints(&context->mock);
+	assert_string_equal(BotState_ClientName(-1), "");
+	Mock_AssertPrintContains(&context->mock,
+		"ClientName: client",
+		PRT_WARNING);
+
 	assert_int_equal(context->api->BotLibVarSet("__squatt", "0"),
 		BLERR_NOERROR);
 }
@@ -9533,8 +9806,17 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 		100,
 		true,
 		false);
+	/*
+	 * Retail's BotDeathmatchAI runs BotUpdateInventory (0x10028b15) and
+	 * BotCheckConsoleMessages (0x10028b1b) before it so much as looks at the
+	 * node, so an observer, dead or frozen frame still drains the console
+	 * queue. Queuing more than ten entries also clears the sub-ten read-delay
+	 * deferral, making the drain single-frame and exact.
+	 */
+	BotAINode_QueueConsoleMessages(context, bot, 12);
 	bot->last_client_update.pm_type = PM_SPECTATOR;
 	BotAINode_RunFrame(context);
+	assert_int_equal(BotNumConsoleMessages(bot->chat_state), 0);
 	assert_int_equal(context->mock.inputs[
 		context->mock.bot_input_count - 1].actionflags,
 		0);
@@ -9544,11 +9826,13 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 
 	bot->client_update_valid = true;
 	bot->last_client_update.pm_type = PM_DEAD;
+	BotAINode_QueueConsoleMessages(context, bot, 12);
 	bot->goal_snapshot_count = 2;
 	bot->active_goal_number = 19;
 	bot->combat.current_enemy = 2;
 	bot->combat.last_enemy_area = 4;
 	BotAINode_RunFrame(context);
+	assert_int_equal(BotNumConsoleMessages(bot->chat_state), 0);
 	assert_int_equal(context->mock.inputs[
 		context->mock.bot_input_count - 1].actionflags,
 		0);
@@ -9679,7 +9963,9 @@ static void test_ai_lifecycle_nodes_gate_pmove_states(void **state)
 	bot->last_client_update.pm_type = PM_FREEZE;
 	bot->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
 	bot->combat.current_enemy = 2;
+	BotAINode_QueueConsoleMessages(context, bot, 12);
 	BotAINode_RunFrame(context);
+	assert_int_equal(BotNumConsoleMessages(bot->chat_state), 0);
 	assert_int_equal(context->mock.inputs[
 		context->mock.bot_input_count - 1].actionflags,
 		0);
@@ -10267,7 +10553,10 @@ test_ai_team_goal_scheduler_direct_branches
 Pins BotLongTermGoal's direct defend, camp, and patrol branches: their delayed
 acknowledgements, strict expiry, nearby camp arrival/crouch hold, and patrol
 direction bit must run before ordinary item-goal selection. Defend's ordinary
-move result also advances the retained no-enemy private view turn.
+move result also advances the retained no-enemy private view turn; the defend
+frame stands the bot on ground and shares the goal's area so the move result
+carries a written movedir, because retail leaves that field undefined when
+BotMoveToGoal reaches no travel branch.
 =============
 */
 static void test_ai_team_goal_scheduler_direct_branches(void **state)
@@ -10294,23 +10583,34 @@ static void test_ai_team_goal_scheduler_direct_branches(void **state)
 	bot->ltg_type = 3;
 	bot->team_goal_number = 401;
 	bot->team_goal.number = 401;
-	bot->team_goal.areanum = 1;
+	/* Retail's BotClearMoveResult (0x10031e26) clears only the 0x18-byte
+	   status prefix, so bot_moveresult_t::movedir stays uninitialised whenever
+	   BotMoveToGoal reaches no travel branch -- and the private view turn below
+	   reads exactly that field. Standing the bot on ground and giving the team
+	   goal the bot's own (fixture-free) area number 0 sends BotMoveToGoal into
+	   BotMoveInGoalArea, which writes movedir = normalize(goal - origin). */
+	bot->team_goal.areanum = 0;
 	VectorSet(bot->team_goal.origin, 200.0f, 0.0f, 0.0f);
 	VectorSet(bot->team_goal.mins, -8.0f, -8.0f, -8.0f);
 	VectorSet(bot->team_goal.maxs, 8.0f, 8.0f, 8.0f);
 	bot->team_message_time = 179.0f;
 	bot->team_goal_time = 190.0f;
+	bot->last_client_update.pm_flags |= PMF_ON_GROUND;
 	vec3_t ninety_degree_delta = {0.0f, 90.0f, 0.0f};
 	AI_DMState_ApplyDeltaAngles(bot->dm_state, ninety_degree_delta);
 	BotAINode_RunFrame(context);
 	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
 	assert_int_equal(bot->active_goal_number, 401);
 	assert_true(bot->has_move_result);
+	/* movedir = (1,0,0) -> ideal yaw 0; with no enemy the private turn runs at
+	   the no-enemy literal 100 deg/s, i.e. one 10-degree step away from the
+	   seeded 90, quantised by AI_DMAngleMod. */
 	assert_float_equal(context->mock.inputs[
 		context->mock.bot_input_count - 1U].viewangles[YAW],
 		80.00244f,
 		0.01f);
 
+	bot->last_client_update.pm_flags = 0;
 	aasworld.time = 190.001f;
 	bot->client_update_valid = true;
 	BotAINode_RunFrame(context);
@@ -10329,9 +10629,21 @@ static void test_ai_team_goal_scheduler_direct_branches(void **state)
 	bot->team_message_time = 199.0f;
 	bot->team_goal_time = 210.0f;
 	bot->arrive_time = 0.0f;
+	/* Retail 0x1001e2a5 ends the nearby-camp epilogue with BotResetAvoidReach
+	   (sub_10034af0), which clears the whole table, not the single-slot
+	   sub_10034b20 that only expires the newest entry and decrements its
+	   retry count. */
+	bot_movestate_t *camp_movestate = BotMoveStateFromHandle(bot->move_handle);
+	assert_non_null(camp_movestate);
+	camp_movestate->avoidreach[0] = 73;
+	camp_movestate->avoidreachtimes[0] = aasworld.time + 10.0f;
+	camp_movestate->avoidreachtries[0] = 5;
 	BotAINode_RunFrame(context);
 	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
 	assert_float_equal(bot->arrive_time, 200.0f, 0.0001f);
+	assert_int_equal(camp_movestate->avoidreach[0], 0);
+	assert_float_equal(camp_movestate->avoidreachtimes[0], 0.0f, 0.0001f);
+	assert_int_equal(camp_movestate->avoidreachtries[0], 0);
 
 	aasworld.time = 203.0f;
 	bot->client_update_valid = true;
@@ -10379,6 +10691,103 @@ static void test_ai_team_goal_scheduler_direct_branches(void **state)
 	BotState_FreeConsoleWaypoints(bot->patrol_points);
 	bot->patrol_points = NULL;
 	bot->current_patrol_point = NULL;
+
+	/*
+	 * Defend inside seventy units takes the same whole-table reset as camp:
+	 * retail 0x1001df88 calls BotResetAvoidReach (sub_10034af0), while the
+	 * single-slot sub_10034b20 would leave the reachability number in place
+	 * and merely decrement its retry count.
+	 */
+	aasworld.time = 230.0f;
+	bot->client_update_valid = true;
+	bot->ai_node = BOT_AI_NODE_SEEK_LTG;
+	bot->ltg_type = 3;
+	bot->team_goal_number = 401;
+	bot->team_goal.number = 401;
+	bot->team_goal.areanum = 1;
+	VectorSet(bot->team_goal.origin, 32.0f, 0.0f, 0.0f);
+	bot->team_message_time = 0.0f;
+	bot->team_goal_time = 260.0f;
+	bot->defend_away_time = 0.0f;
+	VectorClear(bot->last_client_update.origin);
+	bot_movestate_t *defend_movestate = BotMoveStateFromHandle(bot->move_handle);
+	assert_non_null(defend_movestate);
+	defend_movestate->avoidreach[0] = 73;
+	defend_movestate->avoidreachtimes[0] = aasworld.time + 10.0f;
+	defend_movestate->avoidreachtries[0] = 5;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 3);
+	assert_int_equal(defend_movestate->avoidreach[0], 0);
+	assert_float_equal(defend_movestate->avoidreachtimes[0], 0.0f, 0.0001f);
+	assert_int_equal(defend_movestate->avoidreachtries[0], 0);
+	assert_true(bot->defend_away_time >= 235.0f);
+	assert_true(bot->defend_away_time <= 245.0f);
+
+	/*
+	 * Camp's liquid abort samples the eye (retail 0x1001e275 reads bs->eye at
+	 * arg1 + 0x6b0, written as origin + view_offset by 0x100289ec), not the
+	 * origin the AAS_Swimming test just above it uses. Feet in water with a
+	 * dry eye must therefore leave the camp order standing.
+	 */
+	aasworld.time = 270.0f;
+	bot->client_update_valid = true;
+	bot->ai_node = BOT_AI_NODE_SEEK_LTG;
+	bot->ltg_type = 6;
+	bot->ltg_teammate = 0;
+	bot->team_goal.number = 402;
+	bot->team_goal.areanum = 1;
+	VectorClear(bot->team_goal.origin);
+	bot->team_message_time = 0.0f;
+	bot->team_goal_time = 320.0f;
+	bot->arrive_time = 270.0f;
+	VectorClear(bot->last_client_update.origin);
+	VectorSet(bot->last_client_update.viewoffset, 0.0f, 0.0f, 22.0f);
+	context->mock.point_contents_height_split = true;
+	context->mock.point_contents_split_z = 10.0f;
+	context->mock.point_contents_result = CONTENTS_WATER;
+	context->mock.point_contents_result_above = 0;
+	context->mock.point_contents_count = 0U;
+	memset(context->mock.point_contents_points,
+		0,
+		sizeof(context->mock.point_contents_points));
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 6);
+	bool sampled_camp_eye = false;
+	bool sampled_camp_feet = false;
+	for (size_t index = 0;
+		index < context->mock.point_contents_count &&
+			index < ARRAY_LEN(context->mock.point_contents_points);
+		++index)
+	{
+		const float z = context->mock.point_contents_points[index][2];
+		if (z >= 21.9f && z <= 22.1f)
+		{
+			sampled_camp_eye = true;
+		}
+		if (z >= -2.1f && z <= -1.9f)
+		{
+			sampled_camp_feet = true;
+		}
+	}
+	assert_true(sampled_camp_eye);
+	assert_true(sampled_camp_feet);
+
+	/* Mirror case: a dry floor with the eye submerged does abort the camp. */
+	aasworld.time = 271.0f;
+	bot->client_update_valid = true;
+	bot->ai_node = BOT_AI_NODE_SEEK_LTG;
+	bot->ltg_type = 6;
+	bot->team_message_time = 0.0f;
+	bot->arrive_time = 271.0f;
+	context->mock.point_contents_result = 0;
+	context->mock.point_contents_result_above = CONTENTS_WATER;
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+
+	context->mock.point_contents_height_split = false;
+	context->mock.point_contents_result = 0;
+	context->mock.point_contents_result_above = 0;
+	VectorClear(bot->last_client_update.viewoffset);
 }
 
 /*
@@ -10482,6 +10891,11 @@ static void test_ai_team_accompany_scheduler_tracks_formation_and_loss(void **st
 	bot->team_goal_time = 500.0f;
 	bot->teammate_visible_time = 400.0f;
 	bot->formation_dist = 112.0f;
+	/* Stand the bot on ground so BotMoveToGoal resolves the same area as the
+	   accompany goal and reaches BotMoveInGoalArea. Retail's BotClearMoveResult
+	   (0x10031e26) clears only the 0x18-byte status prefix, so without this the
+	   frame's view target would be read from an uninitialised movedir. */
+	bot->last_client_update.pm_flags = PMF_ON_GROUND;
 	BotAINode_RunFrame(context);
 	assert_float_equal(bot->team_message_time, 0.0f, 0.0001f);
 	assert_int_equal(bot->ltg_type, 2);
@@ -10655,6 +11069,38 @@ static void test_ai_team_ctf_scheduler_routes_team_flags(void **state)
 	bot->team_goal_time = 611.5f;
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ltg_type, 0);
+
+	/*
+	 * Retail's ltgtype 5 branch clears the order unconditionally only on the
+	 * deadline (0x1001e57e -> 0x1001e580). The carried-flag test lives inside
+	 * the BotTouchingGoal branch at 0x1001e5a9, so a bot that has lost the flag
+	 * on the way home keeps rushing its own base until it arrives.
+	 */
+	aasworld.time = 613.0f;
+	bot->client_update_valid = true;
+	bot->ltg_type = 5;
+	bot->team_goal_time = 700.0f;
+	bot->rush_base_away_time = 0.0f;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_FLAG1] = 0;
+	bot->last_client_update.inventory[RETAIL_INVENTORY_FLAG2] = 0;
+	VectorClear(bot->last_client_update.origin);
+	assert_int_equal(BotAI_CarryingFlag(bot), 0);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 5);
+	assert_int_equal(bot->active_goal_number, 501);
+	assert_float_equal(bot->rush_base_away_time, 0.0f, 0.0001f);
+
+	/* Arriving at the home flag without one does end the order (0x1001e5a9's
+	   miss arm), and it does not arm the away timer. */
+	aasworld.time = 614.0f;
+	bot->client_update_valid = true;
+	bot->ltg_type = 5;
+	bot->team_goal_time = 700.0f;
+	bot->rush_base_away_time = 0.0f;
+	VectorSet(bot->last_client_update.origin, -96.0f, 0.0f, 32.0f);
+	BotAINode_RunFrame(context);
+	assert_int_equal(bot->ltg_type, 0);
+	assert_float_equal(bot->rush_base_away_time, 0.0f, 0.0001f);
 }
 
 /*
@@ -11372,6 +11818,10 @@ int main(void)
 			setup_bot_interface,
 			teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(
+			test_bot_load_map_keeps_clients_active_and_runs_deathmatch_pass,
 							setup_bot_interface,
 							teardown_bot_interface),
 		cmocka_unit_test_setup_teardown(test_bot_usehook_defaults_disabled,

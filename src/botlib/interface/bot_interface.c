@@ -2473,6 +2473,88 @@ static int BotDefineWrapper(char *string)
 }
 
 /*
+ * Retail sub_10028c30 caches the twelve deathmatch libvars and, under ctf, the
+ * two static flag goals plus six model indices in the globals listed beside
+ * each field.  The reconstruction resolves flag goals and tech models by name
+ * on demand, so these only mirror retail's map-load side effects.
+ */
+static libvar_t *g_botDeathmatchDmflags;      /* data_10064470 */
+static libvar_t *g_botDeathmatchCtf;          /* data_100643ac */
+static libvar_t *g_botDeathmatchCh;           /* data_1006445c */
+static libvar_t *g_botDeathmatchRa;           /* data_10064464 */
+static libvar_t *g_botDeathmatchFastchat;     /* data_1006447c */
+static libvar_t *g_botDeathmatchNochat;       /* data_10064474 */
+static libvar_t *g_botDeathmatchTeamplay;     /* data_10064460 */
+static libvar_t *g_botDeathmatchUsehook;      /* data_10064458 */
+static libvar_t *g_botDeathmatchRocketjump;   /* data_10064478 */
+static libvar_t *g_botDeathmatchRunes;        /* data_10064468 */
+static libvar_t *g_botDeathmatchTeamplayShell; /* data_10064488 */
+static libvar_t *g_botDeathmatchAssimilation; /* data_10064480 */
+static bot_goal_t g_botDeathmatchRedFlagGoal;  /* data_10064420 */
+static bot_goal_t g_botDeathmatchBlueFlagGoal; /* data_100643e0 */
+static int g_botDeathmatchFlagModel1;          /* data_10064484 */
+static int g_botDeathmatchFlagModel2;          /* data_1006448c */
+static int g_botDeathmatchResistanceModel;     /* data_1006449c */
+static int g_botDeathmatchStrengthModel;       /* data_10064498 */
+static int g_botDeathmatchHasteModel;          /* data_10064494 */
+static int g_botDeathmatchRegenerationModel;   /* data_10064490 */
+
+/*
+=============
+BotSetupDeathmatchAI
+
+Reproduces the retail map-load deathmatch pass at 0x10028c30.
+=============
+*/
+static void BotSetupDeathmatchAI(void)
+{
+	g_botDeathmatchDmflags = LibVar("dmflags", "0");
+	g_botDeathmatchCtf = LibVar("ctf", "0");
+	g_botDeathmatchCh = LibVar("ch", "0");
+	g_botDeathmatchRa = LibVar("ra", "0");
+	g_botDeathmatchFastchat = LibVar("fastchat", "0");
+	g_botDeathmatchNochat = LibVar("nochat", "0");
+	g_botDeathmatchTeamplay = LibVar("teamplay", "0");
+	g_botDeathmatchUsehook = LibVar("usehook", "0");
+	g_botDeathmatchRocketjump = LibVar("rocketjump", "1");
+	g_botDeathmatchRunes = LibVar("runes", "0");
+	g_botDeathmatchTeamplayShell = LibVar("teamplay_shell", "0");
+	g_botDeathmatchAssimilation = LibVar("assimilation", "0");
+
+	/*
+	 * 0x10028d39 gates the rest on the ctf libvar, resolves the two static
+	 * flag goals and warns through the Print import when either is missing
+	 * (0x10028d5e / 0x10028d86), then caches the flag and rune model indices
+	 * from 0x10028d9e onwards.
+	 */
+	if (LibVarGetValue("ctf") == 0.0f)
+	{
+		return;
+	}
+
+	char red_name[] = "Red Flag";
+	char blue_name[] = "Blue Flag";
+	if (BotGetLevelItemGoal(-1, red_name, &g_botDeathmatchRedFlagGoal) < 0)
+	{
+		BotInterface_Printf(PRT_WARNING, "CTF without Red Flag\n");
+	}
+	if (BotGetLevelItemGoal(-1, blue_name, &g_botDeathmatchBlueFlagGoal) < 0)
+	{
+		BotInterface_Printf(PRT_WARNING, "CTF without Blue Flag\n");
+	}
+
+	g_botDeathmatchFlagModel1 = IndexFromModel("players/male/flag1.md2");
+	g_botDeathmatchFlagModel2 = IndexFromModel("players/male/flag2.md2");
+	g_botDeathmatchResistanceModel =
+		IndexFromModel("models/ctf/resistance/tris.md2");
+	g_botDeathmatchStrengthModel =
+		IndexFromModel("models/ctf/strength/tris.md2");
+	g_botDeathmatchHasteModel = IndexFromModel("models/ctf/haste/tris.md2");
+	g_botDeathmatchRegenerationModel =
+		IndexFromModel("models/ctf/regeneration/tris.md2");
+}
+
+/*
 =============
 BotLoadMap
 
@@ -2523,7 +2605,16 @@ static int BotLoadMap(char *mapname,
 		return status;
 	}
 
-	Bridge_ResetCachedUpdates();
+	/*
+	 * Retail's map-load reset driver 0x10029c10 loops sub_10029a40 over every
+	 * client record, and that routine reads the record head before the
+	 * 0x10029afc memset (`10029a97  int32_t eax = *arg1`) and writes it back at
+	 * 0x10029b42.  That head word is the only "active" test BotUpdateClient
+	 * makes (0x1002989d), so a client set up before BotLoadMap keeps working
+	 * across the load.  Clear the cached frames but keep the bridge's mirror of
+	 * that flag.
+	 */
+	Bridge_ResetCachedFrames();
 	BotInterface_ResetFrameQueues();
 	BotInterface_ResetEntityCache();
 	BotInterface_ResetMapCache();
@@ -2554,6 +2645,8 @@ static int BotLoadMap(char *mapname,
 
 	BotState_ResetAllForNewMap();
 	BotInitLevelItems();
+	/* Retail 0x10029c63 runs sub_10028c30 as the last map-load reset step. */
+	BotSetupDeathmatchAI();
 	BotInterface_PrintBanner(PRT_MESSAGE,
 		"-------------------------------------\n");
 
@@ -2581,6 +2674,17 @@ static int BotSetupClient(int client, bot_settings_t *settings)
 	{
 		return qfalse;
 	}
+
+	/*
+	 * Retail 0x10037f2c calls sub_100085f0 (0x100085f0 ->
+	 * sub_10037850(aasworld.mapname, dentdata, entdatasize)) after the two
+	 * guards and BEFORE the 0x100294a0 "client %d already setup" early-out, so
+	 * every call that clears the guards registers the map's entity-lump source
+	 * checksum.  The list insert at 0x100376b0 dedupes by source name.
+	 */
+	CRC_RegisterSourceData(aasworld.mapName,
+		aasworld.bspEntityData,
+		aasworld.bspEntityDataSize);
 
 	bot_client_state_t *state = BotState_Get(client);
 	bot_chatstate_t *retained_chat_state =
@@ -5594,7 +5698,13 @@ static bool BotAI_ReplyStandActive(bot_client_state_t *state, float thinktime)
 	if (LibVarGetValue("__squatt") != 0.0f)
 	{
 		EA_Say(state->client_number, "I never hacked your brain...\n");
-		EA_Command(state->client_number, "removebot", (char *)NULL);
+		/* Retail 0x1001ed0a pushes ClientName(bs->client) as EA_Command's
+		   single argument before the NULL sentinel, so the host removes the
+		   bot that spoke rather than the first in-use bot edict. */
+		EA_Command(state->client_number,
+			"removebot",
+			(char *)BotState_ClientName(state->client_number),
+			(char *)NULL);
 		return true;
 	}
 	if (state->chat_state != NULL)
@@ -5902,8 +6012,10 @@ static int BotAI_BattleChaseTravelFlags(const bot_client_state_t *state)
 =============
 BotAI_LongTermGoalTravelFlags
 
-Builds Seek LTG/NBG's retail travel mask, including the escape permissions for
-lava and slime that are intentionally separate from the battle-only masks.
+Builds Seek LTG/NBG's retail travel mask from its three terms. Retail builds it
+from 0x18FBE, the usehook grapple bit and the rocket-jump bit only
+(0x1001f813-0x1001f865 and 0x1001f301-0x1001f34b); it never reads the point
+contents and never adds the lava or slime bits Q3's later ai_dmnet.c does.
 =============
 */
 static int BotAI_LongTermGoalTravelFlags(const bot_client_state_t *state)
@@ -5912,12 +6024,6 @@ static int BotAI_LongTermGoalTravelFlags(const bot_client_state_t *state)
 	if (BotAI_LibVarOrderedNonZero("usehook"))
 	{
 		travel_flags |= TFL_GRAPPLEHOOK;
-	}
-	if (state != NULL &&
-		(AAS_PointContents(state->last_client_update.origin) &
-			(CONTENTS_LAVA | CONTENTS_SLIME)) != 0)
-	{
-		travel_flags |= TFL_LAVA | TFL_SLIME;
 	}
 	if (BotAI_LibVarOrderedNonZero("rocketjump") &&
 		BotAI_CanAndWantsToRocketJump(state))
@@ -5936,6 +6042,25 @@ does not append the rocket-jump gate.
 =============
 */
 static int BotAI_BattleRetreatTravelFlags(void)
+{
+	int travel_flags = TFL_DEFAULT;
+	if (BotAI_LibVarOrderedNonZero("usehook"))
+	{
+		travel_flags |= TFL_GRAPPLEHOOK;
+	}
+	return travel_flags;
+}
+
+/*
+=============
+BotAI_ActivateEntityTravelFlags
+
+Matches the activate-entity node's two-term travel mask. Retail builds it from
+0x18FBE plus the usehook grapple bit only (0x1001efad-0x1001efd7); unlike Seek
+NBG and Seek LTG it never reads the rocketjump libvar or sub_10022990.
+=============
+*/
+static int BotAI_ActivateEntityTravelFlags(void)
 {
 	int travel_flags = TFL_DEFAULT;
 	if (BotAI_LibVarOrderedNonZero("usehook"))
@@ -6865,7 +6990,9 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 		}
 		if (BotAI_TeamGoalDistance(state, goal) < 70.0f)
 		{
-			BotResetLastAvoidReachHandle(state->move_handle);
+			/* Retail 0x1001df88 calls BotResetAvoidReach, not the single-slot
+			   BotResetLastAvoidReach at sub_10034b20. */
+			BotResetAvoidReachHandle(state->move_handle);
 			state->defend_away_time = now + 5.0f +
 				10.0f * BotAI_ConsoleRandom();
 		}
@@ -6913,7 +7040,10 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 		}
 
 		*goal = state->team == 1 ? red_flag : blue_flag;
-		if (BotAI_CarryingFlag(state) == 0 || now > state->team_goal_time)
+		/* Retail's only unconditional clear here is the deadline
+		   (0x1001e57e -> 0x1001e580). The flag-carrying test lives inside the
+		   contact branch at 0x1001e5a9, reproduced below. */
+		if (now > state->team_goal_time)
 		{
 			state->ltg_type = 0;
 		}
@@ -6995,13 +7125,19 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 			{
 				AI_DMState_SetAttackCrouchTime(state->dm_state, now - 1.0f);
 			}
-			if ((AAS_PointContents(state->last_client_update.origin) &
+			/* Retail 0x1001e275 feeds the PointContents wrapper bs->eye
+			   (arg1 + 0x6b0, origin + view_offset at 0x100289ec), not the
+			   origin the AAS_Swimming test above uses. */
+			vec3_t camp_eye;
+			BotInterface_ClientEyePosition(state, camp_eye);
+			if ((AAS_PointContents(camp_eye) &
 				(CONTENTS_WATER | CONTENTS_LAVA | CONTENTS_SLIME)) != 0)
 			{
 				BotAI_ConsoleEnterInitialTeamChat(state, "camp_stop", NULL);
 				state->ltg_type = 0;
 			}
-			BotResetLastAvoidReachHandle(state->move_handle);
+			/* Retail 0x1001e2a5 calls BotResetAvoidReach (sub_10034af0). */
+			BotResetAvoidReachHandle(state->move_handle);
 			return BOT_TEAM_GOAL_HANDLED;
 		}
 		return BOT_TEAM_GOAL_READY;
@@ -7071,9 +7207,9 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 BotAI_ApplyLongTermMoveResultView
 
 Reconstructs Activate, Seek LTG, and Seek NBG's post-move ideal-view policy.
-Explicit mover-set views bypass the private turn; all other results retain or
-update the private ideal then advance sub_10029150 after movement input is
-submitted.
+Only the Seek nodes carry the waiting-roam arm (0x1001f47d) and the mover-set
+guard on the private turn (0x1001f5d7); the activate node's block has two arms
+and an unconditional turn (0x1001f083, 0x1001f169).
 =============
 */
 static bool BotAI_ApplyLongTermMoveResultView(bot_client_state_t *state,
@@ -7088,9 +7224,13 @@ static bool BotAI_ApplyLongTermMoveResultView(bot_client_state_t *state,
 		return false;
 	}
 
-	if ((result->flags & MOVERESULT_MOVEMENTVIEWSET) != 0)
+	bool activate_node = state->ai_node == BOT_AI_NODE_ACTIVATE_ENTITY;
+
+	if (!activate_node &&
+		(result->flags & MOVERESULT_MOVEMENTVIEWSET) != 0)
 	{
-		/* BotMoveToGoal already issued the authoritative retail EA_View. */
+		/* Only the Seek nodes guard the private turn on the mover-set flag
+		   (0x1001f5d7); sub_1001ef40 turns unconditionally at 0x1001f169. */
 		return false;
 	}
 
@@ -7103,7 +7243,7 @@ static bool BotAI_ApplyLongTermMoveResultView(bot_client_state_t *state,
 	}
 
 	vec3_t viewangles;
-	if ((result->flags & MOVERESULT_WAITING) != 0)
+	if (!activate_node && (result->flags & MOVERESULT_WAITING) != 0)
 	{
 		if (BotAI_LongTermGoalRandom() >= thinktime * 0.8f)
 		{
@@ -7793,12 +7933,22 @@ static int BotAI_RunTeamGoalMovement(bot_client_state_t *state,
 		return status;
 	}
 
+	/*
+	 * Retail hands the node's own var_7c mask to both BotMoveToGoal and
+	 * BotMovementViewTarget. The activate node builds it without the
+	 * rocket-jump term (0x1001efad), Seek NBG and Seek LTG with it
+	 * (0x1001f327, 0x1001f83e).
+	 */
+	int travel_flags = state->ai_node == BOT_AI_NODE_ACTIVATE_ENTITY ?
+		BotAI_ActivateEntityTravelFlags() :
+		BotAI_LongTermGoalTravelFlags(state);
+
 	bot_moveresult_t result;
 	BotClearMoveResult(&result);
 	BotMoveToGoalHandle(&result,
 		state->move_handle,
 		goal,
-		BotAI_LongTermGoalTravelFlags(state));
+		travel_flags);
 	if (result.failure)
 	{
 		BotResetAvoidReachHandle(state->move_handle);
@@ -7826,7 +7976,7 @@ static int BotAI_RunTeamGoalMovement(bot_client_state_t *state,
 	BotInterface_ApplyMoveResult(&result, input);
 	bool advance_view = BotAI_ApplyLongTermMoveResultView(state,
 		goal,
-		BotAI_LongTermGoalTravelFlags(state),
+		travel_flags,
 		thinktime,
 		&result,
 		input);
@@ -7926,9 +8076,14 @@ static bool BotAI_ConsumeDeferredNodeSwitch(bot_client_state_t *state)
 	}
 
 	state->ai_node_overflow = true;
-	BotInterface_Printf(PRT_ERROR,
-		"client %d at %1.1f switched more than %d AI nodes\n",
-		state->client_number,
+	/* Same retail overflow sequence as BotAI_Think: the two goal dumps at
+	   0x10028ba7/0x10028bad then BotDumpNodeSwitches' level-4 ClientName
+	   line at 0x1001d302/0x1001d358. */
+	BotDumpGoalStack(state->goal_handle);
+	BotDumpAvoidGoals(state->goal_handle);
+	BotInterface_Printf(PRT_FATAL,
+		"%s at %1.1f switched more than %d AI nodes\n",
+		BotState_ClientName(state->client_number),
 		AAS_Time(),
 		BOT_AI_MAX_NODE_SWITCHES);
 	return false;
@@ -8798,6 +8953,26 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 		return BLERR_INVALIDIMPORT;
 	}
 
+	/*
+	 * Retail BotDeathmatchAI runs the inventory pass (0x10028b15), the console
+	 * message pass (0x10028b1b) and the enter-game chat probe (0x10028b4c)
+	 * before it ever looks at the current node.  The observer, intermission
+	 * and dead tests live inside the nodes, so a dead, spectating or
+	 * intermission bot still drains its console queue every frame.
+	 */
+	BotAI_UpdateBattleInventory(state);
+	BotCheckConsoleMessages(state);
+	if (state->enter_game_time > AAS_Time() - 8.0f)
+	{
+		if (BotAI_ConstructLifecycleChat(state,
+			"enter_game",
+			CHARACTERISTIC_CHAT_ENTEREXITGAME,
+			true))
+		{
+			BotAI_SetLifecycleStand(state, BotAI_ChatTime(state));
+		}
+	}
+
 	pmtype_t pm_type = state->last_client_update.pm_type;
 	if (pm_type == PM_SPECTATOR)
 	{
@@ -8858,28 +9033,23 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 		return BotAI_RunLifecycleFrame(state, thinktime, false);
 	}
 
-	BotAI_UpdateBattleInventory(state);
-	BotCheckConsoleMessages(state);
-	if (state->enter_game_time > AAS_Time() - 8.0f)
-	{
-		if (BotAI_ConstructLifecycleChat(state,
-			"enter_game",
-			CHARACTERISTIC_CHAT_ENTEREXITGAME,
-			true))
-		{
-			BotAI_SetLifecycleStand(state, BotAI_ChatTime(state));
-		}
-	}
-
 	bot_ai_node_frame_t frame;
 	memset(&frame, 0, sizeof(frame));
 	frame.thinktime = thinktime;
 	BotAI_InitEnemyInfo(&frame.enemy);
 	if (!BotAI_RunNodeSwitchLoop(state, BotAI_NodeStep, &frame))
 	{
-		BotInterface_Printf(PRT_ERROR,
-			"client %d at %1.1f switched more than %d AI nodes\n",
-			state->client_number,
+		/*
+		 * Retail emits three diagnostics on overflow: BotDumpGoalStack
+		 * (0x10028ba7), BotDumpAvoidGoals (0x10028bad) and BotDumpNodeSwitches
+		 * (0x10028bb3), the last of which formats with ClientName and prints
+		 * at level 4 (0x1001d358).
+		 */
+		BotDumpGoalStack(state->goal_handle);
+		BotDumpAvoidGoals(state->goal_handle);
+		BotInterface_Printf(PRT_FATAL,
+			"%s at %1.1f switched more than %d AI nodes\n",
+			BotState_ClientName(state->client_number),
 			AAS_Time(),
 			BOT_AI_MAX_NODE_SWITCHES);
 	}

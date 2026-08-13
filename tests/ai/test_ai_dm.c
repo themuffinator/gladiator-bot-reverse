@@ -255,6 +255,49 @@ static float dm_retail_angle_mod(float angle)
 
 /*
 =============
+dm_retail_vectoangles
+
+Mirrors retail vectoangles at 0x10041790: both atan2 results pass through the
+__ftol truncation to whole degrees and fold by +360 when negative, and the
+degenerate axis yields a -90 or -270 pitch.
+=============
+*/
+static void dm_retail_vectoangles(const vec3_t direction, vec3_t angles)
+{
+	float yaw;
+	float pitch;
+
+	if (direction[0] == 0.0f && direction[1] == 0.0f)
+	{
+		yaw = 0.0f;
+		pitch = (direction[2] > 0.0f) ? 90.0f : 270.0f;
+	}
+	else
+	{
+		yaw = (float)(int)(atan2(direction[1], direction[0]) *
+			(180.0 / M_PI));
+		if (yaw < 0.0f)
+		{
+			yaw += 360.0f;
+		}
+
+		float forward = sqrtf(direction[0] * direction[0] +
+			direction[1] * direction[1]);
+		pitch = (float)(int)(atan2(direction[2], forward) *
+			(180.0 / M_PI));
+		if (pitch < 0.0f)
+		{
+			pitch += 360.0f;
+		}
+	}
+
+	angles[PITCH] = -pitch;
+	angles[YAW] = yaw;
+	angles[ROLL] = 0.0f;
+}
+
+/*
+=============
 EA_ResetClient
 =============
 */
@@ -1939,6 +1982,12 @@ static void test_dm_view_turn_preserves_retail_accuracy_snap_threshold(void)
 test_dm_view_turn_truncates_fractional_angle_difference
 
 Pins the retail abs(int(AngleDifference)) conversion before speed updates.
+
+Retail vectoangles at 0x10041790 truncates both axes to whole degrees, so an
+aim direction can never hand this stage a fractional ideal on its own; the
+fractional ideals it does see come from the AngleMod quantisation applied at
+0x10024315 and 0x1002435e, e.g. AngleMod(1) = 0.99976.  The ideal is therefore
+installed directly here rather than derived from an enemy position.
 =============
 */
 static void test_dm_view_turn_truncates_fractional_angle_difference(void)
@@ -1952,20 +2001,15 @@ static void test_dm_view_turn_truncates_fractional_angle_difference(void)
 
 	bot_client_state_t client_state;
 	dm_prepare_client_state(&client_state, client);
-	ai_dm_enemy_info_t enemy;
-	vec3_t enemy_origin = {100.0f, 1.570925f, 0.0f};
-	dm_prepare_enemy(&enemy, 2, enemy_origin, 100.01f, 5.0f);
-	bot_input_t move_command = {0};
-	move_command.thinktime = 0.1f;
 	bot_input_t base = {0};
 	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
 	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
-	AI_DMState_Update(dm_state,
-		&client_state,
-		NULL,
-		&enemy,
-		&move_command,
-		5.0f);
+	vec3_t ideal_viewangles = {0.0f, dm_retail_angle_mod(1.0f), 0.0f};
+	DM_ASSERT(ideal_viewangles[YAW] > 0.8f);
+	DM_ASSERT(ideal_viewangles[YAW] < 1.0f);
+	AI_DMState_SetEnemyContext(dm_state, 2, 5.0f, 0, NULL);
+	AI_DMState_SetIdealViewAngles(dm_state, ideal_viewangles);
+	AI_DMState_ChangeViewAngles(dm_state, &client_state, 0.1f);
 	bot_input_t command = dm_consume_input(client, 0.1f);
 	ai_dm_metrics_t metrics;
 	AI_DMState_GetMetrics(dm_state, &metrics);
@@ -2290,16 +2334,10 @@ static void test_dm_aim_applies_railgun_direction_noise_and_spread(void)
 		expected_direction[axis] /= length;
 		expected_direction[axis] += 0.3f * dm_retail_crandom() * inaccuracy;
 	}
-	float expected_yaw = atan2f(expected_direction[1], expected_direction[0]) *
-		(180.0f / (float)M_PI);
-	if (expected_yaw < 0.0f)
-	{
-		expected_yaw += 360.0f;
-	}
-	float horizontal = sqrtf(expected_direction[0] * expected_direction[0] +
-		expected_direction[1] * expected_direction[1]);
-	float expected_pitch = atan2f(-expected_direction[2], horizontal) *
-		(180.0f / (float)M_PI);
+	vec3_t expected_angles;
+	dm_retail_vectoangles(expected_direction, expected_angles);
+	float expected_yaw = expected_angles[YAW];
+	float expected_pitch = expected_angles[PITCH];
 	expected_pitch = dm_retail_angle_mod(expected_pitch +
 		6.0f * g_dm_weapon_info.vspread * dm_retail_crandom() * inaccuracy);
 	if (expected_pitch > 180.0f)
@@ -2337,6 +2375,80 @@ static void test_dm_aim_applies_railgun_direction_noise_and_spread(void)
 	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[2], expected_target[2], 0.0001f);
 	DM_ASSERT_FLOAT_CLOSE(metrics.ideal_viewangles[PITCH], expected_pitch, 0.01f);
 	DM_ASSERT_FLOAT_CLOSE(metrics.ideal_viewangles[YAW], expected_yaw, 0.01f);
+	AI_DMState_Destroy(dm_state);
+}
+
+/*
+=============
+test_dm_aim_truncates_view_angles_to_whole_degrees
+
+Pins the retail vectoangles truncation at 0x10041790 reached from the aim path
+at 0x100242cc: aiming along (100, 0, -37) with no jitter must derive the pitch
+from the whole-degree -340, not from the untruncated -20.3038.
+=============
+*/
+static void test_dm_aim_truncates_view_angles_to_whole_degrees(void)
+{
+	const int client = 0;
+	g_dm_characteristics[DM_CHARACTERISTIC_PIZZA_PREFERENCE] = 1.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_AIM_SKILL] = 0.0f;
+	g_dm_characteristics[DM_CHARACTERISTIC_AIM_ACCURACY] = 1.0f;
+	g_dm_weapon_available = true;
+	strcpy(g_dm_weapon_info.name, "Blaster");
+	g_dm_weapon_info.hspread = 0.2f;
+	g_dm_weapon_info.vspread = 0.3f;
+	g_dm_trace_result.fraction = 1.0f;
+	g_dm_trace_result.ent = 2;
+
+	ai_dm_state_t *dm_state = AI_DMState_Create(client);
+	DM_ASSERT(dm_state != NULL);
+	bot_client_state_t client_state;
+	dm_prepare_client_state(&client_state, client);
+	client_state.weapon_state = 5;
+	ai_dm_enemy_info_t enemy;
+	/* the aim target adds the retail +8 height, so the eye-relative
+	   direction is exactly (100, 0, -37) */
+	vec3_t enemy_origin = {100.0f, 0.0f, -45.0f};
+	dm_prepare_enemy(&enemy, 2, enemy_origin, 100.0f, 4.0f);
+	bot_input_t move_command = {0};
+	move_command.thinktime = 0.1f;
+	bot_input_t base = {0};
+	DM_ASSERT(EA_ResetClient(client) == BLERR_NOERROR);
+	DM_ASSERT(EA_SubmitInput(client, &base) == BLERR_NOERROR);
+	AI_DMState_Update(dm_state,
+		&client_state,
+		NULL,
+		&enemy,
+		&move_command,
+		4.0f);
+	dm_consume_input(client, 0.1f);
+	ai_dm_metrics_t metrics;
+	AI_DMState_GetMetrics(dm_state, &metrics);
+	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[0], 100.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(metrics.aim_target[2], -37.0f, 0.0001f);
+
+	vec3_t direction = {100.0f, 0.0f, -37.0f};
+	vec3_t retail_angles;
+	dm_retail_vectoangles(direction, retail_angles);
+	DM_ASSERT_FLOAT_CLOSE(retail_angles[PITCH], -340.0f, 0.0001f);
+	DM_ASSERT_FLOAT_CLOSE(retail_angles[YAW], 0.0f, 0.0001f);
+
+	float expected_pitch = dm_retail_angle_mod(retail_angles[PITCH]);
+	if (expected_pitch > 180.0f)
+	{
+		expected_pitch -= 360.0f;
+	}
+	DM_ASSERT_FLOAT_CLOSE(metrics.ideal_viewangles[PITCH],
+		expected_pitch,
+		0.001f);
+	DM_ASSERT_FLOAT_CLOSE(metrics.ideal_viewangles[YAW],
+		dm_retail_angle_mod(0.0f),
+		0.001f);
+
+	/* the pre-fix copy skipped the truncation and produced 20.3027 here */
+	float untruncated = dm_retail_angle_mod(
+		atan2f(37.0f, 100.0f) * (180.0f / (float)M_PI));
+	DM_ASSERT(fabsf(metrics.ideal_viewangles[PITCH] - untruncated) > 0.1f);
 	AI_DMState_Destroy(dm_state);
 }
 
@@ -3199,6 +3311,7 @@ int main(void)
 		{"aim_trace_raise", dm_test_setup, test_dm_aim_preserves_trace_raise_and_skill_threshold, dm_test_teardown},
 		{"aim_rocket_accuracy", dm_test_setup, test_dm_aim_applies_rocket_accuracy_square_root, dm_test_teardown},
 		{"aim_rail_spread", dm_test_setup, test_dm_aim_applies_railgun_direction_noise_and_spread, dm_test_teardown},
+		{"aim_angle_truncation", dm_test_setup, test_dm_aim_truncates_view_angles_to_whole_degrees, dm_test_teardown},
 		{"aim_radial_ground", dm_test_setup, test_dm_aim_radial_ground_target_uses_retail_trace_order, dm_test_teardown},
 		{"aim_radial_gates", dm_test_setup, test_dm_aim_radial_ground_target_preserves_strict_gates, dm_test_teardown},
 		{"aim_radial_exact_impacts", dm_test_setup, test_dm_aim_radial_ground_target_rejects_exact_impact_boundaries, dm_test_teardown},

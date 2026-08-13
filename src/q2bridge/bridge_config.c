@@ -125,7 +125,8 @@ bool BridgeConfig_Init(void)
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.forceclustering, "forceclustering", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.forcereachability, "forcereachability", "0");
     BridgeConfig_CacheLibVar(&g_bridge_config_cache.forcewrite, "forcewrite", "0");
-    BridgeConfig_CacheLibVar(&g_bridge_config_cache.framereachability, "framereachability", "0");
+    /* Retail default string is data_1005bdf8 == "20" (sub_10018920, 0x10018957). */
+    BridgeConfig_CacheLibVar(&g_bridge_config_cache.framereachability, "framereachability", "20");
 
     g_bridge_config_initialised = true;
     return true;

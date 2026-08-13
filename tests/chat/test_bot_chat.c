@@ -10,6 +10,7 @@
 #endif
 
 #include "botlib/ai_chat/ai_chat.h"
+#include "botlib/common/l_assets.h"
 #include "botlib/common/l_log.h"
 #include "botlib/precomp/l_precomp.h"
 #include "botlib/precomp/l_script.h"
@@ -31,6 +32,41 @@ extern int BotLib_TestGetEASayCalls(void);
 extern int BotLib_TestGetEASayTeamCalls(void);
 extern int BotLib_TestGetEALastClient(void);
 extern const char *BotLib_TestGetEALastText(void);
+
+/*
+=============
+BotLib_ResolveAssetPathDetailed
+
+Supplies the detailed resolver the chat setup loaders use for their retail
+"loaded %s" diagnostics. The standalone harness never serves PAK entries, so
+the container length is always zero and the loose "loaded %s\n" form is chosen.
+=============
+*/
+bool BotLib_ResolveAssetPathDetailed(const char *requested,
+	const char *preferred_subdir,
+	botlib_asset_resolution_t *resolution)
+{
+	if (resolution == NULL)
+	{
+		return false;
+	}
+
+	memset(resolution, 0, sizeof(*resolution));
+	if (!BotLib_ResolveAssetPath(requested,
+		preferred_subdir,
+		resolution->resolved_path,
+		sizeof(resolution->resolved_path)))
+	{
+		return false;
+	}
+
+	(void)snprintf(resolution->source_path,
+		sizeof(resolution->source_path),
+		"%s",
+		resolution->resolved_path);
+	resolution->pak_entry_length = 0;
+	return true;
+}
 
 /*
 =============
@@ -4354,11 +4390,16 @@ static void test_setup_chat_ai_exports_match_and_synonym_utilities(void)
 	assert(match.type == MSG_DEATH_TEST);
 	assert(match.subtype == ST_DEATH_RAILGUN_TEST);
 
+	/*
+	 * The shipped match.c obituary templates are unspaced ("was railed by"),
+	 * and retail StringsMatch stores raw spans (HLIL 1002c866 / 1002c8ce), so
+	 * the victim keeps its trailing space and the killer its leading space.
+	 */
 	char variable[256];
 	assert(BotMatchVariable(&match, 0, variable) == variable);
-	assert(strcmp(variable, "Alice") == 0);
+	assert(strcmp(variable, "Alice ") == 0);
 	assert(BotMatchVariable(&match, 1, variable) == variable);
-	assert(strcmp(variable, "Bob") == 0);
+	assert(strcmp(variable, " Bob") == 0);
 	assert(BotMatchVariable(&match, 5, variable) == variable);
 	assert(variable[0] == '\0');
 
@@ -4433,6 +4474,328 @@ static void test_setup_chat_ai_match_string_alternatives_capture_variables(void)
 
 	BotShutdownChatAI();
 	configure_chat_libvars(0.0f, 0.0f);
+	remove(path);
+}
+
+/*
+=============
+test_setup_chat_ai_unterminated_match_block_keeps_parsed_templates
+
+Retail's per-block loop exits identically for `}` and for end of input: the
+re-read at 1002c63b falls through to 1002c641, which publishes the accumulated
+list. A match file truncated after its last `;` therefore still loads, and the
+templates parsed before the truncation stay registered.
+=============
+*/
+static void test_setup_chat_ai_unterminated_match_block_keeps_parsed_templates(void)
+{
+	enum
+	{
+		MTCONTEXT_FIRST_TEST = 1,
+		MTCONTEXT_SECOND_TEST = 2
+	};
+
+	const char *path = "bot_chat_match_unterminated_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	/* Second block is never closed - the file simply stops after its `;`. */
+	fputs(
+		"1\n"
+		"{\n"
+		"0, \" was railed by \", 1 = (1, 12);\n"
+		"}\n"
+		"2\n"
+		"{\n"
+		"0, \" was gunned by \", 1 = (3, 14);\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 1.0f);
+	BotLib_TestSetLibVarString("synfile", "definitely_missing_syn.c");
+	BotLib_TestSetLibVarString("rndfile", "definitely_missing_rnd.c");
+	BotLib_TestSetLibVarString("matchfile", path);
+	assert(BotSetupChatAI() == 0);
+
+	/* The well-formed earlier block survives the truncation. */
+	bot_match_t match;
+	assert(BotFindMatch("Alice was railed by Bob\n",
+		&match,
+		MTCONTEXT_FIRST_TEST));
+	assert(match.type == 1);
+	assert(match.subtype == 12);
+
+	/* So does the template that was fully consumed inside the open block. */
+	assert(BotFindMatch("Alice was gunned by Bob\n",
+		&match,
+		MTCONTEXT_SECOND_TEST));
+	assert(match.type == 3);
+	assert(match.subtype == 14);
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	remove(path);
+}
+
+/*
+=============
+test_setup_chat_ai_match_errors_report_source_position
+
+Retail routes match-loader rejections through SourceError (j_sub_10039200), so
+each carries the script's file/line prefix: adjacent variables at 1002c24c, an
+out-of-range index at 1002c279 and a non-integer block header at 1002c6dc.
+=============
+*/
+static void test_setup_chat_ai_match_errors_report_source_position(void)
+{
+	const char *path = "bot_chat_match_diagnostic_test.c";
+
+	struct
+	{
+		const char *body;
+		const char *expected;
+	} cases[] = {
+		{"1\n{\n0, 1 = (1, 12);\n}\n",
+			"not allowed to have adjacent variables"},
+		{"1\n{\n10, \" railed \", 1 = (1, 12);\n}\n",
+			"can't have more than 10 match variables"},
+		{"bogus\n{\n}\n", "expected integer, found bogus"},
+		{"1\n{\n(, \" railed \" = (1, 12);\n}\n", "invalid token ("}
+	};
+
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+	{
+		remove(path);
+		FILE *fp = fopen(path, "wb");
+		assert(fp != NULL);
+		fputs(cases[i].body, fp);
+		assert(fclose(fp) == 0);
+
+		BotShutdownChatAI();
+		configure_chat_libvars(0.0f, 1.0f);
+		BotLib_TestSetLibVarString("synfile", "definitely_missing_syn.c");
+		BotLib_TestSetLibVarString("rndfile", "definitely_missing_rnd.c");
+		BotLib_TestSetLibVarString("matchfile", path);
+		BotLib_TestResetMessageHistory();
+		(void)BotSetupChatAI();
+
+		/* SourceError prefixes the originating file and line. */
+		char expected[512];
+		int written = snprintf(expected,
+			sizeof(expected),
+			"file %s, line ",
+			path);
+		assert(written > 0 && (size_t)written < sizeof(expected));
+
+		const char *history = BotLib_TestGetMessageHistory();
+		const char *prefix = strstr(history, expected);
+		assert(prefix != NULL);
+		assert(strstr(prefix, cases[i].expected) != NULL);
+
+		BotShutdownChatAI();
+		configure_chat_libvars(0.0f, 0.0f);
+	}
+
+	remove(path);
+}
+
+/*
+=============
+test_setup_chat_ai_synonym_errors_report_source_position
+
+Retail's synonym loader reports "empty string" (1002b5a4), "too many }"
+(1002b581), "missing }" (1002b619) and "unexpected %s" (1002b5f2) through
+SourceError. None of those four carries a trailing newline.
+=============
+*/
+static void test_setup_chat_ai_synonym_errors_report_source_position(void)
+{
+	const char *path = "bot_chat_synonym_diagnostic_test.c";
+
+	struct
+	{
+		const char *body;
+		const char *expected;
+	} cases[] = {
+		{"1\n{\n[(\"\", 1), (\"b\", 1)]\n}\n", "empty string"},
+		{"1\n{\n}\n}\n", "too many }"},
+		{"1\n{\n[(\"a\", 1), (\"b\", 1)]\n", "missing }"},
+		{"1\n{\n\"loose\"\n}\n", "unexpected"},
+		{"1\n{\n[(\"only\", 1)]\n}\n",
+			"synonym must have at least to entries"}
+	};
+
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+	{
+		remove(path);
+		FILE *fp = fopen(path, "wb");
+		assert(fp != NULL);
+		fputs(cases[i].body, fp);
+		assert(fclose(fp) == 0);
+
+		BotShutdownChatAI();
+		configure_chat_libvars(0.0f, 1.0f);
+		BotLib_TestSetLibVarString("synfile", path);
+		BotLib_TestSetLibVarString("rndfile", "definitely_missing_rnd.c");
+		BotLib_TestResetMessageHistory();
+		(void)BotSetupChatAI();
+
+		const char *history = BotLib_TestGetMessageHistory();
+		assert(strstr(history, cases[i].expected) != NULL);
+		assert(strstr(history, path) != NULL);
+
+		BotShutdownChatAI();
+		configure_chat_libvars(0.0f, 0.0f);
+	}
+
+	remove(path);
+}
+
+/*
+=============
+test_setup_chat_ai_logs_loaded_assets
+
+Every retail setup loader logs its outcome: "couldn't find %s" on a resolver
+miss (1002c43b) and "loaded %s" on success (1002c70c).
+=============
+*/
+static void test_setup_chat_ai_logs_loaded_assets(void)
+{
+	const char *path = "bot_chat_loaded_log_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs("1\n{\n0, \" was railed by \", 1 = (1, 12);\n}\n", fp);
+	assert(fclose(fp) == 0);
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 1.0f);
+	BotLib_TestSetLibVarString("synfile", "definitely_missing_syn.c");
+	BotLib_TestSetLibVarString("rndfile", "definitely_missing_rnd.c");
+	BotLib_TestSetLibVarString("matchfile", path);
+	BotLib_TestResetMessageHistory();
+	assert(BotSetupChatAI() == 0);
+
+	const char *history = BotLib_TestGetMessageHistory();
+	char expected[512];
+	int written = snprintf(expected, sizeof(expected), "loaded %s\n", path);
+	assert(written > 0 && (size_t)written < sizeof(expected));
+	assert(strstr(history, expected) != NULL);
+	assert(strstr(history, "couldn't find definitely_missing_syn.c\n") != NULL);
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	remove(path);
+}
+
+/*
+=============
+test_load_chat_file_logs_loaded_block
+
+Retail sub_1002d8a0 logs "loaded %s from %s" for the resolved chat block
+(1002ddea) and "couldn't find %s" when the file cannot be resolved (1002d8d1).
+=============
+*/
+static void test_load_chat_file_logs_loaded_block(void)
+{
+	const char *path = "bot_chat_loadfile_log_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"chat \"logged\"\n"
+		"{\n"
+		"type \"enter_game\"\n"
+		"{\n"
+		"\"hello\";\n"
+		"}\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	BotLib_TestResetMessageHistory();
+	assert(BotLoadChatFile(chat, (char *)path, "logged") == BLERR_NOERROR);
+
+	char expected[512];
+	int written = snprintf(expected,
+		sizeof(expected),
+		"loaded %s from %s\n",
+		"logged",
+		path);
+	assert(written > 0 && (size_t)written < sizeof(expected));
+	assert(strstr(BotLib_TestGetMessageHistory(), expected) != NULL);
+
+	/* A file the resolver cannot find reports before the fatal wrapper line. */
+	BotLib_TestResetMessageHistory();
+	assert(BotLoadChatFile(chat, (char *)"bot_chat_definitely_missing.c", "logged")
+		== BLERR_CANNOTLOADICHAT);
+	const char *history = BotLib_TestGetMessageHistory();
+	assert(strstr(history, "couldn't find bot_chat_definitely_missing.c\n")
+		!= NULL);
+	assert(strstr(history, "BotLoadChatFile: script wrapper failed") == NULL);
+
+	BotDestroyChatState(chat);
+	remove(path);
+}
+
+/*
+=============
+test_reply_chat_ignores_test_libvar_on_retail_entry
+
+Retail BotReplyChat (1002e7d0) reads no libvar and constructs only the selected
+response. bot_testrchat is a Quake III name that appears nowhere in the retail
+image, so the two-argument export must ignore it entirely.
+=============
+*/
+static void test_reply_chat_ignores_test_libvar_on_retail_entry(void)
+{
+	const char *path = "bot_chat_retail_rchat_libvar_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs(
+		"[\"debug\"] = 1\n"
+		"{\n"
+		"\"alpha reply\";\n"
+		"\"beta reply\";\n"
+		"}\n",
+		fp);
+	assert(fclose(fp) == 0);
+
+	bot_chatstate_t *chat = alloc_chat_with_setup_reply_file(path);
+
+	seed_retail_reply_ordinal_zero(2, 2);
+	BotLib_TestSetLibVar("bot_testrchat", 1.0f);
+	drain_console(chat);
+	BotLib_TestResetMessageHistory();
+
+	assert(BotReplyChat(chat, "debug"));
+
+	/*
+	 * Retail dumps nothing: the candidate list never reaches botimport.Print,
+	 * so neither response text appears in the log.
+	 */
+	const char *history = BotLib_TestGetMessageHistory();
+	assert(strstr(history, "alpha reply") == NULL);
+	assert(strstr(history, "beta reply") == NULL);
+
+	/* Exactly one selected response is left pending for BotEnterChat. */
+	char buffer[256];
+	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
+	assert(strcmp(buffer, "alpha reply") == 0
+		|| strcmp(buffer, "beta reply") == 0);
+	assert(BotChatLength(chat) == 0);
+
+	BotLib_TestSetLibVar("bot_testrchat", 0.0f);
+	free_chat_with_setup_assets(chat);
 	remove(path);
 }
 
@@ -4918,6 +5281,12 @@ int main(void)
 	test_retail_string_contains_word_pointer_quirks();
 	test_setup_chat_ai_exports_match_and_synonym_utilities();
 	test_setup_chat_ai_match_string_alternatives_capture_variables();
+	test_setup_chat_ai_unterminated_match_block_keeps_parsed_templates();
+	test_setup_chat_ai_match_errors_report_source_position();
+	test_setup_chat_ai_synonym_errors_report_source_position();
+	test_setup_chat_ai_logs_loaded_assets();
+	test_load_chat_file_logs_loaded_block();
+	test_reply_chat_ignores_test_libvar_on_retail_entry();
 	test_setup_chat_ai_match_adjacent_string_pieces_concatenate();
 	test_retail_enter_chat_emits_all_chat_token();
 	test_retail_enter_chat_emits_team_chat_token();

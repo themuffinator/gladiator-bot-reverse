@@ -502,6 +502,210 @@ static void test_pc_dollar_evaluators_preserve_retail_token_caches(void **state)
 	PC_ShutdownLexer();
 }
 
+/*
+=============
+count_source_diagnostics
+
+Returns the number of diagnostics queued on a source.
+=============
+*/
+static size_t count_source_diagnostics(const pc_source_t *source)
+{
+	size_t count = 0;
+
+	for (const pc_diagnostic_t *cursor = PC_GetDiagnostics(source);
+		cursor != NULL;
+		cursor = cursor->next)
+	{
+		++count;
+	}
+
+	return count;
+}
+
+/*
+=============
+assert_single_diagnostic
+
+Requires exactly one queued diagnostic with the given level and message.
+=============
+*/
+static void assert_single_diagnostic(const pc_source_t *source,
+	pc_error_level_t level,
+	const char *message)
+{
+	const pc_diagnostic_t *head = PC_GetDiagnostics(source);
+
+	assert_non_null(head);
+	assert_int_equal((int)head->level, (int)level);
+	assert_non_null(head->message);
+	assert_string_equal(head->message, message);
+	assert_int_equal((int)count_source_diagnostics(source), 1);
+}
+
+/*
+=============
+test_pc_define_keeps_self_referencing_body_tokens
+
+Pins retail PC_Directive_define (0x1003b128), whose body loop copies every token
+unconditionally.  The Q3 "recursive define (removed recursion)" guard does not
+exist in the shipped DLL, so a self-naming body token is stored, not dropped.
+=============
+*/
+static void test_pc_define_keeps_self_referencing_body_tokens(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	//a body of exactly the define's own name must be kept, and must not
+	//produce a diagnostic
+	const char plain[] = "#define SELF SELF\nAFTER\n";
+	pc_source_t *source = PC_LoadSourceMemory("self_define_plain", plain,
+		strlen(plain));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NAME, token.type);
+	assert_string_equal("AFTER", token.string);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+	assert_int_equal((int)count_source_diagnostics(source), 0);
+	PC_FreeSource(source);
+
+	//the retained leading token is observable through the misplaced-##
+	//check at 0x1003b177: with the body kept, SELF (not ##) leads the list,
+	//so the define is accepted instead of being rejected
+	const char merged[] = "#define SELF SELF ## TAIL\nAFTER\n";
+	source = PC_LoadSourceMemory("self_define_merge", merged, strlen(merged));
+	assert_non_null(source);
+
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NAME, token.type);
+	assert_string_equal("AFTER", token.string);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+	assert_int_equal((int)count_source_diagnostics(source), 0);
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_pc_if_rejects_increment_operator_as_invalid
+
+Pins retail PC_EvaluateTokens: lookup_table_1003c318[0x0b]/[0x0c] route P_INC and
+P_DEC to the shared "invalid operator" arm at 0x1003bdb4, which sets the error
+flag and aborts the load instead of warning and carrying on.
+=============
+*/
+static void test_pc_if_rejects_increment_operator_as_invalid(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "#if 1 ++ 2\nINSIDE\n#endif\nAFTER\n";
+	pc_source_t *source = PC_LoadSourceMemory("if_increment", script,
+		strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(0, PC_ReadToken(source, &token));
+	assert_single_diagnostic(source,
+		PC_ERROR_LEVEL_ERROR,
+		"invalid operator ++ in #if/#elif");
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_ps_read_number_classifies_look_ahead_character
+
+Pins retail PS_ReadNumber (0x1003ee37), which stores the character before
+classifying the next one, so a leading '.' never sets TT_FLOAT.
+=============
+*/
+static void test_ps_read_number_classifies_look_ahead_character(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = ".5 0.5\n";
+	pc_source_t *source = PC_LoadSourceMemory("leading_dot_number", script,
+		strlen(script));
+	assert_non_null(source);
+
+	//".5": the dot is consumed unclassified, so the token is a decimal
+	//integer whose NumberValue accumulates ('.' - '0') == -2 first
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_int_equal(TT_DECIMAL | TT_INTEGER, token.subtype);
+	assert_string_equal(".5", token.string);
+	assert_int_equal(0xFFFFFFF1u, (unsigned int)token.intvalue);
+
+	//"0.5": the dot is seen as a look-ahead character, so TT_FLOAT is set
+	//and the leading zero still marks the token octal
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_int_equal(TT_OCTAL | TT_FLOAT, token.subtype);
+	assert_string_equal("0.5", token.string);
+	assert_float_equal(0.5f, (float)token.floatvalue, 0.0f);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
+/*
+=============
+test_ps_read_number_consumes_unguarded_lowercase_suffixes
+
+Pins retail PS_ReadNumber's suffix loop (0x1003eed7 / 0x1003eeeb), which
+short-circuits on lowercase 'l' and 'u' without consulting the subtype.  The
+later id "bk001204 - brackets" patch must not be applied here.
+=============
+*/
+static void test_ps_read_number_consumes_unguarded_lowercase_suffixes(
+	void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "1.0u 5ll 7uu\n";
+	pc_source_t *source = PC_LoadSourceMemory("number_suffixes", script,
+		strlen(script));
+	assert_non_null(source);
+
+	//lowercase 'u' is taken even though TT_FLOAT is already set
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_int_equal(TT_DECIMAL | TT_FLOAT | TT_UNSIGNED, token.subtype);
+	assert_string_equal("1.0", token.string);
+
+	//both lowercase 'l' suffixes are taken even though TT_LONG is set
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_int_equal(TT_DECIMAL | TT_INTEGER | TT_LONG, token.subtype);
+	assert_string_equal("5", token.string);
+
+	//and both lowercase 'u' suffixes likewise
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_int_equal(TT_DECIMAL | TT_INTEGER | TT_UNSIGNED, token.subtype);
+	assert_string_equal("7", token.string);
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
 static void assert_fixture_diagnostics(pc_source_t *source,
                                        const pc_diagnostic_snapshot_t *expected,
                                        size_t expected_count)
@@ -902,7 +1106,8 @@ static void test_pak_search_uses_retail_numbered_precedence(void **state)
 =============
 test_load_script_file_registers_uncompressed_source_checksum
 
-Pins the raw-file checksum taken before LoadScriptFile applies COM_Compress.
+Pins the raw-file checksum and the verbatim buffer retail's LoadScriptFile keeps
+(0x100401a0): length and end_p both describe the unmodified file bytes.
 =============
 */
 static void test_load_script_file_registers_uncompressed_source_checksum(
@@ -927,7 +1132,9 @@ static void test_load_script_file_registers_uncompressed_source_checksum(
 
 	pc_script_t *script = LoadScriptFile(path);
 	assert_non_null(script);
-	assert_true(script->length < (int)(sizeof(source) - 1U));
+	assert_int_equal(script->length, (int)(sizeof(source) - 1U));
+	assert_ptr_equal(script->end_p, script->buffer + (sizeof(source) - 1U));
+	assert_memory_equal(script->buffer, source, sizeof(source) - 1U);
 	assert_int_equal(CRC_SourceChecksumCount(), 1U);
 
 	uint16_t checksum = 0;
@@ -942,6 +1149,54 @@ static void test_load_script_file_registers_uncompressed_source_checksum(
 	FreeScript(script);
 	CRC_ResetSourceChecksums();
 	BotMemory_Shutdown();
+	assert_int_equal(remove(path), 0);
+}
+
+/*
+=============
+test_pc_reports_missing_endif_for_file_backed_source
+
+Pins retail EndOfScript (0x10040060) reaching true on a file-backed script, which
+is what lets PC_ReadSourceToken (0x10039501) warn about and pop dangling indents.
+A compression pass in LoadScriptFile would leave end_p past the shortened text
+and silently swallow the warning.
+=============
+*/
+static void test_pc_reports_missing_endif_for_file_backed_source(void **state)
+{
+	(void)state;
+	static const char path[] = "__gladiator_missing_endif.c";
+	static const char contents[] =
+		"// leading comment forces a shorter compressed buffer\n"
+		"FIRST\n"
+		"#ifdef NOT_DEFINED\n"
+		"SECOND\n";
+
+	remove(path);
+	FILE *file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_int_equal(fwrite(contents, 1U, sizeof(contents) - 1U, file),
+		sizeof(contents) - 1U);
+	assert_int_equal(fclose(file), 0);
+
+	PC_InitLexer();
+
+	pc_source_t *source = PC_LoadSourceFile(path);
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NAME, token.type);
+	assert_string_equal("FIRST", token.string);
+
+	//SECOND is inside the unterminated #ifdef, so the stream ends there
+	assert_int_equal(0, PC_ReadToken(source, &token));
+	assert_single_diagnostic(source,
+		PC_ERROR_LEVEL_WARNING,
+		"missing #endif");
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
 	assert_int_equal(remove(path), 0);
 }
 
@@ -963,6 +1218,11 @@ int main(void)
 		cmocka_unit_test(test_pc_loads_pak_source_and_includes_with_logical_checksum_names),
 		cmocka_unit_test(test_pak_search_uses_retail_numbered_precedence),
 		cmocka_unit_test(test_load_script_file_registers_uncompressed_source_checksum),
+		cmocka_unit_test(test_pc_define_keeps_self_referencing_body_tokens),
+		cmocka_unit_test(test_pc_if_rejects_increment_operator_as_invalid),
+		cmocka_unit_test(test_ps_read_number_classifies_look_ahead_character),
+		cmocka_unit_test(test_ps_read_number_consumes_unguarded_lowercase_suffixes),
+		cmocka_unit_test(test_pc_reports_missing_endif_for_file_backed_source),
 	};
 
     return cmocka_run_group_tests(tests, NULL, NULL);

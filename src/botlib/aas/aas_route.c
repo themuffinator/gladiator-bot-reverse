@@ -178,12 +178,12 @@ static void AAS_FreeRetailRoutingCache(aas_retailroutingcache_t *cache)
 
 /*
 =============
-AAS_FreeRetailClusterAreaCaches
+AAS_ClearRetailClusterAreaCacheRecords
 
-Free every cache list and the contiguous per-cluster area-head table.
+Release every cluster-area cache record and clear the heads, keeping the table.
 =============
 */
-static void AAS_FreeRetailClusterAreaCaches(void)
+static void AAS_ClearRetailClusterAreaCacheRecords(void)
 {
 	if (aasworld.retailClusterAreaCache == NULL)
 	{
@@ -207,6 +207,23 @@ static void AAS_FreeRetailClusterAreaCaches(void)
 			aasworld.retailClusterAreaCache[clusternum][clusterareanum] = NULL;
 		}
 	}
+}
+
+/*
+=============
+AAS_FreeRetailClusterAreaCaches
+
+Free every cache list and the contiguous per-cluster area-head table.
+=============
+*/
+static void AAS_FreeRetailClusterAreaCaches(void)
+{
+	if (aasworld.retailClusterAreaCache == NULL)
+	{
+		return;
+	}
+
+	AAS_ClearRetailClusterAreaCacheRecords();
 
 	FreeMemory(aasworld.retailClusterAreaCache);
 	aasworld.retailClusterAreaCache = NULL;
@@ -276,12 +293,12 @@ static qboolean AAS_InitRetailClusterAreaCaches(void)
 
 /*
 =============
-AAS_FreeRetailPortalCaches
+AAS_ClearRetailPortalCacheRecords
 
-Free every portal-route list and the per-area portal-cache head table.
+Release every portal-route record and clear the heads, keeping the table.
 =============
 */
-static void AAS_FreeRetailPortalCaches(void)
+static void AAS_ClearRetailPortalCacheRecords(void)
 {
 	if (aasworld.retailPortalCache == NULL)
 	{
@@ -299,6 +316,38 @@ static void AAS_FreeRetailPortalCaches(void)
 		}
 		aasworld.retailPortalCache[areanum] = NULL;
 	}
+}
+
+/*
+=============
+AAS_ClearRetailRoutingCacheRecords
+
+Drop every retail routing-cache record while keeping the head tables live.
+Retail only tears the tables down through sub_10019550, which is reached from
+map load (0x1000ed30) and AAS shutdown (0x1000ee30) alone.
+=============
+*/
+static void AAS_ClearRetailRoutingCacheRecords(void)
+{
+	AAS_ClearRetailClusterAreaCacheRecords();
+	AAS_ClearRetailPortalCacheRecords();
+}
+
+/*
+=============
+AAS_FreeRetailPortalCaches
+
+Free every portal-route list and the per-area portal-cache head table.
+=============
+*/
+static void AAS_FreeRetailPortalCaches(void)
+{
+	if (aasworld.retailPortalCache == NULL)
+	{
+		return;
+	}
+
+	AAS_ClearRetailPortalCacheRecords();
 
 	FreeMemory(aasworld.retailPortalCache);
 	aasworld.retailPortalCache = NULL;
@@ -1441,7 +1490,10 @@ Release retail and compatibility query caches without map-lifetime scratch.
 */
 static void AAS_FreeRoutingQueryCaches(void)
 {
-	AAS_FreeRetailRoutingCaches();
+	/* Retail invalidation drops cache records but never the head tables; only
+	   sub_10019550 at map load (0x1000ed30) and shutdown (0x1000ee30) frees
+	   those, so AAS_FreeRetailRoutingCaches stays out of this path. */
+	AAS_ClearRetailRoutingCacheRecords();
 
 	aas_routingcache_t *cache = aasworld.routingCacheHead;
 	while (cache != NULL)
@@ -1474,6 +1526,10 @@ Release query caches and the alternative-routing arrays owned by the map.
 void AAS_FreeAllRoutingCaches(void)
 {
 	AAS_FreeRoutingQueryCaches();
+
+	/* Map unload is one of retail's two sub_10019550 sites, so the head tables
+	   go here rather than in the invalidation path. */
+	AAS_FreeRetailRoutingCaches();
 	AAS_FreeAlternativeRoutingScratch();
 }
 
@@ -3018,13 +3074,12 @@ Choose the first area to try for random goal searches.
 */
 static int AAS_RandomGoalStartArea(void)
 {
-	if (aasworld.numAreas <= 0)
-	{
-		return 1;
-	}
-
-	return (int)(((double)rand() / ((double)RAND_MAX + 1.0)) *
-		(double)aasworld.numAreas);
+	/* Retail 0x1001a43f scales rand() & 0x7fff by 1/32767, not by 1/32768, so
+	   the start index is numareas-inclusive; the search loop's
+	   "candidate >= numareas -> 1" clamp at 0x1001a461 folds that last value
+	   back onto area 1. */
+	return (int)((float)(rand() & 0x7fff) * (1.0f / 32767.0f) *
+		(float)aasworld.numAreas);
 }
 
 /*
@@ -3045,15 +3100,18 @@ int AAS_RandomGoalArea(int areanum, int travelflags, int *goalareanum, vec3_t go
 		return qfalse;
 	}
 
-	if (AAS_AreaReachability(areanum) == 0)
-	{
-		return qfalse;
-	}
-
+	/* Retail 0x1001a473 gates a candidate on AAS_AreaReachability(candidate)
+	   and a non-zero travel time only. There is no reachability test on the
+	   source area - retail leaves validating it to AAS_AreaTravelTimeToGoalArea
+	   at 0x10019fa0 - and no swim special case. */
 	int candidate = AAS_RandomGoalStartArea();
 	for (int index = 0; index < aasworld.numAreas; ++index)
 	{
-		if (candidate <= 0 || candidate >= aasworld.numAreas)
+		if (candidate <= 0)
+		{
+			candidate = 1;
+		}
+		if (candidate >= aasworld.numAreas)
 		{
 			candidate = 1;
 		}
@@ -3068,32 +3126,36 @@ int AAS_RandomGoalArea(int areanum, int travelflags, int *goalareanum, vec3_t go
 		                                              aasworld.areas[areanum].center,
 		                                              candidate,
 		                                              travelflags);
-		if (traveltime <= 0)
+		if (traveltime == 0)
 		{
 			candidate += 1;
 			continue;
 		}
 
-		if (AAS_AreaSwim(candidate))
+		vec3_t center;
+		vec3_t end;
+		VectorCopy(aasworld.areas[candidate].center, center);
+
+		/* Retail 0x1001a4c4 logs a centre that does not resolve to any area. */
+		if (AAS_PointAreaNum(center) == 0)
 		{
-			*goalareanum = candidate;
-			VectorCopy(aasworld.areas[candidate].center, goalorigin);
-			return qtrue;
+			BotLib_LogWrite("area %d center %f %f %f in solid?",
+				candidate,
+				center[0],
+				center[1],
+				center[2]);
 		}
 
-		vec3_t start;
-		vec3_t end;
-		VectorCopy(aasworld.areas[candidate].center, start);
-		VectorCopy(start, end);
+		VectorCopy(center, end);
 		end[2] -= 300.0f;
 
-		aas_trace_t trace = AAS_TraceClientBBox(start, end, PRESENCE_CROUCH, -1);
-		if (!trace.startsolid &&
-		    trace.fraction < 1.0f &&
-		    AAS_PointAreaNum(trace.endpos) == candidate &&
-		    AAS_AreaGroundFaceArea(candidate) > 300.0f)
+		/* Retail 0x1001a53e accepts on !trace.startsolid alone - no fraction,
+		   containing-area or ground-face-area test - and reports the traced
+		   endpoint's area at 0x1001a565, not the candidate itself. */
+		aas_trace_t trace = AAS_TraceClientBBox(center, end, PRESENCE_CROUCH, -1);
+		if (!trace.startsolid)
 		{
-			*goalareanum = candidate;
+			*goalareanum = AAS_PointAreaNum(trace.endpos);
 			VectorCopy(trace.endpos, goalorigin);
 			return qtrue;
 		}
@@ -3356,18 +3418,33 @@ Return the next reachability index for an area, matching the retail iterator.
 */
 int AAS_NextAreaReachability(int areanum, int reachnum)
 {
-	if (aasworld.areasettings == NULL || areanum <= 0 || areanum >= aasworld.numAreaSettings)
+	/* Retail 0x1001a377 wraps the whole body in the initialized test and falls
+	   through to a silent "return 0" at 0x1001a3e5, so an uninitialized world
+	   produces no diagnostic at all. */
+	if (!aasworld.initialized || aasworld.areasettings == NULL)
+	{
+		return 0;
+	}
+
+	/* Retail 0x1001a387 range checks against numareas, not numareasettings. */
+	if (areanum <= 0 || areanum >= aasworld.numAreas)
 	{
 		BotLib_Print(PRT_ERROR, "AAS_NextAreaReachability: areanum %d out of range\n", areanum);
 		return 0;
 	}
 
-	const aas_areasettings_t *settings = &aasworld.areasettings[areanum];
-	if (settings->numreachableareas <= 0)
+	/* Host safety only: retail indexes areasettings by areanum under the
+	   numareas bound alone, because the two counts are always equal there. */
+	if (areanum >= aasworld.numAreaSettings)
 	{
 		return 0;
 	}
 
+	/* Retail 0x1001a3a6 returns firstreachablearea for reachnum 0 with no
+	   numreachableareas test, so an area with no outgoing reachabilities still
+	   yields exactly one iteration; the reachnum != 0 tail below then returns 0
+	   because reachnum + 1 >= first + 0. */
+	const aas_areasettings_t *settings = &aasworld.areasettings[areanum];
 	int first = settings->firstreachablearea;
 	int end = first + settings->numreachableareas;
 	if (reachnum == 0)

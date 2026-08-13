@@ -110,6 +110,17 @@ bsp_trace_t AAS_Trace(const vec3_t start,
                       int passent,
                       int contentmask);
 int AAS_PointContents(const vec3_t point);
+/*
+ * Reconstruction of retail sub_100057a0, the DLL's own BSP/entity contents
+ * walk. Retail keeps that routine in the image but never calls it -
+ * AAS_PointContents (sub_10003080) tail-calls the engine import instead - so
+ * this is exported only so parity tests can still exercise the walk.
+ */
+int AAS_BSPModelPointContents(const vec3_t point,
+                              int modelnum,
+                              const vec3_t origin,
+                              const vec3_t angles,
+                              qboolean includeentities);
 qboolean AAS_InPVS(const vec3_t point1, const vec3_t point2);
 int AAS_EntityVisible(int viewer,
 	const vec3_t eye,

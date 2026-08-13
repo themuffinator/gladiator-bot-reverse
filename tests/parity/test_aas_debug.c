@@ -11,9 +11,17 @@
 #include "botlib/aas/aas_debug.h"
 #include "botlib/aas/aas_local.h"
 #include "botlib/aas/aas_map.h"
+#include "botlib/aas/aas_sound.h"
+#include "botlib/common/l_crc.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
+#include "botlib/precomp/l_precomp.h"
 #include "q2bridge/bridge.h"
+
+#ifndef PROJECT_SOURCE_DIR
+#error "PROJECT_SOURCE_DIR must be defined for the soundconfig parity fixtures."
+#endif
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
 #define TEST_RETAIL_TFL_WALK 0x00000002
@@ -1276,9 +1284,20 @@ static void test_aas_sample_helpers_use_loaded_planes_and_area_settings(void **s
     assert_int_equal(context->bridge_trace_contentmask, CONTENTS_SOLID | CONTENTS_PLAYERCLIP);
     assert_float_equal(context->bridge_trace_end[0], 100.0f, 0.001f);
 
+	/*
+	 * Retail AAS_PointContents is sub_10003080, a single statement:
+	 * "1000308e  return data_10063ff0(arg1)". data_10063ff0 is the bot_import
+	 * PointContents slot (the host wires it to gi.pointcontents), so the DLL
+	 * never consults its own BSP for this call - it returns whatever the
+	 * engine says, verbatim, and always costs exactly one import call.
+	 */
     context->bridge_point_contents_result = CONTENTS_WATER | CONTENTS_SLIME;
-	assert_int_equal(AAS_PointContents(front_point), 0);
-	assert_int_equal(context->bridge_point_contents_count, 0);
+	assert_int_equal(AAS_PointContents(front_point),
+		CONTENTS_WATER | CONTENTS_SLIME);
+	assert_int_equal(context->bridge_point_contents_count, 1);
+	assert_float_equal(context->bridge_point_contents_point[0], 100.0f, 0.001f);
+	context->bridge_point_contents_result = 0;
+	context->bridge_point_contents_count = 0;
 
     int bbox_areas[4];
     vec3_t bbox_mins = { 40.0f, -8.0f, -8.0f };
@@ -1418,14 +1437,42 @@ static void test_aas_predict_route_uses_reachability_cache_and_stop_events(void 
     assert_int_equal(AAS_BridgeWalkable(2), qfalse);
     assert_int_equal(AAS_AreaVisible(1, 2), qfalse);
 
-    context->areasettings[2].areaflags |= AAS_AREA_LIQUID;
-    int randomGoalArea = 0;
-    vec3_t randomGoalOrigin;
-    VectorClear(randomGoalOrigin);
-    assert_true(AAS_RandomGoalArea(1, TFL_DEFAULT, &randomGoalArea, randomGoalOrigin));
-    assert_int_equal(randomGoalArea, 2);
-    assert_float_equal(randomGoalOrigin[0], 100.0f, 0.001f);
-    context->areasettings[2].areaflags = 0;
+	/*
+	 * Retail AAS_RandomGoalArea is sub_1001a410 and has no swim shortcut: the
+	 * only candidate gate is "1001a473  if (j_sub_10011040(ebx) != 0 &&
+	 * j_sub_10019fa0(arg1, ebx, arg2) u> 0)" - reachability plus a non-zero
+	 * travel time. It then drops 300 units from the area centre
+	 * ("1001a518  var_54_1 = eax_9 - 300f", presence type 4, passent -1),
+	 * accepts on startsolid alone ("1001a53e  if (var_50 == 0)") with no
+	 * fraction, containing-area or ground-face-area test, and reports the
+	 * TRACED ENDPOINT's area, not the candidate ("1001a565  eax_15 =
+	 * j_sub_1001ae60(&var_48); 1001a578  *arg3 = eax_15"). AAS_AREA_LIQUID is
+	 * therefore irrelevant to the result.
+	 *
+	 * The start index at 1001a43f is rand()-driven, so the fixture has to give
+	 * the same answer for every draw: park area 1's back leaf in solid, and
+	 * its centre trace is startsolid so the 1001a53e gate rejects it. Area 3
+	 * has no reachability and is skipped at 1001a473, which leaves area 2 as
+	 * the only acceptable candidate whichever index the RNG hands out - hence
+	 * the repeat loop, which pins that independence rather than one draw.
+	 */
+	int savedbackleaf = context->nodes[1].children[1];
+	context->nodes[1].children[1] = 0;
+	for (int draw = 0; draw < 32; ++draw)
+	{
+		int randomGoalArea = 0;
+		vec3_t randomGoalOrigin;
+		VectorClear(randomGoalOrigin);
+		assert_true(AAS_RandomGoalArea(1,
+			TFL_DEFAULT,
+			&randomGoalArea,
+			randomGoalOrigin));
+		assert_int_equal(randomGoalArea, 2);
+		assert_float_equal(randomGoalOrigin[0], 100.0f, 0.001f);
+		/* The origin is the traced endpoint 300 units below the centre. */
+		assert_float_equal(randomGoalOrigin[2], -300.0f, 0.001f);
+	}
+	context->nodes[1].children[1] = savedbackleaf;
 
     vec3_t enemyOrigin = { 200.0f, 80.0f, 0.0f };
     assert_int_equal(AAS_NearestHideArea(0, origin, 1, 0, enemyOrigin, 3, TFL_DEFAULT), 2);
@@ -1841,12 +1888,20 @@ static void test_retail_client_bbox_trace_preserves_link_order_and_pass_boundary
 
 	vec3_t start = {0.0f, 0.0f, 0.0f};
 	vec3_t end = {100.0f, 0.0f, 0.0f};
+	/*
+	 * Retail sub_1000dda0 stores the presence boxes as two 3-entry stack
+	 * tables: mins at 1000ddc2 are 0xC1800000/0xC1800000/0xC1C00000 and maxs
+	 * at 1000de0a are 0x41800000/0x41800000/0x42000000 - i.e. the Quake II
+	 * 32x32 player, half extent 16, not Q3's 15. The swept entity box is
+	 * therefore x in [71 - 16, 79 + 16], so a 100-unit trace from the origin
+	 * first touches it at x = 55 and the fraction is 0.55, not 0.56.
+	 */
 	aas_trace_t headhit = AAS_TraceClientBBox(start,
 		end,
 		PRESENCE_CROUCH,
 		99);
 	assert_int_equal(headhit.ent, 5);
-	assert_float_equal(headhit.fraction, 0.56f, 0.001f);
+	assert_float_equal(headhit.fraction, 0.55f, 0.001f);
 	assert_int_equal(headhit.lastarea, 1);
 	assert_int_equal(headhit.area, 0);
 	assert_int_equal(headhit.planenum, 0);
@@ -1856,7 +1911,7 @@ static void test_retail_client_bbox_trace_preserves_link_order_and_pass_boundary
 		PRESENCE_CROUCH,
 		5);
 	assert_int_equal(passedhead.ent, 4);
-	assert_float_equal(passedhead.fraction, 0.56f, 0.001f);
+	assert_float_equal(passedhead.fraction, 0.55f, 0.001f);
 
 	aas_trace_t disabled = AAS_TraceClientBBox(start,
 		end,
@@ -1951,7 +2006,16 @@ static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
     vec3_t end = { 100.0f, 0.0f, 0.0f };
     vec3_t boxmins;
     vec3_t boxmaxs;
+	/*
+	 * Retail sub_1000dda0 uses half extent 16 on X and Y (0xC1800000 /
+	 * 0x41800000 in the tables at 1000ddc2 and 1000de0a), so every sweep
+	 * below expands the entity box [71,79] out to [55,95): fraction 0.55 /
+	 * endpos 55 forward, 0.05 / endpos 95 reversed, and exp_dist - the swept
+	 * extent sub_10003680 adds back into cplane.dist - is 16.
+	 */
     AAS_PresenceTypeBoundingBox(PRESENCE_CROUCH, boxmins, boxmaxs);
+	assert_float_equal(boxmins[0], -16.0f, 0.001f);
+	assert_float_equal(boxmaxs[0], 16.0f, 0.001f);
 
     bsp_trace_t entity_trace;
     memset(&entity_trace, 0, sizeof(entity_trace));
@@ -1964,13 +2028,13 @@ static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
                                     CONTENTS_SOLID | CONTENTS_PLAYERCLIP,
                                     &entity_trace));
     assert_false(entity_trace.startsolid);
-    assert_float_equal(entity_trace.fraction, 0.56f, 0.001f);
-    assert_float_equal(entity_trace.endpos[0], 56.0f, 0.001f);
+    assert_float_equal(entity_trace.fraction, 0.55f, 0.001f);
+    assert_float_equal(entity_trace.endpos[0], 55.0f, 0.001f);
     assert_float_equal(entity_trace.plane.normal[0], -1.0f, 0.001f);
 	assert_float_equal(entity_trace.plane.dist, -71.0f, 0.001f);
 	assert_int_equal(entity_trace.plane.type, 0);
 	assert_int_equal(entity_trace.plane.signbits, 0);
-	assert_float_equal(entity_trace.exp_dist, 15.0f, 0.001f);
+	assert_float_equal(entity_trace.exp_dist, 16.0f, 0.001f);
 	assert_int_equal(entity_trace.sidenum, -1);
 	assert_int_equal(entity_trace.contents, 0);
     assert_int_equal(entity_trace.ent, 4);
@@ -1986,20 +2050,20 @@ static void test_aas_trace_client_bbox_hits_linked_entities(void **state)
 	                                CONTENTS_SOLID | CONTENTS_PLAYERCLIP,
 	                                &reverse_entity_trace));
 	assert_false(reverse_entity_trace.startsolid);
-	assert_float_equal(reverse_entity_trace.fraction, 0.06f, 0.001f);
-	assert_float_equal(reverse_entity_trace.endpos[0], 94.0f, 0.001f);
+	assert_float_equal(reverse_entity_trace.fraction, 0.05f, 0.001f);
+	assert_float_equal(reverse_entity_trace.endpos[0], 95.0f, 0.001f);
 	assert_float_equal(reverse_entity_trace.plane.normal[0], 1.0f, 0.001f);
 	assert_float_equal(reverse_entity_trace.plane.dist, 79.0f, 0.001f);
 	assert_int_equal(reverse_entity_trace.plane.signbits, 0);
-	assert_float_equal(reverse_entity_trace.exp_dist, 15.0f, 0.001f);
+	assert_float_equal(reverse_entity_trace.exp_dist, 16.0f, 0.001f);
 	assert_int_equal(reverse_entity_trace.sidenum, -1);
 	assert_int_equal(reverse_entity_trace.contents, 0);
 	assert_int_equal(reverse_entity_trace.ent, 4);
 
     aas_trace_t hit = AAS_TraceClientBBox(start, end, PRESENCE_CROUCH, 99);
     assert_false(hit.startsolid);
-    assert_float_equal(hit.fraction, 0.56f, 0.001f);
-    assert_float_equal(hit.endpos[0], 56.0f, 0.001f);
+    assert_float_equal(hit.fraction, 0.55f, 0.001f);
+    assert_float_equal(hit.endpos[0], 55.0f, 0.001f);
     assert_float_equal(hit.plane.normal[0], -1.0f, 0.001f);
     assert_int_equal(hit.ent, 4);
     assert_int_equal(hit.area, 0);
@@ -2406,8 +2470,28 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 	assert_int_equal(entity_trace.ent, 6);
 	assert_int_equal(context->bridge_trace_count, 0);
 
+	/*
+	 * The DLL's own contents walk is sub_100057a0, entered through
+	 * sub_10005a10 ("10005a44  return j_sub_100057a0(arg1, 0, &var_c,
+	 * &var_c)" - world model, zero origin, zero angles). Retail keeps that
+	 * code but nothing reaches it: AAS_PointContents (sub_10003080) tail-calls
+	 * the bot_import slot instead, so the walk is exercised directly here.
+	 * AAS_PointContents itself must stay a pure delegation - one import call
+	 * per invocation, engine result verbatim - and must not consult the loaded
+	 * brush lumps at all.
+	 */
 	vec3_t mover_contents_point = { 25.0f, 0.0f, 0.0f };
-	assert_int_equal(AAS_PointContents(mover_contents_point), CONTENTS_SOLID);
+	assert_int_equal(AAS_BSPModelPointContents(mover_contents_point,
+			0,
+			NULL,
+			NULL,
+			qtrue),
+		CONTENTS_SOLID);
+	context->bridge_point_contents_result = CONTENTS_LAVA;
+	assert_int_equal(AAS_PointContents(mover_contents_point), CONTENTS_LAVA);
+	assert_int_equal(context->bridge_point_contents_count, 1);
+	context->bridge_point_contents_result = 0;
+	context->bridge_point_contents_count = 0;
 
 	AASEntityFrame bbox;
 	memset(&bbox, 0, sizeof(bbox));
@@ -2420,7 +2504,12 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 	VectorSet(bbox.maxs, 2.0f, 2.0f, 2.0f);
 	assert_int_equal(AAS_UpdateEntity(7, &bbox), BLERR_NOERROR);
 	vec3_t bbox_contents_point = { 50.0f, 0.0f, 0.0f };
-	assert_int_equal(AAS_PointContents(bbox_contents_point), CONTENTS_MONSTER);
+	assert_int_equal(AAS_BSPModelPointContents(bbox_contents_point,
+			0,
+			NULL,
+			NULL,
+			qtrue),
+		CONTENTS_MONSTER);
 
 	/*
 	 * The BBOX path in sub_10003680 does not inspect the content mask; unlike
@@ -2452,7 +2541,11 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 	 * using a transpose of that already-inverted matrix would choose -X.
 	 */
 	vec3_t rotated_mover_contents_point = { 25.0f, 5.0f, 0.0f };
-	assert_int_equal(AAS_PointContents(rotated_mover_contents_point),
+	assert_int_equal(AAS_BSPModelPointContents(rotated_mover_contents_point,
+			0,
+			NULL,
+			NULL,
+			qtrue),
 		CONTENTS_SOLID);
 
 	assert_int_equal(AAS_UpdateEntity(6, NULL), BLERR_NOERROR);
@@ -3510,6 +3603,419 @@ static void test_retail_entity_visibility_translucent_fluid_continuation(void **
 
 /*
 =============
+WriteSoundConfigFixture
+
+Emit a temporary soundconfig the retail loader can be pointed at by libvar.
+=============
+*/
+static void WriteSoundConfigFixture(const char *path, const char *text)
+{
+	FILE *file = fopen(path, "wb");
+	assert_non_null(file);
+	assert_true(fputs(text, file) >= 0);
+	assert_int_equal(fclose(file), 0);
+}
+
+/*
+=============
+setup_aas_sound
+
+Bring up an isolated libvar registry and print capture for soundconfig tests.
+=============
+*/
+static int setup_aas_sound(void **state)
+{
+	aas_debug_test_context_t *context =
+		(aas_debug_test_context_t *)calloc(1, sizeof(*context));
+	assert_non_null(context);
+
+	context->imports.Print = Mock_Print;
+	BotInterface_SetImportTable(&context->imports);
+	g_active_context = context;
+	LibVar_Init();
+
+	*state = context;
+	return 0;
+}
+
+/*
+=============
+teardown_aas_sound
+
+Release the sound subsystem, lexer and libvar state between soundconfig tests.
+=============
+*/
+static int teardown_aas_sound(void **state)
+{
+	AAS_SoundSubsystem_ResetState();
+	PC_ShutdownLexer();
+	LibVar_Shutdown();
+	CRC_ResetSourceChecksums();
+	BotMemory_Shutdown();
+	BotInterface_SetImportTable(NULL);
+	g_active_context = NULL;
+	free(*state);
+	*state = NULL;
+	return 0;
+}
+
+/*
+=============
+test_retail_sound_emit_replaces_active_record_on_zero_timeofs
+
+Pin the x87 equal-bit test at 0x1001ce9a: an immediate emit unlinks the active
+(entity, soundindex) record, a delayed emit does not, and the end time is
+(frame + duration) + timeofs as computed at 0x1001cee4.
+=============
+*/
+static void test_retail_sound_emit_replaces_active_record_on_zero_timeofs(
+	void **state)
+{
+	(void)state;
+	const char *config_path =
+		PROJECT_SOURCE_DIR "/aas_sound_parity_replace.c";
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"parity/replace.wav\"\n"
+		"\tvolume 40\n"
+		"\tduration 4\n"
+		"\ttype 7\n"
+		"\trecognition 0\n"
+		"\tstring \"\"\n"
+		"}\n");
+
+	LibVarSet("max_soundinfo", "4");
+	LibVarSet("max_aassounds", "8");
+	LibVarSet("soundconfig", config_path);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+
+	char asset[] = "parity/replace.wav";
+	char *assets[] = {asset};
+	assert_true(AAS_SoundSubsystem_RegisterMapAssets(1, assets));
+
+	vec3_t origin = {1.0f, 2.0f, 3.0f};
+	AAS_SoundSubsystem_SetFrameTime(0.0f);
+	assert_int_equal(AAS_SoundSubsystem_UpdateSound(origin, 5, 1, 0, 0.5f,
+		1.0f, 0.0f), BLERR_NOERROR);
+	AAS_SoundSubsystem_SetFrameTime(1.0f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1U);
+
+	/* timeofs == 0 replaces the live record instead of duplicating it. */
+	assert_int_equal(AAS_SoundSubsystem_UpdateSound(origin, 5, 1, 0, 0.5f,
+		1.0f, 0.0f), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0U);
+	assert_null(AAS_SoundSubsystem_SoundEvent(0));
+
+	AAS_SoundSubsystem_SetFrameTime(1.001f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1U);
+	const aas_sound_event_t *event = AAS_SoundSubsystem_SoundEvent(0);
+	assert_non_null(event);
+	assert_float_equal(event->start, 1.0f, 0.0001f);
+	assert_float_equal(event->end, 5.0f, 0.0001f);
+
+	/*
+	 * A negative timeofs is not the retail trigger: mask 0x40 is the equal
+	 * bit, not the less-than bit, so the live record survives an emit that
+	 * the pre-fix reconstruction would have replaced.
+	 */
+	assert_int_equal(AAS_SoundSubsystem_UpdateSound(origin, 5, 1, 0, 0.5f,
+		1.0f, -0.25f), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1U);
+	assert_ptr_equal(AAS_SoundSubsystem_SoundEvent(0), event);
+	assert_float_equal(event->end, 5.0f, 0.0001f);
+
+	/* A positive timeofs likewise leaves the live record alone at emit time. */
+	assert_int_equal(AAS_SoundSubsystem_UpdateSound(origin, 5, 1, 0, 0.5f,
+		1.0f, 0.5f), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1U);
+	assert_ptr_equal(AAS_SoundSubsystem_SoundEvent(0), event);
+
+	/*
+	 * The scheduled-to-active promotion at 0x1001cffa runs its own
+	 * (entity, soundindex) removal, so the delayed records still collapse to
+	 * one active entry once their start times pass.
+	 */
+	AAS_SoundSubsystem_SetFrameTime(2.0f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1U);
+	const aas_sound_event_t *delayed = AAS_SoundSubsystem_SoundEvent(0);
+	assert_non_null(delayed);
+	assert_float_equal(delayed->start, 1.501f, 0.0001f);
+	assert_float_equal(delayed->end, 5.501f, 0.0001f);
+
+	assert_int_equal(remove(config_path), 0);
+}
+
+/*
+=============
+test_retail_soundinfo_records_are_zero_filled
+
+Pin the 0x1001c904 __memfill_u32(record, 0, 0x2c) clear: omitted fields read
+back as zero rather than as the fielddef clamp limits.
+=============
+*/
+static void test_retail_soundinfo_records_are_zero_filled(void **state)
+{
+	(void)state;
+	const char *config_path =
+		PROJECT_SOURCE_DIR "/aas_sound_parity_zerofill.c";
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"parity/sparse.wav\"\n"
+		"\ttype 7\n"
+		"}\n");
+
+	LibVarSet("max_soundinfo", "4");
+	LibVarSet("max_aassounds", "8");
+	LibVarSet("soundconfig", config_path);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 1U);
+
+	const aas_soundinfo_t *info = AAS_SoundSubsystem_Info(0U);
+	assert_non_null(info);
+	assert_string_equal(info->name, "parity/sparse.wav");
+	assert_int_equal(info->type, 7);
+	assert_float_equal(info->volume, 0.0f, 0.0001f);
+	assert_float_equal(info->duration, 0.0f, 0.0001f);
+	assert_float_equal(info->recognition, 0.0f, 0.0001f);
+	assert_string_equal(info->string, "");
+
+	/*
+	 * A zero duration yields end == start, so the record is dropped by the
+	 * expiry sweep of the very next frame pass instead of surviving the ten
+	 * seconds the old 10.0f default granted it.
+	 */
+	char asset[] = "parity/sparse.wav";
+	char *assets[] = {asset};
+	assert_true(AAS_SoundSubsystem_RegisterMapAssets(1, assets));
+	vec3_t origin = {0.0f, 0.0f, 0.0f};
+	AAS_SoundSubsystem_SetFrameTime(0.0f);
+	assert_int_equal(AAS_SoundSubsystem_UpdateSound(origin, 9, 0, 0, 1.0f,
+		1.0f, 0.0f), BLERR_NOERROR);
+	AAS_SoundSubsystem_SetFrameTime(0.001f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 1U);
+	const aas_sound_event_t *event = AAS_SoundSubsystem_SoundEvent(0);
+	assert_non_null(event);
+	assert_float_equal(event->start, 0.0f, 0.0001f);
+	assert_float_equal(event->end, 0.0f, 0.0001f);
+	AAS_SoundSubsystem_SetFrameTime(0.002f);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0U);
+
+	assert_int_equal(remove(config_path), 0);
+}
+
+/*
+=============
+test_retail_soundinfo_bounds_reject_out_of_range_values
+
+Pin the FT_BOUNDED volume [0, 80] and duration [0, 10] fielddefs at .data
+0x1005c08c/0x1005c0a8: an out-of-range value aborts the whole load.
+=============
+*/
+static void test_retail_soundinfo_bounds_reject_out_of_range_values(
+	void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)*state;
+	const char *config_path =
+		PROJECT_SOURCE_DIR "/aas_sound_parity_bounds.c";
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"parity/loud.wav\"\n"
+		"\tvolume 100.0\n"
+		"\tduration 0.2\n"
+		"\ttype 1\n"
+		"\trecognition 0\n"
+		"\tstring \"\"\n"
+		"}\n");
+
+	LibVarSet("max_soundinfo", "4");
+	LibVarSet("max_aassounds", "8");
+	LibVarSet("soundconfig", config_path);
+	Mock_Reset(context);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 0U);
+	assert_non_null(Mock_FindPrint(context,
+		"float out of range [0.000000, 80.000000]"));
+	assert_null(Mock_FindPrint(context, "loaded "));
+
+	/* An integer token takes the same bound through the whole-number path. */
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"parity/loud.wav\"\n"
+		"\tvolume 100\n"
+		"\tduration 0.2\n"
+		"\ttype 1\n"
+		"\trecognition 0\n"
+		"\tstring \"\"\n"
+		"}\n");
+	CRC_ResetSourceChecksums();
+	Mock_Reset(context);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 0U);
+	assert_non_null(Mock_FindPrint(context,
+		"value 100 out of range [0.000000, 80.000000]"));
+
+	/* The inclusive upper bound the shipped sounds.c relies on still passes. */
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"parity/loud.wav\"\n"
+		"\tvolume 80.0\n"
+		"\tduration 2.98\n"
+		"\ttype 1\n"
+		"\trecognition 0\n"
+		"\tstring \"\"\n"
+		"}\n");
+	CRC_ResetSourceChecksums();
+	Mock_Reset(context);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 1U);
+
+	/* Duration keeps its own [0, 10] clamp. */
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"parity/long.wav\"\n"
+		"\tvolume 10.0\n"
+		"\tduration 10.5\n"
+		"\ttype 1\n"
+		"\trecognition 0\n"
+		"\tstring \"\"\n"
+		"}\n");
+	CRC_ResetSourceChecksums();
+	Mock_Reset(context);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	assert_int_equal(AAS_SoundSubsystem_InfoCount(), 0U);
+	assert_non_null(Mock_FindPrint(context,
+		"float out of range [0.000000, 10.000000]"));
+
+	assert_int_equal(remove(config_path), 0);
+}
+
+/*
+=============
+test_retail_soundconfig_reports_source_errors_and_load_provenance
+
+Pin SourceError routing at 0x1001c9bd, which adds the "file %s, line %d: "
+prefix from 0x1003924a, and the loose-file "loaded %s" report at 0x1001c9e7.
+=============
+*/
+static void test_retail_soundconfig_reports_source_errors_and_load_provenance(
+	void **state)
+{
+	aas_debug_test_context_t *context = (aas_debug_test_context_t *)*state;
+	const char *config_path =
+		PROJECT_SOURCE_DIR "/aas_sound_parity_errors.c";
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"parity/one.wav\"\n"
+		"\tvolume 40\n"
+		"\tduration 1\n"
+		"\ttype 1\n"
+		"\trecognition 0\n"
+		"\tstring \"\"\n"
+		"}\n"
+		"weaponinfo\n");
+
+	LibVarSet("max_soundinfo", "4");
+	LibVarSet("max_aassounds", "8");
+	LibVarSet("soundconfig", config_path);
+	Mock_Reset(context);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	const char *unknown = Mock_FindPrint(context,
+		"unknown definition weaponinfo");
+	assert_non_null(unknown);
+	assert_non_null(strstr(unknown, "line 10:"));
+	assert_non_null(strstr(unknown, "file "));
+	assert_null(Mock_FindPrint(context, "loaded "));
+
+	/* Over-capacity is reported through the same helper. */
+	LibVarSet("max_soundinfo", "0");
+	CRC_ResetSourceChecksums();
+	Mock_Reset(context);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	const char *overflow = Mock_FindPrint(context,
+		"more than 0 sound infos defined");
+	assert_non_null(overflow);
+	assert_non_null(strstr(overflow, "line 1:"));
+
+	/* A clean parse reports the requested name at PRT_MESSAGE. */
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"parity/one.wav\"\n"
+		"\tvolume 40\n"
+		"\tduration 1\n"
+		"\ttype 1\n"
+		"\trecognition 0\n"
+		"\tstring \"\"\n"
+		"}\n");
+	LibVarSet("max_soundinfo", "4");
+	CRC_ResetSourceChecksums();
+	Mock_Reset(context);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+	char expected[512];
+	snprintf(expected, sizeof(expected), "loaded %s\n", config_path);
+	const char *loaded = Mock_FindPrint(context, expected);
+	assert_non_null(loaded);
+	assert_int_equal(
+		context->prints[context->print_count - 1U].priority, PRT_MESSAGE);
+
+	assert_int_equal(remove(config_path), 0);
+}
+
+/*
+=============
+test_retail_soundindex_table_folds_case
+
+Pin the _stricmp mapping at 0x1001d1c9: asset names differing only in case
+still resolve, and no path normalisation is applied.
+=============
+*/
+static void test_retail_soundindex_table_folds_case(void **state)
+{
+	(void)state;
+	const char *config_path =
+		PROJECT_SOURCE_DIR "/aas_sound_parity_case.c";
+	WriteSoundConfigFixture(config_path,
+		"soundinfo\n"
+		"{\n"
+		"\tname \"player/step1.wav\"\n"
+		"\tvolume 80\n"
+		"\tduration 0.2\n"
+		"\ttype 1\n"
+		"\trecognition 0\n"
+		"\tstring \"\"\n"
+		"}\n");
+
+	LibVarSet("max_soundinfo", "4");
+	LibVarSet("max_aassounds", "8");
+	LibVarSet("soundconfig", config_path);
+	assert_int_equal(AAS_SoundSubsystem_Init(), BLERR_NOERROR);
+
+	char mixed_case[] = "Player/Step1.wav";
+	char backslashed[] = "player\\step1.wav";
+	char prefixed[] = "sound/player/step1.wav";
+	char *assets[] = {mixed_case, backslashed, prefixed};
+	assert_true(AAS_SoundSubsystem_RegisterMapAssets(3, assets));
+
+	const aas_soundinfo_t *folded = AAS_SoundSubsystem_InfoForSoundIndex(0);
+	assert_non_null(folded);
+	assert_string_equal(folded->name, "player/step1.wav");
+	assert_int_equal(AAS_SoundSubsystem_SoundTypeForIndex(0), 1);
+	/* Retail folds case only: separators and prefixes are not normalised. */
+	assert_null(AAS_SoundSubsystem_InfoForSoundIndex(1));
+	assert_null(AAS_SoundSubsystem_InfoForSoundIndex(2));
+
+	assert_int_equal(remove(config_path), 0);
+}
+
+/*
+=============
 main
 
 Run the focused AAS debug and sampling parity tests.
@@ -3633,6 +4139,26 @@ int main(void)
 			test_retail_entity_visibility_translucent_fluid_continuation,
 			setup_aas_debug,
 			teardown_aas_debug),
+		cmocka_unit_test_setup_teardown(
+			test_retail_sound_emit_replaces_active_record_on_zero_timeofs,
+			setup_aas_sound,
+			teardown_aas_sound),
+		cmocka_unit_test_setup_teardown(
+			test_retail_soundinfo_records_are_zero_filled,
+			setup_aas_sound,
+			teardown_aas_sound),
+		cmocka_unit_test_setup_teardown(
+			test_retail_soundinfo_bounds_reject_out_of_range_values,
+			setup_aas_sound,
+			teardown_aas_sound),
+		cmocka_unit_test_setup_teardown(
+			test_retail_soundconfig_reports_source_errors_and_load_provenance,
+			setup_aas_sound,
+			teardown_aas_sound),
+		cmocka_unit_test_setup_teardown(
+			test_retail_soundindex_table_folds_case,
+			setup_aas_sound,
+			teardown_aas_sound),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

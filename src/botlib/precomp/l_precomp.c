@@ -2031,15 +2031,15 @@ int PC_Directive_define(pc_source_t *source)
 		if (!PC_ReadLine(source, &token)) return qtrue;
 	} //end if
 	//read the defined stuff
+	//NOTE: retail (0x1003b128) copies every body token unconditionally; there is
+	//no comparison against define->name in the loop and no "recursive define
+	//(removed recursion)" string anywhere in the shipped data section.  That
+	//guard is a later id addition (Q3 l_precomp.c) and must not be applied here,
+	//so "#define FOO FOO" keeps a one token body [FOO] exactly like retail.
 	last = NULL;
 	do
 	{
 		t = PC_CopyToken(&token);
-		if (t->type == TT_NAME && !strcmp(t->string, define->name))
-		{
-			SourceError(source, "recursive define (removed recursion)");
-			continue;
-		} //end if
 		PC_ClearTokenWhiteSpace(t);
 		t->next = NULL;
 		if (last) last->next = t;
@@ -2630,12 +2630,11 @@ int PC_EvaluateTokens(pc_source_t *source, pc_token_t *tokens, signed long int *
 						} //end if
 						break;
 					} //end case
-					case P_INC:
-					case P_DEC:
-					{
-						SourceError(source, "++ or -- used in #if/#elif");
-						break;
-					} //end case
+					//NOTE: retail (lookup_table_1003c318[0x0b]/[0x0c] = 0x03)
+					//routes P_INC and P_DEC to the shared "invalid operator"
+					//arm at 0x1003bdb4, which sets the error flag and aborts
+					//the evaluation.  They deliberately have no case here so
+					//they reach the default below.
 					case P_SUB:
 					{
 						if (!lastwasvalue)

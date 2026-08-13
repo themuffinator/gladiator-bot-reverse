@@ -7,11 +7,13 @@
 
 #include <cmocka.h>
 
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/ea/ea_local.h"
 #include "botlib/interface/botlib_interface.h"
 #include "q2bridge/bridge.h"
+#include "q2bridge/bridge_config.h"
 
 #define TEST_MAX_COMMANDS 8
 #define TEST_MAX_COMMAND_ARGUMENTS 9
@@ -734,6 +736,8 @@ static void test_ea_action_exports_match_retail_bits(void **state)
 
 	bot_input_t input = {0};
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	/* 1|2|4|16|8|32|64|256|512 - move-right and delayed-jump are byte-1 bits. */
+	assert_int_equal(input.actionflags, 895);
 	assert_int_equal(input.actionflags,
 		ACTION_ATTACK | ACTION_USE | ACTION_RESPAWN | ACTION_CROUCH |
 		ACTION_MOVEUP | ACTION_MOVEFORWARD | ACTION_MOVEBACK |
@@ -763,7 +767,7 @@ static void test_ea_left_action_matches_retail_latch_alias(void **state)
 =============
 test_ea_right_and_delayed_jump_match_retail_bit_aliases
 
-Pins the raw 0x01/0x02 action aliases used by the right-move and delayed-jump
+Pins the byte-1 0x100/0x200 bits written by the right-move and delayed-jump
 elementary-action writers.
 =============
 */
@@ -776,12 +780,14 @@ static void test_ea_right_and_delayed_jump_match_retail_bit_aliases(void **state
 
 	bot_input_t input = {0};
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
-	assert_int_equal(input.actionflags, 0x01);
+	/* sub_100374f0: `flags:1.b |= 1` at 0x10037503 == bit 8. */
+	assert_int_equal(input.actionflags, 0x100);
 
 	assert_int_equal(EA_ResetClient(0), BLERR_NOERROR);
 	EA_DelayedJump(0);
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
-	assert_int_equal(input.actionflags, 0x02);
+	/* sub_10037390: `flags:1.b |= 2` at 0x100373ae == bit 9. */
+	assert_int_equal(input.actionflags, 0x200);
 
 	/* A preceding immediate jump latches bit 0x80 and suppresses this alias. */
 	assert_int_equal(EA_ResetClient(0), BLERR_NOERROR);
@@ -791,6 +797,68 @@ static void test_ea_right_and_delayed_jump_match_retail_bit_aliases(void **state
 	EA_DelayedJump(0);
 	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
 	assert_int_equal(input.actionflags, 0);
+}
+
+/*
+=============
+test_ea_right_and_delayed_jump_do_not_touch_attack_or_use
+
+Proves the byte-1 writers leave the byte-0 attack/use bits alone.
+=============
+*/
+static void test_ea_right_and_delayed_jump_do_not_touch_attack_or_use(void **state)
+{
+	(void)state;
+
+	bot_input_t input = {0};
+
+	/* EA_MoveRight must not press fire (retail bit 8, not bit 0). */
+	assert_int_equal(EA_ResetClient(0), BLERR_NOERROR);
+	EA_MoveRight(0);
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(input.actionflags & ACTION_ATTACK, 0);
+	assert_int_equal(input.actionflags & ACTION_MOVERIGHT, ACTION_MOVERIGHT);
+
+	/* EA_DelayedJump must not press +use (retail bit 9, not bit 1). */
+	assert_int_equal(EA_ResetClient(0), BLERR_NOERROR);
+	EA_DelayedJump(0);
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(input.actionflags & ACTION_USE, 0);
+	assert_int_equal(input.actionflags & ACTION_DELAYEDJUMP, ACTION_DELAYEDJUMP);
+
+	/*
+	 * The suppressed path clears bit 9 only, so a +use issued in the same
+	 * frame survives - retail does `flags:1.b &= 0xfd` at 0x100373a7.
+	 */
+	assert_int_equal(EA_ResetClient(0), BLERR_NOERROR);
+	EA_Jump(0);
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	EA_Use(0);
+	EA_DelayedJump(0);
+	assert_int_equal(EA_GetInput(0, 0.1f, &input), BLERR_NOERROR);
+	assert_int_equal(input.actionflags, ACTION_USE);
+}
+
+/*
+=============
+test_bridge_config_framereachability_default_matches_retail
+
+Pins the retail "20" default string registered by sub_10018920 at 0x10018957.
+=============
+*/
+static void test_bridge_config_framereachability_default_matches_retail(void **state)
+{
+	(void)state;
+
+	assert_true(BridgeConfig_Init());
+
+	libvar_t *framereachability = Bridge_FrameReachability();
+	assert_non_null(framereachability);
+	assert_non_null(framereachability->string);
+	/* data_1005bdf8 == "20"; the <= 0 clamp to 15.0f must not fire by default. */
+	assert_string_equal(framereachability->string, "20");
+	assert_float_equal(framereachability->value, 20.0f, 0.0001f);
+	assert_float_equal(LibVarValue("framereachability", "0"), 20.0f, 0.0001f);
 }
 
 int main(void)
@@ -811,6 +879,8 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_ea_action_exports_match_retail_bits, setup_ea, teardown_ea),
 		cmocka_unit_test_setup_teardown(test_ea_left_action_matches_retail_latch_alias, setup_ea, teardown_ea),
 		cmocka_unit_test_setup_teardown(test_ea_right_and_delayed_jump_match_retail_bit_aliases, setup_ea, teardown_ea),
+		cmocka_unit_test_setup_teardown(test_ea_right_and_delayed_jump_do_not_touch_attack_or_use, setup_ea, teardown_ea),
+		cmocka_unit_test_setup_teardown(test_bridge_config_framereachability_default_matches_retail, setup_ea, teardown_ea),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

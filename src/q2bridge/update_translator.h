@@ -36,9 +36,20 @@ int Bridge_UpdateClient(int client, const bot_updateclient_t *update);
 int Bridge_UpdateEntity(int ent, const bot_updateentity_t *update);
 
 /**
- * @brief Reset the cached bridge state.
+ * @brief Reset the cached bridge state, including every slot's active flag.
+ *
+ * Matches retail's library-lifecycle reset, where the whole client table is
+ * freed and reallocated (sub_10029c90 / sub_10029da0).
  */
 void Bridge_ResetCachedUpdates(void);
+
+/**
+ * @brief Reset the cached bridge frames for a map load, preserving active flags.
+ *
+ * Mirrors sub_10029a40, which saves the record head across its memset
+ * (0x10029a97 / 0x10029b42) so clients set up before BotLoadMap keep working.
+ */
+void Bridge_ResetCachedFrames(void);
 
 /**
  * @brief Synchronise cached limits after map lifecycle changes.

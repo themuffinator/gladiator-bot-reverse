@@ -340,6 +340,30 @@ static void test_capture_print(int priority, const char *fmt, ...)
 	g_test_print_count += 1;
 }
 
+/*
+ * Retail sub_10007d30 emits one PRT_MESSAGE notice per empty visibility
+ * (10007fbb) and lighting (1000813c) lump, ahead of every other BSP
+ * diagnostic, so every header-only fixture picks up two extra prints.
+ */
+#define TEST_BSP_EMPTY_LUMP_NOTICES 2
+
+/*
+=============
+test_assert_empty_bsp_lump_notices
+
+Assert retail's two empty-lump notices lead the capture for a header-only BSP.
+=============
+*/
+static void test_assert_empty_bsp_lump_notices(void)
+{
+	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
+	assert_string_equal(g_test_print_message_history[0],
+		"WARNGING: bsp has no visibility data\n");
+	assert_int_equal(g_test_print_priority_history[1], PRT_MESSAGE);
+	assert_string_equal(g_test_print_message_history[1],
+		"WARNING: bsp has no light data\n");
+}
+
 static void test_capture_dprint(const char *fmt, ...)
 {
     (void)fmt;
@@ -363,6 +387,7 @@ static int test_libvar_set(const char *var_name, const char *value)
 }
 
 static int g_test_point_contents;
+static unsigned int g_test_point_contents_calls;
 static qboolean g_test_gap_trace_enabled;
 static qboolean g_test_grapple_trace_enabled;
 static float g_test_source_ground_max_x;
@@ -380,6 +405,7 @@ Return the deterministic BSP contents mask selected by an in-memory AAS test.
 static int test_point_contents(vec3_t point)
 {
 	(void)point;
+	g_test_point_contents_calls += 1U;
 	return g_test_point_contents;
 }
 
@@ -586,6 +612,21 @@ static void aas_environment_cleanup(aas_test_environment_t *env)
     }
 }
 
+/*
+ * The seven map-fixture cases below need the externally supplied
+ * test_nav.bsp/test_nav.aas pair, which the repository does not ship; the
+ * suite's CMake entry turns the resulting exit code 7 into a CTest skip.
+ *
+ * This function reports the missing fixture with a plain non-zero return
+ * rather than cmocka_skip(). cmocka's skip() sets its global skip flag and
+ * longjmps; when that happens inside a setup the harness reports the case as
+ * an error but leaves the flag raised, and the next test that longjmps - i.e.
+ * the next real assertion failure anywhere in the suite - is then reported as
+ * SKIPPED instead of FAILED. That silently hid live failures in
+ * test_retail_entity_link_heaps_are_fixed_and_reused and
+ * test_reachability_jump_generation_and_rejections. The exit code is the same
+ * either way, so nothing about the CMake skip gate changes.
+ */
 static int aas_environment_setup(void **state)
 {
     aas_test_environment_t *env = (aas_test_environment_t *)calloc(1, sizeof(aas_test_environment_t));
@@ -596,7 +637,7 @@ static int aas_environment_setup(void **state)
     if (!aas_environment_initialise(env)) {
         aas_environment_cleanup(env);
         free(env);
-        cmocka_skip();
+        return -1;
     }
 
     BotInterface_SetImportTable(&g_test_imports);
@@ -608,14 +649,14 @@ static int aas_environment_setup(void **state)
     if (!BridgeConfig_Init()) {
         aas_environment_cleanup(env);
         free(env);
-        cmocka_skip();
+        return -1;
     }
     env->bridge_config_initialised = true;
 
     if (!BotMemory_Init(TEST_BOTLIB_HEAP_SIZE)) {
         aas_environment_cleanup(env);
         free(env);
-        cmocka_skip();
+        return -1;
     }
     env->memory_initialised = true;
 
@@ -965,10 +1006,44 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
-	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_count, 3);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message,
 		"can't seek to bsp lump entity\n");
+	/*
+	 * Retail sub_10007d30 reports the two lumps that may legitimately be empty
+	 * before any other BSP diagnostic: 10007fbb prints the visibility notice
+	 * (with the shipped "WARNGING" typo at 0x1005ac70) and 1000813c the light
+	 * notice, both at PRT_MESSAGE.
+	 */
+	test_assert_empty_bsp_lump_notices();
+
+	/* Both notices are keyed off a zero lump length only, so a populated
+	   visibility or lighting lump suppresses them. */
+	unsigned char bsp_with_vis_light[sizeof(bsp_header) + 8U];
+	bsp_header.lumps[Q2_BSP_LUMP_VISIBILITY].offset =
+		(int32_t)sizeof(bsp_header);
+	bsp_header.lumps[Q2_BSP_LUMP_VISIBILITY].length = 4;
+	bsp_header.lumps[Q2_BSP_LUMP_LIGHTING].offset =
+		(int32_t)sizeof(bsp_header) + 4;
+	bsp_header.lumps[Q2_BSP_LUMP_LIGHTING].length = 4;
+	memcpy(bsp_with_vis_light, &bsp_header, sizeof(bsp_header));
+	memset(bsp_with_vis_light + sizeof(bsp_header), 0, 8U);
+	assert_true(test_write_fixture(bsp_path,
+		bsp_with_vis_light,
+		sizeof(bsp_with_vis_light)));
+	test_reset_print_capture();
+	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
+	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
+	assert_int_equal(g_test_print_count, 1);
+	assert_string_equal(g_test_print_message,
+		"can't seek to bsp lump entity\n");
+	memset(&bsp_header.lumps[Q2_BSP_LUMP_VISIBILITY],
+		0,
+		sizeof(bsp_header.lumps[Q2_BSP_LUMP_VISIBILITY]));
+	memset(&bsp_header.lumps[Q2_BSP_LUMP_LIGHTING],
+		0,
+		sizeof(bsp_header.lumps[Q2_BSP_LUMP_LIGHTING]));
 
 	bsp_header.lumps[Q2_BSP_LUMP_ENTITIES].offset =
 		(int32_t)sizeof(bsp_header);
@@ -976,7 +1051,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
-	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_count, 3);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message,
 		"can't read bsp lump entity\n");
@@ -989,7 +1064,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_NOAASFILE);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message, "no AAS file available\n");
 
@@ -997,7 +1072,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADAASHEADER);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	snprintf(expected,
 		sizeof(expected),
@@ -1011,7 +1086,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_WRONGAASFILEID);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	snprintf(expected,
 		sizeof(expected),
@@ -1025,7 +1100,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_WRONGAASFILEVERSION);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	snprintf(expected,
 		sizeof(expected),
@@ -1043,7 +1118,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADAASLUMP);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message, "can't read aas lump\n");
 
@@ -1052,7 +1127,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADAASLUMP);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message, "can't seek to aas lump\n");
 
@@ -1068,7 +1143,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_MESSAGE);
 	snprintf(expected, sizeof(expected), "loaded %s\n", reported_aas_path);
 	assert_string_equal(g_test_print_message, expected);
@@ -1084,7 +1159,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message,
 		"can't seek to bsp lump planes\n");
@@ -1097,7 +1172,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message,
 		"can't read bsp lump planes\n");
@@ -1112,7 +1187,7 @@ static void test_aas_loader_preserves_retail_header_error_contracts(void **state
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADBSPLUMP);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, 4);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message,
 		"odd planes bsp lump size\n");
@@ -1425,17 +1500,28 @@ static void test_aas_loader_uses_retail_candidate_order_and_reports_selected_pat
 	test_reset_print_capture();
 	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(g_test_print_count, 2);
-	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
-	assert_int_equal(g_test_print_priority_history[1], PRT_MESSAGE);
+	assert_int_equal(g_test_print_count, TEST_BSP_EMPTY_LUMP_NOTICES + 2);
+	test_assert_empty_bsp_lump_notices();
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES],
+		PRT_MESSAGE);
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		PRT_MESSAGE);
 	char expected[PATH_MAX];
+	/* Retail 1000e9bb prints the logical "maps\<map>.bsp" name for a loose
+	   BSP; only the AAS line at 1000eb0f uses the resolved physical path. */
 	snprintf(expected, sizeof(expected), "loaded %s\n", reported_bsp_path);
-	assert_string_equal(g_test_print_message_history[0], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES],
+		expected);
 	snprintf(expected,
 		sizeof(expected),
 		"loaded %s\n",
 		reported_maps_aas_path);
-	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		expected);
 	assert_string_equal(aasworld.aasFilePath, reported_maps_aas_path);
 	AAS_Shutdown();
 
@@ -1447,9 +1533,11 @@ static void test_aas_loader_uses_retail_candidate_order_and_reports_selected_pat
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(g_test_print_count, 2);
+	assert_int_equal(g_test_print_count, TEST_BSP_EMPTY_LUMP_NOTICES + 2);
 	snprintf(expected, sizeof(expected), "loaded %s\n", root_aas_path);
-	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		expected);
 	assert_string_equal(aasworld.aasFilePath, root_aas_path);
 	AAS_Shutdown();
 
@@ -1460,14 +1548,20 @@ static void test_aas_loader_uses_retail_candidate_order_and_reports_selected_pat
 	test_reset_print_capture();
 	status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_CANNOTREADAASHEADER);
-	assert_int_equal(g_test_print_count, 2);
-	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
-	assert_int_equal(g_test_print_priority_history[1], PRT_FATAL);
+	assert_int_equal(g_test_print_count, TEST_BSP_EMPTY_LUMP_NOTICES + 2);
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES],
+		PRT_MESSAGE);
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		PRT_FATAL);
 	snprintf(expected,
 		sizeof(expected),
 		"can't read header of file %s\n",
 		root_aas_path);
-	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		expected);
 	assert_false(aasworld.loaded);
 
 	unlink(root_aas_path);
@@ -1485,19 +1579,23 @@ static void test_aas_loader_uses_retail_candidate_order_and_reports_selected_pat
 =============
 test_assert_resolved_map_load
 
-Loads one transient map and verifies both resolved loose-file diagnostics.
+Loads one transient map and verifies both loose-file "loaded" diagnostics.
+
+Retail reports the two loose cases from different buffers: the BSP line at
+1000e9bb prints the logical "maps\<map>.bsp" name assembled at 1000e8d6, while
+the AAS line at 1000eb0f prints the resolved physical path. Directory
+precedence is therefore pinned by the AAS line alone.
 =============
 */
 static void test_assert_resolved_map_load(const char *map_name,
-	const char *expected_bsp_path,
 	const char *expected_aas_path)
 {
 	char reported_bsp_path[PATH_MAX];
 	char reported_aas_path[PATH_MAX];
 	snprintf(reported_bsp_path,
 		sizeof(reported_bsp_path),
-		"%s",
-		expected_bsp_path);
+		"maps/%s.bsp",
+		map_name);
 	snprintf(reported_aas_path,
 		sizeof(reported_aas_path),
 		"%s",
@@ -1522,20 +1620,29 @@ static void test_assert_resolved_map_load(const char *map_name,
 	test_reset_print_capture();
 	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(g_test_print_count, 2);
-	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
-	assert_int_equal(g_test_print_priority_history[1], PRT_MESSAGE);
+	assert_int_equal(g_test_print_count, TEST_BSP_EMPTY_LUMP_NOTICES + 2);
+	test_assert_empty_bsp_lump_notices();
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES],
+		PRT_MESSAGE);
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		PRT_MESSAGE);
 	char expected[PATH_MAX + 16];
 	snprintf(expected,
 		sizeof(expected),
 		"loaded %s\n",
 		reported_bsp_path);
-	assert_string_equal(g_test_print_message_history[0], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES],
+		expected);
 	snprintf(expected,
 		sizeof(expected),
 		"loaded %s\n",
 		reported_aas_path);
-	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		expected);
 	assert_string_equal(aasworld.aasFilePath, reported_aas_path);
 	AAS_Shutdown();
 }
@@ -1632,16 +1739,16 @@ static void test_aas_loader_resolves_retail_loose_directory_precedence(
 			sizeof(aas_header)));
 	}
 
-	test_assert_resolved_map_load(map_name, bsp_paths[0], aas_paths[0]);
+	test_assert_resolved_map_load(map_name, aas_paths[0]);
 	unlink(bsp_paths[0]);
 	unlink(aas_paths[0]);
-	test_assert_resolved_map_load(map_name, bsp_paths[1], aas_paths[1]);
+	test_assert_resolved_map_load(map_name, aas_paths[1]);
 	unlink(bsp_paths[1]);
 	unlink(aas_paths[1]);
-	test_assert_resolved_map_load(map_name, bsp_paths[2], aas_paths[2]);
+	test_assert_resolved_map_load(map_name, aas_paths[2]);
 	unlink(bsp_paths[2]);
 	unlink(aas_paths[2]);
-	test_assert_resolved_map_load(map_name, bsp_paths[3], aas_paths[3]);
+	test_assert_resolved_map_load(map_name, aas_paths[3]);
 
 	assert_true(test_write_fixture(bsp_paths[0],
 		&bsp_header,
@@ -1649,7 +1756,7 @@ static void test_aas_loader_resolves_retail_loose_directory_precedence(
 	assert_true(test_write_fixture(basedir_maps_aas,
 		&aas_header,
 		sizeof(aas_header)));
-	test_assert_resolved_map_load(map_name, bsp_paths[0], aas_paths[3]);
+	test_assert_resolved_map_load(map_name, aas_paths[3]);
 
 	LibVar_Shutdown();
 	BotInterface_SetImportTable(NULL);
@@ -1806,9 +1913,14 @@ static void test_aas_loader_probes_retail_paks_and_reads_bounded_entries(
 	int status = AAS_LoadMap(map_name, 0, NULL, 0, NULL, 0, NULL);
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_true(aasworld.loaded);
-	assert_int_equal(g_test_print_count, 2);
-	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
-	assert_int_equal(g_test_print_priority_history[1], PRT_MESSAGE);
+	assert_int_equal(g_test_print_count, TEST_BSP_EMPTY_LUMP_NOTICES + 2);
+	test_assert_empty_bsp_lump_notices();
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES],
+		PRT_MESSAGE);
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		PRT_MESSAGE);
 
 	char reported_pak0[PATH_MAX];
 	char reported_pak1[PATH_MAX];
@@ -1862,14 +1974,18 @@ static void test_aas_loader_probes_retail_paks_and_reads_bounded_entries(
 		reported_pak1,
 		archive_separator,
 		reported_logical_bsp);
-	assert_string_equal(g_test_print_message_history[0], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES],
+		expected);
 	snprintf(expected,
 		sizeof(expected),
 		"loaded %s%c%s\n",
 		reported_pak0,
 		archive_separator,
 		logical_aas);
-	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		expected);
 	assert_string_equal(aasworld.aasFilePath, logical_aas);
 	assert_int_equal(aasworld.numBspPlanes, 1);
 	assert_int_equal(aasworld.numBBoxes, 1);
@@ -2094,9 +2210,14 @@ static void test_aas_loader_runs_retail_zip_fallback_as_a_separate_extraction_pa
 	{
 		assert_string_equal(g_test_zip_member_history[index], logical_member);
 	}
-	assert_int_equal(g_test_print_count, 2);
-	assert_int_equal(g_test_print_priority_history[0], PRT_MESSAGE);
-	assert_int_equal(g_test_print_priority_history[1], PRT_FATAL);
+	assert_int_equal(g_test_print_count, TEST_BSP_EMPTY_LUMP_NOTICES + 2);
+	test_assert_empty_bsp_lump_notices();
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES],
+		PRT_MESSAGE);
+	assert_int_equal(
+		g_test_print_priority_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		PRT_FATAL);
 	assert_string_equal(g_test_print_message, "no AAS file available\n");
 	char current_directory[PATH_MAX];
 	assert_non_null(getcwd(current_directory, sizeof(current_directory)));
@@ -2158,7 +2279,14 @@ static void test_aas_loader_runs_retail_zip_fallback_as_a_separate_extraction_pa
 	assert_string_equal(g_test_zip_archive_history[1], relative_game_zip1);
 	assert_string_equal(g_test_zip_member_history[0], logical_member);
 	assert_string_equal(g_test_zip_member_history[1], logical_member);
-	assert_int_equal(g_test_print_count, 2);
+	/*
+	 * The header-only BSP reloaded by this pass still runs retail
+	 * sub_10007d30, which reports its empty visibility (10007fbb) and
+	 * lighting (1000813c) lumps ahead of the two "loaded" lines, exactly as
+	 * the earlier passes in this test already assert.
+	 */
+	assert_int_equal(g_test_print_count, TEST_BSP_EMPTY_LUMP_NOTICES + 2);
+	test_assert_empty_bsp_lump_notices();
 	char expected[PATH_MAX * 2U];
 	snprintf(expected,
 		sizeof(expected),
@@ -2166,7 +2294,9 @@ static void test_aas_loader_runs_retail_zip_fallback_as_a_separate_extraction_pa
 		relative_game_zip1,
 		archive_separator,
 		logical_member);
-	assert_string_equal(g_test_print_message_history[1], expected);
+	assert_string_equal(
+		g_test_print_message_history[TEST_BSP_EMPTY_LUMP_NOTICES + 1],
+		expected);
 	assert_string_equal(aasworld.aasFilePath, "");
 	assert_int_equal(aasworld.numBBoxes, 1);
 	assert_int_equal(aasworld.aasChecksum,
@@ -2840,7 +2970,14 @@ static void test_retail_entity_link_heaps_are_fixed_and_reused(void **state)
 	nodes[1].children[1] = -2;
 	planes[0].normal[0] = 1.0f;
 	aasworld.loaded = qtrue;
-	aasworld.numAreas = 2;
+	/*
+	 * The split node hands out area 1 on the front side and area 2 on the back,
+	 * so the world has to be three areas wide - retail's numareas counts the
+	 * unused zero slot. With numAreas at 2 the second leaf is out of range and
+	 * the entity only ever needs one link, which is not the exhaustion this
+	 * case exists to pin.
+	 */
+	aasworld.numAreas = 3;
 	aasworld.areas = areas;
 	aasworld.numNodes = 2;
 	aasworld.nodes = nodes;
@@ -2853,7 +2990,7 @@ static void test_retail_entity_link_heaps_are_fixed_and_reused(void **state)
 	VectorSet(frame.maxs, 1.0f, 1.0f, 1.0f);
 	test_reset_print_capture();
 	assert_int_equal(AAS_UpdateEntity(1, &frame), BLERR_NOERROR);
-	assert_int_equal(aasworld.areaEntityListCount, 2U);
+	assert_int_equal(aasworld.areaEntityListCount, 3U);
 	assert_int_equal(g_test_print_count, 1);
 	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message, "empty aas link heap\n");
@@ -3393,6 +3530,15 @@ static void test_reachability_swim_generation_and_storage(void **state)
 	aasworld.numBspBrushes = 1;
 	aasworld.bspBrushes = bsp_brushes;
 
+	/*
+	 * Retail sub_10003080 is a bare tail call into the bot_import
+	 * PointContents slot ("1000308e  return data_10063ff0(arg1)"), so the
+	 * engine callback - not the DLL's own BSP walk - decides the answer.
+	 */
+	Q2Bridge_SetImportTable(&g_test_q2_imports);
+	g_test_gap_trace_enabled = qfalse;
+	g_test_point_contents = CONTENTS_WATER;
+
 	AAS_InitReachability();
 	assert_int_equal(AAS_PointContents(vertexes[0]), CONTENTS_WATER);
 	assert_true(AAS_Reachability_Swim(1, 2));
@@ -3411,6 +3557,8 @@ static void test_reachability_swim_generation_and_storage(void **state)
 	AAS_ShutDownReachabilityHeap();
 	AAS_ClearReachabilityData();
 	FreeMemory(aasworld.reachability);
+	g_test_point_contents = 0;
+	Q2Bridge_SetImportTable(NULL);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -3497,7 +3645,17 @@ static void test_reachability_equal_floor_generation_and_storage(void **state)
 	assert_int_equal(aasworld.reachability[1].areanum, 2);
 	assert_int_equal(aasworld.reachability[1].edgenum, -1);
 	assert_int_equal(aasworld.reachability[1].traveltype, TRAVEL_WALK);
-	assert_int_equal(aasworld.reachability[1].traveltime, 301);
+	/*
+	 * Retail seeds the equal-floor link with 1 and then applies three
+	 * surcharges after prepending the record (sub_10011a20):
+	 *   1001200a/10012020  +0x12c when the destination is crouch-only,
+	 *   10012037/10012039  +0x64 when AAS_NearbySolidOrGap(start, end) is false,
+	 *   10012040/10012055  +0x64 when AAS_AreaGroundFaceArea(areanum) < 500.
+	 * Area 2's ground face here is a 50-unit triangle, so the third fires; the
+	 * destination edge runs off the end of the fixture world, so sub_10011740
+	 * reports the gap and the second does not: 1 + 300 + 100 = 401.
+	 */
+	assert_int_equal(aasworld.reachability[1].traveltime, 401);
 	assert_float_equal(aasworld.reachability[1].start[0], 0.1f, 0.0001f);
 	assert_float_equal(aasworld.reachability[1].end[0], 5.0f, 0.0001f);
 	assert_float_equal(aasworld.reachability[1].end[2], 0.125f, 0.0001f);
@@ -3529,12 +3687,30 @@ static void test_reachability_adjacent_edge_travel_branches(void **state)
 		float start_x;
 		float end_x;
 	} adjacent_case_t;
+	/*
+	 * Retail sub_10012200 hard-codes every one of these costs; none of them
+	 * comes from an rs_* libvar.
+	 *
+	 * - step-up walk (0x100130bd type 2): seeded with 1 at 0x100130c5, then
+	 *   +400 at 0x10013118 when AAS_NearbySolidOrGap(start, end) is false and
+	 *   +400 at 0x10013134 when AAS_AreaGroundFaceArea(areanum) < 500. This
+	 *   fixture's destination edge runs off the end of the world, so
+	 *   sub_10011740 finds the gap and returns true (no first penalty), while
+	 *   the single-edge ground face has zero area, so only the second fires:
+	 *   1 + 400 = 401.
+	 * - barrier jump (0x100133a6 type 4): flat 0x190 at 0x100133ad.
+	 * - downhill walk (0x10013473 type 2): flat 1 at 0x1001347a, with no
+	 *   solid/gap or ground-area penalty on this branch.
+	 * - water jump (0x10013279 type 9): flat 0x2bc at 0x10013280.
+	 * - walk off ledge (0x10013631 type 7): flat 0x64 at 0x10013638, with no
+	 *   gravity term and no fall-damage surcharge.
+	 */
 	const adjacent_case_t cases[] = {
-		{8.0f, qfalse, TRAVEL_WALK, 0, 0.1f, 5.0f},
-		{30.0f, qfalse, TRAVEL_BARRIERJUMP, 100, 0.1f, 5.0f},
+		{8.0f, qfalse, TRAVEL_WALK, 401, 0.1f, 5.0f},
+		{30.0f, qfalse, TRAVEL_BARRIERJUMP, 400, 0.1f, 5.0f},
 		{-8.0f, qfalse, TRAVEL_WALK, 1, 0.1f, 5.0f},
-		{30.0f, qtrue, TRAVEL_WATERJUMP, 400, 0.0f, 15.0f},
-		{-40.0f, qfalse, TRAVEL_WALKOFFLEDGE, 72, 0.0f, 2.0f}
+		{30.0f, qtrue, TRAVEL_WATERJUMP, 700, 0.0f, 15.0f},
+		{-40.0f, qfalse, TRAVEL_WALKOFFLEDGE, 100, 0.0f, 2.0f}
 	};
 
 	for (size_t case_index = 0;
@@ -3703,12 +3879,46 @@ static void test_reachability_jump_generation_and_rejections(void **state)
 	aasworld.planes = planes;
 
 	AAS_InitReachability();
+	/*
+	 * KNOWN FAILURE. This also fails at 158c71f; there a leaked cmocka skip
+	 * flag (see aas_environment_setup) mis-reported it as SKIPPED, so it has
+	 * never actually passed. Two separate defects keep it red and both were
+	 * confirmed by experiment, not inferred:
+	 *
+	 * 1. src/botlib/aas/aas_reach.c hands AAS_PredictClientMovement its
+	 *    arguments the wrong way round. It passes direction*speed as the
+	 *    velocity and (0, 0, jumpvelocity) as cmdmove. Retail 0x1001497e
+	 *    passes &data_100631cc - the zero vector at 0x100631cc - as the
+	 *    velocity and puts direction*speed in cmdmove, setting cmdmove[2] to
+	 *    sv_jumpvel only for travel type 5 (0x1001493d). Every other retail
+	 *    call site does the same (0x1000a758, 0x1000f097, 0x1001d5f0). Because
+	 *    the command loop at 0x1000fb24 drags both horizontal axes toward
+	 *    cmdmove within sv_maxacceleration ("2200", created at 0x10037ad0) per
+	 *    frame, the swapped call wipes the jump's horizontal speed on the
+	 *    launch frame and the bot is predicted straight up.
+	 *
+	 * 2. Even with that corrected the fixture cannot land the bot. Retail
+	 *    AAS_TraceClientBBox (sub_1001b260) walks the AAS node tree, not the
+	 *    engine trace, so the g_test_gap_trace ground planes staged above are
+	 *    never consulted; this fixture supplies no nodes, and the
+	 *    reconstruction's no-tree fallback reports fraction 1.0 forever, so the
+	 *    prediction always runs the full 30 frames and is rejected. Making this
+	 *    case meaningful needs an aas node/plane tree that models the two
+	 *    ledges and the gap between them.
+	 */
 	assert_false(AAS_Reachability_Jump(1, 2));
 	assert_true(AAS_ReachabilityExists(1, 2));
 	AAS_StoreReachability();
 	assert_int_equal(aasworld.numReachability, 2);
 	assert_int_equal(aasworld.reachability[1].traveltype, TRAVEL_JUMP);
-	assert_int_equal(aasworld.reachability[1].traveltime, 351);
+	/*
+	 * Retail costs jumps and walk-off-ledges with one unconditional expression
+	 * at 0x10014a8f: (int)(VectorDistance(bestend, beststart) * 240 /
+	 * sv_maxwalkvelocity + 600). sv_maxwalkvelocity is created with the default
+	 * string at 0x10037a91, so a 64-unit gap costs 64 * 240 / 300 + 600 = 651.
+	 * There is no rs_startjump term and no fall-damage surcharge.
+	 */
+	assert_int_equal(aasworld.reachability[1].traveltime, 651);
 	assert_float_equal(aasworld.reachability[1].start[0], 0.0f, 0.0001f);
 	assert_float_equal(aasworld.reachability[1].end[0], 64.0f, 0.0001f);
 
@@ -4083,7 +4293,15 @@ static void test_reachability_retail_teleporter_generation(void **state)
 	areas[2].areanum = 2;
 	VectorSet(areas[2].mins, 50.0f, -64.0f, 0.0f);
 	VectorSet(areas[2].maxs, 160.0f, 64.0f, 128.0f);
+	/*
+	 * Retail admits a teleporter source area on AAS_AreaGrounded alone:
+	 * 0x10015f21 calls sub_10011670, which is "areasettings[area].areaflags &
+	 * 1" (0x1001168a). Quake II has no teleporter brush contents, so the
+	 * AAS_AREACONTENTS_TELEPORTER bit is descriptive here and is not what
+	 * qualifies the area.
+	 */
 	settings[1].contents = AAS_AREACONTENTS_TELEPORTER;
+	settings[1].areaflags = AAS_AREA_GROUNDED;
 	settings[1].presencetype = PRESENCE_CROUCH;
 	settings[2].areaflags = AAS_AREA_GROUNDED;
 	settings[2].presencetype = PRESENCE_CROUCH;
@@ -4768,11 +4986,18 @@ static void test_retail_cluster_flood_invalid_area_diagnostic(void **state)
 	BotInterface_SetImportTable(&g_test_imports);
 	AAS_InitClustering();
 	assert_int_equal(g_test_print_count, 5);
+	/*
+	 * Retail routes this diagnostic through AAS_Error: 0x10008959 calls
+	 * sub_1000d7e0, which formats into a stack buffer and hands the result to
+	 * the Print import with priority 4 (0x1000d810), i.e. PRT_FATAL. The
+	 * .rdata literal at 0x1005adfc is 0x2e bytes - 45 characters plus the NUL -
+	 * so it carries no trailing newline.
+	 */
 	for (int index = 1; index <= 3; ++index)
 	{
-		assert_int_equal(g_test_print_priority_history[index], PRT_ERROR);
+		assert_int_equal(g_test_print_priority_history[index], PRT_FATAL);
 		assert_string_equal(g_test_print_message_history[index],
-			"AAS_FloodClusterAreas_r: areanum out of range\n");
+			"AAS_FloodClusterAreas_r: areanum out of range");
 	}
 	assert_int_equal(g_test_print_priority_history[4], PRT_ERROR);
 	assert_string_equal(g_test_print_message_history[4],
@@ -4878,10 +5103,18 @@ static void test_retail_aas_geometry_optimization(void **state)
 	assert_int_equal(aasworld.areas[2].numfaces, 1);
 	assert_int_equal(aasworld.faceIndex[0], 1);
 	assert_int_equal(aasworld.faceIndex[1], -1);
+	/*
+	 * Retail sub_10010e90 performs exactly one store per non-elevator
+	 * reachability: 0x10010ef5 writes faceoptimizeindex[facenum] back into the
+	 * facenum field at record offset +4 (the record stride is 0x2c and the
+	 * travel type it compares against 0xb lives at +0x24). The edgenum field at
+	 * +8 is never remapped, so it keeps its pre-optimization value even though
+	 * the compacted edge arrays are swapped in immediately afterwards.
+	 */
 	assert_int_equal(aasworld.reachability[1].facenum, 1);
 	assert_int_equal(aasworld.reachability[1].edgenum, -2);
 	assert_int_equal(aasworld.reachability[2].facenum, 0);
-	assert_int_equal(aasworld.reachability[2].edgenum, 0);
+	assert_int_equal(aasworld.reachability[2].edgenum, 3);
 	assert_int_equal(aasworld.reachability[3].facenum, 77);
 	assert_int_equal(aasworld.reachability[3].edgenum, 88);
 
@@ -4956,6 +5189,316 @@ static void test_retail_routing_intra_area_travel_cost(void **state)
 	AAS_FreeAllRoutingCaches();
 	AAS_ClearReachabilityData();
 	free(aasworld.areacontentstravelflags);
+	memset(&aasworld, 0, sizeof(aasworld));
+}
+
+/*
+=============
+test_retail_presence_type_bounding_box_table
+
+Pins sub_1000dda0's +/-16 half extents and its literal 4/2 box selector, which
+is the opposite of the Q3 presence-type mapping.
+=============
+*/
+static void test_retail_presence_type_bounding_box_table(void **state)
+{
+	(void)state;
+	BotInterface_SetImportTable(&g_test_imports);
+
+	vec3_t mins;
+	vec3_t maxs;
+
+	/* 1000de3c: presence type 4 selects table row 1, the 32-unit-tall box. */
+	test_reset_print_capture();
+	AAS_PresenceTypeBoundingBox(4, mins, maxs);
+	assert_int_equal(g_test_print_count, 0);
+	assert_float_equal(mins[0], -16.0f, 0.0001f);
+	assert_float_equal(mins[1], -16.0f, 0.0001f);
+	assert_float_equal(mins[2], -24.0f, 0.0001f);
+	assert_float_equal(maxs[0], 16.0f, 0.0001f);
+	assert_float_equal(maxs[1], 16.0f, 0.0001f);
+	assert_float_equal(maxs[2], 32.0f, 0.0001f);
+
+	/* 1000de46/1000de58: presence type 2 selects row 2, the crouch box. */
+	test_reset_print_capture();
+	AAS_PresenceTypeBoundingBox(2, mins, maxs);
+	assert_int_equal(g_test_print_count, 0);
+	assert_float_equal(mins[0], -16.0f, 0.0001f);
+	assert_float_equal(mins[1], -16.0f, 0.0001f);
+	assert_float_equal(mins[2], -24.0f, 0.0001f);
+	assert_float_equal(maxs[0], 16.0f, 0.0001f);
+	assert_float_equal(maxs[1], 16.0f, 0.0001f);
+	assert_float_equal(maxs[2], 8.0f, 0.0001f);
+
+	/* 1000de4f: any other value warns and still falls through to row 2. */
+	test_reset_print_capture();
+	AAS_PresenceTypeBoundingBox(3, mins, maxs);
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
+	assert_string_equal(g_test_print_message,
+		"AAS_PresenceTypeBoundingBox: unknown presence type\n");
+	assert_float_equal(maxs[2], 8.0f, 0.0001f);
+
+	BotInterface_SetImportTable(NULL);
+}
+
+/*
+=============
+test_retail_point_contents_uses_engine_import
+
+Pins sub_10003080, whose whole body is a tail call into the PointContents
+import slot rather than a walk of the DLL's own BSP copy.
+=============
+*/
+static void test_retail_point_contents_uses_engine_import(void **state)
+{
+	(void)state;
+	memset(&aasworld, 0, sizeof(aasworld));
+	BotInterface_SetImportTable(&g_test_imports);
+	Q2Bridge_SetImportTable(&g_test_q2_imports);
+
+	vec3_t point = {0.0f, 0.0f, 0.0f};
+	g_test_point_contents_calls = 0U;
+
+	/* The engine ORs entity contents into the world answer; retail returns
+	   that combined value verbatim (1000308e). */
+	g_test_point_contents = CONTENTS_WATER | CONTENTS_MONSTER;
+	assert_int_equal(AAS_PointContents(point),
+		CONTENTS_WATER | CONTENTS_MONSTER);
+	g_test_point_contents = CONTENTS_SOLID;
+	assert_int_equal(AAS_PointContents(point), CONTENTS_SOLID);
+	g_test_point_contents = 0;
+	assert_int_equal(AAS_PointContents(point), 0);
+	assert_int_equal(g_test_point_contents_calls, 3U);
+
+	Q2Bridge_SetImportTable(NULL);
+	BotInterface_SetImportTable(NULL);
+	memset(&aasworld, 0, sizeof(aasworld));
+}
+
+/*
+=============
+test_retail_bsp_entity_parse_errors_use_script_diagnostics
+
+Pins sub_100069a0's three failure paths, which all report through ScriptError
+(sub_1003e2c0) on the "entdata" script rather than a bare Print.
+=============
+*/
+static void test_retail_bsp_entity_parse_errors_use_script_diagnostics(
+	void **state)
+{
+	(void)state;
+	BotInterface_SetImportTable(&g_test_imports);
+
+	/* 10006bda: a leading token that is not "{". */
+	const char stray[] = "foo\n{\n\"classname\" \"worldspawn\"\n}\n";
+	test_reset_print_capture();
+	assert_null(AAS_ParseBSPEntities(stray, sizeof(stray) - 1U));
+	assert_int_equal(g_test_print_priority, PRT_ERROR);
+	assert_string_equal(g_test_print_message,
+		"file entdata, line 1: invalid foo\n\n");
+
+	/* 10006bed: a key token whose type is not TT_STRING. */
+	const char badkey[] = "{\n1 \"worldspawn\"\n}\n";
+	test_reset_print_capture();
+	assert_null(AAS_ParseBSPEntities(badkey, sizeof(badkey) - 1U));
+	assert_int_equal(g_test_print_priority, PRT_ERROR);
+	assert_string_equal(g_test_print_message,
+		"file entdata, line 2: invalid 1\n\n");
+
+	/* 10006c34: an entity that is never closed. */
+	const char unterminated[] = "{\n\"classname\" \"worldspawn\"\n";
+	test_reset_print_capture();
+	assert_null(AAS_ParseBSPEntities(unterminated,
+		sizeof(unterminated) - 1U));
+	assert_int_equal(g_test_print_priority, PRT_ERROR);
+	assert_string_equal(g_test_print_message,
+		"file entdata, line 3: missing }\n\n");
+
+	BotInterface_SetImportTable(NULL);
+}
+
+/*
+=============
+test_retail_shutdown_reports_unconditionally
+
+Pins sub_1000ee30, whose "AAS shutdown." message is the last statement and is
+guarded by nothing, so it fires with no map loaded and on repeat shutdowns.
+=============
+*/
+static void test_retail_shutdown_reports_unconditionally(void **state)
+{
+	(void)state;
+	memset(&aasworld, 0, sizeof(aasworld));
+	BotInterface_SetImportTable(&g_test_imports);
+
+	/* 1000ee6f zeroes both the loaded and initialized flags before the print
+	   at 1000ee80, so no predicate could ever have referenced them. */
+	test_reset_print_capture();
+	AAS_Shutdown();
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_MESSAGE);
+	assert_string_equal(g_test_print_message, "AAS shutdown.\n");
+
+	test_reset_print_capture();
+	AAS_Shutdown();
+	assert_int_equal(g_test_print_count, 1);
+	assert_int_equal(g_test_print_priority, PRT_MESSAGE);
+	assert_string_equal(g_test_print_message, "AAS shutdown.\n");
+
+	BotInterface_SetImportTable(NULL);
+	memset(&aasworld, 0, sizeof(aasworld));
+}
+
+/*
+=============
+test_retail_update_entity_keeps_routing_caches
+
+Pins sub_1000a920, whose mover path only relinks; the routing cache head
+tables survive every runtime door, plat and elevator move.
+=============
+*/
+static void test_retail_update_entity_keeps_routing_caches(void **state)
+{
+	(void)state;
+	memset(&aasworld, 0, sizeof(aasworld));
+	BotInterface_SetImportTable(&g_test_imports);
+
+	aas_area_t areas[2] = {0};
+	aas_areasettings_t settings[2] = {0};
+	aas_cluster_t clusters[2] = {0};
+	clusters[1].numareas = 1;
+
+	aasworld.numAreas = 2;
+	aasworld.areas = areas;
+	aasworld.numAreaSettings = 2;
+	aasworld.areasettings = settings;
+	aasworld.numClusters = 2;
+	aasworld.clusters = clusters;
+	aasworld.loaded = qtrue;
+
+	assert_true(AAS_InitRetailRoutingCaches());
+	assert_non_null(aasworld.retailClusterAreaCache);
+	assert_non_null(aasworld.retailPortalCache);
+
+	AASEntityFrame mover = {0};
+	mover.number = 1;
+	mover.solid = SOLID_BSP;
+	mover.origin_dirty = true;
+	VectorSet(mover.previous_origin, 0.0f, 0.0f, 0.0f);
+	VectorSet(mover.origin, 0.0f, 0.0f, 64.0f);
+	VectorSet(mover.mins, -8.0f, -8.0f, -8.0f);
+	VectorSet(mover.maxs, 8.0f, 8.0f, 8.0f);
+
+	/*
+	 * Retail's whole mover path is 1000aafd/1000ab14/1000ab1e/1000ab38 -
+	 * unlink and relink - followed by "1000ab47  return 0". The only routine
+	 * that releases the cache head tables is sub_10019550, called just from
+	 * AAS_LoadMap (1000ed30) and AAS_Shutdown (1000ee30).
+	 */
+	assert_int_equal(AAS_UpdateEntity(1, &mover), BLERR_NOERROR);
+	assert_non_null(aasworld.retailClusterAreaCache);
+	assert_non_null(aasworld.retailPortalCache);
+
+	VectorCopy(mover.origin, mover.previous_origin);
+	VectorSet(mover.origin, 0.0f, 0.0f, 128.0f);
+	assert_int_equal(AAS_UpdateEntity(1, &mover), BLERR_NOERROR);
+	assert_non_null(aasworld.retailClusterAreaCache);
+	assert_non_null(aasworld.retailPortalCache);
+
+	AAS_FreeAllRoutingCaches();
+	aasworld.numAreas = 0;
+	aasworld.areas = NULL;
+	aasworld.numAreaSettings = 0;
+	aasworld.areasettings = NULL;
+	aasworld.numClusters = 0;
+	aasworld.clusters = NULL;
+	AAS_Shutdown();
+	BotInterface_SetImportTable(NULL);
+	memset(&aasworld, 0, sizeof(aasworld));
+}
+
+/*
+=============
+test_retail_entity_visible_keeps_samples_inside_pvs_gate
+
+Pins sub_1000b750: the bottom/top sample advance at 1000b98d-1000b9af sits
+inside the PVS-gated block, so a failing PVS test re-probes the same midpoint
+for all three iterations and never reaches the feet or head samples.
+=============
+*/
+static void test_retail_entity_visible_keeps_samples_inside_pvs_gate(
+	void **state)
+{
+	(void)state;
+	memset(&aasworld, 0, sizeof(aasworld));
+	BotInterface_SetImportTable(&g_test_imports);
+	Q2Bridge_SetImportTable(&g_test_q2_imports);
+	g_test_gap_trace_enabled = qfalse;
+
+	aas_plane_t planes[1] = {0};
+	aas_bspnode_t nodes[1] = {0};
+	aas_bspleaf_t leaves[2] = {0};
+	unsigned char visibility[22] = {0};
+	int32_t num_clusters = 2;
+	int32_t data_offset = 20;
+
+	/* One z-splitting node: z > 0 lands in cluster 0, z < 0 in cluster 1. */
+	planes[0].normal[2] = 1.0f;
+	nodes[0].planenum = 0;
+	nodes[0].children[0] = -1;
+	nodes[0].children[1] = -2;
+	leaves[0].cluster = 0;
+	leaves[1].cluster = 1;
+	memcpy(visibility, &num_clusters, sizeof(num_clusters));
+	memcpy(visibility + 4, &data_offset, sizeof(data_offset));
+	memcpy(visibility + 8, &data_offset, sizeof(data_offset));
+	memcpy(visibility + 12, &data_offset, sizeof(data_offset));
+	memcpy(visibility + 16, &data_offset, sizeof(data_offset));
+	/* Cluster 1 sees only itself, never cluster 0. */
+	visibility[20] = 1U << 1;
+
+	aasworld.numBspPlanes = 1;
+	aasworld.bspPlanes = planes;
+	aasworld.numBspNodes = 1;
+	aasworld.bspNodes = nodes;
+	aasworld.numBspLeaves = 2;
+	aasworld.bspLeaves = leaves;
+	aasworld.numBspVisibilityClusters = num_clusters;
+	aasworld.bspVisibilitySize = sizeof(visibility);
+	aasworld.bspVisibility = visibility;
+
+	aas_entity_t entities[2] = {0};
+	entities[1].inuse = qtrue;
+	entities[1].number = 1;
+	VectorSet(entities[1].origin, 0.0f, 0.0f, 10.0f);
+	VectorSet(entities[1].mins, -8.0f, -8.0f, -20.0f);
+	VectorSet(entities[1].maxs, 8.0f, 8.0f, 4.0f);
+	aasworld.entities = entities;
+	aasworld.maxEntities = 2;
+
+	/*
+	 * The bbox midpoint sits at z = +2 (cluster 0, invisible from the eye),
+	 * while the feet sample would land at z = -18 and the head sample at
+	 * z = +6. Retail never advances past the midpoint here.
+	 */
+	vec3_t eye = {0.0f, 0.0f, -10.0f};
+	vec3_t viewangles = {0.0f, 0.0f, 0.0f};
+	g_test_point_contents_calls = 0U;
+	g_test_point_contents = 0;
+	assert_false(AAS_EntityVisible(0, eye, viewangles, 360.0f, 1));
+	assert_int_equal(g_test_point_contents_calls, 0U);
+
+	/* Once the midpoint's own cluster is visible the normal path runs. */
+	visibility[20] = (1U << 0) | (1U << 1);
+	g_test_point_contents_calls = 0U;
+	assert_true(AAS_EntityVisible(0, eye, viewangles, 360.0f, 1));
+	assert_true(g_test_point_contents_calls > 0U);
+
+	aasworld.entities = NULL;
+	aasworld.maxEntities = 0;
+	Q2Bridge_SetImportTable(NULL);
+	BotInterface_SetImportTable(NULL);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
 
@@ -5041,6 +5584,14 @@ int main(void)
 		cmocka_unit_test(test_retail_cluster_flood_invalid_area_diagnostic),
 		cmocka_unit_test(test_retail_aas_geometry_optimization),
 		cmocka_unit_test(test_retail_routing_intra_area_travel_cost),
+		cmocka_unit_test(test_retail_presence_type_bounding_box_table),
+		cmocka_unit_test(test_retail_point_contents_uses_engine_import),
+		cmocka_unit_test(
+			test_retail_bsp_entity_parse_errors_use_script_diagnostics),
+		cmocka_unit_test(test_retail_shutdown_reports_unconditionally),
+		cmocka_unit_test(test_retail_update_entity_keeps_routing_caches),
+		cmocka_unit_test(
+			test_retail_entity_visible_keeps_samples_inside_pvs_gate),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

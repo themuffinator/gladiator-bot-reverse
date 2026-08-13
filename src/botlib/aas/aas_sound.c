@@ -15,6 +15,7 @@
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_struct.h"
+#include "botlib/precomp/l_precomp.h"
 #include "botlib/precomp/l_script.h"
 
 typedef struct aas_sound_state_s
@@ -63,14 +64,25 @@ typedef struct aas_sound_state_s
 #define AAS_SOUND_NULL_INDEX (-1)
 #define AAS_SOUND_INFO_OFS(field) ((int)offsetof(aas_soundinfo_t, field))
 
+/*
+ * Retail fielddef table at .data 0x1005c070, six 0x1c-byte records of
+ * {name, offset, type, maxarray, floatmin, floatmax, substruct}. Only volume
+ * (0x1005c08c) and duration (0x1005c0a8) carry type 0x0203, i.e.
+ * FT_FLOAT | FT_BOUNDED, with floatmax 0x42a00000 (80.0f) and 0x41200000
+ * (10.0f). recognition (0x1005c0e0) stores floatmax 1.0f but its type word is
+ * plain 0x0003, so it is deliberately left unbounded here.
+ */
 static const fielddef_t g_aas_soundinfo_fields[] = {
-	{"name", AAS_SOUND_INFO_OFS(name), FT_STRING},
-	{"volume", AAS_SOUND_INFO_OFS(volume), FT_FLOAT},
-	{"duration", AAS_SOUND_INFO_OFS(duration), FT_FLOAT},
-	{"type", AAS_SOUND_INFO_OFS(type), FT_INT},
-	{"recognition", AAS_SOUND_INFO_OFS(recognition), FT_FLOAT},
-	{"string", AAS_SOUND_INFO_OFS(string), FT_STRING},
-	{NULL, 0, 0, 0},
+	{"name", AAS_SOUND_INFO_OFS(name), FT_STRING, 0, 0.0f, 0.0f, NULL},
+	{"volume", AAS_SOUND_INFO_OFS(volume), FT_FLOAT | FT_BOUNDED, 0, 0.0f,
+		80.0f, NULL},
+	{"duration", AAS_SOUND_INFO_OFS(duration), FT_FLOAT | FT_BOUNDED, 0, 0.0f,
+		10.0f, NULL},
+	{"type", AAS_SOUND_INFO_OFS(type), FT_INT, 0, 0.0f, 0.0f, NULL},
+	{"recognition", AAS_SOUND_INFO_OFS(recognition), FT_FLOAT, 0, 0.0f, 1.0f,
+		NULL},
+	{"string", AAS_SOUND_INFO_OFS(string), FT_STRING, 0, 0.0f, 0.0f, NULL},
+	{NULL, 0, 0, 0, 0.0f, 0.0f, NULL},
 };
 
 static const structdef_t g_aas_soundinfo_struct = {
@@ -86,7 +98,7 @@ static bool AAS_Sound_PushInfo(const aas_soundinfo_t *info);
 =============
 AAS_Sound_InitInfoDefaults
 
-Initialise one raw 0xb0-byte soundinfo record with its table-defined defaults.
+Zero one raw 0xb0-byte soundinfo record before ReadStructure fills it.
 =============
 */
 static void AAS_Sound_InitInfoDefaults(aas_soundinfo_t *info)
@@ -96,10 +108,13 @@ static void AAS_Sound_InitInfoDefaults(aas_soundinfo_t *info)
 		return;
 	}
 
+	/*
+	 * Retail clears the whole record and defines no field defaults:
+	 * 0x1001c904 __memfill_u32(record, 0, 0x2c) == 0xb0 zero bytes. The
+	 * 80.0f/10.0f/1.0f values are the fielddef floatmax clamps stored at
+	 * .data 0x1005c0a0/0x1005c0bc/0x1005c0f4, not initial values.
+	 */
 	memset(info, 0, sizeof(*info));
-	info->volume = 80.0f;
-	info->duration = 10.0f;
-	info->recognition = 1.0f;
 }
 
 /*
@@ -172,17 +187,23 @@ static bool AAS_Sound_ParseConfigSource(pc_source_t *source)
 		{
 			return false;
 		}
+		/*
+		 * Retail routes both soundconfig diagnostics through SourceError
+		 * (0x1001c9bd j_sub_10039200), which prefixes them with
+		 * "file %s, line %d: " at 0x1003924a, rather than calling
+		 * botimport.Print directly.
+		 */
 		if (definition.type != TT_NAME ||
 			strcmp(definition.string, "soundinfo") != 0)
 		{
-			BotLib_Print(PRT_ERROR,
+			SourceError(source,
 				"unknown definition %s\n",
 				definition.string);
 			return false;
 		}
 		if (g_aas_sound_state.info_count >= g_aas_sound_state.info_capacity)
 		{
-			BotLib_Print(PRT_ERROR,
+			SourceError(source,
 				"more than %d sound infos defined\n",
 				(int)g_aas_sound_state.info_capacity);
 			return false;
@@ -222,14 +243,15 @@ static bool AAS_Sound_PushInfo(const aas_soundinfo_t *info)
         return false;
     }
 
-    if (g_aas_sound_state.info_count >= g_aas_sound_state.info_capacity)
-    {
-        BotLib_Print(PRT_WARNING,
-                     "AAS_Sound: discarding soundinfo '%s' (max %zu)\n",
-                     info->name,
-                     g_aas_sound_state.info_capacity);
-        return false;
-    }
+	/*
+	 * Retail has no diagnostic here: the caller rejects an over-capacity
+	 * config on the soundinfo keyword itself (0x1001c8e8), so this guard is
+	 * only a defensive backstop and must stay silent.
+	 */
+	if (g_aas_sound_state.info_count >= g_aas_sound_state.info_capacity)
+	{
+		return false;
+	}
 
     g_aas_sound_state.infos[g_aas_sound_state.info_count++] = *info;
     return true;
@@ -493,16 +515,16 @@ int AAS_SoundSubsystem_Init(void)
 	}
 	AAS_Sound_InitSoundHeap();
 
-    char resolved_path[BOTLIB_ASSET_MAX_PATH];
+	botlib_asset_resolution_t resolution;
 	const char *requested = LibVarString("soundconfig", "sounds.c");
-	if (!BotLib_ResolveAssetPath(requested, "soundconfig", resolved_path, sizeof(resolved_path)))
+	if (!BotLib_ResolveAssetPathDetailed(requested, "soundconfig", &resolution))
 	{
 		BotLib_Print(PRT_ERROR, "couldn't find %s\n", requested);
 		g_aas_sound_state.initialised = true;
 		return BLERR_NOERROR;
 	}
 
-	pc_source_t *source = PC_LoadSourceFile(resolved_path);
+	pc_source_t *source = PC_LoadSourceFile(resolution.resolved_path);
 	if (source == NULL)
 	{
 		BotLib_Print(PRT_ERROR, "counldn't load %s\n", requested);
@@ -519,8 +541,25 @@ int AAS_SoundSubsystem_Init(void)
 		return BLERR_NOERROR;
 	}
 
-    g_aas_sound_state.initialised = true;
-    return BLERR_NOERROR;
+	/*
+	 * Retail reports the provenance of the config it just parsed, and only on
+	 * the success path: 0x1001c978 "loaded %s\%s\n" when the file came out of
+	 * a pak container and 0x1001c9e7 "loaded %s\n" for a loose file, both at
+	 * PRT_MESSAGE. The parse-failure path returns at 0x1001c9d7 first.
+	 */
+	if (resolution.pak_entry_length != 0)
+	{
+		BotLib_Print(PRT_MESSAGE, "loaded %s\\%s\n",
+			resolution.source_path,
+			requested);
+	}
+	else
+	{
+		BotLib_Print(PRT_MESSAGE, "loaded %s\n", requested);
+	}
+
+	g_aas_sound_state.initialised = true;
+	return BLERR_NOERROR;
 }
 
 /*
@@ -654,7 +693,12 @@ bool AAS_SoundSubsystem_RegisterMapAssets(int count, char *assets[])
         {
             aas_soundinfo_t *info =
 				&g_aas_sound_state.infos[info_index];
-			if (strcmp(info->name, name) == 0)
+			/*
+			 * Retail compares through j_sub_10043c10 at 0x1001d1c9, which
+			 * tail-calls _stricmp (sub_10045cb0). Case folding is the only
+			 * transform: no backslash conversion and no "sound/" stripping.
+			 */
+			if (Q_stricmp(info->name, name) == 0)
 			{
 				g_aas_sound_state.asset_info_by_index[i] = info;
 				break;
@@ -1144,7 +1188,13 @@ int AAS_SoundSubsystem_UpdateSound(const vec3_t origin,
 		return BLERR_NOERROR;
 	}
 
-	if (timeofs < 0.0f)
+	/*
+	 * Retail compares timeofs against zero and branches on the x87 equal bit:
+	 * 0x1001ce95 builds the status word and 0x1001ce9a tests mask 0x40 (C3),
+	 * not 0x01 (C0, '<'). An immediate emit therefore drops the already-active
+	 * record for the same (entity, soundindex) pair; a delayed emit does not.
+	 */
+	if (timeofs == 0.0f)
 	{
 		AAS_Sound_RemoveActiveEntitySound(ent, soundindex);
 	}
@@ -1167,8 +1217,14 @@ int AAS_SoundSubsystem_UpdateSound(const vec3_t origin,
         VectorClear(event->origin);
     }
 
+	/*
+	 * Retail computes the end time as (AAS_Time() + duration) + timeofs at
+	 * 0x1001cee4, re-reading the clock instead of reusing the start value.
+	 * Keep that operand order so the float rounding of the active-list sort
+	 * key matches.
+	 */
 	event->start = g_aas_sound_state.frame_time + timeofs;
-	event->end = event->start + info->duration;
+	event->end = g_aas_sound_state.frame_time + info->duration + timeofs;
 	event->zero = 0;
 	event->ent = ent;
     event->channel = channel;

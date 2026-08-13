@@ -77,11 +77,14 @@ extern "C" {
 #define ACTION_MOVEBACK    64
 #define ACTION_MOVELEFT    128
 /*
- * Gladiator's elementary-action writer aliases these two helpers onto the
- * native attack/use bits; they are not successor-only independent flags.
+ * Retail writes these two through byte 1 of the actionflags dword, not byte 0:
+ * sub_100374f0 (EA_MoveRight) does `flags:1.b |= 1` at 0x10037503 and
+ * sub_10037390 (EA_DelayedJump) does `flags:1.b |= 2` at 0x100373ae, i.e. bits
+ * 8 and 9. Only jump/moveup (0x08), crouch/movedown (0x10) and the jump latch
+ * riding on move-left (0x80, sub_100374c0) are genuinely aliased.
  */
-#define ACTION_MOVERIGHT   1
-#define ACTION_DELAYEDJUMP 2
+#define ACTION_MOVERIGHT   256
+#define ACTION_DELAYEDJUMP 512
 
 // Botlib error codes
 #define BLERR_NOERROR                    0

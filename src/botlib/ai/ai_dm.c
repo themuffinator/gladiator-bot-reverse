@@ -10,6 +10,7 @@
 #include "botlib/aas/aas_map.h"
 #include "botlib/ai/goal_move_orchestrator.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/common/l_utils.h"
 #include "botlib/ea/ea_local.h"
 #include "botlib/interface/bot_interface.h"
 #include "botlib/interface/bot_state.h"
@@ -258,41 +259,6 @@ static float AI_DMChangeViewAngle(float angle, float ideal_angle, float speed)
 		move = -speed;
 	}
 	return AI_DMAngleMod(angle + move);
-}
-
-/*
-=============
-AI_DMVectorToAngles
-
-Converts an aim direction to Gladiator's pitch/yaw representation.
-=============
-*/
-static void AI_DMVectorToAngles(const vec3_t direction, vec3_t angles)
-{
-	VectorClear(angles);
-	if (direction[0] == 0.0f && direction[1] == 0.0f)
-	{
-		if (direction[2] > 0.0f)
-		{
-			angles[PITCH] = -90.0f;
-		}
-		else if (direction[2] < 0.0f)
-		{
-			angles[PITCH] = 90.0f;
-		}
-		return;
-	}
-
-	angles[YAW] = atan2f(direction[1], direction[0]) *
-		(180.0f / (float)M_PI);
-	if (angles[YAW] < 0.0f)
-	{
-		angles[YAW] += 360.0f;
-	}
-	float forward = sqrtf(direction[0] * direction[0] +
-		direction[1] * direction[1]);
-	angles[PITCH] = atan2f(-direction[2], forward) *
-		(180.0f / (float)M_PI);
 }
 
 /*
@@ -631,7 +597,14 @@ static void AI_DMAimAtEnemy(ai_dm_state_t *state,
 			direction[axis] += 0.3f * AI_DMCRandom() * inaccuracy;
 		}
 	}
-	AI_DMVectorToAngles(direction, state->ideal_viewangles);
+	/*
+	 * Retail 0x100242cc calls vectoangles at 0x10041790 here.  Both atan2
+	 * results pass through the __ftol helper at 0x1004180b and 0x10041858,
+	 * so each axis is truncated to a whole degree, folded by +360 when
+	 * negative, and the pitch is then negated at 0x10041876.  Vector2Angles
+	 * reproduces that exactly, including the -90/-270 degenerate pitches.
+	 */
+	Vector2Angles(direction, state->ideal_viewangles);
 	if (weapon != NULL)
 	{
 		float inaccuracy = 1.0f - aim_accuracy;

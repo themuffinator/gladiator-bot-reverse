@@ -215,11 +215,17 @@ void AAS_FrameSynchronise(float time)
 AAS_RunFrameDiagnostics
 
 Execute the retail one-shot AAS and memory diagnostic libvars.
+
+Retail sub_1000e010 reads all three with the non-creating getter sub_10038990
+(0x1000e044, 0x1000e076, 0x1000e0a7), which returns 0.0f without allocating
+when the name is absent (0x1003899f). Only the write-back sub_10038ac0 on the
+taken branch may create a record, so the diagnostics must never inflate the
+block and byte counters they themselves print.
 =============
 */
 void AAS_RunFrameDiagnostics(void)
 {
-	if (LibVarValue("showcacheupdates", "0") != 0.0f)
+	if (LibVarGetValue("showcacheupdates") != 0.0f)
 	{
 		BotLib_Print(PRT_MESSAGE,
 			"%d area cache updates\n",
@@ -230,7 +236,7 @@ void AAS_RunFrameDiagnostics(void)
 		LibVarSet("showcacheupdates", "0");
 	}
 
-	if (LibVarValue("showmemoryusage", "0") != 0.0f)
+	if (LibVarGetValue("showmemoryusage") != 0.0f)
 	{
 		BotLib_Print(PRT_MESSAGE,
 			"total botlib memory: %d KB\n",
@@ -241,7 +247,7 @@ void AAS_RunFrameDiagnostics(void)
 		LibVarSet("showmemoryusage", "0");
 	}
 
-	if (LibVarValue("memorydump", "0") != 0.0f)
+	if (LibVarGetValue("memorydump") != 0.0f)
 	{
 		BotLib_Print(PRT_MESSAGE,
 			"total botlib memory: %d KB\n",

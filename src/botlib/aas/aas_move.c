@@ -364,48 +364,6 @@ static void AAS_MoveStoreClientMove(aas_clientmove_t *move,
 
 /*
 =============
-AAS_MovePointHasHazard
-
-Check whether a sampled point has lava or slime contents.
-=============
-*/
-static int AAS_MovePointHasHazard(const vec3_t point)
-{
-	if (point == NULL)
-	{
-		return qfalse;
-	}
-
-	int contents = 0;
-	bot_import_extended_t *imports = Q2Bridge_GetImportTable();
-	if (imports != NULL && imports->PointContents != NULL)
-	{
-		vec3_t sample;
-		VectorCopy(point, sample);
-		contents = Q2_PointContents(sample);
-	}
-	if ((contents & (CONTENTS_LAVA | CONTENTS_SLIME)) != 0)
-	{
-		return qtrue;
-	}
-
-	if (!aasworld.loaded || aasworld.areasettings == NULL)
-	{
-		return qfalse;
-	}
-
-	int areanum = AAS_PointAreaNum(point);
-	if (areanum <= 0 || areanum >= aasworld.numAreaSettings)
-	{
-		return qfalse;
-	}
-
-	contents = aasworld.areasettings[areanum].contents;
-	return (contents & (AAS_AREACONTENTS_LAVA | AAS_AREACONTENTS_SLIME)) != 0;
-}
-
-/*
-=============
 AAS_Swimming
 
 Return true if the origin is in water, slime, or lava.
@@ -487,28 +445,50 @@ void AAS_JumpReachRunStart(const aas_reachability_t *reach, vec3_t runstart)
 	hordir[0] = reach->start[0] - reach->end[0];
 	hordir[1] = reach->start[1] - reach->end[1];
 	hordir[2] = 0.0f;
-	if (AAS_MoveVectorNormalize(hordir) <= 0.0f)
-	{
-		VectorCopy(reach->start, runstart);
-		return;
-	}
+	/* Retail (sub_1000f010 @0x1000f03a) calls VectorNormalize unconditionally
+	   and proceeds with a zero cmdmove on a degenerate direction; there is no
+	   zero-length early-out. */
+	AAS_MoveVectorNormalize(hordir);
 
 	vec3_t start;
 	VectorCopy(reach->start, start);
 	start[2] += 1.0f;
 
-	for (int frame = 1; frame <= 2; ++frame)
-	{
-		vec3_t sample;
-		VectorMA(start, 40.0f * (float)frame, hordir, sample);
-		if (AAS_MovePointHasHazard(sample))
-		{
-			VectorCopy(start, runstart);
-			return;
-		}
-	}
+	vec3_t velocity;
+	VectorClear(velocity);
+	vec3_t cmdmove;
+	VectorScale(hordir, 400.0f, cmdmove);
 
-	VectorMA(start, 80.0f, hordir, runstart);
+	/* Retail runs two 0.1s frames of real client movement prediction away from
+	   the jump start (0x1000f097) rather than extrapolating a fixed distance,
+	   so walls, ledges and steps clip the run-up point.  The return value is
+	   deliberately ignored: retail has no boolean and copies the scratch move
+	   on the clip-overflow path, which AAS_PredictClientMovement reproduces by
+	   clearing *move before returning qfalse. */
+	aas_clientmove_t move;
+	AAS_PredictClientMovement(&move,
+		-1,
+		start,
+		PRESENCE_NORMAL,
+		qtrue,
+		velocity,
+		cmdmove,
+		1,
+		2,
+		0.1f,
+		SE_ENTERWATER | SE_ENTERSLIME | SE_ENTERLAVA |
+			SE_HITGROUNDDAMAGE | SE_GAP,
+		0,
+		qfalse);
+
+	VectorCopy(move.endpos, runstart);
+	/* 0x1000f0d0 tests move.stopevent (move+0x40) against 0x38, so only slime,
+	   lava and landing damage fall back to the jump start itself. */
+	if ((move.stopevent &
+		(SE_ENTERSLIME | SE_ENTERLAVA | SE_HITGROUNDDAMAGE)) != 0)
+	{
+		VectorCopy(start, runstart);
+	}
 }
 
 /*
@@ -819,6 +799,14 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 			}
 
 			const aas_plane_t *plane = AAS_PlaneFromNum(trace.planenum);
+			if (plane == NULL)
+			{
+				/* Retail (sub_1000f840) indexes aasworld.planes unguarded, so
+				   this can only happen before the plane lump is loaded.  Stop
+				   clipping rather than dereference nothing; with planes loaded
+				   the branch is unreachable and parity is unaffected. */
+				break;
+			}
 
 			int step = qfalse;
 			if (plane->normal[2] == 0.0f && (jump_frame < 0 || frame - jump_frame > 2))
@@ -833,7 +821,7 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 				if (!steptrace.startsolid)
 				{
 					const aas_plane_t *stepplane = AAS_PlaneFromNum(steptrace.planenum);
-					if (stepplane->normal[2] > phys_maxsteepness)
+					if (stepplane != NULL && stepplane->normal[2] > phys_maxsteepness)
 					{
 						VectorSubtract(end, steptrace.endpos, left_test_vel);
 						left_test_vel[2] = 0.0f;

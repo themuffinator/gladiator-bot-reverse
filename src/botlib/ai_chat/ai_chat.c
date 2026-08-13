@@ -10,10 +10,19 @@
 #include <time.h>
 
 #include "botlib/aas/aas_map.h"
+#include "botlib/common/l_assets.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/ea/ea_local.h"
+
+/*
+ * Retail routes every chat-asset parser rejection through SourceError
+ * (j_sub_10039200), which prefixes the script's file and line and prints at
+ * PRT_ERROR. These parsers hold a pc_script_t, so they use l_script.c's
+ * ScriptError, which l_script.h does not declare.
+ */
+void ScriptError(pc_script_t *script, char *str, ...);
 
 #define BOT_CHAT_MAX_MESSAGE_CHARS BOT_CONSOLE_MESSAGE_STORAGE_CHARS
 #define BOT_CHAT_MAX_MATCH_VARIABLES BOT_MATCH_MAX_VARIABLES
@@ -200,6 +209,8 @@ static void BotChat_PrintLegacyDiagnostic(bot_chatstate_t *state,
 struct bot_chatstate_s {
 	pc_source_t *active_source;
 	pc_script_t *active_script;
+	/* Resolution of active_source, kept for retail's "loaded %s from %s" log. */
+	botlib_asset_resolution_t active_resolution;
 	char active_chatfile[128];
 	char active_chatname[64];
 	bot_console_message_node_t *console_first;
@@ -326,7 +337,12 @@ static int BotChat_FastChatEnabled(void)
 =============
 BotChat_TestInitialChatEnabled
 
-Checks the retail bot_testichat libvar used to print initial chat probes.
+Checks the successor-only bot_testichat libvar used to print initial chat probes.
+
+Neither "bot_testichat" nor the "%s has %d chat lines" / "-------------------"
+probe strings exist in the retail image; this is a Quake III extension, and it
+is only acceptable inside BotNumInitialChats because that routine likewise has
+no retail counterpart.
 =============
 */
 static int BotChat_TestInitialChatEnabled(void)
@@ -338,7 +354,11 @@ static int BotChat_TestInitialChatEnabled(void)
 =============
 BotChat_TestReplyChatEnabled
 
-Checks the retail bot_testrchat libvar used to dump reply candidates.
+Checks the successor-only bot_testrchat libvar used to dump reply candidates.
+
+"bot_testrchat" appears nowhere in the retail image and retail BotReplyChat
+(1002e7d0) reads no libvar, so this gates the Q3-only BotReplyChatWithContexts
+entry point alone.
 =============
 */
 static int BotChat_TestReplyChatEnabled(void)
@@ -4369,29 +4389,20 @@ static int BotChat_SetMatchResultVariable(bot_match_t *match,
 		return 0;
 	}
 	/*
-	 * Retail `StringsMatch` measures a variable from where it started to where
-	 * the following literal was found, so the separators around a capture are
-	 * decided by the literal's own leading and trailing spaces.  Every shipped
-	 * obituary template in `bots/match.c` spaces its literals (`VICTIM,
-	 * " was railed by ", KILLER`), which leaves the capture already trimmed.
-	 * The obituary context resolves to the unspaced alternates later in that
-	 * file, so a raw span keeps the separator on both sides of a capture.
-	 * Every consumer here resolves captures against client names, so both runs
-	 * are dropped.  Two parity expectations in test_bot_interface.c want the
-	 * victim's trailing space preserved; honouring that needs the name
-	 * consumers trimming instead, which is tracked separately rather than
-	 * changed speculatively here.
+	 * Retail `StringsMatch` stores a raw span.  It records `ptr` as the message
+	 * cursor standing at the MT_VARIABLE piece (1002c894) and later sets
+	 * `length` to the address `StringContains` returned for the following
+	 * literal minus that cursor (1002c866); a trailing variable simply takes
+	 * `strlen(ptr)` (1002c8ce).  No byte in 1002c800-1002c8de is compared
+	 * against 0x20, so separator spaces belonging to neither the literal nor
+	 * the name stay inside the capture whenever the template literal is
+	 * unspaced.  `bots/match.c`'s live MTCONTEXT_CLIENTOBITUARY templates are
+	 * unspaced ("was railed by"), so retail keeps the victim's trailing space
+	 * and the killer's leading space, and its exact-compare `ClientFromName`
+	 * therefore never resolves an obituary name and aliases every miss to
+	 * client 0.  Do not trim here or in any consumer; the sibling capture path
+	 * `BotChat_CopyCapturedVariable` already stores raw spans.
 	 */
-	while (length > 0U && match->string[offset] == ' ')
-	{
-		++offset;
-		--length;
-	}
-	while (length > 0U && match->string[offset + length - 1U] == ' ')
-	{
-		--length;
-	}
-
 	match->variables[variable].ptr = match->string + offset;
 	match->variables[variable].length = (int)length;
 	return 1;
@@ -5618,6 +5629,8 @@ static int BotChat_ParseSynonymGroup(bot_synonym_context_t *context, pc_script_t
 		char *phrase_text = BotChat_TokenTextDuplicate(&token);
 		if (phrase_text == NULL || phrase_text[0] == '\0')
 		{
+			/* Retail 1002b5a4 -> 1002b5f8, no trailing newline. */
+			ScriptError(script, "empty string");
 			free(phrase_text);
 			return 0;
 		}
@@ -5651,7 +5664,11 @@ static int BotChat_ParseSynonymGroup(bot_synonym_context_t *context, pc_script_t
 		{
 			if (group->phrase_count < 2U)
 			{
-				BotLib_Print(PRT_ERROR,
+				/*
+				 * Retail 1002b5cb reports this through SourceError, so the
+				 * line carries the syn.c(NNN): prefix.
+				 */
+				ScriptError(script,
 					"synonym must have at least to entries\n");
 				return 0;
 			}
@@ -5692,6 +5709,8 @@ static int BotChat_ParseSynonymContextsFromScript(bot_chatstate_t *state,
 		{
 			if (context_level >= 31U)
 			{
+				/* Retail 1002b546, no trailing newline. */
+				ScriptError(script, "more than 32 context levels");
 				return 0;
 			}
 			const unsigned long value = BotChat_NumberTokenValue(&token);
@@ -5706,12 +5725,16 @@ static int BotChat_ParseSynonymContextsFromScript(bot_chatstate_t *state,
 
 		if (token.type != TT_PUNCTUATION)
 		{
+			/* Retail 1002b5f2, no trailing newline. */
+			ScriptError(script, "unexpected %s", token.string);
 			return 0;
 		}
 		if (strcmp(token.string, "}") == 0)
 		{
 			if (context_level == 0U)
 			{
+				/* Retail 1002b581, no trailing newline. */
+				ScriptError(script, "too many }");
 				return 0;
 			}
 			context_mask &= ~context_stack[--context_level];
@@ -5719,6 +5742,7 @@ static int BotChat_ParseSynonymContextsFromScript(bot_chatstate_t *state,
 		}
 		if (strcmp(token.string, "[") != 0)
 		{
+			ScriptError(script, "unexpected %s", token.string);
 			return 0;
 		}
 
@@ -5736,7 +5760,13 @@ static int BotChat_ParseSynonymContextsFromScript(bot_chatstate_t *state,
 			return 0;
 		}
 	}
-	return context_level == 0U;
+	if (context_level != 0U)
+	{
+		/* Retail 1002b619, no trailing newline. */
+		ScriptError(script, "missing }");
+		return 0;
+	}
+	return 1;
 }
 
 /*
@@ -5773,6 +5803,7 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state,
 
 		if (token.type == TT_PUNCTUATION)
 		{
+			ScriptError(script, "invalid token %s\n", token.string);
 			BotChat_StringBuilderDestroy(&builder);
 			return 0;
 		}
@@ -5796,15 +5827,37 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state,
 		}
 		if (token.type == TT_NAME)
 		{
+			ScriptError(script, "invalid token %s\n", token.string);
 			BotChat_StringBuilderDestroy(&builder);
 			return 0;
 		}
 		if (token.type == TT_NUMBER)
 		{
+			/*
+			 * Retail rejects a non-integer through the shared "invalid token"
+			 * path (1002c06f -> 1002c2e2), then tests the variable range
+			 * (1002c07d) and only afterwards adjacency (1002c087), so an
+			 * out-of-range index wins over an adjacent-variable complaint.
+			 */
 			unsigned long variable = 0UL;
-			if (!BotChat_NumberTokenMatchVariableValue(&token, &variable)
-				|| last_was_variable)
+			if (!BotChat_NumberTokenIsInteger(&token))
 			{
+				ScriptError(script, "invalid token %s\n", token.string);
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			if (!BotChat_NumberTokenMatchVariableValue(&token, &variable))
+			{
+				ScriptError(script,
+					"can't have more than %d match variables\n",
+					(int)BOT_CHAT_RETAIL_MATCH_VARIABLES);
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			if (last_was_variable)
+			{
+				ScriptError(script,
+					"not allowed to have adjacent variables\n");
 				BotChat_StringBuilderDestroy(&builder);
 				return 0;
 			}
@@ -5819,6 +5872,7 @@ static int BotChat_ParseMatchTemplate(bot_chatstate_t *state,
 			continue;
 		}
 
+		ScriptError(script, "invalid token %s\n", token.string);
 		BotChat_StringBuilderDestroy(&builder);
 		return 0;
 	}
@@ -5919,7 +5973,15 @@ static int BotChat_ParseMatchBlock(bot_chatstate_t *state,
 			return 0;
 		}
 	}
-	return 0;
+	/*
+	 * Retail ends the per-block loop identically for `}` and for end of input:
+	 * the re-read at 1002c63b falls through to 1002c641, which publishes the
+	 * accumulated list and leaves the loop exactly as the `}` case does.  A
+	 * match file truncated after its last `;` therefore loads successfully
+	 * with every template parsed so far intact.  Only a bad token
+	 * (1002c6dc) or a malformed template destroys the list.
+	 */
+	return 1;
 }
 
 /*
@@ -5997,10 +6059,16 @@ static int BotChat_ParseReplyTemplate(bot_chatstate_t *state, bot_reply_rule_t *
 	pc_token_t token;
 	while (1)
 	{
-		if (!PS_ReadToken(script, &token)
-			|| !BotChat_StringBuilderAppendChatMessageComponent(&builder,
-				&token))
+		if (!PS_ReadToken(script, &token))
 		{
+			BotChat_StringBuilderDestroy(&builder);
+			return 0;
+		}
+		if (!BotChat_StringBuilderAppendChatMessageComponent(&builder, &token))
+		{
+			/* Retail 1002cec7. */
+			ScriptError(script, "unknown message component %s\n",
+				token.string);
 			BotChat_StringBuilderDestroy(&builder);
 			return 0;
 		}
@@ -6067,6 +6135,7 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 
 		if (token.type == TT_PUNCTUATION)
 		{
+			ScriptError(script, "invalid token %s\n", token.string);
 			BotChat_StringBuilderDestroy(&builder);
 			return NULL;
 		}
@@ -6094,10 +6163,30 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 		}
 		if (token.type == TT_NUMBER)
 		{
+			/* Retail order: range (1002c07d) then adjacency (1002c087). */
 			unsigned long variable = 0UL;
-			if (!BotChat_NumberTokenMatchVariableValue(&token, &variable)
-				|| last_was_variable
-				|| (parsed_piece
+			if (!BotChat_NumberTokenIsInteger(&token))
+			{
+				ScriptError(script, "invalid token %s\n", token.string);
+				BotChat_StringBuilderDestroy(&builder);
+				return NULL;
+			}
+			if (!BotChat_NumberTokenMatchVariableValue(&token, &variable))
+			{
+				ScriptError(script,
+					"can't have more than %d match variables\n",
+					(int)BOT_CHAT_RETAIL_MATCH_VARIABLES);
+				BotChat_StringBuilderDestroy(&builder);
+				return NULL;
+			}
+			if (last_was_variable)
+			{
+				ScriptError(script,
+					"not allowed to have adjacent variables\n");
+				BotChat_StringBuilderDestroy(&builder);
+				return NULL;
+			}
+			if ((parsed_piece
 					&& !BotChat_StringBuilderAppendChar(&builder,
 						BOT_CHAT_MATCH_PIECE_SEPARATOR))
 				|| !BotChat_StringBuilderAppendVariableReference(&builder,
@@ -6113,10 +6202,12 @@ static char *BotChat_ParseReplyKeyPattern(pc_script_t *script)
 		}
 		if (token.type == TT_NAME)
 		{
+			ScriptError(script, "invalid token %s\n", token.string);
 			BotChat_StringBuilderDestroy(&builder);
 			return NULL;
 		}
 
+		ScriptError(script, "invalid token %s\n", token.string);
 		BotChat_StringBuilderDestroy(&builder);
 		return NULL;
 	}
@@ -6427,6 +6518,8 @@ static int BotChat_ParseRandomStringTables(bot_chatstate_t *state, pc_script_t *
 	{
 		if (token.type != TT_NAME)
 		{
+			/* Retail 1002bc8b, no trailing newline. */
+			ScriptError(script, "unknown random %s", token.string);
 			return 0;
 		}
 		if (!PS_ExpectTokenString(script, "=")
@@ -6617,10 +6710,16 @@ static char *BotChat_ParseTextTemplate(pc_script_t *script)
 
 	while (1)
 	{
-		if (!PS_ReadToken(script, &token)
-			|| !BotChat_StringBuilderAppendChatMessageComponent(&builder,
-				&token))
+		if (!PS_ReadToken(script, &token))
 		{
+			BotChat_StringBuilderDestroy(&builder);
+			return NULL;
+		}
+		if (!BotChat_StringBuilderAppendChatMessageComponent(&builder, &token))
+		{
+			/* Retail 1002cec7. */
+			ScriptError(script, "unknown message component %s\n",
+				token.string);
 			BotChat_StringBuilderDestroy(&builder);
 			return NULL;
 		}
@@ -6691,6 +6790,8 @@ static int BotChat_ParseSelectedChatBlock(bot_chatstate_t *state, pc_script_t *s
 		}
 		if (token.type != TT_NAME || strcmp(token.string, "type") != 0)
 		{
+			/* Retail 1002dd6e -> 1002dd96. */
+			ScriptError(script, "expected type found %s\n", token.string);
 			return 0;
 		}
 
@@ -6749,6 +6850,10 @@ static int BotChat_ParseInitialChatBlocks(bot_chatstate_t *state,
 	{
 		if (token.type != TT_NAME || strcmp(token.string, "chat") != 0)
 		{
+			/* Retail 1002dd8c -> 1002dd96. */
+			ScriptError(state->active_script,
+				"unknown definition %s\n",
+				token.string);
 			return 0;
 		}
 
@@ -6814,6 +6919,8 @@ static int BotChat_ParseMatchScript(bot_chatstate_t *state, pc_script_t *script)
 	{
 		if (token.type != TT_NUMBER || !BotChat_NumberTokenIsInteger(&token))
 		{
+			/* Retail 1002c6dc. */
+			ScriptError(script, "expected integer, found %s\n", token.string);
 			return 0;
 		}
 		const unsigned long match_context = BotChat_NumberTokenValue(&token);
@@ -6846,6 +6953,8 @@ static int BotChat_ParseReplyScript(bot_chatstate_t *state, pc_script_t *script)
 	{
 		if (token.type != TT_PUNCTUATION || token.string[0] != '[')
 		{
+			/* Retail 1002d641, no trailing newline. */
+			ScriptError(script, "expected [, found %s", token.string);
 			return 0;
 		}
 		if (!BotChat_ParseReplyBlock(state, script))
@@ -7074,10 +7183,25 @@ static int BotChat_LoadSetupScript(bot_chatstate_t *state,
 		return 0;
 	}
 
+	/*
+	 * All four setup loaders carry the same diagnostic trio: a resolver miss
+	 * prints "couldn't find %s" (1002c43b), a resolved file the precompiler
+	 * rejects prints retail's own "counldn't load %s" typo against the
+	 * resolved container path (1002c47c), and the tail logs the load
+	 * unconditionally, selecting the container form when the fileref's pak
+	 * entry length is non-zero (1002c66d -> 1002c687 / 1002c70c).
+	 */
+	botlib_asset_resolution_t resolution;
+	if (!BotLib_ResolveAssetPathDetailed(file_name, NULL, &resolution))
+	{
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n", file_name);
+		return 0;
+	}
+
 	pc_source_t *source = PC_LoadSourceFile(file_name);
 	if (source == NULL)
 	{
-		BotLib_Print(PRT_ERROR, "couldn't find %s\n", file_name);
+		BotLib_Print(PRT_ERROR, "counldn't load %s\n", resolution.source_path);
 		return 0;
 	}
 
@@ -7087,10 +7211,27 @@ static int BotChat_LoadSetupScript(bot_chatstate_t *state,
 		PC_FreeSource(source);
 		return 0;
 	}
+	/*
+	 * Retail's SourceError prefix names the asset the tokens came from, so
+	 * carry the requested name onto the script the parsers report against.
+	 */
+	snprintf(script->filename, sizeof(script->filename), "%s", file_name);
 
 	const int parsed = parser(state, script);
 	PS_FreeScript(script);
 	PC_FreeSource(source);
+
+	/* Retail logs the load after FreeSource, independently of the parse. */
+	if (resolution.pak_entry_length != 0)
+	{
+		BotLib_Print(PRT_MESSAGE, "loaded %s\\%s\n",
+			resolution.source_path,
+			file_name);
+	}
+	else
+	{
+		BotLib_Print(PRT_MESSAGE, "loaded %s\n", file_name);
+	}
 	return parsed;
 }
 
@@ -7159,9 +7300,23 @@ static int BotChat_OpenActiveScript(bot_chatstate_t *state, const char *chatfile
 
 	BotChat_CloseActiveScript(state);
 
+	/*
+	 * Retail sub_1002d8a0 splits the two failures: a resolver miss prints
+	 * "couldn't find %s" against the requested name (1002d8d1) and a resolved
+	 * file the precompiler rejects prints "counldn't load %s" against the
+	 * resolved container path (1002dd3b).
+	 */
+	botlib_asset_resolution_t resolution;
+	if (!BotLib_ResolveAssetPathDetailed(chatfile, NULL, &resolution))
+	{
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n", chatfile);
+		return 0;
+	}
+
 	pc_source_t *source = PC_LoadSourceFile(chatfile);
 	if (source == NULL)
 	{
+		BotLib_Print(PRT_ERROR, "counldn't load %s\n", resolution.source_path);
 		return 0;
 	}
 
@@ -7171,9 +7326,12 @@ static int BotChat_OpenActiveScript(bot_chatstate_t *state, const char *chatfile
 		PC_FreeSource(source);
 		return -1;
 	}
+	/* Name the script after the chat file so SourceError matches retail. */
+	snprintf(script->filename, sizeof(script->filename), "%s", chatfile);
 
 	state->active_source = source;
 	state->active_script = script;
+	state->active_resolution = resolution;
 	return 1;
 }
 
@@ -7424,9 +7582,6 @@ int BotLoadChatFile(bot_chatstate_t *state, char *chatfile, char *chatname)
 	{
 		if (open_status < 0)
 		{
-			BotLib_Print(PRT_ERROR,
-				"BotLoadChatFile: script wrapper failed for %s\n",
-				chatfile);
 			BotChat_PrintLegacyDiagnostic(state,
 				PRT_ERROR,
 				0,
@@ -7455,6 +7610,23 @@ int BotLoadChatFile(bot_chatstate_t *state, char *chatfile, char *chatname)
 	}
 	(void)saw_chat_block;
 	BotChat_CheckInitialChatIntegrity(state);
+	/*
+	 * Retail logs the loaded block before releasing the source, selecting the
+	 * container form when the fileref's pak entry length is non-zero
+	 * (1002dd07 -> 1002dd21 / 1002ddea). Argument order is (chatname,
+	 * chatfile) loose and (chatname, container, chatfile) for a PAK entry.
+	 */
+	if (state->active_resolution.pak_entry_length != 0)
+	{
+		BotLib_Print(PRT_MESSAGE, "loaded %s from %s\\%s\n",
+			chatname,
+			state->active_resolution.source_path,
+			chatfile);
+	}
+	else
+	{
+		BotLib_Print(PRT_MESSAGE, "loaded %s from %s\n", chatname, chatfile);
+	}
 	BotChat_CloseActiveScript(state);
 	strncpy(state->active_chatfile, chatfile, sizeof(state->active_chatfile) - 1);
 	state->active_chatfile[sizeof(state->active_chatfile) - 1] = '\0';
@@ -8966,7 +9138,16 @@ static int BotReplyChatInternal(bot_chatstate_t *state,
 
 	if (reply_rule != NULL && reply_rule->response_count > 0)
 	{
-		if (BotChat_TestReplyChatEnabled())
+		/*
+		 * Retail `BotReplyChat` (1002e7d0) reads no libvar at all: after the
+		 * rule scan it stamps the selected response's time at 1002e99c and
+		 * constructs that single response at 1002e9a3.  `bot_testrchat` is a
+		 * Quake III libvar and its name appears nowhere in the retail image,
+		 * so the dump path is reachable only from the successor-only
+		 * `BotReplyChatWithContexts` entry, never from retail's two-argument
+		 * export.
+		 */
+		if (compatibility_matching && BotChat_TestReplyChatEnabled())
 		{
 			char construction_storage[BOT_CHAT_MAX_MATCH_VARIABLES][BOT_CHAT_MAX_MESSAGE_CHARS];
 			const char *construction_variables[BOT_CHAT_MAX_MATCH_VARIABLES] = {0};
