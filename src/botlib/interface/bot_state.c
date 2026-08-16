@@ -136,6 +136,28 @@ static bot_clientsettings_t *BotState_SettingsSlot(int client)
 
 /*
 =============
+BotState_StrictSettingsSlot
+
+Returns a presentation record only for a real client index.
+
+ClientName and ClientSkin use retail's strict `client < num_clients` bound
+rather than the inclusive one the exported entry points advertise, because the
+settings table holds exactly num_clients records.
+=============
+*/
+static bot_clientsettings_t *BotState_StrictSettingsSlot(int client)
+{
+	if (client < 0 || client >= g_bot_client_capacity ||
+		g_bot_client_settings_pool == NULL)
+	{
+		return NULL;
+	}
+
+	return &g_bot_client_settings_pool[client];
+}
+
+/*
+=============
 BotState_ClearRecord
 
 Clears one complete 0x11d0-byte retail slot, including unused adapter padding.
@@ -804,7 +826,14 @@ Returns the live presentation name stored for a client slot.
 */
 const char *BotState_ClientName(int client)
 {
-	const bot_clientsettings_t *settings = BotState_SettingsSlot(client);
+	/*
+	 * Retail 0x10028f3e gates on the strict `client >= 0 && client <
+	 * num_clients`, deliberately tighter than ValidClientNumber (0x10037900),
+	 * which is inclusive: the settings table is allocated at exactly
+	 * num_clients * 0x90 bytes.  Going through the inclusive slot helper would
+	 * hand back the host sentinel for client == capacity instead of warning.
+	 */
+	const bot_clientsettings_t *settings = BotState_StrictSettingsSlot(client);
 	if (settings == NULL)
 	{
 		BotLib_Print(PRT_WARNING,
@@ -825,7 +854,8 @@ Returns the live presentation skin stored for a client slot.
 */
 const char *BotState_ClientSkin(int client)
 {
-	const bot_clientsettings_t *settings = BotState_SettingsSlot(client);
+	/* Same strict bound as ClientName, retail 0x10028f8e. */
+	const bot_clientsettings_t *settings = BotState_StrictSettingsSlot(client);
 	if (settings == NULL)
 	{
 		BotLib_Print(PRT_WARNING,

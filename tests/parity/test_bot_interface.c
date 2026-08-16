@@ -2856,7 +2856,19 @@ static void test_bot_client_capacity_uses_setup_maxclients(void **state)
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_null(Mock_FindPrint(&context->mock, "invalid client number"));
 	assert_non_null(BotState_ClientSettings(2));
-	assert_string_equal(BotState_ClientName(2), "Sentinel Babe");
+	/*
+	 * BotClientSettings accepts client == maxclients through retail's
+	 * inclusive ValidClientNumber (0x10037900), but ClientName and ClientSkin
+	 * apply the stricter `client < num_clients` bound at 0x10028f3e /
+	 * 0x10028f8e, because the settings table holds exactly num_clients
+	 * records.  The sentinel therefore stores the value and the readers still
+	 * warn.
+	 */
+	Mock_ClearPrints(&context->mock);
+	assert_string_equal(BotState_ClientName(2), "");
+	Mock_AssertSinglePrint(&context->mock,
+		PRT_WARNING,
+		"ClientName: client 2 out of range\n");
 	assert_int_equal(BotState_FindClientByName("Capacity Babe"), 1);
 	assert_int_equal(BotState_FindClientByName("Sentinel Babe"), -1);
 
@@ -10231,10 +10243,31 @@ static void test_ai_seek_ltg_nearby_goal_schedule(void **state)
 	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
 	assert_int_equal(top_goal.number, long_term_goal.number);
 
+	/*
+	 * The twenty second item lease expires here, so BotLongTermGoal pops the
+	 * old goal and reselects.  The rocket launcher is not a candidate yet: the
+	 * nearby-goal selection at t = 600.001 armed its avoid slot, and both
+	 * selectors use the item's respawn time - 30 seconds, since this fixture
+	 * leaves respawntime zero and retail substitutes 30 for that
+	 * (be_ai_goal.c BotChooseLTGItem/BotChooseNBGItem, dll 1002FEB0/10030260).
+	 * With every level item avoided, retail falls through to its
+	 * AAS_RandomGoalArea roam goal, which carries number 0 and GFL_ROAM.
+	 */
 	aasworld.time = 620.001f;
 	bot->client_update_valid = true;
 	BotAINode_RunFrame(context);
-	/* The registered item is selectable again, so retail commits it as the new LTG. */
+	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
+	assert_int_equal(top_goal.number, 0);
+	assert_int_equal(top_goal.flags & GFL_ROAM, GFL_ROAM);
+	assert_float_equal(bot->long_term_goal_time, 640.001f, 0.0001f);
+
+	/*
+	 * Once that avoid slot lapses at t = 630.001 the item is a candidate again,
+	 * so the next lease expiry commits it as the ordinary long-term goal.
+	 */
+	aasworld.time = 660.002f;
+	bot->client_update_valid = true;
+	BotAINode_RunFrame(context);
 	assert_true(context->api->BotGetTopGoal(bot->goal_handle, &top_goal) != 0);
 	assert_int_equal(top_goal.number, 730);
 }

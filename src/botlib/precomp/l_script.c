@@ -1162,7 +1162,12 @@ int PS_ReadNumber(pc_script_t *script, pc_token_t *token)
 		} //end while
 		token->subtype |= TT_HEX;
 	} //end if
-#ifdef BINARYNUMBERS
+	/*
+	 * Retail 0x1003ecd0 tests for the binary prefix unconditionally, with no
+	 * compile-time gate and no SCFL_NOBINARYNUMBERS check, so this branch has
+	 * to be live: without it "0b101" lexes as octal 0 and leaves script_p on
+	 * the 'b', turning the rest of the literal into a spurious name token.
+	 */
 	//check for a binary number
 	else if (*script->script_p == '0' &&
 		(*(script->script_p + 1) == 'b' ||
@@ -1184,7 +1189,6 @@ int PS_ReadNumber(pc_script_t *script, pc_token_t *token)
 		} //end while
 		token->subtype |= TT_BINARY;
 	} //end if
-#endif //BINARYNUMBERS
 	else //decimal or octal integer or floating point number
 	{
 		octal = qfalse;
@@ -1756,16 +1760,28 @@ char PS_NextWhiteSpaceChar(pc_script_t *script)
 // Returns:					-
 // Changes Globals:		-
 //============================================================================
+/*
+ * Retail 0x1003fcb0 uses two loops, not the successor's two single tests:
+ * 0x1003fcb8 is `while (*string == '"')` and 0x1003fd17 is a do/while, so a
+ * value quoted more than once is fully unwrapped.  The shifting copy is an
+ * overlapping strcpy in the original, which is a byte copy under MSVC6 but
+ * undefined against a modern SIMD strcpy, so use memmove for the same result.
+ *
+ * Retail also reads string[-1] once the leading loop empties the buffer; the
+ * length test below keeps that defined without changing any result retail can
+ * actually produce.
+ */
 void StripDoubleQuotes(char *string)
 {
-	if (*string == '\"')
+	while (*string == '\"')
 	{
-		strcpy(string, string+1);
-	} //end if
-	if (string[strlen(string)-1] == '\"')
+		memmove(string, string + 1, strlen(string));
+	} //end while
+	size_t length = strlen(string);
+	while (length > 0 && string[length - 1] == '\"')
 	{
-		string[strlen(string)-1] = '\0';
-	} //end if
+		string[--length] = '\0';
+	} //end while
 } //end of the function StripDoubleQuotes
 //============================================================================
 //
@@ -1773,16 +1789,18 @@ void StripDoubleQuotes(char *string)
 // Returns:					-
 // Changes Globals:		-
 //============================================================================
+/* Retail 0x1003fd40 is StripDoubleQuotes with the other quote character. */
 void StripSingleQuotes(char *string)
 {
-	if (*string == '\'')
+	while (*string == '\'')
 	{
-		strcpy(string, string+1);
-	} //end if
-	if (string[strlen(string)-1] == '\'')
+		memmove(string, string + 1, strlen(string));
+	} //end while
+	size_t length = strlen(string);
+	while (length > 0 && string[length - 1] == '\'')
 	{
-		string[strlen(string)-1] = '\0';
-	} //end if
+		string[--length] = '\0';
+	} //end while
 } //end of the function StripSingleQuotes
 //============================================================================
 //
@@ -1995,36 +2013,26 @@ pc_script_t *LoadScriptFile(const char *filename)
         composed_length = snprintf(pathname, sizeof(pathname), "%s", filename);
     }
 
-    if (composed_length < 0)
+    /*
+     * A failed open is ordinary control flow in retail, not a diagnostic.
+     * 0x100401c5 is the whole failure path - `if (fopen(...) == 0) return 0` -
+     * and PC_Directive_include (0x1003a7a0) probes this routine three times,
+     * raw then include-path then pak-resolved, before its one
+     * "file %s not found" SourceError at 0x1003a825.  Printing here turns
+     * every successful pak-backed include into two spurious engine errors.
+     *
+     * The basefolder composition below is a host-side shim retail does not
+     * have at all - its path handling is a fixed-buffer strcpy - so its
+     * failure paths stay silent for the same reason.
+     */
+    if (composed_length < 0 || (size_t)composed_length >= sizeof(pathname))
     {
-        BotLib_Print(PRT_ERROR, "LoadScriptFile: failed to compose include path for %s\n", filename);
-        return NULL;
-    }
-
-    if ((size_t)composed_length >= sizeof(pathname))
-    {
-        if (basefolder[0] != '\0')
-        {
-            BotLib_Print(PRT_ERROR,
-                         "LoadScriptFile: include path \"%s/%s\" exceeds %zu characters\n",
-                         basefolder,
-                         filename,
-                         sizeof(pathname) - 1);
-        }
-        else
-        {
-            BotLib_Print(PRT_ERROR,
-                         "LoadScriptFile: include path \"%s\" exceeds %zu characters\n",
-                         filename,
-                         sizeof(pathname) - 1);
-        }
         return NULL;
     }
 
     FILE *fp = fopen(pathname, "rb");
     if (fp == NULL)
     {
-        BotLib_Print(PRT_ERROR, "LoadScriptFile: failed to open %s (%s)\n", pathname, strerror(errno));
         return NULL;
     }
 

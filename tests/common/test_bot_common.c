@@ -359,6 +359,14 @@ static void test_crc_matches_reference(void)
 test_crc_source_checksum_registry
 
 Pins raw source-buffer CRC registration, duplicate retention, and name order.
+
+Retail sub_100377e0 (0x100377e4) walks the embedded 92-entry catalogue at
+0x1005e678 but throws the search result away: the insert at 0x100377fe runs on
+both the match and the exhaustion path.  Registration is therefore
+unconditional, and a checksum that appears in the catalogue (0xA991) or that is
+zero is retained like any other.  Only sub_100376b0's name scan rejects a
+record, and it compares through sub_10045cb0 (_stricmp), so both the duplicate
+test and the list ordering fold case.
 =============
 */
 static void test_crc_source_checksum_registry(void)
@@ -373,8 +381,10 @@ static void test_crc_source_checksum_registry(void)
 	CRC_RegisterSourceChecksum("embedded.c", 0xA991U);
 	CRC_RegisterSourceChecksum("zero.c", 0x0000U);
 	CRC_RegisterSourceData("babe.c", "gladiator", 9);
+	/* Folded-case duplicate: rejected by the _stricmp scan at 0x100376c7. */
+	CRC_RegisterSourceChecksum("ZETA.C", 0xFACEU);
 
-	assert(CRC_SourceChecksumCount() == 3U);
+	assert(CRC_SourceChecksumCount() == 5U);
 	char name[CRC_SOURCE_NAME_MAX];
 	uint16_t checksum = 0;
 	assert(CRC_SourceChecksumAt(0U, &checksum, name, sizeof(name)));
@@ -383,10 +393,19 @@ static void test_crc_source_checksum_registry(void)
 	assert(CRC_SourceChecksumAt(1U, &checksum, name, sizeof(name)));
 	assert(checksum == 0x40FEU);
 	assert(strcmp(name, "babe.c") == 0);
+	/* Catalogue member 0xA991 is retained: the catalogue scan filters nothing. */
 	assert(CRC_SourceChecksumAt(2U, &checksum, name, sizeof(name)));
+	assert(checksum == 0xA991U);
+	assert(strcmp(name, "embedded.c") == 0);
+	/* A zero checksum is an ordinary record too. */
+	assert(CRC_SourceChecksumAt(3U, &checksum, name, sizeof(name)));
+	assert(checksum == 0x0000U);
+	assert(strcmp(name, "zero.c") == 0);
+	/* First registration wins for a repeated name, in either case. */
+	assert(CRC_SourceChecksumAt(4U, &checksum, name, sizeof(name)));
 	assert(checksum == 0x1234U);
 	assert(strcmp(name, "zeta.c") == 0);
-	assert(!CRC_SourceChecksumAt(3U, &checksum, name, sizeof(name)));
+	assert(!CRC_SourceChecksumAt(5U, &checksum, name, sizeof(name)));
 
 	const char *dump_path = "bot_common_checksum_dump.log";
 	test_unlink(dump_path);
@@ -408,6 +427,8 @@ static void test_crc_source_checksum_registry(void)
 	assert(strcmp(dump,
 		"\t{0xABCD, 1}, //alpha.c\r\n"
 		"\t{0x40FE, 1}, //babe.c\r\n"
+		"\t{0xA991, 1}, //embedded.c\r\n"
+		"\t{0x0000, 1}, //zero.c\r\n"
 		"\t{0x1234, 1}, //zeta.c\r\n") == 0);
 	BotLib_LogShutdown();
 	LibVar_Shutdown();

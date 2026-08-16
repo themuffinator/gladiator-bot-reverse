@@ -2679,7 +2679,13 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 	const aas_area_t *area1 = &aasworld.areas[area1num];
 	const aas_area_t *area2 = &aasworld.areas[area2num];
 	float jumpvelocity = AAS_ReachPositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
-	float maxjumpdistance = 2.0f * AAS_MaxJumpDistance(jumpvelocity);
+	/*
+	 * Retail stores AAS_MaxJumpDistance verbatim: 0x10013d50 calls the helper
+	 * and 0x10013d55 stores the result with no intervening multiply.  The
+	 * successor doubles it; doubling here makes both the x-y prefilter and the
+	 * final bestdist gate twice as permissive and emits links retail never has.
+	 */
+	float maxjumpdistance = AAS_MaxJumpDistance(jumpvelocity);
 	float maxjumpheight = AAS_MaxJumpHeight(jumpvelocity);
 	for (int axis = 0; axis < 2; ++axis)
 	{
@@ -2786,14 +2792,27 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 		return qfalse;
 	}
 
+	/*
+	 * 0x10014648-0x1001466e rejects the pair before any speed is chosen when
+	 * the drop exceeds the fall-damage distance.  Retail continues only while
+	 * AAS_FallDamageDistance() >= beststart[2] - bestend[2].
+	 */
+	if ((float)AAS_FallDamageDistance() < beststart[2] - bestend[2])
+	{
+		return qfalse;
+	}
+
+	/*
+	 * Retail has exactly two speed branches, 0x1001468f and 0x100146c4: the
+	 * zero-z-velocity solve gives TRAVEL_WALKOFFLEDGE with a 1.2 multiplier
+	 * (0x100146a0), and only if that solve fails does it retry with sv_jumpvel
+	 * for TRAVEL_JUMP - with no multiplier at all.  The 48-unit "short hop" at
+	 * speed 400 and the 1.05 jump multiplier are successor constants that
+	 * appear nowhere in 0x10013cc0..0x10014ac6.
+	 */
 	float speed;
 	int traveltype;
-	if (bestdistance <= 48.0f && fabsf(beststart[2] - bestend[2]) < 8.0f)
-	{
-		speed = 400.0f;
-		traveltype = TRAVEL_WALKOFFLEDGE;
-	}
-	else if (AAS_HorizontalVelocityForJump(0.0f, beststart, bestend, &speed))
+	if (AAS_HorizontalVelocityForJump(0.0f, beststart, bestend, &speed))
 	{
 		speed *= 1.2f;
 		traveltype = TRAVEL_WALKOFFLEDGE;
@@ -2804,15 +2823,20 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 		{
 			return qfalse;
 		}
-		speed *= 1.05f;
 		traveltype = TRAVEL_JUMP;
-		vec3_t horizontaldirection;
-		VectorSubtract(bestend, beststart, horizontaldirection);
-		horizontaldirection[2] = 0.0f;
-		if (AAS_VectorLength(horizontaldirection) < 10.0f)
-		{
-			return qfalse;
-		}
+	}
+
+	/*
+	 * The 10-unit horizontal-length gate sits on the common join at
+	 * label_100146db (0x100146f4-0x10014707), so it applies to both travel
+	 * types, not to TRAVEL_JUMP alone.
+	 */
+	vec3_t horizontaldirection;
+	VectorSubtract(bestend, beststart, horizontaldirection);
+	horizontaldirection[2] = 0.0f;
+	if (AAS_VectorLength(horizontaldirection) < 10.0f)
+	{
+		return qfalse;
 	}
 
 	vec3_t direction;
@@ -2834,9 +2858,14 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 	if (trace.fraction < 1.0f && trace.planenum >= 0 &&
 		trace.planenum < aasworld.numPlanes)
 	{
+		/*
+		 * Retail's two barrier probes test only the plane normal and the drop
+		 * (0x100147e7/0x1001480d and 0x100148be/0x100148de); AAS_PointContents
+		 * is never called anywhere in this routine, so a probe landing in lava
+		 * or slime must still reject the candidate.
+		 */
 		const aas_plane_t *plane = &aasworld.planes[trace.planenum];
 		if (plane->normal[2] >= 0.7f &&
-			(AAS_PointContents(trace.endpos) & (CONTENTS_LAVA | CONTENTS_SLIME)) == 0 &&
 			teststart[2] - trace.endpos[2] <=
 				AAS_ReachPositiveLibVarValue(Bridge_MaxBarrier(), 50.0f))
 		{
@@ -2855,9 +2884,14 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 	if (trace.fraction < 1.0f && trace.planenum >= 0 &&
 		trace.planenum < aasworld.numPlanes)
 	{
+		/*
+		 * Retail's two barrier probes test only the plane normal and the drop
+		 * (0x100147e7/0x1001480d and 0x100148be/0x100148de); AAS_PointContents
+		 * is never called anywhere in this routine, so a probe landing in lava
+		 * or slime must still reject the candidate.
+		 */
 		const aas_plane_t *plane = &aasworld.planes[trace.planenum];
 		if (plane->normal[2] >= 0.7f &&
-			(AAS_PointContents(trace.endpos) & (CONTENTS_LAVA | CONTENTS_SLIME)) == 0 &&
 			teststart[2] - trace.endpos[2] <=
 				AAS_ReachPositiveLibVarValue(Bridge_MaxBarrier(), 50.0f))
 		{

@@ -31,6 +31,8 @@ typedef struct aas_debug_line_test_context_s
 	int shown_colors[AAS_DEBUG_LINE_TEST_EVENTS];
 	bool shown_start_null[AAS_DEBUG_LINE_TEST_EVENTS];
 	bool shown_end_null[AAS_DEBUG_LINE_TEST_EVENTS];
+	vec3_t shown_start[AAS_DEBUG_LINE_TEST_EVENTS];
+	vec3_t shown_end[AAS_DEBUG_LINE_TEST_EVENTS];
 	aas_area_t areas[2];
 	aas_areasettings_t areasettings[2];
 	aas_node_t nodes[2];
@@ -138,6 +140,14 @@ static void Mock_DebugLineShow(int line, vec3_t start, vec3_t end, int color)
 		context->shown_colors[index] = color;
 		context->shown_start_null[index] = start == NULL;
 		context->shown_end_null[index] = end == NULL;
+		if (start != NULL)
+		{
+			VectorCopy(start, context->shown_start[index]);
+		}
+		if (end != NULL)
+		{
+			VectorCopy(end, context->shown_end[index]);
+		}
 	}
 	context->debug_line_show_count += 1;
 }
@@ -160,6 +170,8 @@ static void ResetDebugLineEvents(aas_debug_line_test_context_t *context)
 	memset(context->shown_colors, 0, sizeof(context->shown_colors));
 	memset(context->shown_start_null, 0, sizeof(context->shown_start_null));
 	memset(context->shown_end_null, 0, sizeof(context->shown_end_null));
+	memset(context->shown_start, 0, sizeof(context->shown_start));
+	memset(context->shown_end, 0, sizeof(context->shown_end));
 }
 
 /*
@@ -331,6 +343,175 @@ static void test_retail_shared_debug_line_pool_and_movement_wrapper(void **state
 
 /*
 =============
+test_retail_geometry_visualisers
+
+Pin AAS_ShowArea's edge de-duplication, four-colour cycle, ground-face filter
+and range diagnostic, plus AAS_DrawCross and AAS_DrawArrow geometry.
+=============
+*/
+static void test_retail_geometry_visualisers(void **state)
+{
+	aas_debug_line_test_context_t *context =
+		(aas_debug_line_test_context_t *)(*state);
+
+	/*
+	 * Two faces sharing edge 3.  Retail collects distinct edge numbers across
+	 * the whole area, so the shared edge is drawn once, not twice.
+	 */
+	static aas_vertex_t vertexes[7] = {
+		{0.0f, 0.0f, 0.0f},
+		{0.0f, 0.0f, 0.0f}, {16.0f, 0.0f, 0.0f}, {16.0f, 16.0f, 0.0f},
+		{0.0f, 16.0f, 0.0f}, {32.0f, 0.0f, 0.0f}, {32.0f, 16.0f, 0.0f}
+	};
+	static aas_edge_t edges[6] = {
+		{{0, 0}}, {{1, 2}}, {{2, 3}}, {{3, 4}}, {{2, 5}}, {{5, 6}}
+	};
+	static int edge_index[6] = {1, 2, 3, 3, 4, 5};
+	static aas_face_t faces[3] = {0};
+	static int face_index[2] = {1, 2};
+	static aas_area_t areas[2] = {0};
+	static aas_plane_t planes[1] = {0};
+
+	faces[1].firstedge = 0;
+	faces[1].numedges = 3;
+	faces[1].faceflags = AAS_FACE_GROUND;
+	faces[2].firstedge = 3;
+	faces[2].numedges = 3;
+	faces[2].faceflags = AAS_FACE_SOLID;
+	areas[1].areanum = 1;
+	areas[1].firstface = 0;
+	areas[1].numfaces = 2;
+
+	memset(&aasworld, 0, sizeof(aasworld));
+	aasworld.loaded = qtrue;
+	aasworld.numAreas = 2;
+	aasworld.areas = areas;
+	aasworld.numVertexes = 7;
+	aasworld.vertexes = vertexes;
+	aasworld.numEdges = 6;
+	aasworld.edges = edges;
+	aasworld.edgeIndexSize = 6;
+	aasworld.edgeIndex = edge_index;
+	aasworld.numFaces = 3;
+	aasworld.faces = faces;
+	aasworld.faceIndexSize = 2;
+	aasworld.faceIndex = face_index;
+	aasworld.numPlanes = 1;
+	aasworld.planes = planes;
+
+	AAS_ClearShownDebugLines();
+	ResetDebugLineEvents(context);
+
+	/*
+	 * Five distinct edges across the two faces: 1, 2, 3 from the first and
+	 * 3, 4, 5 from the second, with 3 already recorded.
+	 */
+	AAS_ShowArea(1, 0);
+	assert_int_equal(context->debug_line_show_count, 5);
+	/* Retail starts the cycle from zero, which falls through to red. */
+	assert_int_equal(context->shown_colors[0], (int)LINECOLOR_RED);
+	assert_int_equal(context->shown_colors[1], (int)LINECOLOR_BLUE);
+	assert_int_equal(context->shown_colors[2], (int)LINECOLOR_GREEN);
+	assert_int_equal(context->shown_colors[3], (int)LINECOLOR_YELLOW);
+	assert_int_equal(context->shown_colors[4], (int)LINECOLOR_RED);
+	/* Edge 1 runs vertex 1 -> vertex 2. */
+	assert_float_equal(context->shown_start[0][0], 0.0f, 0.0001f);
+	assert_float_equal(context->shown_end[0][0], 16.0f, 0.0001f);
+	/* Edge 5, the last distinct one, runs vertex 5 -> vertex 6. */
+	assert_float_equal(context->shown_start[4][0], 32.0f, 0.0001f);
+	assert_float_equal(context->shown_end[4][1], 16.0f, 0.0001f);
+
+	/*
+	 * groundfacesonly keeps faceflags & (ground|ladder), so only the first
+	 * face contributes and the shared edge is no longer reached twice.
+	 */
+	AAS_ClearShownDebugLines();
+	ResetDebugLineEvents(context);
+	AAS_ShowArea(1, 1);
+	assert_int_equal(context->debug_line_show_count, 3);
+
+	/* A ladder face qualifies through the same mask. */
+	AAS_ClearShownDebugLines();
+	ResetDebugLineEvents(context);
+	faces[2].faceflags = AAS_FACE_LADDER;
+	AAS_ShowArea(1, 1);
+	assert_int_equal(context->debug_line_show_count, 5);
+	faces[2].faceflags = AAS_FACE_SOLID;
+
+	/*
+	 * Out of range areas draw nothing.  Their diagnostic goes through
+	 * BotLib_Print, which routes to the botlib import table rather than the
+	 * bridge table this harness installs, so only the drawing is observable.
+	 */
+	AAS_ClearShownDebugLines();
+	ResetDebugLineEvents(context);
+	AAS_ShowArea(-1, 0);
+	AAS_ShowArea(aasworld.numAreas, 0);
+	assert_int_equal(context->debug_line_show_count, 0);
+
+	/* Three axis-aligned arms, each spanning origin +/- size. */
+	AAS_ClearShownDebugLines();
+	ResetDebugLineEvents(context);
+	vec3_t origin = {10.0f, 20.0f, 30.0f};
+	AAS_DrawCross(origin, 4.0f, (int)LINECOLOR_BLUE);
+	assert_int_equal(context->debug_line_show_count, 3);
+	assert_float_equal(context->shown_start[0][0], 14.0f, 0.0001f);
+	assert_float_equal(context->shown_end[0][0], 6.0f, 0.0001f);
+	assert_float_equal(context->shown_start[1][1], 24.0f, 0.0001f);
+	assert_float_equal(context->shown_end[1][1], 16.0f, 0.0001f);
+	assert_float_equal(context->shown_start[2][2], 34.0f, 0.0001f);
+	assert_float_equal(context->shown_end[2][2], 26.0f, 0.0001f);
+
+	/*
+	 * A shaft plus two head strokes.  For a +X arrow the head offset is
+	 * normalize(dir) x up = (0, -1, 0), so the strokes sit six units back and
+	 * six units either side, both terminating at the arrow tip.
+	 */
+	AAS_ClearShownDebugLines();
+	ResetDebugLineEvents(context);
+	vec3_t arrowstart = {0.0f, 0.0f, 0.0f};
+	vec3_t arrowend = {100.0f, 0.0f, 0.0f};
+	AAS_DrawArrow(arrowstart, arrowend, (int)LINECOLOR_BLUE,
+		(int)LINECOLOR_YELLOW);
+	assert_int_equal(context->debug_line_show_count, 3);
+	assert_int_equal(context->shown_colors[0], (int)LINECOLOR_BLUE);
+	assert_int_equal(context->shown_colors[1], (int)LINECOLOR_YELLOW);
+	assert_int_equal(context->shown_colors[2], (int)LINECOLOR_YELLOW);
+	assert_float_equal(context->shown_start[0][0], 0.0f, 0.0001f);
+	assert_float_equal(context->shown_end[0][0], 100.0f, 0.0001f);
+	assert_float_equal(context->shown_start[1][0], 94.0f, 0.0001f);
+	assert_float_equal(context->shown_start[1][1], -6.0f, 0.0001f);
+	assert_float_equal(context->shown_start[2][0], 94.0f, 0.0001f);
+	assert_float_equal(context->shown_start[2][1], 6.0f, 0.0001f);
+	assert_float_equal(context->shown_end[1][0], 100.0f, 0.0001f);
+	assert_float_equal(context->shown_end[2][0], 100.0f, 0.0001f);
+
+	/*
+	 * A vertical arrow is within 0.99 of parallel with up, so the head offset
+	 * falls back to the x axis.
+	 */
+	AAS_ClearShownDebugLines();
+	ResetDebugLineEvents(context);
+	VectorSet(arrowend, 0.0f, 0.0f, 100.0f);
+	AAS_DrawArrow(arrowstart, arrowend, (int)LINECOLOR_BLUE,
+		(int)LINECOLOR_YELLOW);
+	assert_int_equal(context->debug_line_show_count, 3);
+	assert_float_equal(context->shown_start[1][0], 6.0f, 0.0001f);
+	assert_float_equal(context->shown_start[1][2], 94.0f, 0.0001f);
+	assert_float_equal(context->shown_start[2][0], -6.0f, 0.0001f);
+	assert_float_equal(context->shown_start[2][2], 94.0f, 0.0001f);
+
+	/* The permanent cross leaks one uncleared handle per arm. */
+	AAS_ClearShownDebugLines();
+	ResetDebugLineEvents(context);
+	AAS_DrawPermanentCross(origin, 2.0f, (int)LINECOLOR_GREEN);
+	assert_int_equal(context->debug_line_create_count, 3);
+	assert_int_equal(context->debug_line_show_count, 6);
+	assert_int_equal(context->debug_line_delete_count, 0);
+}
+
+/*
+=============
 main
 
 Run the isolated retail AAS debug-line pool contract.
@@ -341,6 +522,10 @@ int main(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup_teardown(
 			test_retail_shared_debug_line_pool_and_movement_wrapper,
+			SetupDebugLineTest,
+			TeardownDebugLineTest),
+		cmocka_unit_test_setup_teardown(
+			test_retail_geometry_visualisers,
 			SetupDebugLineTest,
 			TeardownDebugLineTest),
 	};

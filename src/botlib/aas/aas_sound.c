@@ -479,21 +479,21 @@ max_aaslights heap is built only by its recovered standalone initializer.
 */
 int AAS_SoundSubsystem_Init(void)
 {
-	AAS_Sound_FreeInfos();
-	AAS_Sound_FreeSoundEvents();
+	/*
+	 * Retail AAS_SetupSound (0x1001d260) is exactly
+	 *     sub_1001cab0();
+	 *     return sub_1001c760(LibVarString("soundconfig", "sounds.c"));
+	 * so the max_aassounds heap is built first, the config name is read
+	 * second, and max_soundinfo is not touched until the metadata loader runs.
+	 * Each of those leaves also releases only its own old buffer, immediately
+	 * before reallocating it (0x1001cafb / 0x1001c7b3), rather than clearing
+	 * everything up front.  Both orders are observable through the
+	 * out-of-range diagnostics and their LibVarSet resets.
+	 */
 	AAS_Sound_FreeSoundSummaries();
 	g_aas_sound_state.initialised = false;
 
-	int max_soundinfo = AAS_Sound_ReadCapacityLibVar("max_soundinfo",
-		"256",
-		65535,
-		256);
-	g_aas_sound_state.info_capacity = (size_t)max_soundinfo;
-	if (!AAS_Sound_EnsureInfoCapacity())
-	{
-		AAS_Sound_FreeInfos();
-		return BLERR_INVALIDIMPORT;
-	}
+	AAS_Sound_FreeSoundEvents();
 	int max_aassounds = AAS_Sound_ReadCapacityLibVar("max_aassounds",
 		"256",
 		65536,
@@ -517,6 +517,19 @@ int AAS_SoundSubsystem_Init(void)
 
 	botlib_asset_resolution_t resolution;
 	const char *requested = LibVarString("soundconfig", "sounds.c");
+
+	AAS_Sound_FreeInfos();
+	int max_soundinfo = AAS_Sound_ReadCapacityLibVar("max_soundinfo",
+		"256",
+		65535,
+		256);
+	g_aas_sound_state.info_capacity = (size_t)max_soundinfo;
+	if (!AAS_Sound_EnsureInfoCapacity())
+	{
+		AAS_Sound_FreeInfos();
+		return BLERR_INVALIDIMPORT;
+	}
+
 	if (!BotLib_ResolveAssetPathDetailed(requested, "soundconfig", &resolution))
 	{
 		BotLib_Print(PRT_ERROR, "couldn't find %s\n", requested);

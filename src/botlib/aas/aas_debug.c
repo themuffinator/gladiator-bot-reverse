@@ -1,9 +1,12 @@
 #include "aas_debug.h"
 
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "aas_local.h"
 #include "q2bridge/bridge.h"
+#include "q2bridge/bridge_config.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,9 +15,53 @@
 #define AAS_DEBUG_MAX_PATH_DEPTH 128
 #define AAS_DEBUG_MAX_LINES 256
 
+/*
+ * The shared LINECOLOR_* values are written as `L` suffixed literals, so on a
+ * host with 64-bit long they widen to positive values that can never compare
+ * equal to the sign-extended int a colour variable holds.  Retail keeps every
+ * one of these in a 32-bit register, so fold them back to int here.
+ */
+#define AAS_DEBUG_COLOR(value) ((int)(int32_t)(value))
+
 static int g_aasDebugLines[AAS_DEBUG_MAX_LINES];
 static int g_aasDebugLineVisible[AAS_DEBUG_MAX_LINES];
 static int g_aasNumDebugLines;
+
+/*
+=============
+AAS_DebugCrossProduct
+
+Compute the vector cross product used by the arrow head offset.
+=============
+*/
+static void AAS_DebugCrossProduct(const vec3_t v1, const vec3_t v2, vec3_t result)
+{
+	result[0] = v1[1] * v2[2] - v1[2] * v2[1];
+	result[1] = v1[2] * v2[0] - v1[0] * v2[2];
+	result[2] = v1[0] * v2[1] - v1[1] * v2[0];
+}
+
+/*
+=============
+AAS_DebugVectorNormalize
+
+Normalize a vector in place and return its original length.
+=============
+*/
+static float AAS_DebugVectorNormalize(vec3_t vector)
+{
+	float length = sqrtf(DotProduct(vector, vector));
+	if (length > 0.000001f)
+	{
+		VectorScale(vector, 1.0f / length, vector);
+	}
+	else
+	{
+		VectorClear(vector);
+	}
+
+	return length;
+}
 
 /*
 =============
@@ -60,6 +107,549 @@ void AAS_DebugLine(vec3_t start, vec3_t end, int color)
 			return;
 		}
 	}
+}
+
+/*
+=============
+AAS_DebugReserveLines
+
+Reserve handles from the shared 256-slot pool without drawing yet.
+
+AAS_DrawPlaneCross (0x10009a10) and AAS_ShowBoundingBox (0x10009cb0) collect
+several handles up front and mark each visible at reservation time rather than
+at show time, so they cannot go through AAS_DebugLine.  Both stop scanning at
+the 256th slot and then show through whatever the array happens to hold, which
+is why a short reservation is not an error here.
+=============
+*/
+static int AAS_DebugReserveLines(int *lines, int count)
+{
+	int reserved = 0;
+	for (int line = 0; reserved < count && line < AAS_DEBUG_MAX_LINES; ++line)
+	{
+		if (g_aasDebugLines[line] == 0)
+		{
+			g_aasDebugLines[line] = Q2_DebugLineCreate();
+			lines[reserved++] = g_aasDebugLines[line];
+			g_aasDebugLineVisible[line] = qtrue;
+			g_aasNumDebugLines += 1;
+		}
+		else if (!g_aasDebugLineVisible[line])
+		{
+			lines[reserved++] = g_aasDebugLines[line];
+			g_aasDebugLineVisible[line] = qtrue;
+		}
+	}
+
+	return reserved;
+}
+
+/*
+=============
+AAS_DrawPermanentCross
+
+Draw a three-axis cross and leak one extra handle per axis.
+
+Retail 0x10009950 draws each arm through AAS_DebugLine and then creates a
+second, never-tracked line for the same endpoints, so the cross survives the
+next AAS_ClearShownDebugLines.  Retail returns the last DebugLineShow result
+straight from the engine import; the reconstructed import is void, and the DLL
+has no caller that reads the value, so this returns nothing.
+=============
+*/
+void AAS_DrawPermanentCross(const vec3_t origin, float size, int color)
+{
+	for (int i = 0; i < 3; ++i)
+	{
+		vec3_t start;
+		vec3_t end;
+		VectorCopy(origin, start);
+		start[i] += size;
+		VectorCopy(origin, end);
+		end[i] -= size;
+		AAS_DebugLine(start, end, color);
+		int debugline = Q2_DebugLineCreate();
+		Q2_DebugLineShow(debugline, start, end, color);
+	}
+}
+
+/*
+=============
+AAS_DrawCross
+
+Draw a three-axis cross through the ordinary reusable line pool.
+=============
+*/
+void AAS_DrawCross(const vec3_t origin, float size, int color)
+{
+	for (int i = 0; i < 3; ++i)
+	{
+		vec3_t start;
+		vec3_t end;
+		VectorCopy(origin, start);
+		start[i] += size;
+		VectorCopy(origin, end);
+		end[i] -= size;
+		AAS_DebugLine(start, end, color);
+	}
+}
+
+/*
+=============
+AAS_DrawPlaneCross
+
+Draw the retail plane-projected cross at a trace impact point.
+
+Retail 0x10009a10 builds a twelve unit square around the point in the two
+transverse axes, solves each corner back onto the plane along axis type % 3,
+and draws the two diagonals.  It has no caller in the shipped DLL.
+=============
+*/
+void AAS_DrawPlaneCross(const vec3_t point,
+	const vec3_t normal,
+	float dist,
+	int type,
+	int color)
+{
+	vec3_t start1;
+	vec3_t end1;
+	vec3_t start2;
+	vec3_t end2;
+	VectorCopy(point, start1);
+	VectorCopy(point, end1);
+	VectorCopy(point, start2);
+	VectorCopy(point, end2);
+
+	int n0 = type % 3;
+	int n1 = (type + 1) % 3;
+	int n2 = (type + 2) % 3;
+	start1[n1] -= 6.0f;
+	start1[n2] -= 6.0f;
+	end1[n1] += 6.0f;
+	end1[n2] += 6.0f;
+	start2[n1] += 6.0f;
+	start2[n2] -= 6.0f;
+	end2[n1] -= 6.0f;
+	end2[n2] += 6.0f;
+
+	start1[n0] = (dist - (start1[n1] * normal[n1] + start1[n2] * normal[n2])) /
+		normal[n0];
+	end1[n0] = (dist - (end1[n1] * normal[n1] + end1[n2] * normal[n2])) /
+		normal[n0];
+	start2[n0] = (dist - (start2[n1] * normal[n1] + start2[n2] * normal[n2])) /
+		normal[n0];
+	end2[n0] = (dist - (end2[n1] * normal[n1] + end2[n2] * normal[n2])) /
+		normal[n0];
+
+	int lines[2] = {0, 0};
+	(void)AAS_DebugReserveLines(lines, 2);
+	Q2_DebugLineShow(lines[0], start1, end1, color);
+	Q2_DebugLineShow(lines[1], start2, end2, color);
+}
+
+/*
+=============
+AAS_ShowBoundingBox
+
+Draw a bounding box as a flickering wireframe cube.
+
+Retail 0x10009cb0 takes the top corner offsets second and the bottom offsets
+third - the reverse of the successor's order - and reserves only three handles
+per face iteration, so the four passes overwrite each other and only the last
+three edges stay on screen.  Both quirks are preserved.
+=============
+*/
+void AAS_ShowBoundingBox(const vec3_t origin, const vec3_t maxs, const vec3_t mins)
+{
+	vec3_t corners[8];
+	VectorAdd(origin, maxs, corners[0]);
+	corners[1][0] = origin[0] + mins[0];
+	corners[1][1] = origin[1] + maxs[1];
+	corners[1][2] = origin[2] + maxs[2];
+	corners[2][0] = origin[0] + mins[0];
+	corners[2][1] = origin[1] + mins[1];
+	corners[2][2] = origin[2] + maxs[2];
+	corners[3][0] = origin[0] + maxs[0];
+	corners[3][1] = origin[1] + mins[1];
+	corners[3][2] = origin[2] + maxs[2];
+	memcpy(corners[4], corners[0], sizeof(vec3_t) * 4U);
+	for (int i = 0; i < 4; ++i)
+	{
+		corners[4 + i][2] = origin[2] + mins[2];
+	}
+
+	for (int i = 0; i < 4; ++i)
+	{
+		int lines[3] = {0, 0, 0};
+		(void)AAS_DebugReserveLines(lines, 3);
+		Q2_DebugLineShow(lines[0], corners[i], corners[(i + 1) & 3],
+			AAS_DEBUG_COLOR(LINECOLOR_RED));
+		Q2_DebugLineShow(lines[1], corners[4 + i], corners[4 + ((i + 1) & 3)],
+			AAS_DEBUG_COLOR(LINECOLOR_RED));
+		Q2_DebugLineShow(lines[2], corners[i], corners[4 + i], AAS_DEBUG_COLOR(LINECOLOR_RED));
+	}
+}
+
+/*
+=============
+AAS_DebugNextEdgeColor
+
+Advance the retail four-colour debug palette.
+
+Retail spells the tail of this cycle as a neg/sbb/and/add sequence at
+0x1000a264: neg leaves carry set unless the input was green, and sbb eax, eax
+turns that into 0 or -1, selecting yellow for green and red for everything
+else, including the zero the callers start from.
+=============
+*/
+static int AAS_DebugNextEdgeColor(int color)
+{
+	if (color == AAS_DEBUG_COLOR(LINECOLOR_RED))
+	{
+		return AAS_DEBUG_COLOR(LINECOLOR_BLUE);
+	}
+	if (color == AAS_DEBUG_COLOR(LINECOLOR_BLUE))
+	{
+		return AAS_DEBUG_COLOR(LINECOLOR_GREEN);
+	}
+	if (color == AAS_DEBUG_COLOR(LINECOLOR_GREEN))
+	{
+		return AAS_DEBUG_COLOR(LINECOLOR_YELLOW);
+	}
+
+	return AAS_DEBUG_COLOR(LINECOLOR_RED);
+}
+
+/*
+=============
+AAS_ShowArea
+
+Draw one area's edges, de-duplicated, cycling the retail debug palette.
+
+Retail 0x1000a0a0 collects up to 256 distinct edge numbers over the area's
+faces - restricted to ground and liquid faces when groundfacesonly is set -
+and then draws each once.  groundfacesonly keeps only faces carrying the ground
+or ladder bit (retail tests faceflags & 6).  Its range diagnostics for the face
+and edge lumps are warnings only: retail prints and keeps indexing.
+=============
+*/
+void AAS_ShowArea(int areanum, int groundfacesonly)
+{
+	int areaedges[AAS_DEBUG_MAX_LINES];
+	int numareaedges = 0;
+	int color = 0;
+
+	if (areanum < 0 || areanum >= aasworld.numAreas)
+	{
+		BotLib_Print(PRT_ERROR, "area %d out of range [0, %d]\n",
+			areanum, aasworld.numAreas);
+		return;
+	}
+
+	const aas_area_t *area = &aasworld.areas[areanum];
+	for (int i = 0; i < area->numfaces; ++i)
+	{
+		int facenum = abs(aasworld.faceIndex[area->firstface + i]);
+		if (facenum >= aasworld.numFaces)
+		{
+			BotLib_Print(PRT_ERROR, "facenum %d out of range\n", facenum);
+		}
+
+		const aas_face_t *face = &aasworld.faces[facenum];
+		if (groundfacesonly &&
+			(face->faceflags & (AAS_FACE_GROUND | AAS_FACE_LADDER)) == 0)
+		{
+			continue;
+		}
+
+		for (int j = 0; j < face->numedges; ++j)
+		{
+			int edgenum = abs(aasworld.edgeIndex[face->firstedge + j]);
+			if (edgenum >= aasworld.numEdges)
+			{
+				BotLib_Print(PRT_ERROR, "edgenum %d out of range\n", edgenum);
+			}
+
+			int n = 0;
+			while (n < numareaedges && areaedges[n] != edgenum)
+			{
+				n += 1;
+			}
+			if (n == numareaedges && numareaedges < AAS_DEBUG_MAX_LINES)
+			{
+				areaedges[numareaedges++] = edgenum;
+			}
+		}
+	}
+
+	for (int n = 0; n < numareaedges; ++n)
+	{
+		const aas_edge_t *edge = &aasworld.edges[areaedges[n]];
+		color = AAS_DebugNextEdgeColor(color);
+		AAS_DebugLine(aasworld.vertexes[edge->v[0]],
+			aasworld.vertexes[edge->v[1]],
+			color);
+	}
+}
+
+/*
+=============
+AAS_ShowFace
+
+Draw one face's edges plus a stub of its plane normal.
+
+Sibling of AAS_ShowArea that takes a face index; it starts the palette on
+yellow and finishes with a twenty unit red normal from the first vertex.  It
+has no caller in the shipped DLL.
+=============
+*/
+void AAS_ShowFace(int facenum)
+{
+	int color = AAS_DEBUG_COLOR(LINECOLOR_YELLOW);
+
+	if (facenum >= aasworld.numFaces)
+	{
+		BotLib_Print(PRT_ERROR, "facenum %d out of range\n", facenum);
+	}
+
+	const aas_face_t *face = &aasworld.faces[facenum];
+	for (int i = 0; i < face->numedges; ++i)
+	{
+		int edgenum = abs(aasworld.edgeIndex[face->firstedge + i]);
+		if (edgenum >= aasworld.numEdges)
+		{
+			BotLib_Print(PRT_ERROR, "edgenum %d out of range\n", edgenum);
+		}
+
+		const aas_edge_t *edge = &aasworld.edges[edgenum];
+		if (color == AAS_DEBUG_COLOR(LINECOLOR_RED))
+		{
+			color = AAS_DEBUG_COLOR(LINECOLOR_GREEN);
+		}
+		else if (color == AAS_DEBUG_COLOR(LINECOLOR_GREEN))
+		{
+			color = AAS_DEBUG_COLOR(LINECOLOR_BLUE);
+		}
+		else if (color == AAS_DEBUG_COLOR(LINECOLOR_BLUE))
+		{
+			color = AAS_DEBUG_COLOR(LINECOLOR_YELLOW);
+		}
+		else
+		{
+			color = AAS_DEBUG_COLOR(LINECOLOR_RED);
+		}
+
+		AAS_DebugLine(aasworld.vertexes[edge->v[0]],
+			aasworld.vertexes[edge->v[1]],
+			color);
+	}
+
+	const aas_plane_t *plane = &aasworld.planes[face->planenum];
+	int edgenum = abs(aasworld.edgeIndex[face->firstedge]);
+	const aas_edge_t *edge = &aasworld.edges[edgenum];
+	vec3_t start;
+	vec3_t end;
+	VectorCopy(aasworld.vertexes[edge->v[0]], start);
+	VectorMA(start, 20.0f, plane->normal, end);
+	AAS_DebugLine(start, end, AAS_DEBUG_COLOR(LINECOLOR_RED));
+}
+
+/*
+=============
+AAS_PrintTravelType
+
+Retail 0x1000a400 returns immediately; the travel-type names never shipped.
+=============
+*/
+void AAS_PrintTravelType(int traveltype)
+{
+	(void)traveltype;
+}
+
+/*
+=============
+AAS_DrawArrow
+
+Draw a shaft plus two head strokes from start to end.
+
+The head offset is normalize(end - start) crossed with world up, falling back
+to the x axis once the two are within 0.99 of parallel.
+=============
+*/
+void AAS_DrawArrow(const vec3_t start, const vec3_t end, int linecolor, int arrowcolor)
+{
+	vec3_t up = {0.0f, 0.0f, 1.0f};
+	vec3_t dir;
+	vec3_t cross;
+	vec3_t p1;
+	vec3_t p2;
+	vec3_t shaftstart;
+	vec3_t shaftend;
+
+	VectorCopy(start, shaftstart);
+	VectorCopy(end, shaftend);
+	VectorSubtract(end, start, dir);
+	AAS_DebugVectorNormalize(dir);
+	float dot = DotProduct(dir, up);
+	if (dot > 0.99f || dot < -0.99f)
+	{
+		VectorSet(cross, 1.0f, 0.0f, 0.0f);
+	}
+	else
+	{
+		AAS_DebugCrossProduct(dir, up, cross);
+	}
+
+	VectorMA(end, -6.0f, dir, p1);
+	VectorCopy(p1, p2);
+	VectorMA(p1, 6.0f, cross, p1);
+	VectorMA(p2, -6.0f, cross, p2);
+	AAS_DebugLine(shaftstart, shaftend, linecolor);
+	AAS_DebugLine(p1, shaftend, arrowcolor);
+	AAS_DebugLine(p2, shaftend, arrowcolor);
+}
+
+/*
+=============
+AAS_ShowReachability
+
+Visualise one reachability: its area, a start-to-end arrow, and for the
+airborne travel types the predicted client movement.
+
+Retail 0x1000a5e0 reads sv_jumpvel straight out of the libvar without the
+positive-value fallback the generator applies, drives the jump prediction from
+a zero velocity plus a command vector, and adds the run-up cross for
+TRAVEL_JUMP alone.  Its prediction passes visualize as one, which is what
+draws the arc.
+=============
+*/
+void AAS_ShowReachability(const aas_reachability_t *reach)
+{
+	if (reach == NULL)
+	{
+		return;
+	}
+
+	AAS_ShowArea(reach->areanum, 1);
+	AAS_DrawArrow(reach->start, reach->end, AAS_DEBUG_COLOR(LINECOLOR_BLUE), AAS_DEBUG_COLOR(LINECOLOR_YELLOW));
+
+	const libvar_t *jumpvel = Bridge_JumpVelocity();
+	float speed = 0.0f;
+	vec3_t dir;
+	vec3_t cmdmove;
+	aas_clientmove_t move;
+
+	if (reach->traveltype == TRAVEL_JUMP ||
+		reach->traveltype == TRAVEL_WALKOFFLEDGE)
+	{
+		float jumpvelocity = (jumpvel != NULL) ? jumpvel->value : 0.0f;
+		AAS_HorizontalVelocityForJump(jumpvelocity,
+			reach->start,
+			reach->end,
+			&speed);
+		dir[0] = reach->end[0] - reach->start[0];
+		dir[1] = reach->end[1] - reach->start[1];
+		dir[2] = 0.0f;
+		AAS_DebugVectorNormalize(dir);
+		VectorScale(dir, speed, cmdmove);
+		cmdmove[2] = jumpvelocity;
+
+		vec3_t velocity = {0.0f, 0.0f, 0.0f};
+		AAS_PredictClientMovement(&move,
+			-1,
+			reach->start,
+			PRESENCE_NORMAL,
+			qtrue,
+			velocity,
+			cmdmove,
+			3,
+			30,
+			0.1f,
+			SE_HITGROUND | SE_ENTERWATER | SE_ENTERSLIME | SE_ENTERLAVA |
+				SE_HITGROUNDDAMAGE,
+			0,
+			qtrue);
+
+		if (reach->traveltype == TRAVEL_JUMP)
+		{
+			AAS_JumpReachRunStart(reach, dir);
+			AAS_DrawCross(dir, 4.0f, AAS_DEBUG_COLOR(LINECOLOR_BLUE));
+		}
+	}
+	else if (reach->traveltype == TRAVEL_ROCKETJUMP)
+	{
+		float zvel = AAS_RocketJumpZVelocity(reach->start);
+		AAS_HorizontalVelocityForJump(zvel, reach->start, reach->end, &speed);
+		dir[0] = reach->end[0] - reach->start[0];
+		dir[1] = reach->end[1] - reach->start[1];
+		dir[2] = 0.0f;
+		AAS_DebugVectorNormalize(dir);
+		VectorScale(dir, speed, cmdmove);
+
+		vec3_t velocity = {0.0f, 0.0f, zvel};
+		AAS_PredictClientMovement(&move,
+			-1,
+			reach->start,
+			PRESENCE_NORMAL,
+			qtrue,
+			velocity,
+			cmdmove,
+			3,
+			30,
+			0.1f,
+			SE_HITGROUND | SE_ENTERWATER | SE_ENTERSLIME | SE_ENTERLAVA |
+				SE_HITGROUNDDAMAGE,
+			0,
+			qtrue);
+	}
+}
+
+/*
+=============
+AAS_ShowReachableAreas
+
+Step through one area's reachabilities, one entry every 1.5 seconds.
+
+Retail 0x1000a810 keeps the copied record, the last area, the cursor, and the
+clock in file statics, restarts the cursor when the area changes, and shows
+the retained copy on every call even between advances.
+=============
+*/
+void AAS_ShowReachableAreas(int areanum)
+{
+	static aas_reachability_t showreach_reach;
+	static int showreach_lastareanum;
+	static int showreach_index;
+	static float showreach_lasttime;
+
+	if (areanum != showreach_lastareanum)
+	{
+		showreach_index = 0;
+		showreach_lastareanum = areanum;
+	}
+
+	const aas_areasettings_t *settings = &aasworld.areasettings[areanum];
+	int numreach = settings->numreachableareas;
+	if (numreach == 0)
+	{
+		return;
+	}
+	if (showreach_index >= numreach)
+	{
+		showreach_index = 0;
+	}
+
+	if (AAS_Time() - showreach_lasttime > 1.5f)
+	{
+		showreach_reach =
+			aasworld.reachability[settings->firstreachablearea + showreach_index];
+		showreach_index += 1;
+		showreach_lasttime = AAS_Time();
+		AAS_PrintTravelType(showreach_reach.traveltype);
+		BotLib_Print(PRT_MESSAGE, "\n");
+	}
+
+	AAS_ShowReachability(&showreach_reach);
 }
 
 /*

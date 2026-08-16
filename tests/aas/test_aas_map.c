@@ -3834,7 +3834,8 @@ static void test_reachability_jump_generation_and_rejections(void **state)
 	int edge_index[2] = {1, 2};
 	aas_face_t faces[3] = {0};
 	int face_index[2] = {1, 2};
-	aas_plane_t planes[1] = {0};
+	aas_plane_t planes[3] = {0};
+	aas_node_t nodes[5] = {0};
 
 	areas[1].areanum = 1;
 	areas[1].firstface = 0;
@@ -3860,6 +3861,42 @@ static void test_reachability_jump_generation_and_rejections(void **state)
 	faces[2].numedges = 1;
 	planes[0].normal[2] = 1.0f;
 
+	/*
+	 * Retail AAS_TraceClientBBox (sub_1001b260) walks the AAS node tree rather
+	 * than the engine trace, so the probe jump only lands if this fixture
+	 * supplies a tree.  Model the real shape of the case: solid under both
+	 * ledges, open air over the 64 unit gap between them.
+	 *
+	 *   plane 0  z = 0     ground level (also the two ground faces above)
+	 *   plane 1  x = 0     source ledge lip
+	 *   plane 2  x = 64    destination ledge lip
+	 *
+	 *   node 1   z > 0 -> node 2 (air)        z < 0 -> node 3 (below ground)
+	 *   node 2   x > 64 -> area 2             x < 64 -> area 1
+	 *   node 3   x > 0  -> node 4             x < 0  -> solid (floor of area 1)
+	 *   node 4   x > 64 -> solid (floor of area 2)   otherwise -> area 1
+	 *
+	 * Node 4's open leaf is what makes the gap a gap: a bot that drops into it
+	 * never meets a solid leaf, so the prediction burns all 30 frames and the
+	 * link is rejected, exactly as a bottomless pit would behave.
+	 */
+	planes[1].normal[0] = 1.0f;
+	planes[1].dist = 0.0f;
+	planes[2].normal[0] = 1.0f;
+	planes[2].dist = 64.0f;
+	nodes[1].planenum = 0;
+	nodes[1].children[0] = 2;
+	nodes[1].children[1] = 3;
+	nodes[2].planenum = 2;
+	nodes[2].children[0] = -2;
+	nodes[2].children[1] = -1;
+	nodes[3].planenum = 1;
+	nodes[3].children[0] = 4;
+	nodes[3].children[1] = 0;
+	nodes[4].planenum = 2;
+	nodes[4].children[0] = 0;
+	nodes[4].children[1] = -1;
+
 	aasworld.loaded = qtrue;
 	aasworld.numAreas = 3;
 	aasworld.areas = areas;
@@ -3875,36 +3912,16 @@ static void test_reachability_jump_generation_and_rejections(void **state)
 	aasworld.faces = faces;
 	aasworld.faceIndexSize = 2;
 	aasworld.faceIndex = face_index;
-	aasworld.numPlanes = 1;
+	aasworld.numPlanes = 3;
 	aasworld.planes = planes;
+	aasworld.numNodes = 5;
+	aasworld.nodes = nodes;
 
 	AAS_InitReachability();
 	/*
-	 * KNOWN FAILURE. This also fails at 158c71f; there a leaked cmocka skip
-	 * flag (see aas_environment_setup) mis-reported it as SKIPPED, so it has
-	 * never actually passed. Two separate defects keep it red and both were
-	 * confirmed by experiment, not inferred:
-	 *
-	 * 1. src/botlib/aas/aas_reach.c hands AAS_PredictClientMovement its
-	 *    arguments the wrong way round. It passes direction*speed as the
-	 *    velocity and (0, 0, jumpvelocity) as cmdmove. Retail 0x1001497e
-	 *    passes &data_100631cc - the zero vector at 0x100631cc - as the
-	 *    velocity and puts direction*speed in cmdmove, setting cmdmove[2] to
-	 *    sv_jumpvel only for travel type 5 (0x1001493d). Every other retail
-	 *    call site does the same (0x1000a758, 0x1000f097, 0x1001d5f0). Because
-	 *    the command loop at 0x1000fb24 drags both horizontal axes toward
-	 *    cmdmove within sv_maxacceleration ("2200", created at 0x10037ad0) per
-	 *    frame, the swapped call wipes the jump's horizontal speed on the
-	 *    launch frame and the bot is predicted straight up.
-	 *
-	 * 2. Even with that corrected the fixture cannot land the bot. Retail
-	 *    AAS_TraceClientBBox (sub_1001b260) walks the AAS node tree, not the
-	 *    engine trace, so the g_test_gap_trace ground planes staged above are
-	 *    never consulted; this fixture supplies no nodes, and the
-	 *    reconstruction's no-tree fallback reports fraction 1.0 forever, so the
-	 *    prediction always runs the full 30 frames and is rejected. Making this
-	 *    case meaningful needs an aas node/plane tree that models the two
-	 *    ledges and the gap between them.
+	 * Retail returns false from AAS_Reachability_Jump even when it links the
+	 * pair; the link itself is the observable effect, so check the heap rather
+	 * than the return value.
 	 */
 	assert_false(AAS_Reachability_Jump(1, 2));
 	assert_true(AAS_ReachabilityExists(1, 2));

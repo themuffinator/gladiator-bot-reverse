@@ -12,7 +12,13 @@
 
 #define CRC_INIT_VALUE 0xffffu
 #define CRC_XOR_VALUE  0x0000u
-#define CRC_SOURCE_NAME_MAX 144u
+/*
+ * Retail allocates each source-checksum record as a single 0x98-byte block
+ * (sub_100376b0 at 0x100376ec): the 16-bit checksum sits at +0, the filename
+ * copy starts at +2, and the list link occupies +0x94.  The filename field is
+ * therefore 0x94 - 2 = 146 bytes wide.
+ */
+#define CRC_SOURCE_NAME_MAX 146u
 
 #ifdef __cplusplus
 extern "C" {

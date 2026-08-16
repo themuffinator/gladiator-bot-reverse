@@ -9,6 +9,7 @@
 
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
+#include "botlib/common/l_utils.h"
 #include "q2bridge/bridge.h"
 
 #define EA_MAX_COMMAND_LENGTH 256
@@ -80,6 +81,13 @@ static ea_client_state_t *EA_ClientState(int client)
 EA_VectorToAngles
 
 Converts a look direction into the elementary-action view representation.
+
+Retail has one such routine, vectoangles at 0x10041790, and EA_LookAtPoint
+reaches it like every other caller.  It runs both atan2 results through __ftol
+(0x1004180b, 0x10041858) before converting back, so every angle it yields is a
+whole degree.  Delegate to the faithful port rather than keeping a private
+copy: computing the fractional angle here made the chase path write e.g. yaw
+26.5651 where retail writes 26.
 =============
 */
 static void EA_VectorToAngles(const vec3_t value, vec3_t out)
@@ -89,32 +97,7 @@ static void EA_VectorToAngles(const vec3_t value, vec3_t out)
 		return;
 	}
 
-	vec3_t result = {0.0f, 0.0f, 0.0f};
-	if (value[0] == 0.0f && value[1] == 0.0f)
-	{
-		result[YAW] = 0.0f;
-		if (value[2] > 0.0f)
-		{
-			result[PITCH] = -90.0f;
-		}
-		else if (value[2] < 0.0f)
-		{
-			result[PITCH] = 90.0f;
-		}
-	}
-	else
-	{
-		result[YAW] = atan2f(value[1], value[0]) * (180.0f / (float)M_PI);
-		if (result[YAW] < 0.0f)
-		{
-			result[YAW] += 360.0f;
-		}
-
-		float forward = sqrtf(value[0] * value[0] + value[1] * value[1]);
-		result[PITCH] = atan2f(-value[2], forward) * (180.0f / (float)M_PI);
-	}
-
-	VectorCopy(result, out);
+	Vector2Angles(value, out);
 }
 
 /*

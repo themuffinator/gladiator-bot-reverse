@@ -188,9 +188,49 @@ are fixed except where noted.
 
 1. Stage the missing mover BSP/AAS assets under `dev_tools/assets/maps/` and
    rerun `ctest --test-dir .audit-full-parity --output-on-failure -R botlib_parity`.
-2. Add a per-routine address map for current source functions so exact-name
-   overlap can be replaced by address-backed semantic matching.
+   Still outstanding. The `parity_asset_verification` fixture is a hard
+   `FATAL_ERROR`, and every parity, AI, and bspc test declares it as a required
+   fixture, so its two missing files stop nine suites from running under CTest
+   even though the cases themselves skip cleanly. Until the assets are staged,
+   measure those suites by running their executables directly from
+   `dev_tools/assets/`.
+2. ~~Add a per-routine address map for current source functions so exact-name
+   overlap can be replaced by address-backed semantic matching.~~ Done:
+   [retail_function_map.md](retail_function_map.md) indexes all 816 retail
+   botlib routines by DLL address, HLIL line span, retail name, original
+   translation unit, and every citation of that address in `src/`.
 3. Import or recreate an MSVC6-compatible oracle harness before claiming a
    strict routine byte-match percentage for this repository.
-4. Triage the three direct parity failures before using the direct parity pass
-   as a green baseline.
+4. ~~Triage the three direct parity failures before using the direct parity
+   pass as a green baseline.~~ Done, together with three more that had appeared
+   since: see "Full translation-unit audit" below.
+
+## Full translation-unit audit
+
+A routine-by-routine pass compared **756 retail routines** across all 33
+original translation units against `dev_tools/gladiator.dll.bndb_hlil.txt`,
+cross-checked against `ref/gladiator-bot-restored/botlib/`. Each candidate
+divergence was then re-checked by an independent pass instructed to refute it
+against the HLIL; 28 of 109 candidates did not survive that check.
+
+The 80 that did are catalogued with evidence and a fix in
+[retail_divergence_backlog.md](retail_divergence_backlog.md). Thirteen are
+fixed in the tree; one was implemented and backed out because it moves test
+outcomes that need separate triage; the rest are open.
+
+The audit also found that ten of the twelve routines in the original
+`be_aas_debug.c` had no counterpart at all — `AAS_ShowArea`, `AAS_ShowFace`,
+`AAS_DrawCross`, `AAS_DrawArrow`, `AAS_DrawPermanentCross`,
+`AAS_DrawPlaneCross`, `AAS_ShowBoundingBox`, `AAS_PrintTravelType`,
+`AAS_ShowReachability` and `AAS_ShowReachableAreas`. All ten are now
+reconstructed in `src/botlib/aas/aas_debug.c`.
+
+### Baseline repairs
+
+| Failure | Resolution |
+| --- | --- |
+| `bot_common` / `bot_common_crc` aborted on `CRC_SourceChecksumCount() == 3` | The catalogue scan at `0x100377e4` discards its result, so registration is unconditional; the test pinned a suppression that does not exist. Registration also now uses `GetClearedMemory`, `_stricmp` ordering and dedup, and the record's real 146-byte name field. |
+| `aas_map` failed `test_reachability_jump_generation_and_rejections` | The fixture supplied no AAS node tree, so `AAS_TraceClientBBox` never landed the probe jump. It now models both ledges and the gap, and the case exercises the real generator. |
+| `ai_dm` never ran | `ai_dm_tests` did not link `botlib_common`, so it failed on undefined `Vector2Angles`. |
+| `botlib_parity_bot_interface` failed `test_ai_seek_ltg_nearby_goal_schedule` | Both selectors arm a 30-second avoid slot for an item whose `respawntime` is zero, so at `t+20` the item is still avoided and retail falls through to its roam goal. The test expected reselection. |
+| MSVC builds failed outright | `_Static_assert` in `ai_character.c` and `bot_move.h` is rejected by the default MSVC C dialect. Build with clang + Ninja, as `.audit-full-parity` does. |

@@ -38,7 +38,9 @@ add_executable(ai_dm_tests
     test_ai_dm.c
     ${PROJECT_SOURCE_DIR}/src/botlib/ai/ai_dm.c
 )
-target_link_libraries(ai_dm_tests PRIVATE ${BOTLIB_PARITY_TEST_LIBRARIES})
+# ai_dm.c calls Vector2Angles and the rest of l_utils, which live in
+# botlib_common; without it the link fails on an undefined symbol.
+target_link_libraries(ai_dm_tests PRIVATE botlib_common ${BOTLIB_PARITY_TEST_LIBRARIES})
 target_include_directories(ai_dm_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/botlib/precomp

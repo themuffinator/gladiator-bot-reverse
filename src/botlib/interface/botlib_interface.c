@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "botlib/aas/aas_map.h"
 #include "botlib/aas/aas_debug.h"
@@ -186,6 +187,14 @@ static int Botlib_SetupAISubsystem(void)
 	if (g_subsystem_state.ai_initialised) {
 		return BLERR_NOERROR;
 	}
+
+	/*
+	 * Retail seeds the CRT generator here and nowhere else: 0x10029c99 is the
+	 * DLL's only call to the seed setter, and it runs before weapon, goal and
+	 * chat setup.  Without it every session replays the same chat picks, aim
+	 * error, roam directions and probability gates from the implicit seed 1.
+	 */
+	srand((unsigned int)time(NULL));
 
 	BotState_ResetClientSettings();
 
@@ -378,6 +387,14 @@ int BotSetupLibrary(void)
 
 	Botlib_ResetSubsystemState();
 	Botlib_ResetLibraryVariables();
+	/*
+	 * DIVERGENCE, tracked separately: retail 0x10037bb0 never clears
+	 * libvarlist, so host values pushed through the exported BotLibVarSet
+	 * survive setup and every later getter is a pure find.  Dropping this
+	 * reset is the faithful behaviour, but it also lets the character and goal
+	 * fixtures' own weaponconfig/itemconfig reach setup for the first time,
+	 * which changes eight test outcomes that need triaging on their own.
+	 */
 	LibVar_ResetCache();
 	CRC_ResetSourceChecksums();
 

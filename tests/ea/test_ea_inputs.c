@@ -295,25 +295,42 @@ static void test_ea_matches_legacy_input(void **state)
     assert_memory_equal(&legacy, &g_capture_state.ea_input, sizeof(bot_input_t));
 }
 
+/*
+ * Mirrors retail vectoangles (0x10041790), which EA_LookAtPoint reaches like
+ * every other caller. Both atan2 results pass through __ftol (0x1004180b,
+ * 0x10041858) before being converted back, so the stored view angles are
+ * always whole degrees, and the negative pitch is wrapped by +360 before it is
+ * negated (0x10041867 / 0x10041876).
+ */
 static void compute_expected_angles(const vec3_t origin, const vec3_t target, vec3_t out)
 {
     vec3_t direction;
     VectorSubtract(target, origin, direction);
 
-    float yaw = atan2f(direction[1], direction[0]) * (180.0f / (float)M_PI);
-    if (yaw < 0.0f)
+    float yaw;
+    float pitch;
+    if (direction[0] == 0.0f && direction[1] == 0.0f)
     {
-        yaw += 360.0f;
+        yaw = 0.0f;
+        pitch = (direction[2] > 0.0f) ? 90.0f : 270.0f;
+    }
+    else
+    {
+        yaw = (float)(int)(atan2(direction[1], direction[0]) * (180.0 / M_PI));
+        if (yaw < 0.0f)
+        {
+            yaw += 360.0f;
+        }
+
+        float forward = sqrtf(direction[0] * direction[0] + direction[1] * direction[1]);
+        pitch = (float)(int)(atan2(direction[2], forward) * (180.0 / M_PI));
+        if (pitch < 0.0f)
+        {
+            pitch += 360.0f;
+        }
     }
 
-    float forward = sqrtf(direction[0] * direction[0] + direction[1] * direction[1]);
-    float pitch = 0.0f;
-    if (forward > 0.0001f || fabsf(direction[2]) > 0.0001f)
-    {
-        pitch = atan2f(-direction[2], forward) * (180.0f / (float)M_PI);
-    }
-
-    out[PITCH] = pitch;
+    out[PITCH] = -pitch;
     out[YAW] = yaw;
     out[ROLL] = 0.0f;
 }

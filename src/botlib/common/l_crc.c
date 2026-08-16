@@ -4,13 +4,15 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "shared/q_platform.h"
+
 #include "l_log.h"
 #include "l_memory.h"
 
 /*
  * Retail stores these records as a 0x98-byte checksum/name/next chain.  The
  * native representation keeps its pointer host-sized while preserving the
- * CRC, 144-byte filename field, duplicate behavior, and lexical ordering.
+ * CRC, 146-byte filename field, duplicate behavior, and lexical ordering.
  */
 typedef struct crc_source_checksum_s
 {
@@ -223,31 +225,40 @@ void CRC_RegisterSourceChecksum(const char *name, uint16_t checksum)
 	 * 0x100377fe runs on both the match and the exhaustion path, so the scan is
 	 * dead code and registration is unconditional here.  Only the name-ordered
 	 * duplicate scan below (retail 0x100376b0) can reject a record.
+	 *
+	 * The retail routine runs two independent passes, and this keeps that shape.
+	 * The first pass (0x100376c7) scans the whole list for a name hit and
+	 * returns on a match; only after it falls off the end does 0x100376ec
+	 * allocate.  Both passes compare through sub_10045cb0, which is _stricmp -
+	 * the same leaf the powerup image names at 0x1002105a go through - so the
+	 * list is folded-case ordered and folded-case deduplicated.
 	 */
-	crc_source_checksum_t *previous = NULL;
-	crc_source_checksum_t *current = g_crc_source_checksums;
-	while (current != NULL)
+	for (const crc_source_checksum_t *probe = g_crc_source_checksums;
+		probe != NULL;
+		probe = probe->next)
 	{
-		int comparison = strcmp(current->name, name);
-		if (comparison == 0)
+		if (Q_stricmp(name, probe->name) == 0)
 		{
 			return;
 		}
-		if (comparison > 0)
-		{
-			break;
-		}
-		previous = current;
-		current = current->next;
 	}
 
-	crc_source_checksum_t *entry = GetMemory(sizeof(*entry));
+	/* Retail takes the cleared allocator (j_sub_10039000) for this record. */
+	crc_source_checksum_t *entry = GetClearedMemory(sizeof(*entry));
 	if (entry == NULL)
 	{
 		return;
 	}
 
 	entry->checksum = checksum;
+
+	/*
+	 * Retail copies the name with an unbounded strcpy, so a filename of 146
+	 * characters or more runs off the end of the 0x98-byte record.  Real
+	 * callers pass config-file paths that never reach that length; the bound
+	 * below keeps the reconstruction defined without changing any behavior
+	 * retail can actually exhibit.
+	 */
 	size_t name_length = strlen(name);
 	if (name_length >= sizeof(entry->name))
 	{
@@ -255,6 +266,23 @@ void CRC_RegisterSourceChecksum(const char *name, uint16_t checksum)
 	}
 	memcpy(entry->name, name, name_length);
 	entry->name[name_length] = '\0';
+
+	/*
+	 * Second pass (0x1003771e): insert before the first record the new name
+	 * sorts ahead of, otherwise append.  Retail compares new against current,
+	 * so the list stays ascending.
+	 */
+	crc_source_checksum_t *previous = NULL;
+	crc_source_checksum_t *current = g_crc_source_checksums;
+	while (current != NULL)
+	{
+		if (Q_stricmp(entry->name, current->name) < 0)
+		{
+			break;
+		}
+		previous = current;
+		current = current->next;
+	}
 
 	entry->next = current;
 	if (previous == NULL)
