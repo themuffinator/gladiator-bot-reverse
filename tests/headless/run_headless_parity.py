@@ -38,6 +38,15 @@ PE_MACHINE = {0x14C: "x86", 0x8664: "x64", 0x1C0: "arm", 0xAA64: "arm64"}
 
 # Botlib/game diagnostics that mean the run is not healthy.  Anchored so that
 # ordinary content (a bot named "Error", a map called "fatal") cannot trip them.
+# A Gladiator obituary reads like "Byte was machinegunned by Bill Gates",
+# "Steroid Stud was corkscrewed through his head by Demigoddess" or
+# "Steroid Stud couldn't avoid death by painless from Trash".  Requiring the
+# victim clause as well as " by " keeps the startup banner's "by Mr Elusive."
+# out of the count - matching on " by " alone let a run pass on one fewer real
+# kill than it claimed.
+CHAT_LINE = re.compile(r"^[^:]{1,40}: .")
+KILL_LINE = re.compile(r"(\bwas\b.*\bby\b)|(couldn't avoid)")
+
 PROBLEM_PATTERNS = (
     re.compile(r"^Fatal:", re.IGNORECASE),
     re.compile(r"^Error:", re.IGNORECASE),
@@ -172,6 +181,7 @@ def main() -> int:
 
     game_map = os.environ.get("GLADIATOR_Q2_MAP", "q2dm1")
     want_bots = int(os.environ.get("GLADIATOR_Q2_BOTS", "4"))
+    want_kills = int(os.environ.get("GLADIATOR_Q2_KILLS", "3"))
     runtime = int(os.environ.get("GLADIATOR_Q2_RUNTIME", "45"))
     port = os.environ.get("GLADIATOR_Q2_PORT", "27920")
 
@@ -234,9 +244,18 @@ def main() -> int:
             if current is None:
                 continue
             text = current.read_text(encoding="utf-8", errors="replace")
-            if sum(1 for l in text.splitlines() if l.endswith("entered the game")) >= want_bots:
-                # Give the bots a few seconds of actual play once they are all in.
-                time.sleep(min(10.0, max(0.0, deadline - time.time())))
+            seen = text.splitlines()
+            joined = sum(1 for l in seen if l.endswith("entered the game"))
+            fought = sum(
+                1
+                for l in seen
+                if KILL_LINE.search(l)
+                and not CHAT_LINE.match(l)
+                and not l.startswith("loaded")
+            )
+            # Stop once the bots are not just present but actually fighting;
+            # otherwise keep playing until the deadline.
+            if joined >= want_bots and fought >= want_kills:
                 break
         if process.poll() is None:
             process.terminate()
@@ -279,6 +298,30 @@ def main() -> int:
 
     if not any("loaded" in line and game_map in line for line in lines):
         failures.append(f"no evidence the {game_map} map data was loaded")
+
+    if not any(line.endswith(".aas") or ".aas" in line for line in lines):
+        failures.append("no evidence the AAS navigation data was loaded")
+
+    # Bots connecting proves loading, not playing.  An obituary only happens
+    # after a bot has navigated to an opponent, selected a weapon and hit it,
+    # so it is the cheapest end-to-end proof that navigation, target selection
+    # and combat all work against real map data.
+    kills = [
+        line
+        for line in lines
+        if KILL_LINE.search(line)
+        and not CHAT_LINE.match(line)
+        and not line.startswith("loaded")
+    ]
+    if len(kills) < want_kills:
+        failures.append(
+            f"only {len(kills)} of {want_kills} kills; bots connected but did "
+            f"not fight (navigation, weapon selection or combat)"
+        )
+
+    chats = [line for line in lines if CHAT_LINE.match(line)]
+    if not chats:
+        failures.append("no bot chat was emitted")
 
     problems = [
         line
