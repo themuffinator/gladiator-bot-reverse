@@ -215,7 +215,7 @@ address-to-translation-unit index.
 
 ### MEDIUM The soundindex->soundinfo table is rebuilt on index-refresh calls and before the AAS load succeeds
 
-- status: **open**
+- status: **applied**
 - retail: `sub_1001D140 (AAS_InitSoundIndexTable)` @ `0x1001d140`
 - HLIL: 24437-24486
 - reference: ref/gladiator-bot-restored/botlib/be_aas_sound.c:470-494

@@ -863,8 +863,14 @@ static void test_aas_null_map_refreshes_assets_without_world_reset(void **state)
 	assert_int_equal(aasworld.numAreas, 2);
 	assert_ptr_equal(aasworld.areas, retained_areas);
 	assert_string_equal(aasworld.mapName, "retained_world");
-	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/old.wav");
-	assert_string_equal(AAS_SoundSubsystem_AssetName(1), "sound/refreshed.wav");
+	/*
+	 * The refresh branch runs only the fill-only index refresh (0x1000ecf7)
+	 * and returns at 0x1000ed02.  The soundindex->soundinfo table is built
+	 * from the single site on the load path (0x1000ed73), so a refresh leaves
+	 * it exactly as it was - here, empty.
+	 */
+	assert_null(AAS_SoundSubsystem_AssetName(0));
+	assert_null(AAS_SoundSubsystem_AssetName(1));
 	assert_string_equal(AAS_ModelFromIndex(1), "*1");
 	assert_int_equal(IndexFromModel("*1"), 1);
 	assert_string_equal(AAS_SoundFromIndex(1), "sound/refreshed.wav");
@@ -878,7 +884,7 @@ static void test_aas_null_map_refreshes_assets_without_world_reset(void **state)
 	assert_true(aasworld.loaded);
 	assert_ptr_equal(aasworld.areas, retained_areas);
 	assert_string_equal(aasworld.mapName, "retained_world");
-	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/replacement.wav");
+	assert_null(AAS_SoundSubsystem_AssetName(0));
 	assert_null(AAS_SoundSubsystem_AssetName(1));
 	assert_string_equal(AAS_ModelFromIndex(1), "*1");
 	assert_string_equal(AAS_SoundFromIndex(0), "sound/old.wav");
@@ -2648,6 +2654,10 @@ test_retail_entity_configuration_initialises_sound_state
 
 Retail configuration rebuilds the ordinary sound heap and soundinfo table
 before it invalidates entity records.
+
+A NULL-mapname refresh does NOT rebuild the soundindex->soundinfo table, so a
+sound precached after the map load stays unmapped and queues no event - see
+0x1000ecf7 / 0x1000ed02 against the single build site at 0x1000ed73.
 =============
 */
 static void test_retail_entity_configuration_initialises_sound_state(void **state)
@@ -2671,9 +2681,11 @@ static void test_retail_entity_configuration_initialises_sound_state(void **stat
 		1.0f,
 		1.0f,
 		0.0f),
-		BLERR_NOERROR);
+		/* The refresh left the soundindex->soundinfo table unbuilt, so the
+		   index is out of range and no event is queued. */
+		BLERR_INVALIDSOUNDINDEX);
 	AAS_SoundSubsystem_SetFrameTime(1.0f);
-	assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 1);
+	assert_int_equal((int)AAS_SoundSubsystem_SoundEventCount(), 0);
 
 	assert_int_equal(AAS_ConfigureEntityLimits(2, 1), BLERR_NOERROR);
 	assert_true(AAS_SoundSubsystem_InfoCount() > 0U);

@@ -8545,11 +8545,13 @@ int AAS_LoadMap(const char *mapname,
 				"AAS_LoadMap: failed to refresh asset indexes\n");
 			return BLERR_INVALIDIMPORT;
 		}
-		if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
-		{
-			BotLib_Print(PRT_WARNING,
-				"AAS_LoadMap: failed to refresh sound asset indexes\n");
-		}
+		/*
+		 * 0x1000ecf7 runs only sub_1000dcc0 and returns at 0x1000ed02; the
+		 * soundindex->soundinfo table is built from exactly one site, the
+		 * 0x1000ed73 call on the load path.  Rebuilding it here would make
+		 * sounds precached after the map load resolve and start producing
+		 * events, which retail's bots never hear.
+		 */
 		return BLERR_NOERROR;
 	}
 
@@ -8571,14 +8573,6 @@ int AAS_LoadMap(const char *mapname,
 	aasworld.loaded = qfalse;
 	TranslateEntity_SetWorldLoaded(qfalse);
 	AAS_ResetEntityLinks();
-
-	if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
-	{
-		BotLib_Print(PRT_FATAL,
-			"AAS_LoadMap: failed to register sound assets for %s\n",
-			mapname);
-		return AAS_ReturnMapLoadFailure(BLERR_INVALIDIMPORT);
-	}
 
     strncpy(aasworld.mapName, mapname, sizeof(aasworld.mapName) - 1U);
     aasworld.mapName[sizeof(aasworld.mapName) - 1U] = '\0';
@@ -9459,6 +9453,20 @@ int AAS_LoadMap(const char *mapname,
     }
 
     AAS_InvalidateRouteCache();
+
+	/*
+	 * 0x1000ed73 builds the soundindex->soundinfo table last, after the load
+	 * has succeeded and after the link-heap and reachability init, so a failed
+	 * load leaves the previous map's mapping in place.  Retail's sub_1001d140
+	 * cannot fail, so a problem here must not turn a completed load into an
+	 * error retail never emits.
+	 */
+	if (!AAS_SoundSubsystem_RegisterMapAssets(soundindexes, soundindex))
+	{
+		BotLib_Print(PRT_WARNING,
+			"AAS_LoadMap: failed to register sound assets for %s\n",
+			mapname);
+	}
 
     AAS_FrameSynchronise(0.0f);
     TranslateEntity_SetWorldLoaded(qtrue);
