@@ -5064,10 +5064,25 @@ Announces a non-empty current subteam and clears the first retail dword of the
 */
 static void BotAI_ConsoleLeaveSubteam(bot_client_state_t *state)
 {
+	if (state == NULL || state->chat_state == NULL)
+	{
+		return;
+	}
+
+	/*
+	 * The inline-strlen guard at 0x10027a7c covers only BotInitialChat
+	 * (0x10027a8c); BotEnterChat at 0x10027aa1 and the slot clear at
+	 * 0x10027aaf sit at the outer indentation and run unconditionally.  The
+	 * fused helper would skip the flush, leaving a staged chat pending so it
+	 * later goes out through EA_Say instead of EA_SayTeam.
+	 */
 	if (state->subteam[0] != '\0')
 	{
-		BotAI_ConsoleEnterInitialTeamChat(state, "leftteam", state->subteam);
+		BotInitialChat(state->chat_state, "leftteam", state->subteam, NULL);
 	}
+	BotEnterChat(state->chat_state,
+		state->client_number,
+		BOT_CONSOLE_CHAT_TEAM);
 	memset(state->subteam, 0, sizeof(int));
 }
 
@@ -5397,11 +5412,18 @@ static bool BotAI_ConstructDeathChat(bot_client_state_t *state)
 		return false;
 	}
 
-	const char *killer_name = "";
-	int killer_client = state->combat.current_enemy - 1;
-	if (killer_client >= 0 && killer_client < BotState_ClientCapacity())
+	/*
+	 * 0x10022160 builds variable 0 with EasyClientName (sub_10021860), not the
+	 * raw netname, and leaves it empty when bs->enemy is 0.  Retail's caller
+	 * buffer is the 32-byte var_20 slot.
+	 */
+	char killer_name[0x20];
+	killer_name[0] = '\0';
+	if (state->combat.current_enemy != 0)
 	{
-		killer_name = BotState_ClientName(killer_client);
+		BotAI_ConsoleEasyClientName(state->combat.current_enemy - 1,
+			killer_name,
+			sizeof(killer_name));
 	}
 
 	const char *chat_type = "death_bfg";
@@ -5455,11 +5477,14 @@ static bool BotAI_ConstructKillChat(bot_client_state_t *state)
 		return false;
 	}
 
-	const char *victim_name = "";
-	int victim_client = state->combat.current_enemy - 1;
-	if (victim_client >= 0 && victim_client < BotState_ClientCapacity())
+	/* 0x100222e0 uses EasyClientName for variable 0, as the death chat does. */
+	char victim_name[0x20];
+	victim_name[0] = '\0';
+	if (state->combat.current_enemy != 0)
 	{
-		victim_name = BotState_ClientName(victim_client);
+		BotAI_ConsoleEasyClientName(state->combat.current_enemy - 1,
+			victim_name,
+			sizeof(victim_name));
 	}
 
 	const char *chat_type = "kill_telefrag";
@@ -5476,7 +5501,7 @@ static bool BotAI_ConstructKillChat(bot_client_state_t *state)
 
 	BotInitialChat(state->chat_state,
 		chat_type,
-		victim_name != NULL ? victim_name : "",
+		victim_name,
 		NULL);
 	return true;
 }
@@ -7184,54 +7209,65 @@ static bool BotAI_ApplyLongTermMoveResultView(bot_client_state_t *state,
 
 	bool activate_node = state->ai_node == BOT_AI_NODE_ACTIVATE_ENTITY;
 
-	if (!activate_node &&
-		(result->flags & MOVERESULT_MOVEMENTVIEWSET) != 0)
-	{
-		/* Only the Seek nodes guard the private turn on the mover-set flag
-		   (0x1001f5d7); sub_1001ef40 turns unconditionally at 0x1001f169. */
-		return false;
-	}
+	/*
+	 * MOVERESULT_MOVEMENTVIEWSET suppresses only this frame's
+	 * BotChangeViewAngles (0x1001f5d7, 0x1001fba4, 0x10020471); the
+	 * ideal-viewangles block ahead of it runs unconditionally, and the
+	 * retained value is read later by Seek LTG's no-goal branch and by
+	 * AINode_Stand.  sub_1001ef40 turns unconditionally at 0x1001f169.
+	 */
+	const bool turn = activate_node ||
+		(result->flags & MOVERESULT_MOVEMENTVIEWSET) == 0;
 
 	if ((result->flags & (MOVERESULT_MOVEMENTVIEW |
 		MOVERESULT_SWIMVIEW)) != 0)
 	{
 		AI_DMState_SetIdealViewAngles(state->dm_state,
 			result->ideal_viewangles);
-		return true;
+		return turn;
 	}
 
 	vec3_t viewangles;
 	if (!activate_node && (result->flags & MOVERESULT_WAITING) != 0)
 	{
-		if (BotAI_LongTermGoalRandom() >= thinktime * 0.8f)
+		/* 0x1001f4aa / 0x1001fad2: the random gate skips the ideal write
+		   only, not the turn decision. */
+		if (BotAI_LongTermGoalRandom() < thinktime * 0.8f)
 		{
-			return true;
+			vec3_t roam_goal;
+			vec3_t direction;
+			BotAI_RoamGoal(state, roam_goal);
+			VectorSubtract(roam_goal,
+				state->last_client_update.origin,
+				direction);
+			Vector2Angles(direction, viewangles);
+			viewangles[ROLL] *= 0.5f;
+			AI_DMState_SetIdealViewAngles(state->dm_state, viewangles);
 		}
-
-		vec3_t roam_goal;
-		vec3_t direction;
-		BotAI_RoamGoal(state, roam_goal);
-		VectorSubtract(roam_goal, state->last_client_update.origin, direction);
-		Vector2Angles(direction, viewangles);
-		viewangles[ROLL] *= 0.5f;
-		AI_DMState_SetIdealViewAngles(state->dm_state, viewangles);
-		return true;
+		return turn;
 	}
 
-	bot_goal_t view_goal = *goal;
-	if (state->ai_node == BOT_AI_NODE_SEEK_NBG && state->goal_handle > 0)
+	/*
+	 * 0x1001f504 loads the Seek NBG view goal with BotGetSecondGoal; when that
+	 * returns nothing the following BotGetTopGoal result is never moved into
+	 * EDI, so a single-entry stack passes a NULL goal and
+	 * BotMovementViewTarget's NULL guard forces the movedir fallback.  Seek
+	 * LTG (0x1001fb3d) and the activate node (0x1001f0c1) pass their own goal.
+	 */
+	const bot_goal_t *view_goal = goal;
+	bot_goal_t second_goal;
+	if (state->ai_node == BOT_AI_NODE_SEEK_NBG)
 	{
-		bot_goal_t second_goal;
-		if (AI_GoalBotlib_GetSecondGoal(state->goal_handle, &second_goal) != 0)
-		{
-			view_goal = second_goal;
-		}
+		view_goal = (state->goal_handle > 0 &&
+			AI_GoalBotlib_GetSecondGoal(state->goal_handle, &second_goal) != 0)
+			? &second_goal
+			: NULL;
 	}
 
 	vec3_t target;
 	vec3_t direction;
 	if (BotMovementViewTargetHandle(state->move_handle,
-		&view_goal,
+		view_goal,
 		travel_flags,
 		300.0f,
 		target) != 0)
@@ -7245,7 +7281,7 @@ static bool BotAI_ApplyLongTermMoveResultView(bot_client_state_t *state,
 	Vector2Angles(direction, viewangles);
 	viewangles[ROLL] *= 0.5f;
 	AI_DMState_SetIdealViewAngles(state->dm_state, viewangles);
-	return true;
+	return turn;
 }
 
 /*
@@ -8251,30 +8287,42 @@ BotAI_SetBattleMovementGoalView
 
 Uses Gladiator's fixed 300-unit movement lookahead when the mover did not
 provide its own movement or swim view.
+
+Battle Chase (0x100203f5) and Battle Retreat (0x1002093e) both fall through to
+a shared vectoangles tail when BotMovementViewTarget fails, using
+moveresult.movedir as the direction, so ideal_viewangles is always written.
+Retail's `ideal_viewangles[2] *= 0.5` at 0x1002044f / 0x100209a0 is a dead
+multiply - vectoangles (sub_10041790) already stores 0 into ROLL, as
+Vector2Angles does - so it is deliberately not reproduced.
 =============
 */
 static int BotAI_SetBattleMovementGoalView(bot_client_state_t *state,
 	const bot_goal_t *goal,
-	int travel_flags)
+	int travel_flags,
+	const bot_moveresult_t *result)
 {
-	if (state == NULL || state->dm_state == NULL || goal == NULL)
-	{
-		return qfalse;
-	}
-
-	vec3_t target;
-	if (!BotMovementViewTargetHandle(state->move_handle,
-		goal,
-		travel_flags,
-		300.0f,
-		target))
+	if (state == NULL || state->dm_state == NULL || result == NULL)
 	{
 		return qfalse;
 	}
 
 	vec3_t direction;
+	vec3_t target;
+	if (goal != NULL &&
+		BotMovementViewTargetHandle(state->move_handle,
+			goal,
+			travel_flags,
+			300.0f,
+			target))
+	{
+		VectorSubtract(target, state->last_client_update.origin, direction);
+	}
+	else
+	{
+		VectorCopy(result->movedir, direction);
+	}
+
 	vec3_t viewangles;
-	VectorSubtract(target, state->last_client_update.origin, direction);
 	Vector2Angles(direction, viewangles);
 	AI_DMState_SetIdealViewAngles(state->dm_state, viewangles);
 	return qtrue;
@@ -8438,6 +8486,25 @@ static int BotAI_RunBattleChaseMovement(bot_client_state_t *state,
 		return status;
 	}
 
+	/*
+	 * 0x100200a0 runs the ideal-view selection unconditionally and gates only
+	 * BotChangeViewAngles on MOVERESULT_MOVEMENTVIEWSET (0x10020471).  The
+	 * chase_time reset sits between the two (0x10020531 between 0x10020529
+	 * and 0x10020534).
+	 */
+	if ((result.flags & (MOVERESULT_MOVEMENTVIEW |
+		MOVERESULT_SWIMVIEW)) != 0)
+	{
+		BotAI_SetBattleResultIdealView(state, &result);
+	}
+	else
+	{
+		BotAI_SetBattleMovementGoalView(state,
+			&chase_goal,
+			BotAI_BattleChaseTravelFlags(state),
+			&result);
+	}
+
 	bot_movestate_t *move_state = BotMoveStateFromHandle(state->move_handle);
 	if (move_state != NULL &&
 		move_state->areanum == state->combat.last_enemy_area)
@@ -8447,17 +8514,6 @@ static int BotAI_RunBattleChaseMovement(bot_client_state_t *state,
 
 	if ((result.flags & MOVERESULT_MOVEMENTVIEWSET) == 0)
 	{
-		if ((result.flags & (MOVERESULT_MOVEMENTVIEW |
-			MOVERESULT_SWIMVIEW)) != 0)
-		{
-			BotAI_SetBattleResultIdealView(state, &result);
-		}
-		else
-		{
-			BotAI_SetBattleMovementGoalView(state,
-				&chase_goal,
-				BotAI_BattleChaseTravelFlags(state));
-		}
 		AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
 	}
 	return BLERR_NOERROR;
@@ -8619,12 +8675,12 @@ static int BotAI_RunBattleRetreatMovement(bot_client_state_t *state,
 	{
 		if (BotAI_BattleAttackSkill(state) < 0.3f)
 		{
-			if (BotAI_SetBattleMovementGoalView(state,
+			/* 0x100209a6 turns on both arms of the view-target if/else. */
+			(void)BotAI_SetBattleMovementGoalView(state,
 				retreat_goal,
-				BotAI_BattleRetreatTravelFlags()))
-			{
-				AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
-			}
+				BotAI_BattleRetreatTravelFlags(),
+				&result);
+			AI_DMState_ChangeViewAngles(state->dm_state, state, thinktime);
 		}
 		else
 		{

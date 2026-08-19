@@ -954,7 +954,7 @@ address-to-translation-unit index.
 
 ### MEDIUM BotMatchMessage case 13 (leave subteam) skips BotEnterChat when the bot has no subteam
 
-- status: **open**
+- status: **applied**
 - retail: `BotMatchMessage` @ `0x10026f10`
 - HLIL: 31523-31542
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmq2.c:2803-2811
@@ -968,7 +968,7 @@ address-to-translation-unit index.
 
 ### MEDIUM BotChat_Death and BotChat_Kill substitute the raw client netname instead of the EasyClientName-normalised one
 
-- status: **open**
+- status: **applied**
 - retail: `BotChat_Death / BotChat_Kill` @ `0x10022160 / 0x100222e0`
 - HLIL: 27806-27813, 27879-27885
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmq2.c:705-709 and :750-754
@@ -982,7 +982,7 @@ address-to-translation-unit index.
 
 ### MEDIUM MOVERESULT_MOVEMENTVIEWSET suppresses the ideal_viewangles update in Seek LTG/NBG/Activate and Battle Chase; retail only suppresses the view turn
 
-- status: **open**
+- status: **applied**
 - retail: `AINode_Seek_NBG / AINode_Seek_LTG / AINode_Battle_Chase` @ `0x1001f290 (0x1001f5d7), 0x1001f760 (0x1001fba4), 0x100200a0 (0x10020471)`
 - HLIL: 26006-26008; 26243-26244; 26534-26536
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmnet.c:1008-1009, 1157-1158, 1419-1420
@@ -996,7 +996,7 @@ address-to-translation-unit index.
 
 ### MEDIUM Seek NBG aims at the top goal when the goal stack has no second entry; retail aims with a NULL goal (i.e. falls back to movedir)
 
-- status: **open**
+- status: **applied**
 - retail: `AINode_Seek_NBG` @ `0x1001f290`
 - HLIL: 25938-25948 (0x1001f504-0x1001f532)
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmnet.c:980-983
@@ -1010,7 +1010,7 @@ address-to-translation-unit index.
 
 ### MEDIUM BotAI_SetBattleMovementGoalView drops retail's movedir fallback and the ideal_viewangles[ROLL] *= 0.5
 
-- status: **open**
+- status: **applied**
 - retail: `AINode_Battle_Chase / AINode_Battle_Retreat` @ `0x100200a0 (0x100203f5-0x1002044f), 0x10020600 (0x1002093e-0x100209a0)`
 - HLIL: 26502-26522; 26682-26698
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmnet.c:1406-1415 and 1544-1553
@@ -1024,7 +1024,7 @@ address-to-translation-unit index.
 
 ### MEDIUM Battle Retreat skips BotChangeViewAngles when the movement view target cannot be resolved
 
-- status: **open**
+- status: **applied**
 - retail: `AINode_Battle_Retreat` @ `0x10020600 (0x1002099e-0x100209a6)`
 - HLIL: 26696-26699
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmnet.c:1544-1554
