@@ -1399,12 +1399,18 @@ static void test_bsp_texinfo_payload_load_and_retail_trace_boundary(void **state
 		CONTENTS_SOLID);
 	assert_false(trace.allsolid);
 	assert_false(trace.startsolid);
-	assert_float_equal(trace.fraction, (11.0f - 0.005f) / 30.0f, 0.00001f);
-	assert_float_equal(trace.endpos[0], 0.995f, 0.0001f);
+	/*
+	 * Retail expands the brush by the trace box: expandedDist =
+	 * planedist - minSupport = 0 - (-maxs[0]) = 1, so the -x face at x = 0
+	 * blocks the box once its +x face reaches it.  The centre travels 9 of
+	 * the 30 units, less the 0.005 clip epsilon (0x10003ea3 / 0x10003f80).
+	 */
+	assert_float_equal(trace.fraction, (9.0f - 0.005f) / 30.0f, 0.00001f);
+	assert_float_equal(trace.endpos[0], -1.005f, 0.0001f);
 	assert_float_equal(trace.plane.normal[0], -1.0f, 0.00001f);
 	assert_float_equal(trace.plane.dist, 0.0f, 0.00001f);
 	assert_int_equal(trace.plane.signbits, 0);
-	assert_float_equal(trace.exp_dist, -1.0f, 0.00001f);
+	assert_float_equal(trace.exp_dist, 1.0f, 0.00001f);
 	assert_int_equal(trace.sidenum, 0);
 	assert_int_equal(trace.contents, CONTENTS_SOLID);
 	bsp_surface_t empty_surface;

@@ -883,15 +883,25 @@ static qboolean AAS_TraceEntityBBox(const aas_entity_t *entity,
 	/* Retail BBOX traces use the sentinel side and leave contents clear. */
 	local.sidenum = -1;
 
-	qboolean startsinside = qtrue;
-	float startsolidmargin = (entity->solid == SOLID_BBOX) ? 0.5f : 0.0f;
-	for (int axis = 0; axis < 3; ++axis)
+	/*
+	 * Retail 100037b1 runs the start-solid probe only when entdata.solid is
+	 * SOLID_BBOX; SOLID_BSP skips it entirely and falls through to the sweep.
+	 * The probe tests the strict interior of the expanded box SHRUNK by 0.5
+	 * per side: 100037c2 continues only while expandedmins[i] + 0.5 < start[i]
+	 * and 100037e3 bails as soon as expandedmaxs[i] - 0.5 <= start[i].
+	 */
+	qboolean startsinside = qfalse;
+	if (entity->solid == SOLID_BBOX)
 	{
-		if (start[axis] < expandedmins[axis] - startsolidmargin ||
-			start[axis] > expandedmaxs[axis] + startsolidmargin)
+		startsinside = qtrue;
+		for (int axis = 0; axis < 3; ++axis)
 		{
-			startsinside = qfalse;
-			break;
+			if (start[axis] <= expandedmins[axis] + 0.5f ||
+				start[axis] >= expandedmaxs[axis] - 0.5f)
+			{
+				startsinside = qfalse;
+				break;
+			}
 		}
 	}
 
@@ -1193,32 +1203,58 @@ void AAS_BSPModelMinsMaxsOrigin(int modelnum,
 
 /*
 =============
-AAS_BSPTracePlaneOffset
+AAS_BSPTraceBoxSupports
 
-Calculate the plane expansion offset for tracing a world-axis-aligned box.
+Compute the two box support distances retail uses to expand a BSP plane for a
+world-axis-aligned box sweep.  minsupport is DotProduct(corner, normal) for the
+box corner that minimises it, maxsupport the same for the maximising corner.
+
+Retail builds the pair negated: the general arm at 0x10004a8d selects
+normal[k] > 0 ? mins[k] : maxs[k] into one vector and the complement into the
+other, then stores -DotProduct(vec, normal) for each (0x10004b16, 0x10004b3c);
+the axial arm shortcuts to -mins[type] / -maxs[type] (0x100049af, 0x100049bb).
+The brush clipper at 0x10003e5b/0x10003eef keeps only the minsupport arm.
 =============
 */
-static float AAS_BSPTracePlaneOffset(const vec3_t normal, const vec3_t mins, const vec3_t maxs)
+static void AAS_BSPTraceBoxSupports(const vec3_t normal,
+                                    const vec3_t mins,
+                                    const vec3_t maxs,
+                                    float *minsupport,
+                                    float *maxsupport)
 {
-	if (normal == NULL)
+	float minsum = 0.0f;
+	float maxsum = 0.0f;
+
+	if (normal != NULL)
 	{
-		return 0.0f;
+		for (int component = 0; component < 3; ++component)
+		{
+			float lo = (mins != NULL) ? mins[component] : 0.0f;
+			float hi = (maxs != NULL) ? maxs[component] : 0.0f;
+
+			/* Retail 0x10004a9b tests normal[k] <= 0, so a zero component
+			   takes the maxs slot; it contributes 0 to either sum. */
+			if (normal[component] <= 0.0f)
+			{
+				minsum += normal[component] * hi;
+				maxsum += normal[component] * lo;
+			}
+			else
+			{
+				minsum += normal[component] * lo;
+				maxsum += normal[component] * hi;
+			}
+		}
 	}
 
-	float offset = 0.0f;
-	for (int component = 0; component < 3; ++component)
+	if (minsupport != NULL)
 	{
-		if (normal[component] < 0.0f)
-		{
-			offset += normal[component] * ((maxs != NULL) ? maxs[component] : 0.0f);
-		}
-		else
-		{
-			offset += normal[component] * ((mins != NULL) ? mins[component] : 0.0f);
-		}
+		*minsupport = minsum;
 	}
-
-	return offset;
+	if (maxsupport != NULL)
+	{
+		*maxsupport = maxsum;
+	}
 }
 
 /*
@@ -1337,7 +1373,15 @@ static qboolean AAS_TraceThroughBSPBrush(const aas_bspbrush_t *brush,
 		vec3_t normal;
 		float planedist;
 		AAS_BSPTraceWorldPlane(plane, transform, normal, &planedist);
-		float expandedDist = planedist + AAS_BSPTracePlaneOffset(normal, mins, maxs);
+		/*
+		 * Retail 0x10003ea3 / 0x10003f80 form the expanded plane distance as
+		 * planedist - DotProduct(vec, normal) with vec the minimising corner,
+		 * i.e. planedist - minsupport.  That GROWS the brush by the trace box;
+		 * adding the support instead would shrink it.
+		 */
+		float minsupport;
+		AAS_BSPTraceBoxSupports(normal, mins, maxs, &minsupport, NULL);
+		float expandedDist = planedist - minsupport;
 		float startdist = DotProduct(start, normal) - expandedDist;
 		float enddist = DotProduct(end, normal) - expandedDist;
 
@@ -1518,6 +1562,15 @@ static void AAS_TraceBSPModelTree(int headnode,
 		return;
 	}
 
+	/*
+	 * ref be_aas_bspq2.c:1008 computes the overall trace delta once, outside
+	 * the descent loop, and reuses it at :1120/:1130 to pick which child the
+	 * segment enters first.  Every sub-segment stays collinear with it, so the
+	 * sign of DotProduct(delta, normal) is the same at every node.
+	 */
+	vec3_t tracedelta;
+	VectorSubtract(end, start, tracedelta);
+
 	while (stacktop > 0)
 	{
 		aas_bsptrace_stack_t current = stack[--stacktop];
@@ -1555,84 +1608,169 @@ static void AAS_TraceBSPModelTree(int headnode,
 		vec3_t normal;
 		float planedist;
 		AAS_BSPTraceWorldPlane(plane, transform, normal, &planedist);
-		float expandedDist = planedist + AAS_BSPTracePlaneOffset(normal, mins, maxs);
-		float front = DotProduct(current.start, normal) - expandedDist;
-		float back = DotProduct(current.end, normal) - expandedDist;
+
 		/*
-		 * sub_100044f0 classifies the expanded box against BSP split planes
-		 * through a ±0.005 band before deciding that a segment is wholly in
-		 * one child.  This is distinct from the brush clip epsilon below:
-		 * a segment whose front endpoint is just ahead of the plane can be
-		 * routed straight to the back child instead of visiting both leaves.
+		 * sub_100044f0 keeps TWO plane offsets per node - 0x100049af/0x100049bb
+		 * axial, 0x10004b16/0x10004b3c general (ref be_aas_bspq2.c:1122-1151,
+		 * v133/v134) - and classifies the segment against both.  Pair 0 carries
+		 * the minimising box corner and governs the back child, pair 1 the
+		 * maximising corner and governs the front child.  The two children are
+		 * gated independently at 0x10004c03 and 0x10004c78, so both can be
+		 * pushed, each with the FULL unclipped segment.
 		 */
-		if (front > -AAS_BSP_TRACE_EPSILON &&
-			back > -AAS_BSP_TRACE_EPSILON)
+		float support[2];
+		AAS_BSPTraceBoxSupports(normal, mins, maxs, &support[0], &support[1]);
+
+		float startdist = DotProduct(current.start, normal) - planedist;
+		float enddist = DotProduct(current.end, normal) - planedist;
+
+		/*
+		 * 0x10004b5b writes four flags indexed 2 * pair + role: role 0 means
+		 * both endpoints sit in front of that pair's offset plane, role 1 that
+		 * both sit behind it, each judged inside the retail 0.005 band.
+		 */
+		float pairstart[2];
+		float pairend[2];
+		qboolean sideflag[4];
+		for (int pair = 0; pair < 2; ++pair)
 		{
-			if (!AAS_PushBSPTraceNode(stack,
-			                          &stacktop,
-			                          node->children[0],
-			                          current.startfraction,
-			                          current.endfraction,
-			                          current.start,
-			                          current.end))
+			pairstart[pair] = startdist + support[pair];
+			pairend[pair] = enddist + support[pair];
+			sideflag[pair * 2] = (pairstart[pair] > -AAS_BSP_TRACE_EPSILON &&
+			                      pairend[pair] > -AAS_BSP_TRACE_EPSILON) ? qtrue : qfalse;
+			sideflag[pair * 2 + 1] = (pairstart[pair] < AAS_BSP_TRACE_EPSILON &&
+			                          pairend[pair] < AAS_BSP_TRACE_EPSILON) ? qtrue : qfalse;
+		}
+
+		/*
+		 * ref be_aas_bspq2.c:1120/1130 picks the child the segment enters first
+		 * from the sign of DotProduct(tracedelta, normal); child 0 is the front
+		 * child, so a forward-running segment reaches it last.
+		 */
+		int firstchild = (DotProduct(tracedelta, normal) >= 0.0f) ? 0 : 1;
+
+		/*
+		 * Child C is classified by pair 1 - C: the front child by the
+		 * maximising support, the back child by the minimising one.  Where a
+		 * pair straddles the plane, 0x10004d10 / 0x10004d78 take the crossing
+		 * fraction from that pair's own adjusted distances rather than from a
+		 * single shared front/(front-back).
+		 */
+		float pairfrac[2];
+		vec3_t pairmiddle[2];
+		float pairmidfrac[2];
+		for (int pair = 0; pair < 2; ++pair)
+		{
+			if (sideflag[pair * 2] || sideflag[pair * 2 + 1])
 			{
-				return;
+				pairfrac[pair] = -1.0f;
+				VectorCopy(current.start, pairmiddle[pair]);
+				pairmidfrac[pair] = current.startfraction;
+				continue;
 			}
-			continue;
-		}
-		if (front < AAS_BSP_TRACE_EPSILON &&
-			back < AAS_BSP_TRACE_EPSILON)
-		{
-			if (!AAS_PushBSPTraceNode(stack,
-			                          &stacktop,
-			                          node->children[1],
-			                          current.startfraction,
-			                          current.endfraction,
-			                          current.start,
-			                          current.end))
+
+			float denom = pairstart[pair] - pairend[pair];
+			float fraction = (denom != 0.0f) ? (pairstart[pair] / denom) : 0.0f;
+			if (fraction < 0.0f)
 			{
-				return;
+				fraction = 0.0f;
 			}
-			continue;
+			else if (fraction > 1.0f)
+			{
+				fraction = 1.0f;
+			}
+			pairfrac[pair] = fraction;
+			for (int component = 0; component < 3; ++component)
+			{
+				pairmiddle[pair][component] = current.start[component] +
+					(current.end[component] - current.start[component]) * fraction;
+			}
+			pairmidfrac[pair] = current.startfraction +
+				(current.endfraction - current.startfraction) * fraction;
 		}
 
-		float fraction = front / (front - back);
-		if (fraction < 0.0f)
+		qboolean overflowed = qfalse;
+		qboolean nodedone = qfalse;
+		int childorder[2];
+		childorder[0] = firstchild;
+		childorder[1] = 1 - firstchild;
+
+		for (int visit = 0; visit < 2 && !nodedone; ++visit)
 		{
-			fraction = 0.0f;
-		}
-		else if (fraction > 1.0f)
-		{
-			fraction = 1.0f;
+			int child = childorder[visit];
+			/*
+			 * 0x10004c03 / 0x10004c78: descend this child when either offset
+			 * reports the segment wholly on that child's side, handing it the
+			 * original unclipped endpoints (0x10004c0c, 0x10004c86).
+			 */
+			if (sideflag[child] || sideflag[child + 2])
+			{
+				if (!AAS_PushBSPTraceNode(stack,
+				                          &stacktop,
+				                          node->children[child],
+				                          current.startfraction,
+				                          current.endfraction,
+				                          current.start,
+				                          current.end))
+				{
+					overflowed = qtrue;
+					break;
+				}
+				/*
+				 * 0x10004c59 / 0x10004cdd: only when BOTH offsets agree does
+				 * retail stop looking at the sibling.
+				 */
+				if (sideflag[child] && sideflag[child + 2])
+				{
+					nodedone = qtrue;
+				}
+				continue;
+			}
+
+			/*
+			 * Residual case (0x10004dfa, 0x10004f86): this child was not taken
+			 * whole, so it gets the portion of the segment lying on its side.
+			 * Retail prefers its own pair's crossing and falls back to the
+			 * sibling pair's (0x10004e0f / 0x10004fa3).
+			 */
+			int ownpair = 1 - child;
+			int usepair = (pairfrac[ownpair] >= 0.0f) ? ownpair : (1 - ownpair);
+			if (pairfrac[usepair] < 0.0f)
+			{
+				continue;
+			}
+
+			qboolean pushed;
+			if (child == firstchild)
+			{
+				/* Reached last along the segment: keep middle -> end. */
+				pushed = AAS_PushBSPTraceNode(stack,
+				                              &stacktop,
+				                              node->children[child],
+				                              pairmidfrac[usepair],
+				                              current.endfraction,
+				                              pairmiddle[usepair],
+				                              current.end);
+			}
+			else
+			{
+				/* Reached first along the segment: keep start -> middle. */
+				pushed = AAS_PushBSPTraceNode(stack,
+				                              &stacktop,
+				                              node->children[child],
+				                              current.startfraction,
+				                              pairmidfrac[usepair],
+				                              current.start,
+				                              pairmiddle[usepair]);
+			}
+			if (!pushed)
+			{
+				overflowed = qtrue;
+				break;
+			}
 		}
 
-		vec3_t middle;
-		for (int component = 0; component < 3; ++component)
-		{
-			middle[component] = current.start[component] +
-			                    (current.end[component] - current.start[component]) * fraction;
-		}
-
-		float middlefraction = current.startfraction +
-		                       (current.endfraction - current.startfraction) * fraction;
-		int side = (front < 0.0f) ? 1 : 0;
-		if (!AAS_PushBSPTraceNode(stack,
-		                          &stacktop,
-		                          node->children[side ^ 1],
-		                          middlefraction,
-		                          current.endfraction,
-		                          middle,
-		                          current.end))
-		{
-			return;
-		}
-		if (!AAS_PushBSPTraceNode(stack,
-		                          &stacktop,
-		                          node->children[side],
-		                          current.startfraction,
-		                          middlefraction,
-		                          current.start,
-		                          middle))
+		if (overflowed)
 		{
 			return;
 		}
@@ -10020,6 +10158,38 @@ static int AAS_LinkEntityToComputedAreas(aas_entity_t *entity, const vec3_t absm
 
 /*
 =============
+AAS_LinkEntityClientBBox
+
+Link an entity into the AAS area tree over every client origin whose presence
+box would touch it, the way retail sub_1001c620 does.
+
+0x1001c632 fetches the presence box for the requested type through
+AAS_PresenceTypeBoundingBox (sub_1000dda0), then 0x1001c649 and 0x1001c66d form
+absmins - maxs .. absmaxs - mins before handing that box to AAS_AASLinkEntity
+(sub_1001c460, 0x1001c696).  The subtraction is the Minkowski expansion of the
+entity by the client box, so the resulting area list holds every entity a client
+standing anywhere in that area could collide with.
+=============
+*/
+static int AAS_LinkEntityClientBBox(aas_entity_t *entity,
+                                    const vec3_t absmins,
+                                    const vec3_t absmaxs,
+                                    int presencetype)
+{
+	vec3_t presencemins;
+	vec3_t presencemaxs;
+	vec3_t linkmins;
+	vec3_t linkmaxs;
+
+	AAS_PresenceTypeBoundingBox(presencetype, presencemins, presencemaxs);
+	VectorSubtract(absmins, presencemaxs, linkmins);
+	VectorSubtract(absmaxs, presencemins, linkmaxs);
+
+	return AAS_LinkEntityToComputedAreas(entity, linkmins, linkmaxs);
+}
+
+/*
+=============
 AAS_UpdateEntity
 =============
 */
@@ -10089,7 +10259,15 @@ int AAS_UpdateEntity(int ent, const AASEntityFrame *state)
         VectorAdd(entity->origin, entity->maxs, absmaxs);
         AAS_ClampMinsMaxs(absmins, absmaxs);
 
-        int linkStatus = AAS_LinkEntityToComputedAreas(entity, absmins, absmaxs);
+        /*
+         * Retail 1000ab14: j_sub_1001c620(&var_c, &var_18, ebx, 2).  The
+         * bare literal 2 is deliberate - this DLL's presence table maps 2
+         * to the SHORT box {-16,-16,-24}/{16,16,8} and 4 to the tall one,
+         * the reverse of Q3; see the note at AAS_PresenceTypeBoundingBox.
+         * The BSP-leaf link below keeps the RAW box, matching 1000ab38
+         * passing arg4 = 0.
+         */
+        int linkStatus = AAS_LinkEntityClientBBox(entity, absmins, absmaxs, 2);
         if (linkStatus != BLERR_NOERROR)
         {
             return linkStatus;

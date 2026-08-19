@@ -74,7 +74,7 @@ address-to-translation-unit index.
 
 ### HIGH SOLID_BBOX start-solid test uses an expanded box; retail uses a box shrunk by 0.5
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_EntityCollision` @ `0x10003680`
 - HLIL: 4999-5040 (100037bd..10003853)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_bspq2.c:417-423
@@ -88,7 +88,7 @@ address-to-translation-unit index.
 
 ### HIGH BSP brush plane expansion is applied with the wrong sign (brush is shrunk by the trace box instead of expanded)
 
-- status: **open**
+- status: **applied**
 - retail: `CM_TraceThroughBrush` @ `0x10003c90`
 - HLIL: 5386-5425 (10003eef..10003fa2), 5432-5452 (10003e5b..10003ea3)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_bspq2.c:693-722 (vec[]/dir[] selection and `v20 = v19 + v38`)
@@ -102,7 +102,7 @@ address-to-translation-unit index.
 
 ### HIGH BSP node descent classifies the box against one expanded plane; retail uses both box-side offsets
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_TraceBSPModel` @ `0x100044f0`
 - HLIL: 6013-6015 (100049af..100049bb), 6018-6060 (10004b4d..10004be9)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_bspq2.c:1122-1123, 1132-1151, 1153-1185
@@ -116,7 +116,7 @@ address-to-translation-unit index.
 
 ### HIGH AAS entity area-links skip the presence-type bbox expansion (AAS_LinkEntityClientBBox is not implemented)
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_LinkEntityClientBBox` @ `0x1001c620`
 - HLIL: 23914-23929 (plus caller at 10432-10433: `1000ab14 esi[0x1f] = j_sub_1001c620(&var_c, &var_18, ebx, 2)`)
 - ours: `src/botlib/aas/aas_map.c:9988`
@@ -129,7 +129,7 @@ address-to-translation-unit index.
 
 ### HIGH AAS_UpdateEntity links entities to areas without the client-bbox expansion
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_UpdateEntity` @ `0x1000a920`
 - HLIL: 10432-10435 (call); 23914-23929 (sub_1001c620 AAS_LinkEntityClientBBox); 12345-12385 (sub_1000dda0 AAS_PresenceTypeBoundingBox)
 - ours: `src/botlib/aas/aas_map.c:9988`
