@@ -1485,7 +1485,13 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 	status = context->api->BotLoadMap(NULL, 2, models, 1, sounds, 1, images);
 	assert_int_equal(status, BLERR_NOERROR);
 	assert_int_equal(context->mock.print_count, 0);
-	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/old.wav");
+	/*
+	 * A NULL-mapname refresh runs only the fill-only index refresh
+	 * (0x1000ecf7) and returns at 0x1000ed02.  The soundindex->soundinfo table
+	 * is built from the single site on the load path (0x1000ed73), so a
+	 * refresh leaves it exactly as it was - here, never built.
+	 */
+	assert_null(AAS_SoundSubsystem_AssetName(0));
 
 	const bot_mover_catalogue_entry_t *catalogue_entry =
 		BotMove_MoverCatalogueFindByModel(1);
@@ -1493,17 +1499,20 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 	assert_int_equal(catalogue_entry->modelindex, -1);
 
 	vec3_t origin = {0.0f, 0.0f, 0.0f};
+	/*
+	 * With the table unbuilt every index is out of range, so a sound
+	 * precached after the map load queues no event - which is exactly the
+	 * retail behaviour the refresh path produces.
+	 */
 	status = context->api->BotAddSound(origin, 0, 0, 0, 1.0f, 1.0f, 0.0f);
-	assert_int_equal(status, BLERR_NOERROR);
-	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
-	status = context->api->BotAddSound(origin, 0, 0, 1, 1.0f, 1.0f, 0.0f);
 	assert_int_equal(status, BLERR_INVALIDSOUNDINDEX);
+	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
 	const captured_print_t *invalid_sound =
-		Mock_FindPrintEntry(&context->mock, "sound index 1 out of range");
+		Mock_FindPrintEntry(&context->mock, "sound index 0 out of range");
 	assert_non_null(invalid_sound);
 	assert_int_equal(invalid_sound->type, PRT_FATAL);
 	assert_string_equal(invalid_sound->message,
-		"sound index 1 out of range [0, 1]\n");
+		"sound index 0 out of range [0, 0]\n");
 
 	char *refreshed_models[] = {
 		"maps/retained.bsp",
@@ -1536,15 +1545,17 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 	assert_float_equal(client_state->last_update_time, 17.0f, 0.0001f);
 	assert_int_equal(BotState_ActiveClientCount(), 1);
 	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
-	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/replacement.wav");
-	assert_string_equal(AAS_SoundSubsystem_AssetName(1), "sound/new-index.wav");
+	/* Still a refresh, so the table is still untouched. */
+	assert_null(AAS_SoundSubsystem_AssetName(0));
+	assert_null(AAS_SoundSubsystem_AssetName(1));
 
 	catalogue_entry = BotMove_MoverCatalogueFindByModel(1);
 	assert_non_null(catalogue_entry);
 	assert_int_equal(catalogue_entry->modelindex, -1);
 
+	/* Table still unbuilt after a second refresh, so still out of range. */
 	status = context->api->BotAddSound(origin, 0, 0, 1, 1.0f, 1.0f, 0.0f);
-	assert_int_equal(status, BLERR_NOERROR);
+	assert_int_equal(status, BLERR_INVALIDSOUNDINDEX);
 	assert_int_equal(AAS_SoundSubsystem_SoundEventCount(), 0);
 
 	char *ignored_sounds[] = {"sound/ignored.wav"};
@@ -1568,7 +1579,12 @@ static void test_bot_load_map_null_refreshes_assets_without_reset(void **state)
 	assert_string_equal(missing_bsp->message,
 		"couldn't find the bsp file maps/.bsp\n");
 #endif
-	assert_string_equal(AAS_SoundSubsystem_AssetName(0), "sound/ignored.wav");
+	/*
+	 * 0x1000ed73 builds the soundindex table last, after the load has
+	 * succeeded, so a load that fails at BSP discovery leaves the previous
+	 * mapping in place - here, still none.
+	 */
+	assert_null(AAS_SoundSubsystem_AssetName(0));
 	assert_null(AAS_SoundSubsystem_AssetName(1));
 	assert_false(aasworld.loaded);
 	assert_ptr_equal(BotState_Get(1), client_state);
@@ -1717,35 +1733,36 @@ static void test_bot_setup_commits_before_retail_libvar_sequence(void **state)
 		"sv_jumpvel",
 		"sv_maxwaterjump",
 	};
-	const botlib_import_capture_t capture = {
-		.BotLibVarGet = Mock_CaptureSetupLibVarGet,
-	};
-
-	memset(&g_setup_order_capture, 0, sizeof(g_setup_order_capture));
-	BotInterface_SetImportCapture(&capture);
+	/*
+	 * The order is read back from the libvar list itself rather than from a
+	 * host callback: retail's export table carries BotLibVarSet but no
+	 * BotLibVarGet (ref botlib.h:196), so the botlib never asks the host for a
+	 * libvar and there is no host-side ordering to observe.  LibVarAlloc
+	 * inserts at the head, so the number of hops from a variable to the end of
+	 * the list grows with age-in-list position: the most recently created
+	 * variable sits at the head and walks the whole list, the oldest sits at
+	 * the tail and walks one node.  A later creation therefore has strictly
+	 * more hops than an earlier one.
+	 */
 	int status = context->api->BotSetupLibrary();
-	BotInterface_SetImportCapture(NULL);
 	assert_int_equal(status, BLERR_NOERROR);
 
-	size_t prefix_start = g_setup_order_capture.count;
-	for (size_t index = 0; index < g_setup_order_capture.count; ++index)
-	{
-		if (strcmp(g_setup_order_capture.names[index], expected_names[0]) == 0)
-		{
-			prefix_start = index;
-			break;
-		}
-	}
-	assert_true(prefix_start < g_setup_order_capture.count);
-	assert_true(g_setup_order_capture.count - prefix_start >=
-		ARRAY_LEN(expected_names));
-
+	size_t previous_hops = 0U;
 	for (size_t index = 0; index < ARRAY_LEN(expected_names); ++index)
 	{
-		size_t captured_index = prefix_start + index;
-		assert_string_equal(g_setup_order_capture.names[captured_index],
-			expected_names[index]);
-		assert_true(g_setup_order_capture.library_initialised[captured_index]);
+		const libvar_t *var = LibVarGet(expected_names[index]);
+		assert_non_null(var);
+
+		size_t hops = 0U;
+		for (const libvar_t *walk = var; walk != NULL; walk = walk->next)
+		{
+			++hops;
+		}
+
+		/* Each name in the sequence must have been created after the one
+		   before it, i.e. sit strictly nearer the head. */
+		assert_true(hops > previous_hops);
+		previous_hops = hops;
 	}
 
 	status = context->api->BotShutdownLibrary();

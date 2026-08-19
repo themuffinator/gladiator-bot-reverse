@@ -2006,11 +2006,30 @@ bool BotInterface_ImportCacheEntry(int index, const char **name, const char **va
 		return false;
 	}
 
+	/*
+	 * The cache prepends, so walking it directly yields the most recently set
+	 * name first.  Index from the oldest entry instead: retail never clears
+	 * libvarlist, so its entries sit in the order the host pushed them, and
+	 * the seed has to reproduce that order rather than invert it.
+	 */
+	int count = 0;
 	for (botlib_import_cache_entry_t *entry = g_botImportCache;
 		entry != NULL;
 		entry = entry->next)
 	{
-		if (index-- == 0)
+		++count;
+	}
+	if (index >= count)
+	{
+		return false;
+	}
+
+	int remaining = count - 1 - index;
+	for (botlib_import_cache_entry_t *entry = g_botImportCache;
+		entry != NULL;
+		entry = entry->next)
+	{
+		if (remaining-- == 0)
 		{
 			*name = entry->name;
 			*value = entry->value;
