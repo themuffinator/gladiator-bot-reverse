@@ -3408,26 +3408,28 @@ static void test_reachability_physics_helpers(void **state)
 	vec3_t second_end = {10.0f, 5.0f, 0.0f};
 	aas_plane_t plane = {0};
 	plane.normal[2] = 1.0f;
-	vec3_t beststart1 = {0.0f, 0.0f, 0.0f};
-	vec3_t bestend1 = {0.0f, 0.0f, 0.0f};
-	vec3_t beststart2 = {0.0f, 0.0f, 0.0f};
-	vec3_t bestend2 = {0.0f, 0.0f, 0.0f};
+	vec3_t beststart = {0.0f, 0.0f, 0.0f};
+	vec3_t bestend = {0.0f, 0.0f, 0.0f};
 	float edgedistance = AAS_ClosestEdgePoints(first_start,
 		first_end,
 		second_start,
 		second_end,
 		&plane,
 		&plane,
-		beststart1,
-		bestend1,
-		beststart2,
-		bestend2,
+		beststart,
+		bestend,
 		99999.0f);
 	assert_float_equal(edgedistance, 5.0f, 0.0001f);
-	assert_float_equal(beststart1[0], 10.0f, 0.0001f);
-	assert_float_equal(beststart1[1], 0.0f, 0.0001f);
-	assert_float_equal(bestend1[0], 10.0f, 0.0001f);
-	assert_float_equal(bestend1[1], 5.0f, 0.0001f);
+	/*
+	 * All four projected candidates tie at distance 5, so retail's running
+	 * VectorMiddle folds them in order: (0,0) -> (5,0) -> (2.5,0) -> (6.25,0),
+	 * and the same on the far edge.  Quake III's later two-range variant would
+	 * report (10,0)/(10,5) here.
+	 */
+	assert_float_equal(beststart[0], 6.25f, 0.0001f);
+	assert_float_equal(beststart[1], 0.0f, 0.0001f);
+	assert_float_equal(bestend[0], 6.25f, 0.0001f);
+	assert_float_equal(bestend[1], 5.0f, 0.0001f);
 }
 
 /*

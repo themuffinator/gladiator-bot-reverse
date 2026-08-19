@@ -2417,60 +2417,53 @@ static qboolean AAS_VectorBetweenVectors(const vec3_t point,
 
 /*
 =============
-AAS_ExtendClosestRange
+AAS_VectorMiddle
 
-Extend one endpoint of an equal-distance point range using the retail
-farthest-from-opposite-end comparison.
+Return the midpoint of two reachability geometry points.
+
+This is retail sub_10013c70 (HLIL 16318-16323): componentwise addition
+followed by sub_10043570(result, 0.5f, result).
 =============
 */
-static void AAS_ExtendClosestRange(vec3_t first,
-	vec3_t second,
-	const vec3_t point)
+static void AAS_VectorMiddle(const vec3_t first,
+	const vec3_t second,
+	vec3_t middle)
 {
-	float firstdistance = AAS_VectorDistance(first, point);
-	float seconddistance = AAS_VectorDistance(second, point);
-	float rangedistance = AAS_VectorDistance(first, second);
-	if (firstdistance > seconddistance)
-	{
-		if (firstdistance > rangedistance)
-		{
-			VectorCopy(point, second);
-		}
-	}
-	else if (seconddistance > rangedistance)
-	{
-		VectorCopy(point, first);
-	}
+	VectorAdd(first, second, middle);
+	VectorScale(middle, 0.5f, middle);
 }
 
 /*
 =============
 AAS_ConsiderClosestEdgePoint
 
-Merge one projected edge-point pair into the current closest-distance ranges.
+Merge one projected edge-point pair into the current closest point pair.
+
+Retail keeps a SINGLE beststart/bestend pair (HLIL 16377-16384: bestdist at
+var_1b0_1 followed by six contiguous floats and nothing else) and folds an
+equal-distance candidate in with a running VectorMiddle - 100141d0/100141e4,
+10014291/100142a5, 1001435f/1001436f, 10014429/10014439.  Quake III's newer
+two-range AAS_ClosestEdgePoints is a later rewrite and is not what this DLL
+does; from the third tied candidate on, the two schemes disagree.
 =============
 */
 static void AAS_ConsiderClosestEdgePoint(const vec3_t start,
 	const vec3_t end,
-	vec3_t beststart1,
-	vec3_t bestend1,
-	vec3_t beststart2,
-	vec3_t bestend2,
+	vec3_t beststart,
+	vec3_t bestend,
 	float *bestdist)
 {
 	float distance = AAS_VectorDistance(start, end);
 	if (distance > *bestdist - 0.5f && distance < *bestdist + 0.5f)
 	{
-		AAS_ExtendClosestRange(beststart1, beststart2, start);
-		AAS_ExtendClosestRange(bestend1, bestend2, end);
+		AAS_VectorMiddle(beststart, start, beststart);
+		AAS_VectorMiddle(bestend, end, bestend);
 	}
 	else if (distance < *bestdist)
 	{
 		*bestdist = distance;
-		VectorCopy(start, beststart1);
-		VectorCopy(start, beststart2);
-		VectorCopy(end, bestend1);
-		VectorCopy(end, bestend2);
+		VectorCopy(start, beststart);
+		VectorCopy(end, bestend);
 	}
 }
 
@@ -2478,16 +2471,14 @@ static void AAS_ConsiderClosestEdgePoint(const vec3_t start,
 =============
 AAS_ReplaceClosestEdgePoint
 
-Replace the closest ranges only when a vertex-pair fallback is strictly
-closer, matching the retail non-projecting path.
+Replace the closest pair only when a vertex-pair fallback is strictly closer,
+matching the retail non-projecting path.
 =============
 */
 static void AAS_ReplaceClosestEdgePoint(const vec3_t start,
 	const vec3_t end,
-	vec3_t beststart1,
-	vec3_t bestend1,
-	vec3_t beststart2,
-	vec3_t bestend2,
+	vec3_t beststart,
+	vec3_t bestend,
 	float *bestdist)
 {
 	float distance = AAS_VectorDistance(start, end);
@@ -2497,17 +2488,15 @@ static void AAS_ReplaceClosestEdgePoint(const vec3_t start,
 	}
 
 	*bestdist = distance;
-	VectorCopy(start, beststart1);
-	VectorCopy(start, beststart2);
-	VectorCopy(end, bestend1);
-	VectorCopy(end, bestend2);
+	VectorCopy(start, beststart);
+	VectorCopy(end, bestend);
 }
 
 /*
 =============
 AAS_ClosestEdgePoints
 
-Calculate the closest point ranges on two ground edges after projecting each
+Calculate the closest point pair on two ground edges after projecting each
 edge endpoint onto the other edge's horizontal line and ground plane.
 =============
 */
@@ -2517,10 +2506,8 @@ float AAS_ClosestEdgePoints(const vec3_t v1,
 	const vec3_t v4,
 	const aas_plane_t *plane1,
 	const aas_plane_t *plane2,
-	vec3_t beststart1,
-	vec3_t bestend1,
-	vec3_t beststart2,
-	vec3_t bestend2,
+	vec3_t beststart,
+	vec3_t bestend,
 	float bestdist)
 {
 	if (plane1 == NULL || plane2 == NULL ||
@@ -2598,55 +2585,32 @@ float AAS_ClosestEdgePoints(const vec3_t v1,
 	qboolean founddistance = qfalse;
 	if (AAS_VectorBetweenVectors(p1, v3, v4))
 	{
-		AAS_ConsiderClosestEdgePoint(v1, p1, beststart1, bestend1,
-			beststart2, bestend2, &bestdist);
+		AAS_ConsiderClosestEdgePoint(v1, p1, beststart, bestend, &bestdist);
 		founddistance = qtrue;
 	}
 	if (AAS_VectorBetweenVectors(p2, v3, v4))
 	{
-		AAS_ConsiderClosestEdgePoint(v2, p2, beststart1, bestend1,
-			beststart2, bestend2, &bestdist);
+		AAS_ConsiderClosestEdgePoint(v2, p2, beststart, bestend, &bestdist);
 		founddistance = qtrue;
 	}
 	if (AAS_VectorBetweenVectors(p3, v1, v2))
 	{
-		AAS_ConsiderClosestEdgePoint(p3, v3, beststart1, bestend1,
-			beststart2, bestend2, &bestdist);
+		AAS_ConsiderClosestEdgePoint(p3, v3, beststart, bestend, &bestdist);
 		founddistance = qtrue;
 	}
 	if (AAS_VectorBetweenVectors(p4, v1, v2))
 	{
-		AAS_ConsiderClosestEdgePoint(p4, v4, beststart1, bestend1,
-			beststart2, bestend2, &bestdist);
+		AAS_ConsiderClosestEdgePoint(p4, v4, beststart, bestend, &bestdist);
 		founddistance = qtrue;
 	}
 	if (!founddistance)
 	{
-		AAS_ReplaceClosestEdgePoint(v1, v3, beststart1, bestend1,
-			beststart2, bestend2, &bestdist);
-		AAS_ReplaceClosestEdgePoint(v1, v4, beststart1, bestend1,
-			beststart2, bestend2, &bestdist);
-		AAS_ReplaceClosestEdgePoint(v2, v3, beststart1, bestend1,
-			beststart2, bestend2, &bestdist);
-		AAS_ReplaceClosestEdgePoint(v2, v4, beststart1, bestend1,
-			beststart2, bestend2, &bestdist);
+		AAS_ReplaceClosestEdgePoint(v1, v3, beststart, bestend, &bestdist);
+		AAS_ReplaceClosestEdgePoint(v1, v4, beststart, bestend, &bestdist);
+		AAS_ReplaceClosestEdgePoint(v2, v3, beststart, bestend, &bestdist);
+		AAS_ReplaceClosestEdgePoint(v2, v4, beststart, bestend, &bestdist);
 	}
 	return bestdist;
-}
-
-/*
-=============
-AAS_VectorMiddle
-
-Return the midpoint of two reachability geometry points.
-=============
-*/
-static void AAS_VectorMiddle(const vec3_t first,
-	const vec3_t second,
-	vec3_t middle)
-{
-	VectorAdd(first, second, middle);
-	VectorScale(middle, 0.5f, middle);
 }
 
 /*
@@ -2706,9 +2670,7 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 
 	float bestdistance = 999999.0f;
 	vec3_t beststart = {0.0f, 0.0f, 0.0f};
-	vec3_t beststart2 = {0.0f, 0.0f, 0.0f};
 	vec3_t bestend = {0.0f, 0.0f, 0.0f};
-	vec3_t bestend2 = {0.0f, 0.0f, 0.0f};
 	for (int face1index = 0; face1index < area1->numfaces; ++face1index)
 	{
 		int face1num = abs(aasworld.faceIndex[area1->firstface + face1index]);
@@ -2777,16 +2739,18 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 						&aasworld.planes[face2->planenum],
 						beststart,
 						bestend,
-						beststart2,
-						bestend2,
 						bestdistance);
 				}
 			}
 		}
 	}
 
-	AAS_VectorMiddle(beststart, beststart2, beststart);
-	AAS_VectorMiddle(bestend, bestend2, bestend);
+	/*
+	 * 10014608 leaves the four nested loops straight into the 1001460e
+	 * bestdist-vs-4 test and label_10014623's maxjumpdistance compare; there
+	 * is no post-loop midpoint, because the tie merge already happened
+	 * in-place on every equal-distance candidate.
+	 */
 	if (bestdistance <= 4.0f || bestdistance >= maxjumpdistance)
 	{
 		return qfalse;

@@ -345,24 +345,6 @@ static bool BotInterface_HasLineOfSight(const vec3_t from,
 
 /*
 =============
-BotInterface_SameTeam
-
-Compares the semantic team fields used by the reconstructed console layer.
-=============
-*/
-static bool BotInterface_SameTeam(const bot_client_state_t *lhs,
-	const bot_client_state_t *rhs)
-{
-	if (lhs == NULL || rhs == NULL || lhs->team < 0 || rhs->team < 0)
-	{
-		return false;
-	}
-
-	return lhs->team == rhs->team;
-}
-
-/*
-=============
 BotAI_EntityIsDead
 
 Reconstructs retail sub_10021710's Quake II client/live-frame predicate.
@@ -399,6 +381,11 @@ static int BotAI_EntityIsShooting(const aas_entityinfo_t *entity_info)
 BotAI_ModelTeamMatches
 
 Compares the model prefix before the Quake II model/skin separator.
+
+Retail's DF_MODELTEAMS arm (0x100236ec..0x100237ab) ends in StrCompareN @
+0x100456b0 - the raw repe cmpsb strncmp - so this compare is CASE-SENSITIVE,
+unlike the DF_SKINTEAMS/ctf and teamplay arms, which both go through the
+case-folding sub_10045cb0 (_strcmpi).  ref be_ai2_dmq2.c:1214 vs :1202/:1190.
 =============
 */
 static int BotAI_ModelTeamMatches(const char *left, const char *right)
@@ -412,7 +399,7 @@ static int BotAI_ModelTeamMatches(const char *left, const char *right)
 		? (size_t)(right_separator - right)
 		: strlen(right);
 	return left_length == right_length &&
-		Q_strnicmp(left, right, left_length) == 0;
+		strncmp(left, right, left_length) == 0;
 }
 
 /*
@@ -3441,7 +3428,13 @@ static void BotAI_RoamGoal(const bot_client_state_t *state, vec3_t goal)
 			state->entity_number,
 			MASK_SOLID);
 		vec3_t direction;
-		VectorSubtract(trace.endpos, state->last_client_update.origin, direction);
+		/*
+		 * 0x10022bf1 subtracts the bot origin from the RANDOMIZED endpoint,
+		 * before the trace result is copied out at 0x10022c03, so the length
+		 * driving both the 100-unit gate and the 0x10022c5b rescale is the
+		 * full untraced ray length rather than fraction * length.
+		 */
+		VectorSubtract(best_origin, state->last_client_update.origin, direction);
 		float length = sqrtf(DotProduct(direction, direction));
 		if (length <= 100.0f)
 		{
@@ -3472,6 +3465,29 @@ static void BotAI_RoamGoal(const bot_client_state_t *state, vec3_t goal)
 		}
 	}
 	VectorCopy(best_origin, goal);
+}
+
+/*
+=============
+BotAI_CTFTeam
+
+Return the bot's CTF team the way retail sub_10023510 does: 1 when its skin
+contains "ctf_r", 2 otherwise.
+
+0x10023523 calls strstr(ClientSkin(bs->client), "ctf_r") and 0x1002352b turns
+the result into 1 or 2 with the neg/sbb idiom.  Retail derives this on demand
+and never caches it in bot_state_t, so nothing here writes state->team.
+=============
+*/
+static int BotAI_CTFTeam(const bot_client_state_t *state)
+{
+	if (state == NULL)
+	{
+		return 2;
+	}
+
+	const char *skin = BotState_ClientSkin(state->client_number);
+	return (skin != NULL && strstr(skin, "ctf_r") != NULL) ? 1 : 2;
 }
 
 /*
@@ -3628,107 +3644,6 @@ static int BotAI_FindExactConsoleClientByName(const char *name)
 
 /*
 =============
-BotAI_ConsoleModelTeamMatches
-
-Compares the model prefix before the Quake II skin separator.
-=============
-*/
-static bool BotAI_ConsoleModelTeamMatches(const char *left, const char *right)
-{
-	if (left == NULL || right == NULL || left[0] == '\0' || right[0] == '\0')
-	{
-		return false;
-	}
-
-	const char *left_separator = strchr(left, '/');
-	const char *right_separator = strchr(right, '/');
-	size_t left_length = left_separator != NULL
-		? (size_t)(left_separator - left)
-		: strlen(left);
-	size_t right_length = right_separator != NULL
-		? (size_t)(right_separator - right)
-		: strlen(right);
-	return left_length == right_length &&
-		Q_strnicmp(left, right, left_length) == 0;
-}
-
-/*
-=============
-BotAI_ConsoleSkinTeamMatches
-
-Compares the skin suffix at the Quake II model/skin separator.
-=============
-*/
-static bool BotAI_ConsoleSkinTeamMatches(const char *left, const char *right)
-{
-	if (left == NULL || right == NULL || left[0] == '\0' || right[0] == '\0')
-	{
-		return false;
-	}
-
-	const char *left_separator = strchr(left, '/');
-	const char *right_separator = strchr(right, '/');
-	return Q_stricmp(left_separator != NULL ? left_separator : left,
-		right_separator != NULL ? right_separator : right) == 0;
-}
-
-/*
-=============
-BotAI_ConsoleClientIsTeammate
-
-Uses the reconstructed semantic team slot first, then Gladiator's Quake II
-CTF/model/skin presentation conventions when no semantic peer state exists.
-=============
-*/
-static bool BotAI_ConsoleClientIsTeammate(const bot_client_state_t *state,
-	int client)
-{
-	if (state == NULL || !BotState_ClientInRange(client))
-	{
-		return false;
-	}
-	if (client == state->client_number)
-	{
-		return true;
-	}
-
-	const bot_client_state_t *other = BotState_Get(client);
-	if (other != NULL && other->active &&
-		state->team >= 0 && other->team >= 0)
-	{
-		return BotInterface_SameTeam(state, other);
-	}
-
-	const char *self_skin = BotState_ClientSkin(state->client_number);
-	const char *other_skin = BotState_ClientSkin(client);
-	if (LibVarGetValue("ctf") != 0.0f)
-	{
-		bool self_red = self_skin != NULL && strstr(self_skin, "ctf_r") != NULL;
-		bool other_red = other_skin != NULL && strstr(other_skin, "ctf_r") != NULL;
-		bool self_blue = self_skin != NULL && strstr(self_skin, "ctf_b") != NULL;
-		bool other_blue = other_skin != NULL && strstr(other_skin, "ctf_b") != NULL;
-		if (self_red || other_red || self_blue || other_blue)
-		{
-			return (self_red && other_red) || (self_blue && other_blue);
-		}
-	}
-
-	int dmflags = (int)LibVarGetValue("dmflags");
-	if ((dmflags & BOT_CONSOLE_MODEL_TEAMS) != 0)
-	{
-		return BotAI_ConsoleModelTeamMatches(self_skin, other_skin);
-	}
-	if ((dmflags & BOT_CONSOLE_SKIN_TEAMS) != 0 ||
-		LibVarGetValue("teamplay") != 0.0f)
-	{
-		return BotAI_ConsoleSkinTeamMatches(self_skin, other_skin);
-	}
-
-	return false;
-}
-
-/*
-=============
 BotAI_ConsoleTeamPlayerCount
 
 Counts named same-team clients for the retail unaddressed-command probability.
@@ -3740,8 +3655,10 @@ static int BotAI_ConsoleTeamPlayerCount(const bot_client_state_t *state)
 	for (int client = 0; client < BotState_ClientCapacity(); ++client)
 	{
 		const char *name = BotState_ClientName(client);
+		/* ref BotNumTeamMates (be_ai2_dmq2.c:1230-1236) calls BotSameTeam
+		   per client with the entity number, i.e. client + 1. */
 		if (name != NULL && name[0] != '\0' &&
-			BotAI_ConsoleClientIsTeammate(state, client))
+			BotAI_SameTeam(state, client + 1))
 		{
 			++count;
 		}
@@ -3793,7 +3710,8 @@ static bool BotAI_ConsoleAddressedToBot(bot_client_state_t *state,
 		(int)sizeof(netname));
 	int source_client = BotAI_FindExactConsoleClientByName(netname);
 	if (source_client < 0 ||
-		!BotAI_ConsoleClientIsTeammate(state, source_client))
+		/* 0x10026be0 gates on j_sub_10023550(arg1, eax + 1). */
+		!BotAI_SameTeam(state, source_client + 1))
 	{
 		return false;
 	}
@@ -4487,7 +4405,7 @@ static void BotAI_SelectAutomaticCTFGoal(bot_client_state_t *state)
 
 	if (selection < 0.66f && flags_available)
 	{
-		state->team_goal = state->team == 1 ? red_flag : blue_flag;
+		state->team_goal = BotAI_CTFTeam(state) == 1 ? red_flag : blue_flag;
 		state->team_goal_number = state->team_goal.number;
 		state->ltg_type = 3;
 		state->defend_away_time = 0.0f;
@@ -6330,13 +6248,12 @@ static bool BotAI_CommitCarriedFlagRetreatGoal(bot_client_state_t *state,
 
 	bot_goal_t red_flag;
 	bot_goal_t blue_flag;
-	if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag) ||
-		(state->team != 1 && state->team != 2))
+	if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag))
 	{
 		return false;
 	}
 
-	*goal = state->team == 1 ? red_flag : blue_flag;
+	*goal = BotAI_CTFTeam(state) == 1 ? red_flag : blue_flag;
 	return true;
 }
 
@@ -7008,14 +6925,13 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 			BotAI_ConsoleEnterInitialTeamChat(state, "captureflag_start", NULL);
 			state->team_message_time = 0.0f;
 		}
-		if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag) ||
-			(state->team != 1 && state->team != 2))
+		if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag))
 		{
 			state->ltg_type = 0;
 			return BOT_TEAM_GOAL_HANDLED;
 		}
 
-		*goal = state->team == 1 ? blue_flag : red_flag;
+		*goal = BotAI_CTFTeam(state) == 1 ? blue_flag : red_flag;
 		if (BotTouchingGoal(state->last_client_update.origin, goal) ||
 			now > state->team_goal_time)
 		{
@@ -7032,14 +6948,13 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 		{
 			return BOT_TEAM_GOAL_NONE;
 		}
-		if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag) ||
-			(state->team != 1 && state->team != 2))
+		if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag))
 		{
 			state->ltg_type = 0;
 			return BOT_TEAM_GOAL_HANDLED;
 		}
 
-		*goal = state->team == 1 ? red_flag : blue_flag;
+		*goal = BotAI_CTFTeam(state) == 1 ? red_flag : blue_flag;
 		/* Retail's only unconditional clear here is the deadline
 		   (0x1001e57e -> 0x1001e580). The flag-carrying test lives inside the
 		   contact branch at 0x1001e5a9, reproduced below. */

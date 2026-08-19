@@ -334,7 +334,7 @@ address-to-translation-unit index.
 
 ### HIGH AAS_ClosestEdgePoints uses Quake III's two-endpoint range instead of retail's running VectorMiddle
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_Reachability_Jump (inline closest-edge-point selection)` @ `0x10013cc0`
 - HLIL: 16830-16879: `if (bestdist-0.5 >= dist || bestdist+0.5 <= dist) { if (dist < bestdist) { beststart = v1; bestdist = dist; bestend = p1 } } else { j_sub_10013c70(&var_1ac, edi_5, &var_1ac); j_sub_10013c70(&var_1a0, &var_168, &var_1a0) }` — eight such VectorMiddle (sub_10013c70) calls at 100141d0/100141e4/10014291/100142a5/1001435f/1001436f/10014429/10014439
 - reference: ref/gladiator-bot-restored/botlib/be_aas_reach.c:1365-1381
@@ -884,7 +884,7 @@ address-to-translation-unit index.
 
 ### HIGH BotRoamGoal measures the direction/length from trace.endpos instead of the randomized endpoint
 
-- status: **open**
+- status: **applied**
 - retail: `BotRoamGoal` @ `0x10022a60`
 - HLIL: 28208-28232
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmq2.c:954-960 (`VectorSubtract(endpos, bs->origin, dir); len = VectorNormalize(dir); if (len > 100.0f) { v19 = trace.fraction * len - 40.0f; ... }`)
@@ -898,7 +898,7 @@ address-to-translation-unit index.
 
 ### HIGH BotAddressedToBot uses a different team predicate than retail's BotSameTeam (teamplay compares only the skin suffix; MODELTEAMS is checked before SKINTEAMS)
 
-- status: **open**
+- status: **applied**
 - retail: `BotAddressedToBot / BotSameTeam` @ `0x10026be0 / 0x10023550`
 - HLIL: 31070, 28579-28687
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmq2.c:1188-1217 (BotSameTeam) and :2384-2386 (BotAddressedToBot)
@@ -926,7 +926,7 @@ address-to-translation-unit index.
 
 ### HIGH BotCTFTeam is never computed - state->team stays -1, so every CTF flag-goal selection takes the "no team" abort path
 
-- status: **open**
+- status: **applied**
 - retail: `BotCTFTeam` @ `0x10023510`
 - HLIL: 28547-28551
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmq2.c:1146-1154 (BotCTFTeam) and :2171-2174 (BotCTFSeekGoals defend branch)
@@ -940,7 +940,7 @@ address-to-translation-unit index.
 
 ### MEDIUM BotSameTeam's DF_MODELTEAMS comparison is case-insensitive; retail uses strncmp
 
-- status: **open**
+- status: **applied**
 - retail: `BotSameTeam` @ `0x10023550`
 - HLIL: 28635-28678
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmq2.c:1214 (`if ( !strncmp((const char *)ClientSkin(bs->client), (const char *)ClientSkin(v8), MaxCount) )`)

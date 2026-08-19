@@ -838,10 +838,8 @@ float AAS_ClosestEdgePoints(const vec3_t v1,
 	const vec3_t v4,
 	const aas_plane_t *plane1,
 	const aas_plane_t *plane2,
-	vec3_t beststart1,
-	vec3_t bestend1,
-	vec3_t beststart2,
-	vec3_t bestend2,
+	vec3_t beststart,
+	vec3_t bestend,
 	float bestdist);
 int AAS_Reachability_Jump(int area1num, int area2num);
 int AAS_Reachability_Ladder(int area1num, int area2num);
