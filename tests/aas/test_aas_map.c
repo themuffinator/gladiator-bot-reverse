@@ -3054,6 +3054,7 @@ static void test_routing_frame_respects_framereachability(void **state)
     LibVarSet("framereachability", "0");
 
     AAS_RouteFrameResetDiagnostics();
+    AAS_RetailResetCacheUpdateCounts();
     AAS_RouteFrameUpdate();
 
     assert_int_equal(AAS_RouteFrameWorkCounter(), 0);
@@ -3064,6 +3065,7 @@ static void test_routing_frame_respects_framereachability(void **state)
     LibVarSet("framereachability", "8");
 
     AAS_RouteFrameResetDiagnostics();
+    AAS_RetailResetCacheUpdateCounts();
     AAS_RouteFrameUpdate();
 
     assert_int_equal(AAS_RouteFrameWorkCounter(), 1);
@@ -3081,11 +3083,13 @@ static void test_routing_frame_forcewrite_toggle(void **state)
 
     LibVarSet("forcewrite", "0");
     AAS_RouteFrameResetDiagnostics();
+    AAS_RetailResetCacheUpdateCounts();
     AAS_RouteFrameUpdate();
     assert_false(AAS_RouteFrameForceWriteActive());
 
     LibVarSet("forcewrite", "1");
     AAS_RouteFrameResetDiagnostics();
+    AAS_RetailResetCacheUpdateCounts();
     AAS_RouteFrameUpdate();
     assert_true(AAS_RouteFrameForceWriteActive());
 

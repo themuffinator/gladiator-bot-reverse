@@ -2741,6 +2741,7 @@ static void test_retail_area_cache_propagates_fifo_and_counts(void **state)
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	ConfigureRetailAreaPropagationFixture(context);
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 
 	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
 	aas_retailroutingcache_t *cache =
@@ -2863,6 +2864,7 @@ static void test_retail_portal_cache_propagates_both_sides_and_lifecycle(void **
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	ConfigureRetailPortalLineFixture(context);
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
 
 	aasworld.time = 1.0f;
@@ -2943,6 +2945,7 @@ static void test_retail_portal_cache_inherits_travel_and_content_masks(void **st
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	ConfigureRetailPortalLineFixture(context);
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 
 	aas_retailroutingcache_t *cache =
 		AAS_GetRetailPortalRoutingCache(3, 3, TEST_RETAIL_TFL_AIR);
@@ -2983,6 +2986,7 @@ static void test_retail_portal_cache_wraps_ushort_costs(void **state)
 	context->reachability[4].traveltime = 29998;
 	context->reachability[6].traveltime = 39998;
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 
 	aas_retailroutingcache_t *cache = AAS_GetRetailPortalRoutingCache(3,
 		3,
@@ -3006,6 +3010,7 @@ static void test_retail_portal_cache_retains_equal_fifo_side(void **state)
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	ConfigureRetailPortalEqualFixture(context);
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
 
 	aas_retailroutingcache_t *cache =
@@ -3036,6 +3041,7 @@ static void test_retail_route_query_same_cluster_origin_and_first_hop(void **sta
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	ConfigureRetailAreaPropagationFixture(context);
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
 
 	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
@@ -3077,6 +3083,7 @@ static void test_retail_route_query_filters_and_projects_travel_flags(void **sta
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	ConfigureRetailAreaPropagationFixture(context);
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 
 	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
 		NULL,
@@ -3107,6 +3114,7 @@ static void test_retail_route_query_filters_and_projects_travel_flags(void **sta
 	context->areasettings[4].contents = AAS_AREACONTENTS_WATER;
 	assert_true(AAS_InitRetailRoutingCaches());
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
 		NULL,
 		4,
@@ -3138,6 +3146,7 @@ static void test_retail_route_query_crosses_portals_and_adjusts_portal_sides(voi
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	ConfigureRetailPortalLineFixture(context);
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
 
 	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
@@ -3189,6 +3198,7 @@ static void test_retail_route_query_wraps_cross_cluster_ushort_sum(void **state)
 	context->reachability[4].traveltime = 29998;
 	context->reachability[6].traveltime = 39998;
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 
 	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
 		NULL,
@@ -3210,6 +3220,7 @@ static void test_retail_route_query_preserves_guards_and_same_area_order(void **
 	aas_debug_test_context_t *context = (aas_debug_test_context_t *)(*state);
 	ConfigureRetailAreaPropagationFixture(context);
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 	int travelflags = TEST_RETAIL_TFL_WALK | TEST_RETAIL_TFL_AIR;
 
 	aasworld.initialized = qfalse;
@@ -3273,6 +3284,7 @@ static void test_retail_route_query_preserves_guards_and_same_area_order(void **
 		1);
 
 	AAS_RouteFrameResetDiagnostics();
+	AAS_RetailResetCacheUpdateCounts();
 	assert_int_equal(AAS_AreaTravelTimeToGoalArea(1,
 		NULL,
 		4,

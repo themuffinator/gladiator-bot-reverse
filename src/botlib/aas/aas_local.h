@@ -314,7 +314,7 @@ typedef struct aas_entityinfo_s
 #define AAS_AREA_LADDER   2
 #define AAS_AREA_LIQUID   4
 #define AAS_AREA_DISABLED 8
-#define AAS_AREA_WEAPONJUMP 32
+#define AAS_AREA_WEAPONJUMP 8192 /* 0x2000; retail ORs 0x20 into areaflags byte 1 at 0x10017a9b */
 #define AAS_AREA_BRIDGE   16
 
 #define SE_NONE                 0
@@ -945,6 +945,8 @@ int AAS_NearestHideArea(int srcnum,
 int AAS_NextAreaReachability(int areanum, int reachnum);
 void AAS_RouteFrameUpdate(void);
 void AAS_RouteFrameResetDiagnostics(void);
+/* Test-only; retail has no counterpart. See aas_route.c. */
+void AAS_RetailResetCacheUpdateCounts(void);
 int AAS_RouteFrameWorkCounter(void);
 int AAS_RouteFrameSkipCounter(void);
 int AAS_RouteFrameLastBudget(void);

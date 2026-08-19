@@ -30,7 +30,7 @@ address-to-translation-unit index.
 
 ### MEDIUM Weapon-jump area flag is 0x20 instead of retail's 0x2000
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_SetWeaponJumpAreaFlags / AAS_Reachability_WeaponJump` @ `0x10017a9b (set), 0x10017cbc (test)`
 - HLIL: 19268 `ecx_2:1.b = (*(eax_91 + (edx_3 << 2) + 4)):1.b | 0x20` — OR of 0x20 into byte 1 of areaflags, i.e. `areaflags |= 0x2000`; 20288-20289 `((*(data_10066954 + arg2 * 0x1c + 4)).w:1.b & 0x20) != 0` — test of areaflags bit 13
 - reference: ref/gladiator-bot-restored/botlib/be_aas_reach.c:2590 `aasworld.areasettings[areanum].areaflags |= 0x2000u;` and :2632
@@ -503,7 +503,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_AreaTravelTime returns 0 for sub-unit distances; retail clamps to 1
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_AreaTravelTime` @ `0x10018f50`
 - HLIL: 21158-21181 (deciding: 21176-21181)
 - ours: `src/botlib/aas/aas_route.c:1888`
@@ -516,7 +516,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_RandomGoalArea passes an origin, turning retail's single route query per candidate into a full per-reachability scan
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_RandomGoalArea` @ `0x1001a410`
 - HLIL: 22136-22209 (deciding: 22163)
 - ours: `src/botlib/aas/aas_route.c:3125`
@@ -529,7 +529,7 @@ address-to-translation-unit index.
 
 ### LOW sub_1001AB80 allocates the alt-routing scratch with GetMemory, we use GetClearedMemory
 
-- status: **open**
+- status: **applied**
 - retail: `sub_1001AB80` @ `0x1001ab80`
 - HLIL: 22428-22443 (deciding: 22435, 22441)
 - ours: `src/botlib/aas/aas_route.c:1201`
@@ -542,7 +542,7 @@ address-to-translation-unit index.
 
 ### LOW AAS_ReachabilityFromNum range check is one tighter than retail's
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_ReachabilityFromNum` @ `0x1001a2e0`
 - HLIL: 22096-22105 (deciding: 22098)
 - ours: `src/botlib/aas/aas_route.c:2568`
@@ -555,7 +555,7 @@ address-to-translation-unit index.
 
 ### LOW AAS_AlternativeRouteGoals is missing retail's per-candidate Log_Write("%d midrange area %d")
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_AlternativeRouteGoals (sub_1001A720)` @ `0x1001a720`
 - HLIL: 22262-22417 (deciding: 22313-22319)
 - ours: `src/botlib/aas/aas_route.c:3010`
@@ -568,7 +568,7 @@ address-to-translation-unit index.
 
 ### LOW Cumulative area/portal cache-update counters are zeroed on map load; retail never resets them
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_RoutingInfo / numareacacheupdates / numportalcacheupdates` @ `0x1001a610`
 - HLIL: 22217-22220 (plus the only writes: 21591, 21783; .data initialisers 78840, 78844)
 - ours: `src/botlib/aas/aas_route.c:3480`

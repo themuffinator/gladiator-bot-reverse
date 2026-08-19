@@ -1198,8 +1198,10 @@ static qboolean AAS_InitAlternativeRoutingScratch(void)
 		return qfalse;
 	}
 
+	/* 0x1001ab80 allocates both scratch arrays with j_sub_10038f90 =
+	   GetMemory, uncleared; the midrange table is memset before use below. */
 	g_alternative_route_midrange =
-		(aas_altroute_midrange_t *)GetClearedMemory(
+		(aas_altroute_midrange_t *)GetMemory(
 			numareas * sizeof(*g_alternative_route_midrange));
 	if (g_alternative_route_midrange == NULL)
 	{
@@ -1207,7 +1209,7 @@ static qboolean AAS_InitAlternativeRoutingScratch(void)
 	}
 
 	g_alternative_route_cluster_areas =
-		(int *)GetClearedMemory(
+		(int *)GetMemory(
 			numareas * sizeof(*g_alternative_route_cluster_areas));
 	if (g_alternative_route_cluster_areas == NULL)
 	{
@@ -1871,30 +1873,41 @@ unsigned short AAS_AreaTravelTime(int areanum, const vec3_t start, const vec3_t 
 		return 0;
 	}
 
-	float distance = VectorDistance(start, end);
+	/*
+	 * 0x10018f95 scales in x87 against the double constants 1.3 and 0.33, and
+	 * 0x10018fc0 truncates to int BEFORE the clamp: `if (result > 0) return
+	 * result; return 1`.  Clamping the float first would return 0 for every
+	 * scaled value in (0,1) - i.e. any separation under about three units in
+	 * an ordinary area - where retail returns 1.
+	 */
+	double distance = (double)VectorDistance(start, end);
 	if (AAS_AreaCrouch(areanum))
 	{
-		distance *= 1.3f;
+		distance *= 1.3;
 	}
 	else if (AAS_AreaSwim(areanum))
 	{
-		distance *= 1.0f;
+		distance *= 1.0;
 	}
 	else
 	{
-		distance *= 0.33f;
+		distance *= 0.33;
 	}
 
-	if (distance <= 0.0f)
+	int traveltime = (int)distance;
+	if (traveltime <= 0)
 	{
 		return 1U;
 	}
-	if (distance >= ROUTE_INVALID_TIME)
+	/* Ours, not retail's: retail returns the raw int32 and has no upper
+	   clamp.  It only differs above 65535, which its in-area callers cannot
+	   reach, and it keeps the unsigned short return from wrapping. */
+	if (traveltime >= ROUTE_INVALID_TIME)
 	{
 		return (unsigned short)ROUTE_INVALID_TIME;
 	}
 
-	return (unsigned short)distance;
+	return (unsigned short)traveltime;
 }
 
 static unsigned short AAS_LocalTravelTime(int areanum, const vec3_t origin, int reachIndex)
@@ -2562,6 +2575,15 @@ void AAS_ReachabilityFromNum(int num, aas_reachability_t *reach)
 		return;
 	}
 
+	/*
+	 * Deliberate hardening, not a reconstruction gap: retail 0x1001a2fc
+	 * rejects only on `num > reachabilitysize`, so num == reachabilitysize is
+	 * accepted and memcpy'd from 44 bytes past the lump allocated at
+	 * 0x1000cb33 as exactly count * 0x2c.  The bytes it returns there are
+	 * whatever follows the allocation, so they cannot be reproduced anyway;
+	 * we clamp to an all-zero record instead.  Keep this in step with the
+	 * sibling pre-filter in AAS_NextAreaReachability.
+	 */
 	if (!aasworld.initialized ||
 	    aasworld.reachability == NULL ||
 	    num < 0 ||
@@ -2957,6 +2979,10 @@ int AAS_AlternativeRouteGoals(vec3_t start,
 		(size_t)aasworld.numAreas *
 			sizeof(*g_alternative_route_midrange));
 
+	/* 0x1001a731 zeroes this accepted-candidate counter; it feeds only the
+	   Log_Write below (phase 2 counts emitted goals separately). */
+	int nummidrangeareas = 0;
+
 	for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
 	{
 		if (aasworld.areasettings == NULL || areanum >= aasworld.numAreaSettings)
@@ -3008,6 +3034,12 @@ int AAS_AlternativeRouteGoals(vec3_t start,
 		g_alternative_route_midrange[areanum].valid = qtrue;
 		g_alternative_route_midrange[areanum].starttime = starttime;
 		g_alternative_route_midrange[areanum].goaltime = goaltime;
+		/* 0x1001a884 logs after the three stores and before the increment, so
+		   the first accepted area prints 0.  Push order at 0x1001a861/862
+		   makes the varargs (counter, areanum), and the format carries no
+		   trailing newline. */
+		BotLib_LogWrite("%d midrange area %d", nummidrangeareas, areanum);
+		nummidrangeareas += 1;
 	}
 
 	int numaltroutegoals = 0;
@@ -3122,8 +3154,12 @@ int AAS_RandomGoalArea(int areanum, int travelflags, int *goalareanum, vec3_t go
 			continue;
 		}
 
+		/* 0x1001a473 is the bare three-argument query j_sub_10019fa0(arg1,
+		   ebx, arg2); retail's AAS_AreaTravelTimeToGoalArea has no origin
+		   parameter at all, and a non-NULL origin here would add one
+		   AAS_RetailFirstReachabilityToGoalArea scan per candidate. */
 		int traveltime = AAS_AreaTravelTimeToGoalArea(areanum,
-		                                              aasworld.areas[areanum].center,
+		                                              NULL,
 		                                              candidate,
 		                                              travelflags);
 		if (traveltime == 0)
@@ -3471,15 +3507,37 @@ int AAS_NextAreaReachability(int areanum, int reachnum)
 =============
 AAS_RouteFrameResetDiagnostics
 
-Reset routing-frame diagnostics and retail update accounting.
+Reset the frame-scoped routing diagnostics.
+
+The cumulative numareacacheupdates / numportalcacheupdates counters are
+deliberately NOT cleared here.  In retail they live at data_10066758 and
+data_10066748, below aasworld's 0x100667e0 base, so AAS_Shutdown's
+memset(&aasworld, 0, 0x2a4) at 0x1000ee30 cannot reach them and
+AAS_DumpAASData never touches them - they are per-DLL-load totals that
+survive map loads and full BotShutdownLibrary/BotSetupLibrary cycles.
+Zeroing g_retail_frame_routing_updates is safe: AAS_StartFrame re-zeroes
+data_10066a70 at 0x1000e03a, after AAS_ContinueInit.
 =============
 */
 void AAS_RouteFrameResetDiagnostics(void)
 {
 	memset(&g_route_frame_state, 0, sizeof(g_route_frame_state));
+	g_retail_frame_routing_updates = 0;
+}
+
+/*
+=============
+AAS_RetailResetCacheUpdateCounts
+
+Test-only hook with no retail counterpart: zero the cumulative routing-cache
+update counters so a suite can assert absolute values from a known baseline.
+Nothing in the library calls this.
+=============
+*/
+void AAS_RetailResetCacheUpdateCounts(void)
+{
 	g_retail_area_cache_updates = 0;
 	g_retail_portal_cache_updates = 0;
-	g_retail_frame_routing_updates = 0;
 }
 
 static int AAS_ReadIntLibVar(libvar_t *var)

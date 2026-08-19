@@ -11598,6 +11598,7 @@ static void test_bot_start_frame_matches_retail_frame_sequence(void **state)
     assert_int_equal(status, BLERR_NOERROR);
 
     AAS_RouteFrameResetDiagnostics();
+    AAS_RetailResetCacheUpdateCounts();
     AAS_ReachabilityFrameResetDiagnostics();
 
     status = context->api->BotLibVarSet("framereachability", "0");
@@ -11643,6 +11644,7 @@ static void test_bot_start_frame_matches_retail_frame_sequence(void **state)
     assert_int_equal(AAS_RetailFrameRoutingUpdateCount(), 0);
 
     AAS_RouteFrameResetDiagnostics();
+    AAS_RetailResetCacheUpdateCounts();
     Mock_ClearPrints(&context->mock);
     status = context->api->BotLibVarSet("showcacheupdates", "1");
     assert_int_equal(status, BLERR_NOERROR);
