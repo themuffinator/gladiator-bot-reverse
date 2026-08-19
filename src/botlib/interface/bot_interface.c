@@ -6111,7 +6111,8 @@ fully avoided item set by clearing both avoid layers.
 =============
 */
 static bool BotAI_GetItemLongTermGoal(bot_client_state_t *state,
-	bot_goal_t *goal)
+	bot_goal_t *goal,
+	int travel_flags)
 {
 	if (state == NULL || goal == NULL || state->goal_handle <= 0)
 	{
@@ -6130,10 +6131,12 @@ static bool BotAI_GetItemLongTermGoal(bot_client_state_t *state,
 	if (state->long_term_goal_time < AAS_Time())
 	{
 		AI_GoalBotlib_PopGoal(state->goal_handle);
+		/* 0x1001e6b1 passes the tfl BotLongTermGoal was called with, which
+		   for Battle Retreat is its own mask, not Seek LTG's. */
 		if (AI_GoalBotlib_ChooseLTG(state->goal_handle,
 			state->last_client_update.origin,
 			state->last_client_update.inventory,
-			BotAI_LongTermGoalTravelFlags(state)) != 0)
+			travel_flags) != 0)
 		{
 			state->long_term_goal_time = AAS_Time() + 20.0f;
 		}
@@ -6225,37 +6228,44 @@ static int BotAI_TryBattleChaseNearbyGoal(bot_client_state_t *state,
 
 /*
 =============
-BotAI_CommitCarriedFlagRetreatGoal
+BotAI_CTFRetreatGoals
 
-Replays Battle Retreat's CTF flag branch: promote a carrier to the home-base
-LTG once, clear the away timer, and resolve the matching team flag goal.
+Retail BotCTFRetreatGoals (sub_100263d0, ref be_ai2_dmq2.c:2124-2139).  It only
+promotes a flag carrier to the rush-base LTG and resets that branch's timers -
+it resolves no goal.  Battle Retreat takes the goal itself from BotLongTermGoal
+on the very next line (0x10020795 then 0x100207a6), whose ltgtype-5 arm does
+the flag lookup.
 =============
 */
-static bool BotAI_CommitCarriedFlagRetreatGoal(bot_client_state_t *state,
-	bot_goal_t *goal)
+static void BotAI_CTFRetreatGoals(bot_client_state_t *state)
 {
-	if (state == NULL || goal == NULL || BotAI_CarryingFlag(state) == 0)
+	if (state == NULL || BotAI_CarryingFlag(state) == 0)
 	{
-		return false;
+		return;
 	}
 
 	if (state->ltg_type != BOT_LTG_RUSH_BASE)
 	{
 		state->ltg_type = BOT_LTG_RUSH_BASE;
-		state->rush_base_away_time = 0.0f;
 		state->team_goal_time = AAS_Time() + 120.0f;
+		state->rush_base_away_time = 0.0f;
 	}
-
-	bot_goal_t red_flag;
-	bot_goal_t blue_flag;
-	if (!BotAI_ConsoleCTFFlagGoals(&red_flag, &blue_flag))
-	{
-		return false;
-	}
-
-	*goal = BotAI_CTFTeam(state) == 1 ? red_flag : blue_flag;
-	return true;
 }
+
+typedef enum bot_team_goal_result_e
+{
+	BOT_TEAM_GOAL_NONE = 0,
+	BOT_TEAM_GOAL_READY,
+	BOT_TEAM_GOAL_HANDLED,
+} bot_team_goal_result_t;
+
+static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *state,
+	float thinktime,
+	bot_goal_t *goal,
+	vec3_t held_viewangles,
+	bool *held_view_set,
+	int *held_actionflags,
+	int retreat);
 
 /*
 =============
@@ -6477,25 +6487,47 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 			return qfalse;
 		}
 
-		bot_goal_t retreat_goal;
-		bool carrying_flag = BotAI_CarryingFlag(state) != 0;
-		bool has_retreat_goal = carrying_flag
-			? BotAI_CommitCarriedFlagRetreatGoal(state, &retreat_goal)
-			: state->goal_handle > 0 &&
-				AI_GoalBotlib_GetTopGoal(state->goal_handle, &retreat_goal) != 0;
-		int travel_flags = BotAI_BattleRetreatTravelFlags();
-		if (!carrying_flag && !has_retreat_goal && state->goal_handle > 0)
+		/*
+		 * 0x10020792: BotCTFRetreatGoals runs first and only promotes the LTG,
+		 * then 0x100207a6 resolves the goal with BotLongTermGoal(bs, tfl, 1).
+		 * Battle Retreat passes its own travel mask, so the item tail must use
+		 * that rather than Seek LTG's rocket-jump-capable one.
+		 */
+		if (LibVarGetValue("ctf") != 0.0f)
 		{
-			AI_GoalBotlib_ChooseLTG(state->goal_handle,
-				state->last_client_update.origin,
-				state->last_client_update.inventory,
+			BotAI_CTFRetreatGoals(state);
+		}
+
+		bot_goal_t retreat_goal;
+		int travel_flags = BotAI_BattleRetreatTravelFlags();
+		vec3_t retreat_viewangles;
+		bool retreat_view_set = false;
+		int retreat_actionflags = 0;
+		bot_team_goal_result_t retreat_result =
+			BotAI_ResolveTeamLongTermGoal(state,
+				frame->thinktime,
+				&retreat_goal,
+				retreat_viewangles,
+				&retreat_view_set,
+				&retreat_actionflags,
+				1);
+		bool has_retreat_goal = false;
+		if (retreat_result == BOT_TEAM_GOAL_READY)
+		{
+			has_retreat_goal = true;
+		}
+		else if (retreat_result == BOT_TEAM_GOAL_NONE)
+		{
+			has_retreat_goal = BotAI_GetItemLongTermGoal(state,
+				&retreat_goal,
 				travel_flags);
-			has_retreat_goal = AI_GoalBotlib_GetTopGoal(state->goal_handle,
-				&retreat_goal) != 0;
 		}
 		if (!has_retreat_goal)
 		{
-			/* Retail keeps Battle Retreat active and only advances its view turn. */
+			/*
+			 * 0x100207b1: retail keeps Battle Retreat active and only advances
+			 * its view turn when BotLongTermGoal yields nothing.
+			 */
 			frame->work = BOT_AI_FRAME_WORK_BATTLE_RETREAT_IDLE;
 			return qtrue;
 		}
@@ -6651,13 +6683,6 @@ static void BotAI_TeamPatrolName(const bot_client_state_t *state,
 	}
 }
 
-typedef enum bot_team_goal_result_e
-{
-	BOT_TEAM_GOAL_NONE = 0,
-	BOT_TEAM_GOAL_READY,
-	BOT_TEAM_GOAL_HANDLED,
-} bot_team_goal_result_t;
-
 /*
 =============
 BotAI_ResolveTeamLongTermGoal
@@ -6665,6 +6690,11 @@ BotAI_ResolveTeamLongTermGoal
 Reconstructs BotLongTermGoal's direct help, accompany, defend, CTF, camp, and
 patrol branches before the ordinary item-goal stack is consulted. Remaining
 LTG variants fall through to the ordinary item-goal stack.
+
+retreat is BotLongTermGoal's third argument (sub_1001d760).  It suppresses
+exactly three branches - ltgtype 1 at 0x1001d78b `if (eax == 1 && arg3 == 0)`,
+ltgtype 2 at 0x1001d96d, and ltgtype 3 at 0x1001de8c `if (... || arg3 != 0)`.
+Captureflag, rush base, camp and patrol all run unchanged under retreat.
 =============
 */
 static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *state,
@@ -6672,7 +6702,8 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 	bot_goal_t *goal,
 	vec3_t held_viewangles,
 	bool *held_view_set,
-	int *held_actionflags)
+	int *held_actionflags,
+	int retreat)
 {
 	if (held_view_set != NULL)
 	{
@@ -6693,6 +6724,11 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 	{
 	case 1:
 	{
+		/* 0x1001d78b: `eax == 1 && arg3 == 0`. */
+		if (retreat)
+		{
+			return BOT_TEAM_GOAL_NONE;
+		}
 		int teammate_entity = state->ltg_teammate + 1;
 		if (state->team_message_time != 0.0f &&
 			now > state->team_message_time)
@@ -6754,6 +6790,11 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 
 	case 2:
 	{
+		/* 0x1001d96d: `eax == 2 && arg3 == 0`. */
+		if (retreat)
+		{
+			return BOT_TEAM_GOAL_NONE;
+		}
 		int teammate_entity = state->ltg_teammate + 1;
 		if (state->team_message_time != 0.0f &&
 			now > state->team_message_time)
@@ -6886,7 +6927,9 @@ static bot_team_goal_result_t BotAI_ResolveTeamLongTermGoal(bot_client_state_t *
 	}
 
 	case 3:
-		if (now <= state->defend_away_time)
+		/* 0x1001de8c: `if ((eax:1.b & 0x41) != 0 || arg3 != 0)` falls straight
+		   through to the item tail. */
+		if (retreat || now <= state->defend_away_time)
 		{
 			return BOT_TEAM_GOAL_NONE;
 		}
@@ -8076,7 +8119,8 @@ static int BotAI_RunGoalMovement(bot_client_state_t *state,
 		&team_goal,
 		held_viewangles,
 		&held_view_set,
-		&held_actionflags);
+		&held_actionflags,
+		0);
 	if (team_result == BOT_TEAM_GOAL_READY)
 	{
 		if (BotAI_TryLongTermNearbyGoal(state,
@@ -8114,7 +8158,9 @@ static int BotAI_RunGoalMovement(bot_client_state_t *state,
 	}
 
 	bot_goal_t long_term_goal;
-	if (BotAI_GetItemLongTermGoal(state, &long_term_goal))
+	if (BotAI_GetItemLongTermGoal(state,
+		&long_term_goal,
+		BotAI_LongTermGoalTravelFlags(state)))
 	{
 		if (BotAI_TryLongTermNearbyGoal(state,
 			&long_term_goal,

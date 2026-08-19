@@ -14,7 +14,7 @@ did not survive are not listed.
 | Confirmed | 80 |
 | Refuted on re-check | 28 |
 | High / medium / low | 13 / 38 / 29 |
-| Applied / reverted / open | 13 / 1 / 66 |
+| Applied / reverted / open | 24 / 1 / 55 |
 
 `applied` entries are fixed in the tree and covered by the suite. `reverted`
 entries were implemented, found to move test outcomes that need separate
@@ -912,7 +912,7 @@ address-to-translation-unit index.
 
 ### HIGH Battle Retreat never runs BotLongTermGoal: no LTG-type dispatch and no item-goal pop/reselect tail
 
-- status: **open**
+- status: **applied**
 - retail: `AINode_Battle_Retreat / BotLongTermGoal` @ `0x10020600 (call at 0x100207a6) -> 0x1001d760`
 - HLIL: 26624 (0x100207a6); item tail 25193-25232 (0x1001e60e-0x1001e6dd)
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmnet.c:1498 and 252-607
