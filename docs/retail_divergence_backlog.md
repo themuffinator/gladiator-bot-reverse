@@ -148,7 +148,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_BSPModelMinsMaxsOrigin enumerates all 8 model corners; retail enumerates only 7 distinct ones
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_BSPModelMinsMaxsOrigin` @ `0x10005e60`
 - HLIL: 6976-6995 (10005eef..10005f54)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_bspq2.c:1747-1756
@@ -162,7 +162,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS entity linking drops AAS_AASLinkEntity's axial BoxOnPlaneSide fast path
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_AASLinkEntity` @ `0x1001c460`
 - HLIL: 23873-23897
 - ours: `src/botlib/aas/aas_map.c:2302`
@@ -175,7 +175,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS area/BSP-leaf link lists are built in the reverse of retail's traversal order
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_BestReachableArea / AAS_BestReachableLinkArea` @ `0x1000b300`
 - HLIL: 10857-10859 (AAS_BestReachableArea fallback); 10657-10687 (AAS_BestReachableLinkArea walks head-first); 23899-23905 (sub_1001c460 push order: children[0] at node+4 pushed BEFORE children[1] at node+8); 23843-23849 (each visited leaf is PREPENDED); 7168-7174 (same push order in sub_10006210)
 - ours: `src/botlib/aas/aas_map.c:2310`
@@ -188,7 +188,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_AreaEntityCollision passes the wrong contents mask to AAS_EntityCollision
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_AreaEntityCollision` @ `0x1001b130`
 - HLIL: 22748-22749
 - ours: `src/botlib/aas/aas_map.c:2437`
@@ -201,7 +201,7 @@ address-to-translation-unit index.
 
 ### MEDIUM PVS leaf lookup sends points exactly on a splitting plane to the wrong child
 
-- status: **open**
+- status: **applied**
 - retail: `CM_PointLeafnum` @ `0x10003360`
 - HLIL: 4805-4814 (100033c4..100033d6)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_bspq2.c:241-245

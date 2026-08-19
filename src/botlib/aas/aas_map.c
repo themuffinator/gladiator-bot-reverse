@@ -1169,12 +1169,22 @@ void AAS_BSPModelMinsMaxsOrigin(int modelnum,
 		rotatedmaxs[component] = -999999.0f;
 	}
 
+	/*
+	 * Retail enumerates only 7 DISTINCT corners.  The selectors at 0x10005eec,
+	 * 0x10005f03 and 0x10005f1a are `i >= 4 ? maxs[0] : mins[0]`,
+	 * `(i & 1) ? mins[1] : maxs[1]` and `(i < 2 || i > 6) ? mins[2] : maxs[2]`.
+	 * The z immediate is literally 6 where an all-8-corner walk would need 5,
+	 * so i = 6 re-emits i = 4's corner and (maxs[0], maxs[1], mins[2]) is never
+	 * generated.  Reproduced deliberately - do not "fix" the 6 to a 5.  Only
+	 * compound rotations can observe it; any single-axis rotation leaves the
+	 * missing corner tied with one retail does visit.
+	 */
 	for (int corner = 0; corner < 8; ++corner)
 	{
 		vec3_t local;
-		local[0] = (corner & 1) ? model->maxs[0] : model->mins[0];
-		local[1] = (corner & 2) ? model->maxs[1] : model->mins[1];
-		local[2] = (corner & 4) ? model->maxs[2] : model->mins[2];
+		local[0] = (corner >= 4) ? model->maxs[0] : model->mins[0];
+		local[1] = (corner & 1) ? model->mins[1] : model->maxs[1];
+		local[2] = (corner < 2 || corner > 6) ? model->mins[2] : model->maxs[2];
 
 		vec3_t rotated;
 		AAS_RotateLocalVector(local, axis, rotated);
@@ -2437,16 +2447,42 @@ static int AAS_CollectBBoxAreasFromTree(const vec3_t absmins,
 			return numareas;
 		}
 
-		int side = AAS_BoxOnPlaneSide(absmins, absmaxs, &aasworld.planes[node->planenum]);
-		if ((side & 2) != 0)
+		/*
+		 * 0x1001c541 branches on plane->type with a SIGNED `>= 3`, taking
+		 * Quake's axial fast path otherwise: 0x1001c555 is C0|C3, i.e.
+		 * `dist <= absmins[type] -> 1`, and 0x1001c56a is C0 alone, i.e.
+		 * `dist < absmaxs[type] -> 3`, else 2.  The generic routine differs on
+		 * exactly one input - `absmins[type] < dist == absmaxs[type]`, where it
+		 * yields 3 and descends a front subtree retail never enters.
+		 */
+		const aas_plane_t *plane = &aasworld.planes[node->planenum];
+		int side;
+		if (plane->type < 3)
 		{
-			if (stacktop >= AAS_AREA_STACK_SIZE)
+			if (plane->dist <= absmins[plane->type])
 			{
-				BotLib_Print(PRT_ERROR, "AAS_LinkEntity: stack overflow\n");
-				return numareas;
+				side = 1;
 			}
-			stack[stacktop++].nodenum = node->children[1];
+			else if (plane->dist >= absmaxs[plane->type])
+			{
+				side = 2;
+			}
+			else
+			{
+				side = 3;
+			}
 		}
+		else
+		{
+			side = AAS_BoxOnPlaneSide(absmins, absmaxs, plane);
+		}
+
+		/*
+		 * 0x1001c460 pushes children[0] BEFORE children[1] (0x1001c4xx), and
+		 * both are LIFO, so reversing the pushes reverses the whole leaf visit
+		 * order.  Retail then PREPENDS each visited leaf, which is why
+		 * AAS_BestReachableArea's consumers scan the returned array backwards.
+		 */
 		if ((side & 1) != 0)
 		{
 			if (stacktop >= AAS_AREA_STACK_SIZE)
@@ -2455,6 +2491,15 @@ static int AAS_CollectBBoxAreasFromTree(const vec3_t absmins,
 				return numareas;
 			}
 			stack[stacktop++].nodenum = node->children[0];
+		}
+		if ((side & 2) != 0)
+		{
+			if (stacktop >= AAS_AREA_STACK_SIZE)
+			{
+				BotLib_Print(PRT_ERROR, "AAS_LinkEntity: stack overflow\n");
+				return numareas;
+			}
+			stack[stacktop++].nodenum = node->children[1];
 		}
 	}
 
@@ -2572,7 +2617,10 @@ static qboolean AAS_AreaEntityCollision(int areanum,
 		                        boxmins,
 		                        boxmaxs,
 		                        end,
-		                        CONTENTS_SOLID | CONTENTS_PLAYERCLIP,
+		                        /* 0x1001b1a8 passes 0x02010003; the missing
+		                           CONTENTS_WINDOW bit made every glass bmodel
+		                           invisible to client traces. */
+		                        MASK_PLAYERSOLID,
 		                        &bsptrace))
 		{
 			collision = qtrue;
@@ -3502,7 +3550,12 @@ static int AAS_BSPPointLeafNumber(const vec3_t point)
 		}
 		const aas_plane_t *plane = &aasworld.bspPlanes[node->planenum];
 		float distance = DotProduct(point, plane->normal) - plane->dist;
-		nodenum = node->children[distance < 0.0f ? 1 : 0];
+		/*
+		 * 0x100033cf tests (AH & 0x41), i.e. C0|C3 = `d <= 0`, so a point
+		 * exactly on the plane - and NaN - takes the BACK child.  This matches
+		 * AAS_BSPModelPointLeafNum, which already had the rule right.
+		 */
+		nodenum = node->children[(distance > 0.0f) ? 0 : 1];
 	}
 
 	int leafnum = -1 - nodenum;

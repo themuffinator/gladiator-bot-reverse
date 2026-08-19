@@ -1200,10 +1200,10 @@ int AAS_BestReachableArea(const vec3_t origin,
 		aasworld.numAreas);
 	areanum = 0;
 	/*
-	 * sub_1001c460 prepends each temporary leaf link before
-	 * sub_1000b130 chooses its first grounded/swimming area.  BBoxAreas
-	 * returns leaf visits in traversal order, so consume it backwards to
-	 * preserve the temporary link-list order.
+	 * sub_1001c460 PREPENDS each visited leaf, so its list is the reverse of
+	 * its DFS order.  AAS_BBoxAreas now returns that DFS order, so consuming
+	 * it backwards reproduces the link-list order sub_1000b130 walks head
+	 * first.
 	 */
 	for (int index = numareas - 1; index >= 0; --index)
 	{
@@ -3436,7 +3436,10 @@ int AAS_Reachability_TeleportEntityList(const aas_bspentity_t *entities)
 			break;
 		}
 		int numareas = AAS_BBoxAreas(absmins, absmaxs, areas, aasworld.numAreas);
-		for (int index = 0; index < numareas; ++index)
+		/* Retail walks the prepended link list head first (ref
+		   be_aas_reach.c:2106), i.e. the reverse of the DFS order
+		   AAS_BBoxAreas returns. */
+		for (int index = numareas - 1; index >= 0; --index)
 		{
 			int sourcearea = areas[index];
 			/*

@@ -3002,7 +3002,12 @@ static void test_retail_entity_link_heaps_are_fixed_and_reused(void **state)
 	assert_string_equal(g_test_print_message, "empty aas link heap\n");
 	assert_non_null(aasworld.entities[1].areas);
 	assert_int_equal(aasworld.entities[1].areaOccupancyCount, 1);
-	assert_int_equal(aasworld.entities[1].areas->areanum, 1);
+	/*
+	 * sub_1001c460 pushes children[0] before children[1] onto a LIFO stack, so
+	 * the back child's area 2 is the FIRST leaf visited and the only one the
+	 * one-slot link heap can take.
+	 */
+	assert_int_equal(aasworld.entities[1].areas->areanum, 2);
 	assert_int_equal(AAS_UpdateEntity(1, NULL), BLERR_NOERROR);
 	free(aasworld.entities[1].areaOccupancyBits);
 	FreeMemory(aasworld.entities);
@@ -3345,11 +3350,16 @@ static void test_reachability_area_and_link_helpers(void **state)
 	vec3_t unlinked_mins = {-128.0f, -8.0f, -8.0f};
 	vec3_t unlinked_maxs = {128.0f, 8.0f, 8.0f};
 	vec3_t best_goal_origin;
+	/*
+	 * Retail's DFS visits the back child first and PREPENDS each leaf, so the
+	 * list head - what AAS_BestReachableLinkArea returns - is the front
+	 * child's area 1.
+	 */
 	assert_int_equal(AAS_BestReachableArea(unlinked_origin,
 		unlinked_mins,
 		unlinked_maxs,
 		best_goal_origin),
-		2);
+		1);
 	assert_float_equal(best_goal_origin[0], -64.0f, 0.001f);
 	aasworld.nodes = NULL;
 	aasworld.numNodes = 0;
