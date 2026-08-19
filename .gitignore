@@ -2,3 +2,5 @@
 .audit-*/
 build*
 /.vscode-build
+/Testing
+/ref/gladiator-bot-restored
