@@ -4138,6 +4138,86 @@ static bot_client_state_t *setup_console_team_command_fixture(
 	return bot;
 }
 
+
+/*
+=============
+set_console_client_team
+
+Put a client on a notional team the way a server does.
+
+Retail has no semantic team field: BotSameTeam resolves the relationship from
+teamplay_shell, ch, teamplay, dmflags and ctf, and the only per-client input is
+the skin.  Team 1 therefore means "wears the bot's skin", which satisfies both
+the teamplay arm (full-string _strcmpi at 0x10023683) and the DF_SKINTEAMS arm
+(suffix from '/' at 0x1002380e); any other team means a skin that matches
+neither.
+=============
+*/
+static void set_console_client_team(bot_interface_test_context_t *context,
+	int client,
+	int team)
+{
+	bot_clientsettings_t presentation;
+	memset(&presentation, 0, sizeof(presentation));
+	snprintf(presentation.netname,
+		sizeof(presentation.netname),
+		"%s",
+		BotState_ClientName(client));
+	snprintf(presentation.skin,
+		sizeof(presentation.skin),
+		"%s",
+		(team == 1) ? "female/athena" : "male/rampage");
+	assert_int_equal(context->api->BotClientSettings(client, &presentation),
+		BLERR_NOERROR);
+}
+
+/*
+=============
+enable_console_team_gate
+
+Turn on the team relationship these command handlers require.
+
+TeamPlayIsOn is (dmflags & 0xC0) || ctf || teamplay (ref be_ai2_dmq2.c:2189),
+and BotAddressedToBot additionally requires BotSameTeam, so DF_SKINTEAMS alone
+satisfies both without implying full teamplay rules.
+=============
+*/
+static void enable_console_team_gate(bot_interface_test_context_t *context)
+{
+	assert_int_equal(context->api->BotLibVarSet("dmflags", "64"),
+		BLERR_NOERROR);
+}
+
+
+/*
+=============
+set_console_ctf_team
+
+Put the bot on a CTF team the way retail resolves it.
+
+BotCTFTeam (sub_10023510) is strstr(ClientSkin(bs->client), "ctf_r") ? 1 : 2 -
+there is no team field, only the skin - so team 1 means wearing a red CTF skin
+and anything else means not wearing one.
+=============
+*/
+static void set_console_ctf_team(bot_interface_test_context_t *context,
+	int client,
+	int team)
+{
+	bot_clientsettings_t presentation;
+	memset(&presentation, 0, sizeof(presentation));
+	snprintf(presentation.netname,
+		sizeof(presentation.netname),
+		"%s",
+		BotState_ClientName(client));
+	snprintf(presentation.skin,
+		sizeof(presentation.skin),
+		"%s",
+		(team == 1) ? "male/ctf_r" : "male/ctf_b");
+	assert_int_equal(context->api->BotClientSettings(client, &presentation),
+		BLERR_NOERROR);
+}
+
 /*
 =============
 process_console_team_command
@@ -4343,6 +4423,9 @@ static void test_bot_console_what_are_you_doing_reports_every_ltg_type(
 {
 	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 	bot_client_state_t *bot = setup_console_team_command_fixture(context, NULL);
+	/* These handlers gate on BotAddressedToBot, which requires BotSameTeam;
+	   DF_SKINTEAMS supplies that without turning teamplay on. */
+	enable_console_team_gate(context);
 	assert_int_equal(context->api->BotLibVarSet("nochat", "1"), BLERR_NOERROR);
 	assert_float_equal(LibVarGetValue("teamplay"), 0.0f, 0.0001f);
 
@@ -4489,19 +4572,22 @@ static void test_bot_console_what_are_you_doing_preserves_gates_and_empty_source
 	bot_client_state_t *teammate = NULL;
 	bot_client_state_t *bot = setup_console_team_command_fixture(context,
 		&teammate);
+	/* These handlers gate on BotAddressedToBot, which requires BotSameTeam;
+	   DF_SKINTEAMS supplies that without turning teamplay on. */
+	enable_console_team_gate(context);
 	assert_int_equal(context->api->BotLibVarSet("nochat", "1"), BLERR_NOERROR);
 	assert_int_equal(bot->ltg_type, 0);
 	assert_int_equal(bot->ltg_teammate, 0);
 	assert_int_equal(bot->team_goal_number, 0);
 
 	BotState_SetLongTermGoal(bot, 1, -1, 0);
-	teammate->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		3.0f,
 		"(Commander): Babe what are you doing?");
 	assert_int_equal(count_team_chat_commands(&context->mock), 0U);
 
-	teammate->team = 1;
+	set_console_client_team(context, 2, 1);
 	process_console_team_command(context,
 		6.0f,
 		"(Commander): Other what are you doing?");
@@ -4595,14 +4681,14 @@ static void test_bot_console_subteam_cases_preserve_retail_gates_and_storage(
 
 	assert_int_equal(context->api->BotLibVarSet("teamplay", "1"),
 		BLERR_NOERROR);
-	teammate->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		6.0f,
 		"(Commander): Babe join team AlphaABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
 	assert_string_equal(bot->subteam, "");
 	assert_int_equal(count_team_chat_commands(&context->mock), 0U);
 
-	teammate->team = 1;
+	set_console_client_team(context, 2, 1);
 	process_console_team_command(context,
 		9.0f,
 		"(Commander): Other join team AlphaABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
@@ -4666,7 +4752,7 @@ static void test_bot_console_formation_damage_cases_are_ungated(void **state)
 	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 	bot_client_state_t *teammate = NULL;
 	(void)setup_console_team_command_fixture(context, &teammate);
-	teammate->team = 2;
+	set_console_client_team(context, 2, 2);
 
 	process_console_team_command(context,
 		3.0f,
@@ -4719,13 +4805,13 @@ static void test_bot_console_formation_space_preserves_conversion_and_limits(
 
 	assert_int_equal(context->api->BotLibVarSet("teamplay", "1"),
 		BLERR_NOERROR);
-	teammate->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		6.0f,
 		"(Commander): Babe the formation intervening space is 1.5 meter");
 	assert_float_equal(bot->formation_dist, 77.0f, 0.0001f);
 
-	teammate->team = 1;
+	set_console_client_team(context, 2, 1);
 	process_console_team_command(context,
 		9.0f,
 		"(Commander): Other the formation intervening space is 1.5 meter");
@@ -4799,12 +4885,12 @@ static void test_bot_console_doformation_and_dismiss_preserve_exact_ltg_effects(
 	assert_int_equal(bot->ltg_type, 1);
 	assert_int_equal(context->api->BotLibVarSet("teamplay", "1"),
 		BLERR_NOERROR);
-	teammate->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		9.0f,
 		"(Commander): Babe dismiss");
 	assert_int_equal(bot->ltg_type, 1);
-	teammate->team = 1;
+	set_console_client_team(context, 2, 1);
 	process_console_team_command(context,
 		12.0f,
 		"(Commander): Other dismiss");
@@ -4865,12 +4951,12 @@ static void test_bot_console_camp_preserves_retail_goal_branches_and_deadlines(
 
 	assert_int_equal(context->api->BotLibVarSet("teamplay", "1"),
 		BLERR_NOERROR);
-	teammate->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		6.0f,
 		"(Commander): Babe camp near the Rocket Launcher");
 	assert_int_equal(bot->ltg_type, 3);
-	teammate->team = 1;
+	set_console_client_team(context, 2, 1);
 	process_console_team_command(context,
 		9.0f,
 		"(Commander): Other camp near the Rocket Launcher");
@@ -4993,7 +5079,7 @@ static void test_bot_console_checkpoint_stores_independently_of_addressing(
 	assert_float_equal(bot->checkpoints->goal.origin[2], 32.5f, 0.0001f);
 	assert_int_equal(count_team_chat_commands(&context->mock), 0U);
 
-	teammate->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		9.0f,
 		"(Commander): Babe checkpoint Rival is at 24 0 32");
@@ -5002,7 +5088,7 @@ static void test_bot_console_checkpoint_stores_independently_of_addressing(
 	assert_string_equal(bot->checkpoints->next->name, "Alpha");
 	assert_int_equal(count_team_chat_commands(&context->mock), 0U);
 
-	teammate->team = 1;
+	set_console_client_team(context, 2, 1);
 	process_console_team_command(context,
 		12.0f,
 		"(Commander): Babe checkpoint alpha is at 48 0 32.6");
@@ -5216,7 +5302,7 @@ static void test_bot_console_help_accompany_preserves_retail_target_and_goal_bou
 	assert_non_null(ally);
 	ally->client_number = 3;
 	ally->entity_number = 4;
-	ally->team = 1;
+	set_console_client_team(context, 3, 1);
 	BotState_SetActive(ally, true);
 
 	bot->ltg_type = 9;
@@ -5245,12 +5331,12 @@ static void test_bot_console_help_accompany_preserves_retail_target_and_goal_bou
 	assert_int_equal(bot->ltg_type, 9);
 	assert_memory_equal(&bot->team_goal, &untouched_goal, sizeof(untouched_goal));
 
-	commander->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		9.0f,
 		"(Commander): Babe help me");
 	assert_int_equal(bot->ltg_type, 9);
-	commander->team = 1;
+	set_console_client_team(context, 2, 1);
 
 	process_console_team_command(context,
 		12.0f,
@@ -5383,12 +5469,12 @@ static void test_bot_console_defend_key_area_preserves_retail_gates_and_deadline
 		"(Commander): Other defend the Rocket Launcher");
 	assert_int_equal(bot->ltg_type, 8);
 
-	commander->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		9.0f,
 		"(Commander): Babe defend the Rocket Launcher");
 	assert_int_equal(bot->ltg_type, 8);
-	commander->team = 1;
+	set_console_client_team(context, 2, 1);
 
 	process_console_team_command(context,
 		12.0f,
@@ -5481,12 +5567,12 @@ static void test_bot_console_ctf_rush_base_is_dormant_but_enemy_flag_order_runs(
 		blue_flag_name,
 		&flag_goal) >= 0);
 	assert_int_equal(flag_goal.areanum, 1);
-	commander->team = 2;
+	set_console_client_team(context, 2, 2);
 	process_console_team_command(context,
 		12.0f,
 		"(Commander): Babe rush base");
 	assert_int_equal(bot->ltg_type, 9);
-	commander->team = 1;
+	set_console_client_team(context, 2, 1);
 
 	bot->ltg_type = 9;
 	bot->team_message_time = 44.0f;
@@ -10992,7 +11078,15 @@ static void test_ai_team_accompany_scheduler_tracks_formation_and_loss(void **st
 		context->mock.bot_input_count - 1U].actionflags & ACTION_CROUCH) != 0);
 	ai_dm_metrics_t metrics;
 	AI_DMState_GetMetrics(bot->dm_state, &metrics);
-	assert_float_equal(metrics.ideal_viewangles[YAW], 180.0f, 0.0001f);
+	/*
+	 * The accompany wait takes the MOVERESULT_WAITING roam arm, so the ideal
+	 * view comes from BotRoamGoal.  0x10022bf1 measures the candidate
+	 * direction from the RANDOMIZED endpoint - before the trace result is
+	 * copied out at 0x10022c03 - so the roam target, and this yaw, differ from
+	 * the value the old trace.endpos-based measurement produced.  The applied
+	 * yaw below is unchanged: the turn is still capped the same way.
+	 */
+	assert_float_equal(metrics.ideal_viewangles[YAW], 143.0f, 0.0001f);
 	assert_float_equal(context->mock.inputs[
 		context->mock.bot_input_count - 1U].viewangles[YAW],
 		9.99756f,
@@ -11091,7 +11185,7 @@ static void test_ai_team_ctf_scheduler_routes_team_flags(void **state)
 		100,
 		true,
 		false);
-	bot->team = 1;
+	set_console_ctf_team(context, bot->client_number, 1);
 	bot->ltg_type = 4;
 	bot->team_message_time = 499.0f;
 	bot->team_goal_time = 600.0f;
@@ -11199,7 +11293,7 @@ static void test_ai_seek_ltg_automatic_ctf_goal_scheduler(void **state)
 		100,
 		true,
 		false);
-	bot->team = 1;
+	set_console_ctf_team(context, bot->client_number, 1);
 	srand(1);
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ltg_type, 0);
@@ -11216,7 +11310,7 @@ static void test_ai_seek_ltg_automatic_ctf_goal_scheduler(void **state)
 		100,
 		true,
 		false);
-	bot->team = 1;
+	set_console_ctf_team(context, bot->client_number, 1);
 	srand(1);
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ltg_type, 0);
@@ -11231,7 +11325,7 @@ static void test_ai_seek_ltg_automatic_ctf_goal_scheduler(void **state)
 		100,
 		true,
 		false);
-	bot->team = 1;
+	set_console_ctf_team(context, bot->client_number, 1);
 	srand(1);
 	BotAINode_RunFrame(context);
 	assert_int_equal(bot->ltg_type, 3);
@@ -11275,7 +11369,7 @@ static void test_ai_battle_retreat_carried_flag_promotes_home_goal(void **state)
 		30,
 		true,
 		false);
-	bot->team = 1;
+	set_console_ctf_team(context, bot->client_number, 1);
 	bot->ltg_type = 0;
 	bot->rush_base_away_time = 999.0f;
 	bot->team_goal_time = 0.0f;
