@@ -36,6 +36,7 @@
 #include "botlib/ai_move/mover_catalogue.h"
 #include "botlib/common/l_libvar.h"
 #include "botlib/precomp/l_precomp.h"
+#include "botlib/common/l_crc.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
@@ -688,6 +689,8 @@ static int aas_environment_teardown(void **state)
         /* This harness tears the arena down directly rather than through
            BotShutdownLibrary, so it has to drop the precompiler's global
            defines itself; they are allocated from the arena. */
+        /* Same hazard for the CRC source-checksum list: file scope, records allocated from the arena. */
+        CRC_ResetSourceChecksums();
         PC_ShutdownLexer();
         BotMemory_Shutdown();
         env->memory_initialised = false;
@@ -2623,6 +2626,8 @@ static int aas_link_heap_teardown(void **state)
 	 * source.  BotShutdownLibrary does this for production callers; harnesses
 	 * that tear the arena down directly have to do it themselves.
 	 */
+	/* Same hazard for the CRC source-checksum list: file scope, records allocated from the arena. */
+	CRC_ResetSourceChecksums();
 	PC_ShutdownLexer();
 	BotMemory_Shutdown();
 	BotInterface_SetImportTable(NULL);
@@ -2674,9 +2679,16 @@ sound precached after the map load stays unmapped and queues no event - see
 0x1000ecf7 / 0x1000ed02 against the single build site at 0x1000ed73.
 =============
 */
+__attribute__((noinline)) static void temp_poison_stack(void)
+{
+	volatile char buf[196608];
+	memset((void *)buf, 0xBB, sizeof(buf));
+}
+
 static void test_retail_entity_configuration_initialises_sound_state(void **state)
 {
 	(void)state;
+	temp_poison_stack();
 	LibVarSet("max_soundinfo", "64");
 	LibVarSet("max_aassounds", "4");
 	LibVarSet("soundconfig", PROJECT_SOURCE_DIR "/dev_tools/assets/sounds.c");
@@ -5573,6 +5585,8 @@ static void test_retail_entity_visible_keeps_samples_inside_pvs_gate(
 	BotInterface_SetImportTable(NULL);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
+
+
 
 int main(void)
 {
