@@ -496,7 +496,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_InitRoutingUpdate's two persistent numareas*40 allocations are never made
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_InitRoutingUpdate` @ `0x100194a0`
 - HLIL: 21436-21451
 - ours: `src/botlib/aas/aas_route.c:578`
@@ -742,7 +742,7 @@ address-to-translation-unit index.
 
 ### MEDIUM BotUpdateEntityItems: entity-link path recomputes the area with a stale iteminfo index in retail, the correct one in ours
 
-- status: **open**
+- status: **applied**
 - retail: `BotUpdateEntityItems` @ `0x1002fa20`
 - HLIL: 37700-37753 (decisive: 37702 `if (*(result_2[1] + *(esi_1 + 4) * 0x11c + 0xf0) == j)` matches on li->iteminfo, but 37747 `void* ecx_10 = result_2[1] + ebx_1 * 0x11c` then 37748-37750 `j_sub_1000b300(esi_1 + 8, ecx_10 + 0x100, ecx_10 + 0x10c, esi_1 + 0x18)`); ebx_1 is written only at 37601 `int32_t ebx_1 = var_108` (uninitialised) and inside the LABEL_24 modelindex search at 37664-37671
 - ours: `src/botlib/ai_goal/bot_goal.c:1810`
@@ -755,7 +755,12 @@ address-to-translation-unit index.
 
 ### LOW LoadItemConfig: retail uses FreeMemory on the source (not FreeSource) when the iteminfo name token is missing
 
-- status: **open**
+- status: **applied**
+- resolved as a documented deviation rather than a code change, taking the
+  entry's own second option: reproducing it means deliberately leaking the
+  script image, token list, defines and define hash on an error path whose
+  only retail-visible effect is two diagnostic counters. The reason is
+  recorded at the call site in bot_goal.c.
 - retail: `LoadItemConfig` @ `0x1002ed20`
 - HLIL: 37063-37066 — `if (j_sub_1003d740(eax_5, 1, 0, &var_430) == 0) { j_sub_100390b0(result); j_sub_100390b0(eax_5); return 0 }`; contrast 37071-37074 for the ReadStructure failure, which uses `j_sub_100390b0(result); j_sub_1003e000(eax_5)` (FreeMemory + FreeSource), and 37085-37088 for the unknown-definition path
 - ours: `src/botlib/ai_goal/bot_goal.c:3207`
@@ -1050,7 +1055,13 @@ address-to-translation-unit index.
 
 ### LOW BotRecordNodeSwitch is not implemented, so the node-overflow dump prints only its header line
 
-- status: **open**
+- status: **applied**
+- applied with one approximation: this reconstruction has no separate
+  AIEnter_* layer, so the record is taken in a shared BotAI_EnterNode setter
+  and the two seek nodes report the goal currently on top of the stack
+  rather than the goal the AIEnter site had just chosen. Identical in the
+  ordinary case; an approximation only when the record is taken before the
+  stack is updated. The other eight nodes pass "" exactly as retail does.
 - retail: `BotRecordNodeSwitch / BotDumpNodeSwitches` @ `0x1001d3a0 / 0x1001d2d0`
 - HLIL: 24570-24579; 24509-24565
 - reference: ref/gladiator-bot-restored/botlib/be_ai2_dmnet.c:69-91

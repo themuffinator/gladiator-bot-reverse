@@ -1750,6 +1750,23 @@ Refresh dropped or temporary entity items each frame.
 */
 void BotUpdateEntityItems(void)
 {
+	/*
+	 * Retail carries the itemconfig index used by the entity-link path in EBX,
+	 * a function-local it loads once at 0x1002fa90 from a slot that is only
+	 * written later with the modelindex - an uninitialised read - and
+	 * thereafter assigns solely in the modelindex search loop at
+	 * 0x1002fbef-0x1002fc0d, which leaves it at numitems when the search
+	 * fails.  The link branch at 0x1002fba5 then indexes ic->items with THAT
+	 * value, not with the matched levelitem's own iteminfo.
+	 *
+	 * The pre-first-search value is genuine stack garbage and is not
+	 * reproducible; g_itemdef_count is the only defined value retail can also
+	 * produce, and it addresses the zeroed slot the loader always leaves
+	 * spare, so the box comes out as {0,0,0}/{0,0,0} exactly as it does in
+	 * retail after a failed search.
+	 */
+	int reused_iteminfo = g_itemdef_count;
+
 	for (bot_levelitem_t *item = g_levelitem_head; item != NULL; )
 	{
 		bot_levelitem_t *next_item = item->next;
@@ -1807,9 +1824,31 @@ void BotUpdateEntityItems(void)
 
 				item->entitynum = entnum;
 				VectorCopy(entityinfo.origin, item->origin);
+				/*
+				 * 0x1002fba5 forms ic->items[EBX] here, NOT
+				 * ic->items[li->iteminfo] - the index the match at 0x1002fb18
+				 * used.  Every shipped iteminfo carries the same
+				 * {-15,-15,-15}/{15,15,15} box, so a stale but in-range index
+				 * is unobservable; the reachable case is the search having
+				 * left it at numitems, which selects the zeroed spare slot.
+				 */
+				vec3_t reusedmins;
+				vec3_t reusedmaxs;
+				if (g_itemdefs != NULL &&
+					reused_iteminfo >= 0 &&
+					reused_iteminfo < g_itemdef_capacity)
+				{
+					VectorCopy(g_itemdefs[reused_iteminfo].mins, reusedmins);
+					VectorCopy(g_itemdefs[reused_iteminfo].maxs, reusedmaxs);
+				}
+				else
+				{
+					VectorClear(reusedmins);
+					VectorClear(reusedmaxs);
+				}
 				item->areanum = AAS_BestReachableArea(item->origin,
-					itemdef->mins,
-					itemdef->maxs,
+					reusedmins,
+					reusedmaxs,
 					item->goalorigin);
 			}
 			else
@@ -1829,11 +1868,26 @@ void BotUpdateEntityItems(void)
 			continue;
 		}
 
-		const bot_itemdef_t *itemdef = BotGoal_FindItemDefByModelIndex(modelindex);
-		if (itemdef == NULL)
+		/*
+		 * 0x1002fbef-0x1002fc0d walks the itemconfig by modelindex and leaves
+		 * the index in EBX whether or not it matched.  The not-found value
+		 * (== numitems) is load-bearing: it is what makes the link branch above
+		 * read the zeroed spare slot on a later iteration.
+		 */
+		for (reused_iteminfo = 0;
+			reused_iteminfo < g_itemdef_count;
+			++reused_iteminfo)
+		{
+			if (g_itemdefs[reused_iteminfo].modelindex == modelindex)
+			{
+				break;
+			}
+		}
+		if (reused_iteminfo >= g_itemdef_count)
 		{
 			continue;
 		}
+		const bot_itemdef_t *itemdef = &g_itemdefs[reused_iteminfo];
 
 		bot_levelitem_t *item = BotGoal_AllocLevelItem();
 		if (item == NULL)
@@ -3185,6 +3239,17 @@ static bool BotGoal_LoadItemDefs(void)
 		pc_token_t classname_token;
 		if (!PC_ExpectTokenType(source, TT_STRING, 0, &classname_token))
 		{
+			/*
+			 * Deliberate deviation.  Retail's other three parse-loop exits
+			 * release the parser with FreeSource, but this one calls
+			 * FreeMemory on the source pointer instead (0x1002ee4x, both
+			 * frees targeting 0x100390b0), so it reclaims only the 1624-byte
+			 * source_t header and leaks the script stack, the file image, the
+			 * pushed-back tokens, every define and the 4096-byte define hash.
+			 * Reproducing that means deliberately leaking several KB on an
+			 * error path whose only retail-visible effect is two diagnostic
+			 * counters, so we take the shared full PC_FreeSource below.
+			 */
 			parsed = false;
 			break;
 		}

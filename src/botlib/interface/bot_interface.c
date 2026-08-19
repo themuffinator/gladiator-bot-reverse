@@ -45,6 +45,7 @@
 #include "bot_state.h"
 
 static void BotInterface_Printf(int priority, const char *fmt, ...);
+static void BotAI_EnterNode(bot_client_state_t *state, int node);
 static bool BotAI_ConstructLifecycleChat(bot_client_state_t *state,
 	const char *type,
 	int characteristic,
@@ -5604,7 +5605,7 @@ static void BotCheckConsoleMessages(bot_client_state_t *state)
 			BotRemoveConsoleMessage(state->chat_state, node);
 			state->stand_time = AAS_Time() + BotAI_ChatTime(state);
 			state->chat_standing = true;
-			state->ai_node = BOT_AI_NODE_STAND;
+			BotAI_EnterNode(state, BOT_AI_NODE_STAND);
 			return;
 		}
 
@@ -5842,7 +5843,7 @@ static void BotAI_EnterFoundEnemy(bot_client_state_t *state,
 	}
 
 	BotAI_ResetFightNavigation(state, true);
-	state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+	BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_FIGHT);
 }
 
 /*
@@ -5866,7 +5867,7 @@ static void BotAI_EnterBattleChase(bot_client_state_t *state)
 		AI_DMState_SetChaseDeadline(state->dm_state,
 			state->combat.chase_time);
 	}
-	state->ai_node = BOT_AI_NODE_BATTLE_CHASE;
+	BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_CHASE);
 }
 
 /*
@@ -6208,7 +6209,7 @@ static bool BotAI_TryLongTermNearbyGoal(bot_client_state_t *state,
 	}
 
 	state->nearby_goal_time = AAS_Time() + 5.0f;
-	state->ai_node = BOT_AI_NODE_SEEK_NBG;
+	BotAI_EnterNode(state, BOT_AI_NODE_SEEK_NBG);
 	BotResetLastAvoidReachHandle(state->move_handle);
 	return true;
 }
@@ -6247,7 +6248,7 @@ static int BotAI_TryBattleChaseNearbyGoal(bot_client_state_t *state,
 
 	state->nearby_goal_time = AAS_Time() + 5.0f;
 	BotAI_ResetFightNavigation(state, false);
-	state->ai_node = BOT_AI_NODE_BATTLE_NBG;
+	BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_NBG);
 	return qtrue;
 }
 
@@ -6321,14 +6322,14 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 	case BOT_AI_NODE_STAND:
 		if (BotAI_FindEnemy(state, &frame->enemy))
 		{
-			state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+			BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_FIGHT);
 			return qfalse;
 		}
 		if (state->chat_standing)
 		{
 			if (!BotAI_ReplyStandActive(state, frame->thinktime))
 			{
-				state->ai_node = BOT_AI_NODE_SEEK_LTG;
+				BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 				return qfalse;
 			}
 			frame->work = BOT_AI_FRAME_WORK_STAND;
@@ -6347,7 +6348,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 		}
 		if (AAS_Time() > state->activation_goal_time)
 		{
-			state->ai_node = BOT_AI_NODE_SEEK_NBG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_NBG);
 			return qfalse;
 		}
 		frame->post_acquire_enemy = true;
@@ -6371,7 +6372,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 			{
 				AI_GoalBotlib_PopGoal(state->goal_handle);
 			}
-			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 			return qfalse;
 		}
 	}
@@ -6385,7 +6386,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 		{
 			state->stand_time = AAS_Time() + BotAI_ChatTime(state);
 			state->chat_standing = true;
-			state->ai_node = BOT_AI_NODE_STAND;
+			BotAI_EnterNode(state, BOT_AI_NODE_STAND);
 			return qfalse;
 		}
 		state->combat.current_enemy = 0;
@@ -6413,14 +6414,14 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 				{
 					state->stand_time = AAS_Time() + BotAI_ChatTime(state);
 					state->chat_standing = true;
-					state->ai_node = BOT_AI_NODE_STAND;
+					BotAI_EnterNode(state, BOT_AI_NODE_STAND);
 					return qfalse;
 				}
 			}
 		}
 		if (!BotAI_ResolveCurrentEnemy(state, &frame->enemy))
 		{
-			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 			return qfalse;
 		}
 		/*
@@ -6438,7 +6439,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 			}
 			else
 			{
-				state->ai_node = BOT_AI_NODE_SEEK_LTG;
+				BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 			}
 			return qfalse;
 		}
@@ -6448,23 +6449,23 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 	case BOT_AI_NODE_BATTLE_CHASE:
 		if (state->combat.current_enemy == 0)
 		{
-			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 			return qfalse;
 		}
 		if (BotAI_CurrentEnemyVisible(state))
 		{
 			BotAI_ResetFightNavigation(state, false);
-			state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+			BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_FIGHT);
 			return qfalse;
 		}
 		if (BotAI_FindEnemy(state, &frame->enemy))
 		{
-			state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+			BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_FIGHT);
 			return qfalse;
 		}
 		if (state->combat.last_enemy_area == 0)
 		{
-			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 			return qfalse;
 		}
 		bot_goal_t chase_goal;
@@ -6475,7 +6476,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 		}
 		if (AAS_Time() > state->combat.chase_time)
 		{
-			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 			return qfalse;
 		}
 		if (BotAI_TryBattleChaseNearbyGoal(state,
@@ -6492,7 +6493,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 		if (state->combat.current_enemy == 0 ||
 			!BotAI_ResolveCurrentEnemy(state, &frame->enemy))
 		{
-			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 			return qfalse;
 		}
 		BotAI_UpdateEnemyBattleInventory(state,
@@ -6508,7 +6509,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 		}
 		if (!frame->enemy.visible)
 		{
-			state->ai_node = BOT_AI_NODE_SEEK_LTG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 			return qfalse;
 		}
 
@@ -6573,7 +6574,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 		if (state->combat.current_enemy == 0 ||
 			!BotAI_ResolveCurrentEnemy(state, &frame->enemy))
 		{
-			state->ai_node = BOT_AI_NODE_SEEK_NBG;
+			BotAI_EnterNode(state, BOT_AI_NODE_SEEK_NBG);
 			return qfalse;
 		}
 		BotAI_RecordLastEnemyLocation(state, &frame->enemy);
@@ -6594,11 +6595,11 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 			if (state->goal_handle <= 0 ||
 				!AI_GoalBotlib_GetTopGoal(state->goal_handle, &nearby_goal))
 			{
-				state->ai_node = BOT_AI_NODE_BATTLE_FIGHT;
+				BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_FIGHT);
 			}
 			else
 			{
-				state->ai_node = BOT_AI_NODE_BATTLE_RETREAT;
+				BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_RETREAT);
 			}
 			return qfalse;
 		}
@@ -6607,7 +6608,7 @@ static int BotAI_NodeStep(bot_client_state_t *state, void *context)
 	}
 	}
 
-	state->ai_node = BOT_AI_NODE_SEEK_LTG;
+	BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 	return qfalse;
 }
 
@@ -6618,6 +6619,156 @@ BotAI_RunNodeSwitchLoop
 Runs immediate retail node transitions until work completes or 50 switches.
 =============
 */
+/*
+ * Retail keeps numnodeswitches at 0x100644a0 and a nodeswitch[51][144] record
+ * array at 0x10064a80 (ref be_ai2_dmnet.c:58-59).  Nothing downstream reads
+ * them; they exist only for the overflow dump.
+ */
+#define BOT_AI_NODE_SWITCH_RECORD_CHARS 144
+
+static char g_bot_node_switches[BOT_AI_MAX_NODE_SWITCHES + 1]
+	[BOT_AI_NODE_SWITCH_RECORD_CHARS];
+static int g_bot_node_switch_count;
+
+/*
+=============
+BotAI_NodeSwitchName
+
+Return the retail node name recorded on entry to each AI node.
+
+The strings are the literals the AIEnter_* routines pass to BotRecordNodeSwitch
+(sub_1001d3a0).  Retail has a "respawn" entry too; this reconstruction has no
+separate respawn node.
+=============
+*/
+static const char *BotAI_NodeSwitchName(int node)
+{
+	switch (node)
+	{
+	case BOT_AI_NODE_OBSERVER: return "observer";
+	case BOT_AI_NODE_INTERMISSION: return "intermission";
+	case BOT_AI_NODE_STAND: return "stand";
+	case BOT_AI_NODE_ACTIVATE_ENTITY: return "activate entity";
+	case BOT_AI_NODE_BATTLE_FIGHT: return "battle fight";
+	case BOT_AI_NODE_BATTLE_CHASE: return "battle chase";
+	case BOT_AI_NODE_BATTLE_RETREAT: return "battle retreat";
+	case BOT_AI_NODE_BATTLE_NBG: return "battle NBG";
+	case BOT_AI_NODE_SEEK_NBG: return "seek NBG";
+	case BOT_AI_NODE_SEEK_LTG: return "seek LTG";
+	default: break;
+	}
+	return "";
+}
+
+/*
+=============
+BotAI_ResetNodeSwitches
+
+Retail sub_1001d2b0: clear the per-frame node-switch record count.  Called from
+0x10028b7e, immediately before the 50-iteration node loop.
+=============
+*/
+static void BotAI_ResetNodeSwitches(void)
+{
+	g_bot_node_switch_count = 0;
+}
+
+/*
+=============
+BotAI_EnterNode
+
+Switch the bot to an AI node and record it, reproducing retail's
+BotRecordNodeSwitch (sub_1001d3a0).
+
+0x1001d3a0 formats "%s at %2.1f entered %s: %s\n" from ClientName, AAS_Time(),
+the node name and a per-node string, then increments numnodeswitches.  The
+seek nodes pass BotGoalName(goal->number) for the last field and the literal
+"no goal" when none was selected; every other node passes "".
+
+Retail records from each AIEnter_* with the goal it just chose.  This
+reconstruction has no separate AIEnter_* layer, so the seek nodes report the
+goal currently on top of the stack - the same goal in the ordinary case, and an
+approximation only when the record is taken before the stack is updated.
+=============
+*/
+static void BotAI_EnterNode(bot_client_state_t *state, int node)
+{
+	state->ai_node = node;
+
+	if (g_bot_node_switch_count < 0 ||
+		g_bot_node_switch_count >= BOT_AI_MAX_NODE_SWITCHES + 1)
+	{
+		return;
+	}
+
+	char detail[BOT_AI_NODE_SWITCH_RECORD_CHARS];
+	detail[0] = '\0';
+	if (node == BOT_AI_NODE_SEEK_NBG || node == BOT_AI_NODE_SEEK_LTG)
+	{
+		bot_goal_t goal;
+		if (state->goal_handle > 0 &&
+			AI_GoalBotlib_GetTopGoal(state->goal_handle, &goal) != 0)
+		{
+			BotGoalName(goal.number, detail, (int)sizeof(detail));
+		}
+		else
+		{
+			snprintf(detail, sizeof(detail), "no goal");
+		}
+	}
+
+	snprintf(g_bot_node_switches[g_bot_node_switch_count],
+		sizeof(g_bot_node_switches[0]),
+		"%s at %2.1f entered %s: %s\n",
+		BotState_ClientName(state->client_number),
+		AAS_Time(),
+		BotAI_NodeSwitchName(node),
+		detail);
+	g_bot_node_switch_count += 1;
+}
+
+/*
+=============
+BotAI_DumpNodeSwitches
+
+Reproduce retail BotDumpNodeSwitches (sub_1001d2d0): build the header plus
+every recorded switch into one buffer and emit it as a single PRT_FATAL
+message.  Retail passes that buffer to Print as the format string and sizes it
+at only 1400 bytes against up to 50 records, so it can smash its own stack; we
+pass "%s" and size the buffer for the whole set.
+=============
+*/
+static void BotAI_DumpNodeSwitches(bot_client_state_t *state)
+{
+	char message[(BOT_AI_MAX_NODE_SWITCHES + 2) *
+		BOT_AI_NODE_SWITCH_RECORD_CHARS];
+	int written = snprintf(message,
+		sizeof(message),
+		"%s at %1.1f switched more than %d AI nodes\n",
+		BotState_ClientName(state->client_number),
+		AAS_Time(),
+		BOT_AI_MAX_NODE_SWITCHES);
+	size_t length = (written > 0) ? (size_t)written : 0U;
+	if (length >= sizeof(message))
+	{
+		length = sizeof(message) - 1U;
+	}
+
+	for (int index = 0; index < g_bot_node_switch_count; ++index)
+	{
+		const char *record = g_bot_node_switches[index];
+		size_t record_length = strlen(record);
+		if (record_length >= sizeof(message) - length)
+		{
+			break;
+		}
+		memcpy(message + length, record, record_length + 1U);
+		length += record_length;
+	}
+
+	BotInterface_Printf(PRT_FATAL, "%s", message);
+}
+
 int BotAI_RunNodeSwitchLoop(bot_client_state_t *state,
 	bot_ai_node_step_fn step,
 	void *context)
@@ -6629,6 +6780,10 @@ int BotAI_RunNodeSwitchLoop(bot_client_state_t *state,
 
 	state->ai_node_switches = 0;
 	state->ai_node_overflow = false;
+	/* 0x10028b7e resets the record count immediately before the node loop.
+	   Retail's AIEnter_Stand call at 0x10028b75 happens BEFORE this, so its
+	   record is intentionally discarded. */
+	BotAI_ResetNodeSwitches();
 	while (state->ai_node_switches < BOT_AI_MAX_NODE_SWITCHES)
 	{
 		if (step(state, context) != 0)
@@ -7407,7 +7562,7 @@ static bool BotAI_StoreBlockedActivationGoal(bot_client_state_t *state,
 		return true;
 	}
 
-	state->ai_node = BOT_AI_NODE_ACTIVATE_ENTITY;
+	BotAI_EnterNode(state, BOT_AI_NODE_ACTIVATE_ENTITY);
 	return true;
 }
 
@@ -8862,7 +9017,7 @@ static void BotAI_SetLifecycleStand(bot_client_state_t *state,
 
 	state->stand_time = AAS_Time() + duration;
 	state->chat_standing = true;
-	state->ai_node = BOT_AI_NODE_STAND;
+	BotAI_EnterNode(state, BOT_AI_NODE_STAND);
 }
 
 /*
@@ -8881,7 +9036,7 @@ static void BotAI_EnterObserver(bot_client_state_t *state)
 	}
 
 	BotState_ResetForNewMap(state);
-	state->ai_node = BOT_AI_NODE_OBSERVER;
+	BotAI_EnterNode(state, BOT_AI_NODE_OBSERVER);
 }
 
 /*
@@ -8906,7 +9061,7 @@ static void BotAI_EnterIntermission(bot_client_state_t *state)
 	{
 		BotEnterChat(state->chat_state, state->client_number, 0);
 	}
-	state->ai_node = BOT_AI_NODE_INTERMISSION;
+	BotAI_EnterNode(state, BOT_AI_NODE_INTERMISSION);
 }
 
 /*
@@ -9030,7 +9185,7 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 		state->respawn_requested = false;
 		state->respawn_action_sent = false;
 		state->respawn_time = 0.0f;
-		state->ai_node = BOT_AI_NODE_SEEK_LTG;
+		BotAI_EnterNode(state, BOT_AI_NODE_SEEK_LTG);
 		/* Retail's respawn node changes state, then ends this first alive frame. */
 		return BotAI_RunLifecycleFrame(state, thinktime, false);
 	}
@@ -9064,11 +9219,7 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 		 */
 		BotDumpGoalStack(state->goal_handle);
 		BotDumpAvoidGoals(state->goal_handle);
-		BotInterface_Printf(PRT_FATAL,
-			"%s at %1.1f switched more than %d AI nodes\n",
-			BotState_ClientName(state->client_number),
-			AAS_Time(),
-			BOT_AI_MAX_NODE_SWITCHES);
+		BotAI_DumpNodeSwitches(state);
 	}
 
 	if (frame.work == BOT_AI_FRAME_WORK_STAND)
@@ -9159,7 +9310,7 @@ static int BotAI_Think(bot_client_state_t *state, float thinktime)
 
 		if (BotAI_WantsToRetreat(state))
 		{
-			state->ai_node = BOT_AI_NODE_BATTLE_RETREAT;
+			BotAI_EnterNode(state, BOT_AI_NODE_BATTLE_RETREAT);
 		}
 	}
 	else if (frame.work == BOT_AI_FRAME_WORK_BATTLE_NBG)

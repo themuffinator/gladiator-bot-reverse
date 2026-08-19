@@ -40,6 +40,16 @@ typedef struct aas_retailportalupdate_s
 	struct aas_retailportalupdate_s *prev;
 } aas_retailportalupdate_t;
 
+/*
+ * Retail keeps these two scratch arrays allocated from routing init until the
+ * next one (data_10066a68 / data_10066a6c, allocated at 0x100194a0); neither
+ * AAS_FreeRoutingCaches nor AAS_Shutdown releases them.
+ */
+static aas_retailroutingupdate_t *g_retail_area_update;
+static int g_retail_area_update_count;
+static aas_retailportalupdate_t *g_retail_portal_update;
+static int g_retail_portal_update_count;
+
 static const int g_retail_travel_flags[32] = {
 	0,
 	0x00000001,
@@ -380,6 +390,62 @@ static qboolean AAS_InitRetailPortalCaches(void)
 
 /*
 =============
+AAS_InitRoutingUpdate
+
+Allocate the two persistent routing-update scratch arrays.
+
+Retail sub_100194a0 frees any existing areaupdate / portalupdate and allocates
+each as GetClearedMemory(numareas * 0x28), once per routing init, from
+AAS_InitRouting (sub_10019520).  Both consumers only memset the shared buffer -
+0x10019700 and 0x10019c00 - and AAS_FreeRoutingCaches (0x10019550) never
+releases them, so they live until the next AAS_InitRoutingUpdate.  Allocating
+per call and freeing afterwards, as we used to, put a GetClearedMemory /
+FreeMemory pair in the routing hot path retail does not have and left the
+botlib block count two lower than retail's for the whole map.
+
+Retail's free-before-allocate order is kept so re-init on a second map load
+nets zero extra blocks.  These are file-scope rather than aasworld members
+because the update structs are local to this translation unit; the lifetime and
+the allocator accounting are what matter.
+=============
+*/
+static void AAS_InitRoutingUpdate(void)
+{
+	if (g_retail_area_update != NULL)
+	{
+		FreeMemory(g_retail_area_update);
+		g_retail_area_update = NULL;
+	}
+	g_retail_area_update_count = 0;
+	if (g_retail_portal_update != NULL)
+	{
+		FreeMemory(g_retail_portal_update);
+		g_retail_portal_update = NULL;
+	}
+	g_retail_portal_update_count = 0;
+
+	if (aasworld.numAreas <= 0)
+	{
+		return;
+	}
+
+	g_retail_area_update = (aas_retailroutingupdate_t *)GetClearedMemory(
+		(size_t)aasworld.numAreas * sizeof(*g_retail_area_update));
+	if (g_retail_area_update != NULL)
+	{
+		g_retail_area_update_count = aasworld.numAreas;
+	}
+
+	g_retail_portal_update = (aas_retailportalupdate_t *)GetClearedMemory(
+		(size_t)aasworld.numAreas * sizeof(*g_retail_portal_update));
+	if (g_retail_portal_update != NULL)
+	{
+		g_retail_portal_update_count = aasworld.numAreas;
+	}
+}
+
+/*
+=============
 AAS_InitRetailRoutingCaches
 
 Recreate both retail cache-head table families for the current AAS world.
@@ -388,6 +454,7 @@ Recreate both retail cache-head table families for the current AAS world.
 qboolean AAS_InitRetailRoutingCaches(void)
 {
 	AAS_FreeRetailRoutingCaches();
+	AAS_InitRoutingUpdate();
 	if (!AAS_InitRetailClusterAreaCaches())
 	{
 		return qfalse;
@@ -575,13 +642,13 @@ static void AAS_UpdateRetailAreaRoutingCache(aas_retailroutingcache_t *cache)
 		return;
 	}
 
-	aas_retailroutingupdate_t *updates =
-		(aas_retailroutingupdate_t *)GetClearedMemory(
-			(size_t)aasworld.numAreas * sizeof(aas_retailroutingupdate_t));
-	if (updates == NULL)
+	/* 0x10019700 only memsets the shared buffer AAS_InitRoutingUpdate owns. */
+	aas_retailroutingupdate_t *updates = g_retail_area_update;
+	if (updates == NULL || g_retail_area_update_count < aasworld.numAreas)
 	{
 		return;
 	}
+	memset(updates, 0, (size_t)aasworld.numAreas * sizeof(*updates));
 
 	int badtravelflags = ~cache->travelflags;
 	aas_retailroutingupdate_t *head = &updates[cache->areanum];
@@ -711,7 +778,6 @@ static void AAS_UpdateRetailAreaRoutingCache(aas_retailroutingcache_t *cache)
 		}
 	}
 
-	FreeMemory(updates);
 }
 
 /*
@@ -833,13 +899,13 @@ static void AAS_UpdateRetailPortalRoutingCache(aas_retailroutingcache_t *cache)
 		return;
 	}
 
-	aas_retailportalupdate_t *updates =
-		(aas_retailportalupdate_t *)GetClearedMemory(
-			(size_t)aasworld.numAreas * sizeof(aas_retailportalupdate_t));
-	if (updates == NULL)
+	/* 0x10019c00 only memsets the shared buffer AAS_InitRoutingUpdate owns. */
+	aas_retailportalupdate_t *updates = g_retail_portal_update;
+	if (updates == NULL || g_retail_portal_update_count < aasworld.numAreas)
 	{
 		return;
 	}
+	memset(updates, 0, (size_t)aasworld.numAreas * sizeof(*updates));
 
 	aas_retailportalupdate_t *head = &updates[cache->areanum];
 	aas_retailportalupdate_t *tail = head;
@@ -966,7 +1032,6 @@ static void AAS_UpdateRetailPortalRoutingCache(aas_retailroutingcache_t *cache)
 		}
 	}
 
-	FreeMemory(updates);
 }
 
 /*
