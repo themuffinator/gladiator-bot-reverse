@@ -102,8 +102,19 @@ macro(require_file description path)
     endif()
 endmacro()
 
-require_file("mover BSP" "${asset_root}/maps/test_mover.bsp")
-require_file("mover AAS" "${asset_root}/maps/test_mover.aas")
+# Optional assets gate individual test cases that skip themselves when the file
+# is absent; they must not fail the fixture, because this test is FIXTURES_SETUP
+# for the whole parity suite and a hard failure here disables every parity
+# executable over a fixture only one test case consults.
+set(optional_missing "")
+macro(optional_file description path)
+    if(NOT EXISTS "${path}")
+        list(APPEND optional_missing "${description} (${path})")
+    endif()
+endmacro()
+
+optional_file("mover BSP" "${asset_root}/maps/test_mover.bsp")
+optional_file("mover AAS" "${asset_root}/maps/test_mover.aas")
 require_file("precompiler lexer source (fw_items.c)" "${asset_root}/fw_items.c")
 require_file("precompiler lexer source (syn.c)" "${asset_root}/syn.c")
 require_file("weapon configuration stub (weapons.c)" "${asset_root}/weapons.c")
@@ -118,6 +129,13 @@ if(missing)
     message(FATAL_ERROR
         "Stage the listed assets under ${asset_root} (or set GLADIATOR_ASSET_DIR to the correct asset root) "
         "before rerunning the parity suite. See tests/README.md for download locations and layout requirements.")
+endif()
+
+if(optional_missing)
+    message(STATUS "Parity optional assets absent (dependent cases will skip):")
+    foreach(entry IN LISTS optional_missing)
+        message(STATUS " - ${entry}")
+    endforeach()
 endif()
 
 message(STATUS "Parity assets verified: ${asset_root}")
@@ -236,7 +254,7 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(
         headless_quake2_parity
         PROPERTIES
-            ENVIRONMENT "GLADIATOR_Q2_MODULE_PATH=$<TARGET_FILE:gladiator>"
+            ENVIRONMENT "GLADIATOR_Q2_MODULE_PATH_BUILD=$<TARGET_FILE:gladiator>"
             LABELS "LongRunning"
             SKIP_RETURN_CODE 125
     )

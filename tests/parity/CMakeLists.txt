@@ -19,7 +19,11 @@ if(BOTLIB_PARITY_ENABLE_SOURCES)
         target_link_libraries(${target} PRIVATE ${PARITY_LIBRARIES} ${BOTLIB_PARITY_TEST_LIBRARIES})
         target_include_directories(${target} PRIVATE ${PROJECT_SOURCE_DIR}/src)
         target_compile_definitions(${target} PRIVATE PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
-        add_test(NAME ${target} COMMAND ${target})
+        # These suites reference fixture assets by project-relative path (e.g.
+        # dev_tools/assets/fw_items.c), so they must run from the source root.
+        # Without this they resolve nothing and fail in the build directory.
+        add_test(NAME ${target} COMMAND ${target}
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
         set_tests_properties(
             ${target}
             PROPERTIES

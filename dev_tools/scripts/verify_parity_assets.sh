@@ -9,6 +9,7 @@ project_root="$(cd "$(dirname "$0")/.." && pwd)"
 asset_root="${GLADIATOR_ASSET_DIR:-"${project_root}/dev_tools/assets"}"
 
 missing=()
+optional_missing=()
 
 require_file() {
 	local description="$1"
@@ -18,8 +19,20 @@ require_file() {
 	fi
 }
 
-require_file "mover BSP" "${asset_root}/maps/test_mover.bsp"
-require_file "mover AAS" "${asset_root}/maps/test_mover.aas"
+# Optional assets gate individual test cases that skip themselves when the
+# file is absent. They must not fail this script: it is the parity suite's
+# setup fixture, so a hard failure here disables every parity executable
+# over a fixture only one test case consults.
+optional_file() {
+	local description="$1"
+	local path="$2"
+	if [[ ! -f "$path" ]]; then
+		optional_missing+=("${description} (${path})")
+	fi
+}
+
+optional_file "mover BSP" "${asset_root}/maps/test_mover.bsp"
+optional_file "mover AAS" "${asset_root}/maps/test_mover.aas"
 require_file "precompiler lexer source (fw_items.c)" "${asset_root}/fw_items.c"
 require_file "precompiler lexer source (syn.c)" "${asset_root}/syn.c"
 require_file "weapon configuration stub (weapons.c)" "${asset_root}/weapons.c"
@@ -37,6 +50,13 @@ Stage the listed assets under ${GLADIATOR_ASSET_DIR:-${asset_root}} (or set GLAD
 before rerunning the parity suite. See tests/README.md for download locations and layout requirements.
 EOF_MSG
 	exit 1
+fi
+
+if [[ ${#optional_missing[@]} -gt 0 ]]; then
+	printf "%s\n" "$(yellow "Parity optional assets absent (dependent cases will skip):")"
+	for entry in "${optional_missing[@]}"; do
+		printf " - %s\n" "$entry"
+	done
 fi
 
 printf "%s %s\n" "$(green "Parity assets verified:")" "${asset_root}"

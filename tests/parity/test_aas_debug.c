@@ -1304,8 +1304,16 @@ static void test_aas_sample_helpers_use_loaded_planes_and_area_settings(void **s
     vec3_t bbox_maxs = { 60.0f, 8.0f, 8.0f };
     int bbox_count = AAS_BBoxAreas(bbox_mins, bbox_maxs, bbox_areas, (int)ARRAY_LEN(bbox_areas));
     assert_int_equal(bbox_count, 2);
-    assert_int_equal(bbox_areas[0], 2);
-    assert_int_equal(bbox_areas[1], 1);
+    /*
+     * 0x1001c58e pushes children[0] and 0x1001c59a children[1] onto an
+     * upward-growing LIFO, so children[1] is popped and visited FIRST.  This
+     * fixture has children[0] = -2 (area 2) and children[1] = -1 (area 1), so
+     * the DFS order is area 1 then area 2.  Retail prepends each visited leaf,
+     * which is why its link list reads the other way round - the array this
+     * returns is the visit order, not the list order.
+     */
+    assert_int_equal(bbox_areas[0], 1);
+    assert_int_equal(bbox_areas[1], 2);
 
     int trace_areas[4];
     vec3_t trace_points[4];
@@ -2326,8 +2334,18 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 		                                                     rotated_end,
 		                                                     CONTENTS_SOLID);
 	assert_false(asymmetric_rotated_trace.startsolid);
-	assert_float_equal(asymmetric_rotated_trace.fraction, 0.3874375f, 0.0001f);
-	assert_float_equal(asymmetric_rotated_trace.endpos[1], -9.005f, 0.001f);
+	/*
+	 * The world plane after yaw 90 is n = (0,-1,0) at y = -10.  Retail forms
+	 * expandedDist = planedist - minSupport (0x10003ea3), and minSupport picks
+	 * maxs[1] = 1 because n[1] <= 0, giving 10 - (-1) = 11: the brush is GROWN
+	 * by the box.  startdist = 40 - 11 = 29, so the fraction is
+	 * (29 - 0.005) / 80 and the centre stops at -11.005, leaving the box's
+	 * leading +y face 0.005 short of the brush face.  The old expectation of
+	 * 0.3874375 / -9.005 came from adding the support instead, which shrank
+	 * the brush and left the box two units inside it.
+	 */
+	assert_float_equal(asymmetric_rotated_trace.fraction, 0.3624375f, 0.0001f);
+	assert_float_equal(asymmetric_rotated_trace.endpos[1], -11.005f, 0.001f);
 	assert_float_equal(asymmetric_rotated_trace.plane.normal[0], -1.0f, 0.001f);
 
 	/*
@@ -2467,7 +2485,14 @@ static void test_aas_bsp_model_bounds_and_entity_collision_use_brush_lumps(void 
 	assert_float_equal(entity_trace.fraction, 0.2499167f, 0.0001f);
 	assert_float_equal(entity_trace.endpos[0], 14.995f, 0.001f);
 	assert_float_equal(entity_trace.plane.normal[0], -1.0f, 0.001f);
-	assert_int_equal(entity_trace.ent, 6);
+	/*
+	 * 0x10003aad copies the AAS_TraceBSPModel result into the caller's record
+	 * as a raw 0x54-byte block, with no field write between it and the
+	 * fraction test at 0x10003a9b, so trace.ent keeps the zero the model
+	 * trace memset it to.  Only the SOLID_BBOX branch stamps the entity
+	 * number (0x10003805).
+	 */
+	assert_int_equal(entity_trace.ent, 0);
 	assert_int_equal(context->bridge_trace_count, 0);
 
 	/*

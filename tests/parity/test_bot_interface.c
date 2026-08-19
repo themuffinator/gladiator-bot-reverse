@@ -4080,6 +4080,21 @@ static bot_client_state_t *setup_console_team_command_fixture(
 	snprintf(settings.charactername, sizeof(settings.charactername), "babe");
 	assert_true(context->api->BotSetupClient(1, &settings));
 
+	/*
+	 * BotAddressedToBot gates on BotSameTeam(bs, client + 1) and returns 0
+	 * when it fails (ref be_ai2_dmq2.c:2384-2386), so the speaker has to be a
+	 * real teammate by retail's own rules for any of these command handlers to
+	 * run.  Retail has no semantic team field - BotSameTeam resolves the
+	 * relationship from teamplay_shell, ch, teamplay, dmflags and ctf - so the
+	 * fixture establishes it the way a server would.
+	 *
+	 * Identical skins satisfy both arms a test may select: the teamplay arm
+	 * compares the FULL skin with _strcmpi (0x10023683) and the DF_SKINTEAMS
+	 * arm compares only the suffix from '/' (0x1002380e).  DF_SKINTEAMS is the
+	 * default here so the handlers run with teamplay off; a test that wants
+	 * the negative gate sets dmflags/teamplay to 0 explicitly and still gets
+	 * "not same team", because no arm then matches.
+	 */
 	bot_clientsettings_t presentation;
 	memset(&presentation, 0, sizeof(presentation));
 	snprintf(presentation.netname, sizeof(presentation.netname), "Babe");
@@ -4088,18 +4103,16 @@ static bot_client_state_t *setup_console_team_command_fixture(
 		BLERR_NOERROR);
 	memset(&presentation, 0, sizeof(presentation));
 	snprintf(presentation.netname, sizeof(presentation.netname), "Commander");
-	snprintf(presentation.skin, sizeof(presentation.skin), "male/athena");
+	snprintf(presentation.skin, sizeof(presentation.skin), "female/athena");
 	assert_int_equal(context->api->BotClientSettings(2, &presentation),
 		BLERR_NOERROR);
 
 	bot_client_state_t *bot = BotState_Get(1);
 	assert_non_null(bot);
-	bot->team = 1;
 	bot_client_state_t *teammate = BotState_Create(2);
 	assert_non_null(teammate);
 	teammate->client_number = 2;
 	teammate->entity_number = 3;
-	teammate->team = 1;
 	BotState_SetActive(teammate, true);
 	if (teammate_out != NULL)
 	{

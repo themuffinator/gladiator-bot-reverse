@@ -64,10 +64,18 @@ static libvar_t *BridgeConfig_CacheLibVar(libvar_t **slot, const char *name, con
     {
         if (default_value != NULL)
         {
-            Q2_Print(PRT_WARNING,
-                     "[bridge_config] failed to query libvar '%s'; defaulting to '%s'\n",
-                     name,
-                     default_value);
+            /*
+             * Not an error, and deliberately silent.  LibVarGet is a pure
+             * lookup (retail 0x10038910), and the host pushes only a subset of
+             * these through BotLibVarSet: forceclustering, forcereachability,
+             * forcewrite, nooptimize, autolaunchbspc, nochat, fastchat,
+             * altnames and rocketjump go through only when their cvar is
+             * non-zero, and weaponconfig, max_weaponinfo, max_projectileinfo
+             * and grapplemodel are never pushed at all (ref bl_main.c:905-990).
+             * Registering the default on first read is exactly what retail's
+             * LibVar(name, default) does, and it reports nothing - warning here
+             * emitted eight lines of noise on every server start.
+             */
             var = LibVar(name, default_value);
         }
         else
