@@ -16,10 +16,14 @@ did not survive are not listed.
 | High / medium / low | 13 / 38 / 29 |
 | Applied / reverted / open | 80 / 0 / 0 |
 
-`applied` entries are fixed in the tree and covered by the suite. `reverted`
-entries were implemented, found to move test outcomes that need separate
-triage, and backed out with the evidence retained here. Everything else is
-open.
+Every entry is now `applied`: the divergence is resolved in the tree and the
+suite is green apart from the pre-existing asset-gated tests. A handful of
+entries were resolved by deliberately NOT reproducing retail - a double free,
+two memory leaks, an out-of-bounds read and a nondeterministic stale-stack
+read - and each of those carries a note here plus a comment at the call site
+explaining why, so a later audit does not re-open them as gaps. Entries whose
+analysis and prescribed fix disagreed, or that were applied with a documented
+deviation, record that under their status line.
 
 Read a routine's HLIL with the line span given for each entry, e.g.
 `Read dev_tools/gladiator.dll.bndb_hlil.txt offset=16382 limit=60`.
