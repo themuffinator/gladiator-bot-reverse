@@ -267,14 +267,20 @@ static void BotChat_ResetConsoleQueue(bot_chatstate_t *state);
 =============
 BotChat_RetailRandomFloat
 
-Returns Gladiator's inclusive low-fifteen-bit random fraction. A maximum rand
-sample is deliberately 1.0f, so count-based retail selections can miss their
-list endpoint.
+Returns Gladiator's low-fifteen-bit random fraction.
+
+Retail's three count-based selectors (0x1002be32, 0x1002e46e, 0x1002e93a)
+evaluate rand() & 0x7fff, the 3.05185094e-05f constant and the count entirely
+in x87, never narrowing to single precision.  The constant is exactly
+2^-15 + 2^-30, so the largest fraction is 1 - 2^-30 and the truncated index is
+always <= count - 1: the list endpoint is always reachable.  Returning a float
+would round that to exactly 1.0f and let the index reach count, so the chain
+stays at double width up to the truncation in every consumer.
 =============
 */
-static float BotChat_RetailRandomFloat(void)
+static double BotChat_RetailRandomFloat(void)
 {
-	return (float)(rand() & 0x7fff) * 3.05185094e-05f;
+	return (double)(rand() & 0x7fff) * (double)3.05185094e-05f;
 }
 
 #define BOT_CHAT_MIN_INTERVAL_SECONDS 25.0
@@ -1067,7 +1073,7 @@ static const char *BotChat_SelectRandomFromTable(const bot_chat_random_table_t *
 	}
 	
 	const size_t index = (size_t)(BotChat_RetailRandomFloat()
-		* (float)table->entry_count);
+		* (double)table->entry_count);
 	if (table->entries == NULL || index >= table->entry_count)
 	{
 		return NULL;
@@ -1091,7 +1097,7 @@ static const char *BotChat_SelectRandomFromStateTable(
 	}
 
 	const size_t index = (size_t)(BotChat_RetailRandomFloat()
-		* (float)table->entry_count);
+		* (double)table->entry_count);
 	if (table->entries == NULL || index >= table->entry_count)
 	{
 		return NULL;
@@ -2165,7 +2171,7 @@ static const char *BotChat_ChooseInitialTemplate(bot_chatstate_t *state,
 	if (available_count > 0)
 	{
 		int selected = (int)(BotChat_RetailRandomFloat()
-			* (float)available_count);
+			* (double)available_count);
 		for (size_t i = type->template_count; i > 0; --i)
 		{
 			const size_t index = i - 1U;
@@ -4814,8 +4820,8 @@ static const bot_synonym_phrase_t *BotChat_SelectWeightedSynonymFromGroup(
 		total_weight += phrase->weight;
 	}
 
-	const float roll = BotChat_RetailRandomFloat() * total_weight;
-	float cumulative = 0.0f;
+	const double roll = BotChat_RetailRandomFloat() * (double)total_weight;
+	double cumulative = 0.0;
 	for (size_t i = 0; i < group->phrase_count; ++i)
 	{
 		const bot_synonym_phrase_t *phrase = &group->phrases[i];
@@ -4830,7 +4836,9 @@ static const bot_synonym_phrase_t *BotChat_SelectWeightedSynonymFromGroup(
 		}
 	}
 
-	/* HOST SAFETY: retail dereferences NULL on the inclusive endpoint. */
+	/* Unreachable once the roll is evaluated at retail's x87 width: the
+	   fraction cannot reach 1.0, so the last phrase always wins the
+	   endpoint comparison. */
 	return NULL;
 }
 
@@ -5399,7 +5407,7 @@ static size_t BotChat_SelectIndex(const char *seed, size_t count)
 	{
 		return 0U;
 	}
-	return (size_t)(BotChat_RetailRandomFloat() * (float)count);
+	return (size_t)(BotChat_RetailRandomFloat() * (double)count);
 }
 
 /*
@@ -5705,7 +5713,10 @@ static int BotChat_ParseSynonymContextsFromScript(bot_chatstate_t *state,
 	pc_token_t token;
 	while (PS_ReadToken(script, &token))
 	{
-		if (token.type == TT_NUMBER && BotChat_NumberTokenIsInteger(&token))
+		/* 0x1002b1d9 accepts any TT_NUMBER with no integer-subtype test and
+		   pushes token.intvalue, so "1e3" contributes 1000 where a strtoul of
+		   the spelling would give 1. */
+		if (token.type == TT_NUMBER)
 		{
 			if (context_level >= 31U)
 			{
@@ -5713,7 +5724,7 @@ static int BotChat_ParseSynonymContextsFromScript(bot_chatstate_t *state,
 				ScriptError(script, "more than 32 context levels");
 				return 0;
 			}
-			const unsigned long value = BotChat_NumberTokenValue(&token);
+			const unsigned long value = token.intvalue;
 			context_stack[context_level++] = value;
 			context_mask |= value;
 			if (!PS_ExpectTokenString(script, "{"))
@@ -5725,9 +5736,14 @@ static int BotChat_ParseSynonymContextsFromScript(bot_chatstate_t *state,
 
 		if (token.type != TT_PUNCTUATION)
 		{
-			/* Retail 1002b5f2, no trailing newline. */
-			ScriptError(script, "unexpected %s", token.string);
-			return 0;
+			/*
+			 * 0x1002b110 has only the TT_NUMBER and TT_PUNCTUATION arms and no
+			 * else, so a string, literal or name at file scope falls straight
+			 * through to the next PC_ReadTokenHandle at 0x1002b4b5.  The
+			 * "unexpected %s" error below (0x1002b5e6) is raised only for
+			 * punctuation that is neither "}" nor "[".
+			 */
+			continue;
 		}
 		if (strcmp(token.string, "}") == 0)
 		{
@@ -6405,7 +6421,6 @@ static int BotChat_ParseReplyBlock(bot_chatstate_t *state, pc_script_t *script)
 		return 0;
 	}
 	unsigned long reply_context = BotChat_NumberTokenValue(&token);
-	float priority = token.floatvalue;
 	if (!PS_ExpectTokenString(script, "{"))
 	{
 		BotChat_FreeReplyKeyList(&keys);
@@ -6417,7 +6432,12 @@ static int BotChat_ParseReplyBlock(bot_chatstate_t *state, pc_script_t *script)
 		BotChat_FreeReplyKeyList(&keys);
 		return 0;
 	}
-	rule->priority = priority;
+	/*
+	 * 0x1002d52f stores (float)(unsigned long)token.intvalue, so a fractional
+	 * priority is truncated at load time.  BotChat_AddReplyRule already wrote
+	 * exactly that value from reply_context; keeping token.floatvalue here
+	 * would overwrite it with the fraction retail discards.
+	 */
 	if (!BotChat_MoveReplyKeysToRule(rule, &keys))
 	{
 		BotChat_FreeReplyKeyList(&keys);
@@ -6463,17 +6483,19 @@ static int BotChat_ParseRandomStringBlock(bot_chatstate_t *state,
 	pc_script_t *script)
 {
 	(void)state;
+	/*
+	 * 0x1002bb1d enters on PC_ExpectTokenType(source, TT_STRING, 0, token)
+	 * with no prior "}" check, so an empty { } or a trailing comma reaches the
+	 * expect and raises retail's "expected a string, found }".  Leaving that
+	 * loop is NOT a file-level error: 0x1002bbdf falls into the outer
+	 * PC_ReadTokenHandle at 0x1002bbf8, which keeps reading later tables.
+	 */
 	while (1)
 	{
-		if (PS_CheckTokenString(script, "}"))
-		{
-			return 1;
-		}
-
 		pc_token_t token;
 		if (!PS_ExpectTokenType(script, TT_STRING, 0, &token))
 		{
-			return 0;
+			return 1;
 		}
 		char *entry_text = BotChat_TokenTextDuplicate(&token);
 		if (entry_text == NULL)
@@ -7221,16 +7243,25 @@ static int BotChat_LoadSetupScript(bot_chatstate_t *state,
 	PS_FreeScript(script);
 	PC_FreeSource(source);
 
-	/* Retail logs the load after FreeSource, independently of the parse. */
-	if (resolution.pak_entry_length != 0)
+	/*
+	 * All four retail setup loaders reach this print only on the fall-through
+	 * after the parse loop ends normally; every SourceError branch frees the
+	 * partial list and returns 0 first (0x1002c6d5, 0x1002c6a5 and siblings).
+	 * The guard is the parse result, not a non-empty list: a file that yields
+	 * no tokens falls through and still prints (0x1002c499).
+	 */
+	if (parsed)
 	{
-		BotLib_Print(PRT_MESSAGE, "loaded %s\\%s\n",
-			resolution.source_path,
-			file_name);
-	}
-	else
-	{
-		BotLib_Print(PRT_MESSAGE, "loaded %s\n", file_name);
+		if (resolution.pak_entry_length != 0)
+		{
+			BotLib_Print(PRT_MESSAGE, "loaded %s\\%s\n",
+				resolution.source_path,
+				file_name);
+		}
+		else
+		{
+			BotLib_Print(PRT_MESSAGE, "loaded %s\n", file_name);
+		}
 	}
 	return parsed;
 }
@@ -7513,10 +7544,21 @@ int BotSetupChatAI(void)
 	if (LibVarValue("nochat", "0") == 0.0f)
 	{
 		file = LibVarString("rchatfile", "rchat.c");
-		(void)BotChat_LoadSetupScript(bot_chat_setup_state,
+		const int rchat_loaded = BotChat_LoadSetupScript(bot_chat_setup_state,
 			file,
 			"reply chats",
 			BotChat_ParseSetupReplyScript);
+		/*
+		 * 0x1002d699 tests replyhead after the "loaded" print and the
+		 * integrity check, and 0x1002d6a2 reports an rchat.c that produced no
+		 * rules at all.  Every parse failure returns earlier at 0x1002d661 /
+		 * 0x1002d67d without printing either message, so this is gated on a
+		 * successful load.
+		 */
+		if (rchat_loaded && bot_chat_setup_state->replies.rule_count == 0U)
+		{
+			BotLib_Print(PRT_MESSAGE, "no rchats\n");
+		}
 	}
 	(void)BotChat_InitConsoleMessageHeap();
 
@@ -7600,12 +7642,18 @@ int BotLoadChatFile(bot_chatstate_t *state, char *chatfile, char *chatname)
 			&found_chat_block);
 	if (!parsed || !found_chat_block)
 	{
+		/*
+		 * 0x1002ddc5 passes the resolved bot_fileref_t.path as the second
+		 * argument - <basedir>/<gamedir>/<file> for a loose hit, the pakN.pak
+		 * container for a pak hit - never the requested spelling.  Valid here
+		 * because open_status == 1 means the resolution was stored.
+		 */
 		BotChat_PrintLegacyDiagnostic(state,
 			PRT_ERROR,
 			0,
 			"couldn't find chat %s in %s\n",
 			chatname,
-			chatfile);
+			state->active_resolution.source_path);
 		goto load_failed;
 	}
 	(void)saw_chat_block;
@@ -8870,7 +8918,8 @@ BotChat_SelectRetailReplyResponse
 
 Selects a reply response with the retail eligible-count/raw-list traversal.
 The predecrement intentionally happens before the recency check, so an
-all-recent rule selects its linked-list head and the RNG endpoint can miss.
+all-recent rule selects its linked-list head.  The RNG endpoint is always
+reachable at retail's x87 width - see BotChat_RetailRandomFloat.
 =============
 */
 static int BotChat_SelectRetailReplyResponse(const bot_reply_rule_t *rule,
@@ -8892,7 +8941,7 @@ static int BotChat_SelectRetailReplyResponse(const bot_reply_rule_t *rule,
 		}
 	}
 
-	int num = (int)(BotChat_RetailRandomFloat() * (float)available_count);
+	int num = (int)(BotChat_RetailRandomFloat() * (double)available_count);
 	for (size_t i = rule->response_count; i > 0; --i)
 	{
 		const size_t index = i - 1U;

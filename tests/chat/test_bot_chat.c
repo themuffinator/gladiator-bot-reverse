@@ -159,9 +159,12 @@ static void seed_retail_chat_ordinal(size_t draw_count,
 		int matches = 1;
 		for (size_t draw = 0; draw < draw_count; ++draw)
 		{
-			const float fraction =
-				(float)(rand() & 0x7fff) * 0.000030518509f;
-			const int ordinal = (int)(fraction * (float)available_count);
+			/* Match production's double-width chain, which mirrors
+			   retail's x87 evaluation; a float here disagrees for the
+			   low-15-bit samples near the RNG maximum. */
+			const double fraction =
+				(double)(rand() & 0x7fff) * (double)3.05185094e-05f;
+			const int ordinal = (int)(fraction * (double)available_count);
 			if (ordinal != expected_ordinal)
 			{
 				matches = 0;
@@ -1929,13 +1932,15 @@ static void test_reply_chat_chooses_highest_priority_match(void)
 
 /*
 =============
-test_reply_chat_priority_uses_integer_best_value
+test_reply_chat_priority_truncates_fractional_priority
 
-Pins the retail int bestpriority local: reverse traversal stores 1.9 as 1, so
-the earlier source rule at 1.5 replaces it despite its lower float priority.
+Pins retail 0x1002d52f, which stores (float)(unsigned long)token.intvalue: a
+fractional priority is truncated when the rule is loaded, so 1.5 and 1.9 both
+become 1.0.  Reverse traversal then reaches the later source rule first, and
+the earlier one cannot replace it because 1.0 < 1.0 is false.
 =============
 */
-static void test_reply_chat_priority_uses_integer_best_value(void)
+static void test_reply_chat_priority_truncates_fractional_priority(void)
 {
 	const char *path = "bot_chat_reply_integer_priority_test.c";
 	remove(path);
@@ -1962,7 +1967,7 @@ static void test_reply_chat_priority_uses_integer_best_value(void)
 
 	char buffer[256];
 	assert(take_pending_chat(chat, buffer, sizeof(buffer)));
-	assert(strcmp(buffer, "first lower fractional priority") == 0);
+	assert(strcmp(buffer, "later higher fractional priority") == 0);
 
 	free_chat_with_setup_assets(chat);
 	remove(path);
@@ -4603,6 +4608,43 @@ static void test_setup_chat_ai_match_errors_report_source_position(void)
 
 /*
 =============
+test_setup_chat_ai_synonym_skips_stray_non_punctuation
+
+Retail BotLoadSynonyms dispatches only TT_NUMBER (0x1002b1d9) and
+TT_PUNCTUATION (0x1002b22f) and has no else arm, so a stray string, literal or
+name falls through to the next PC_ReadTokenHandle at 0x1002b4b5 and is ignored.
+The file must still load, and the synonym list after the stray token must still
+be usable.
+=============
+*/
+static void test_setup_chat_ai_synonym_skips_stray_non_punctuation(void)
+{
+	const char *path = "bot_chat_synonym_stray_token_test.c";
+	remove(path);
+
+	FILE *fp = fopen(path, "wb");
+	assert(fp != NULL);
+	fputs("1\n{\n\"loose\"\n[(\"alpha\", 1), (\"beta\", 1)]\n}\n", fp);
+	assert(fclose(fp) == 0);
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 1.0f);
+	BotLib_TestSetLibVarString("synfile", path);
+	BotLib_TestSetLibVarString("rndfile", "definitely_missing_rnd.c");
+	BotLib_TestResetMessageHistory();
+	(void)BotSetupChatAI();
+
+	const char *history = BotLib_TestGetMessageHistory();
+	assert(strstr(history, "unexpected") == NULL);
+	assert(strstr(history, "loaded") != NULL);
+
+	BotShutdownChatAI();
+	configure_chat_libvars(0.0f, 0.0f);
+	remove(path);
+}
+
+/*
+=============
 test_setup_chat_ai_synonym_errors_report_source_position
 
 Retail's synonym loader reports "empty string" (1002b5a4), "too many }"
@@ -4622,7 +4664,7 @@ static void test_setup_chat_ai_synonym_errors_report_source_position(void)
 		{"1\n{\n[(\"\", 1), (\"b\", 1)]\n}\n", "empty string"},
 		{"1\n{\n}\n}\n", "too many }"},
 		{"1\n{\n[(\"a\", 1), (\"b\", 1)]\n", "missing }"},
-		{"1\n{\n\"loose\"\n}\n", "unexpected"},
+		{"1\n{\n;\n}\n", "unexpected"},
 		{"1\n{\n[(\"only\", 1)]\n}\n",
 			"synonym must have at least to entries"}
 	};
@@ -5257,7 +5299,7 @@ int main(void)
 	test_reply_chat_falls_back_to_reply_table();
 	test_retail_reply_chat_name_key_is_inert();
 	test_reply_chat_chooses_highest_priority_match();
-	test_reply_chat_priority_uses_integer_best_value();
+	test_reply_chat_priority_truncates_fractional_priority();
 	test_reply_chat_equal_priority_prefers_file_last_rule();
 	test_reply_chat_all_recent_reuses_retail_head();
 	test_retail_reply_chat_matches_gender_keys();
@@ -5283,6 +5325,7 @@ int main(void)
 	test_setup_chat_ai_match_string_alternatives_capture_variables();
 	test_setup_chat_ai_unterminated_match_block_keeps_parsed_templates();
 	test_setup_chat_ai_match_errors_report_source_position();
+	test_setup_chat_ai_synonym_skips_stray_non_punctuation();
 	test_setup_chat_ai_synonym_errors_report_source_position();
 	test_setup_chat_ai_logs_loaded_assets();
 	test_load_chat_file_logs_loaded_block();

@@ -599,7 +599,7 @@ address-to-translation-unit index.
 
 ### MEDIUM LoadWeaponConfig emits the wrong file-error diagnostics (no "couldn't find", no "counldn't load" typo)
 
-- status: **open**
+- status: **applied**
 - retail: `LoadWeaponConfig` @ `0x10034bb0`
 - HLIL: 41085-41095
 - reference: ref/gladiator-bot-restored/botlib/be_ai_weap.c:137-147
@@ -613,7 +613,7 @@ address-to-translation-unit index.
 
 ### LOW LoadWeaponConfig prints an invented "couldn't load weapon config %s" on every parse/fixup failure
 
-- status: **open**
+- status: **applied**
 - retail: `LoadWeaponConfig` @ `0x10034bb0`
 - HLIL: 41172-41211, 41235-41251, 41307-41312
 - reference: ref/gladiator-bot-restored/botlib/be_ai_weap.c:163-233
@@ -627,7 +627,7 @@ address-to-translation-unit index.
 
 ### LOW LoadWeaponConfig never emits the pak-relative "loaded %s\\%s" success message
 
-- status: **open**
+- status: **applied**
 - retail: `LoadWeaponConfig` @ `0x10034bb0`
 - HLIL: 41328-41333
 - reference: ref/gladiator-bot-restored/botlib/be_ai_weap.c:238-241
@@ -643,7 +643,7 @@ address-to-translation-unit index.
 
 ### MEDIUM Retail's x87 random fraction never reaches 1.0; our float helper collapses it to exactly 1.0f, shifting every count-based pick at the RNG maximum
 
-- status: **open**
+- status: **applied**
 - retail: `RandomString / BotChooseInitialChatMessage / BotReplyChat` @ `0x1002bdd0, 0x1002e3b0, 0x1002e7d0`
 - HLIL: 34477-34479 (1002be32), 36538-36541 (1002e46e), 36796-36800 (1002e93a)
 - ours: `src/botlib/ai_chat/ai_chat.c:277`
@@ -656,7 +656,7 @@ address-to-translation-unit index.
 
 ### MEDIUM Random-string block accepts an empty { } silently and aborts the whole file on a bad entry, where retail diagnoses and continues
 
-- status: **open**
+- status: **applied**
 - retail: `BotLoadRandomStrings` @ `0x1002b990`
 - HLIL: 34337-34340 (1002bb1d: if (PC_ExpectTokenType(esi_1, 1, 0, &var_430) != 0) do {...}) and 34399-34403 (1002bbdf/1002bbe9 loop exit, then 1002bbf8 PC_ReadTokenHandle continues the outer loop)
 - ours: `src/botlib/ai_chat/ai_chat.c:6468`
@@ -669,7 +669,7 @@ address-to-translation-unit index.
 
 ### MEDIUM "loaded <file>" is printed even when the asset parse failed; all four retail loaders return before that print on any parse error
 
-- status: **open**
+- status: **applied**
 - retail: `BotLoadSynonyms / BotLoadRandomStrings / BotLoadMatchTemplates / BotLoadReplyChat` @ `0x1002b110, 0x1002b990, 0x1002c410, 0x1002d270`
 - HLIL: 34783-34787 vs 34891-34896 (1002c6dc returns 0; the print is at 1002c687/1002c70c); same shape at 33884-33886 vs 34130-34135, 34265-34268 vs 34415-34420, 35598-35602 vs 35770-35773
 - ours: `src/botlib/ai_chat/ai_chat.c:7224`
@@ -682,7 +682,7 @@ address-to-translation-unit index.
 
 ### LOW Synonym loader aborts on a top-level token retail silently ignores
 
-- status: **open**
+- status: **applied**
 - retail: `BotLoadSynonyms` @ `0x1002b110`
 - HLIL: 33872-33892 and 34111-34117 (1002d1d9: if (var_b0 == 3) ... 1002b22f: else if (var_b0 == 5) ... falls straight to the next PC_ReadTokenHandle at 1002b4b5 with no else branch)
 - ours: `src/botlib/ai_chat/ai_chat.c:5726`
@@ -695,7 +695,7 @@ address-to-translation-unit index.
 
 ### LOW Reply-chat priority keeps the fractional token value; retail stores (float)token.intvalue
 
-- status: **open**
+- status: **applied**
 - retail: `BotLoadReplyChat` @ `0x1002d270`
 - HLIL: 35698-35702 (1002d4dc: PC_ExpectTokenString "=" + PC_ExpectTokenType(3,0); 1002d52f: result_1[1] = fconvert.s(float.t(var_28.q)) where var_28 is token.intvalue)
 - ours: `src/botlib/ai_chat/ai_chat.c:6408`
@@ -708,7 +708,7 @@ address-to-translation-unit index.
 
 ### LOW Retail's "no rchats" load-time diagnostic is not emitted
 
-- status: **open**
+- status: **applied**
 - retail: `BotLoadReplyChat` @ `0x1002d270`
 - HLIL: 35775-35779 (1002d68f: BotCheckReplyChatIntegrety(result); 1002d699: if (result == 0); 1002d6a2: data_10063fe8(1, "no rchats\n"))
 - ours: `src/botlib/ai_chat/ai_chat.c:7163`
@@ -721,7 +721,7 @@ address-to-translation-unit index.
 
 ### LOW "couldn't find chat %s in %s" prints the requested chat-file name instead of retail's resolved container path
 
-- status: **open**
+- status: **applied**
 - retail: `BotLoadInitialChat` @ `0x1002d8a0`
 - HLIL: 36201-36203 (1002dce1: if (var_564 == 0); 1002ddc5: data_10063fe8(3, "couldn't find chat %s in %s\n", arg2, &var_558))
 - ours: `src/botlib/ai_chat/ai_chat.c:7606`

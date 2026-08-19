@@ -104,38 +104,28 @@ static const char *AI_Weapon_LogPath(const char *path)
 AI_Weapon_OpenSource
 
 Resolves and opens a weapon configuration through the shared asset search path.
+
+Retail keeps the two failures distinct and reports the REQUESTED name for both:
+0x10034c99 prints "couldn't find %s\n" when the resolver misses, and 0x10034ce1
+the misspelled "counldn't load %s\n" when LoadSourceFile rejects the resolved
+file.  Nothing else is printed on either path, and both happen before the
+weaponconfig block is allocated at 0x10034ce9.
 =============
 */
 static pc_source_t *AI_Weapon_OpenSource(const char *requested,
-										 char *resolved_path,
-										 size_t resolved_size)
+										 botlib_asset_resolution_t *resolution)
 {
-	if (resolved_path != NULL && resolved_size > 0)
+	if (!BotLib_ResolveAssetPathDetailed(requested, NULL, resolution))
 	{
-		resolved_path[0] = '\0';
-	}
-
-	if (requested == NULL || requested[0] == '\0')
-	{
-		requested = AI_WEAPON_DEFAULT_CONFIG;
-	}
-
-	char candidate[AI_WEAPON_MAX_PATH];
-	if (!BotLib_ResolveAssetPath(requested, NULL, candidate, sizeof(candidate)))
-	{
-		if (resolved_path != NULL && resolved_size > 0)
-		{
-			strncpy(resolved_path, candidate, resolved_size - 1);
-			resolved_path[resolved_size - 1] = '\0';
-		}
+		BotLib_Print(PRT_ERROR, "couldn't find %s\n", requested);
 		return NULL;
 	}
 
 	pc_source_t *source = PC_LoadSourceFile(requested);
-	if (resolved_path != NULL && resolved_size > 0)
+	if (source == NULL)
 	{
-		strncpy(resolved_path, candidate, resolved_size - 1);
-		resolved_path[resolved_size - 1] = '\0';
+		BotLib_Print(PRT_ERROR, "counldn't load %s\n", requested);
+		return NULL;
 	}
 
 	return source;
@@ -200,17 +190,18 @@ static void AI_Weapon_FreeLoadArtifacts(pc_source_t *source, bot_weapon_config_t
 =============
 AI_Weapon_LoadFailed
 
-Common failure path that matches the retail cascaded load diagnostic.
+Release the load artifacts and fail.
+
+Retail's LoadWeaponConfig prints exactly one diagnostic per failure exit, from
+the branch that failed, and never "couldn't load weapon config %s" - that
+string lives only in BotLoadWeaponWeights at 0x10035368, at PRT_FATAL.  The
+ReadStructure exit at 0x10034f1d prints nothing at all.
 =============
 */
 static ai_weapon_library_t *AI_Weapon_LoadFailed(pc_source_t *source,
-												 bot_weapon_config_t *config,
-												 const char *requested)
+												 bot_weapon_config_t *config)
 {
 	AI_Weapon_FreeLoadArtifacts(source, config);
-	BotLib_Print(PRT_ERROR,
-				 "couldn't load weapon config %s\n",
-				 AI_Weapon_LogPath(requested));
 	return NULL;
 }
 
@@ -405,6 +396,23 @@ ai_weapon_library_t *AI_LoadWeaponLibrary(const char *filename)
 		requested = AI_WEAPON_DEFAULT_CONFIG;
 	}
 
+	/*
+	 * 0x10034bd3 strncpy's the requested name into var_558, and every
+	 * diagnostic this routine emits reports that buffer - never the resolved
+	 * candidate.  The source is resolved and loaded before the weaponconfig
+	 * block is allocated (0x10034ce9), so the two file errors free nothing.
+	 */
+	char retail_filename[AI_WEAPON_MAX_PATH];
+	strncpy(retail_filename, requested, sizeof(retail_filename) - 1);
+	retail_filename[sizeof(retail_filename) - 1] = '\0';
+
+	botlib_asset_resolution_t resolution;
+	pc_source_t *source = AI_Weapon_OpenSource(retail_filename, &resolution);
+	if (source == NULL)
+	{
+		return NULL;
+	}
+
 	int max_weaponinfo = AI_Weapon_NormalizeMaxLibvar("max_weaponinfo");
 	int max_projectileinfo = AI_Weapon_NormalizeMaxLibvar("max_projectileinfo");
 
@@ -412,54 +420,57 @@ ai_weapon_library_t *AI_LoadWeaponLibrary(const char *filename)
 		AI_Weapon_AllocateConfig(max_weaponinfo, max_projectileinfo);
 	if (config == NULL)
 	{
-		BotLib_Print(PRT_ERROR,
-					 "couldn't load weapon config %s\n",
-					 AI_Weapon_LogPath(requested));
-		return NULL;
+		/* Retail's GetClearedMemory at 0x10034ce9 is unchecked; this guard is
+		   ours and stays silent rather than emitting retail text. */
+		return AI_Weapon_LoadFailed(source, NULL);
 	}
 
-	char resolved_path[AI_WEAPON_MAX_PATH];
-	pc_source_t *source = AI_Weapon_OpenSource(requested,
-											   resolved_path,
-											   sizeof(resolved_path));
-	if (source == NULL)
-	{
-		const char *failed_path = (resolved_path[0] != '\0') ? resolved_path : requested;
-		BotLib_Print(PRT_ERROR, "couldn't load %s\n", AI_Weapon_LogPath(failed_path));
-		return AI_Weapon_LoadFailed(NULL, config, requested);
-	}
-
-	const char *log_path = AI_Weapon_LogPath(resolved_path);
 	if (!AI_Weapon_ReadConfigDefinitions(source,
 										 config,
 										 max_weaponinfo,
 										 max_projectileinfo,
-										 log_path))
+										 retail_filename))
 	{
-		return AI_Weapon_LoadFailed(source, config, requested);
+		return AI_Weapon_LoadFailed(source, config);
 	}
 
 	PC_FreeSource(source);
 	source = NULL;
 
-	if (!AI_Weapon_FixupDefinitions(config, log_path))
+	if (!AI_Weapon_FixupDefinitions(config, retail_filename))
 	{
-		return AI_Weapon_LoadFailed(NULL, config, requested);
+		return AI_Weapon_LoadFailed(NULL, config);
 	}
 
 	ai_weapon_library_t *library = (ai_weapon_library_t *)GetClearedMemory(sizeof(*library));
 	if (library == NULL)
 	{
 		BotLib_Print(PRT_ERROR, "[ai_weapon] failed to allocate library wrapper\n");
-		return AI_Weapon_LoadFailed(NULL, config, requested);
+		return AI_Weapon_LoadFailed(NULL, config);
 	}
 
 	library->config = config;
-	strncpy(library->source_path, log_path, sizeof(library->source_path) - 1);
+	strncpy(library->source_path,
+			AI_Weapon_LogPath(resolution.resolved_path),
+			sizeof(library->source_path) - 1);
 	library->source_path[sizeof(library->source_path) - 1] = '\0';
 	g_active_weapon_config = config;
 
-	BotLib_Print(PRT_MESSAGE, "loaded %s\n", library->source_path);
+	/*
+	 * 0x1003504d branches on the bot_fileref_t length: a PAK hit reports
+	 * <container>\<logical name> (0x1003506a), a loose file just the logical
+	 * name (0x100350fb).  Both arms print the requested name, not the path.
+	 */
+	if (resolution.pak_entry_length != 0)
+	{
+		BotLib_Print(PRT_MESSAGE, "loaded %s\\%s\n",
+					 resolution.source_path,
+					 retail_filename);
+	}
+	else
+	{
+		BotLib_Print(PRT_MESSAGE, "loaded %s\n", retail_filename);
+	}
 	return library;
 }
 
