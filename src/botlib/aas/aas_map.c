@@ -18,6 +18,7 @@
 #include <windows.h>
 #include <direct.h>
 #include <io.h>
+#include <process.h>
 #define chdir _chdir
 #define getcwd _getcwd
 #define unlink _unlink
@@ -6093,6 +6094,117 @@ AAS_ReturnAASLoadFailure
 Preserve the retail ZIP helper's final no-AAS status after member load errors.
 =============
 */
+/*
+=============
+AAS_LaunchWinBSPC
+
+Spawn WinBSPC to compile the missing AAS file, reproducing retail sub_1000e140.
+
+The routine builds "<map>.bsp"; composes "<basedir><sep><gamedir><sep>" and
+keeps that prefix; appends "maps" and probes it with _access(path, 4), adding a
+separator on success and stripping the four characters it just appended on
+failure; then appends "<map>.aas".  The saved prefix plus "winbspc.exe" is the
+executable, Log_Write records `spawning "%s"`, and the argument is
+"bsp2aas(<bsp>,<aas>);" passed through _spawnl(_P_NOWAIT, ...).  A negative
+return prints "can't execute WinBSPC" at PRT_ERROR.
+
+This routine exists only in the Windows DLL - the ELF build has no counterpart
+- so elsewhere it reports the same failure without spawning anything.
+=============
+*/
+static void AAS_LaunchWinBSPC(const char *mapname)
+{
+	if (mapname == NULL || mapname[0] == '\0')
+	{
+		return;
+	}
+
+	char bsppath[MAX_FILEPATH];
+	char aaspath[MAX_FILEPATH];
+	char exepath[MAX_FILEPATH];
+	char arguments[MAX_FILEPATH];
+
+	strncpy(bsppath, mapname, sizeof(bsppath) - 1U);
+	bsppath[sizeof(bsppath) - 1U] = '\0';
+	strncat(bsppath, ".bsp", sizeof(bsppath) - strlen(bsppath) - 1U);
+
+	strncpy(aaspath, LibVarString("basedir", ""), sizeof(aaspath) - 1U);
+	aaspath[sizeof(aaspath) - 1U] = '\0';
+	AppendPathSeperator(aaspath, (int)sizeof(aaspath));
+	strncat(aaspath, LibVarString("gamedir", ""),
+		sizeof(aaspath) - strlen(aaspath) - 1U);
+	AppendPathSeperator(aaspath, (int)sizeof(aaspath));
+
+	strncpy(exepath, aaspath, sizeof(exepath) - 1U);
+	exepath[sizeof(exepath) - 1U] = '\0';
+
+	strncat(aaspath, "maps", sizeof(aaspath) - strlen(aaspath) - 1U);
+#ifdef _WIN32
+	if (_access(aaspath, 4) != 0)
+#else
+	if (access(aaspath, R_OK) != 0)
+#endif
+	{
+		/* 0x1000e2xx writes 0 at strlen-4, stripping the "maps" just added. */
+		size_t length = strlen(aaspath);
+		if (length >= 4U)
+		{
+			aaspath[length - 4U] = '\0';
+		}
+	}
+	else
+	{
+		AppendPathSeperator(aaspath, (int)sizeof(aaspath));
+	}
+	strncat(aaspath, mapname, sizeof(aaspath) - strlen(aaspath) - 1U);
+	strncat(aaspath, ".aas", sizeof(aaspath) - strlen(aaspath) - 1U);
+
+	strncat(exepath, "winbspc.exe", sizeof(exepath) - strlen(exepath) - 1U);
+	BotLib_LogWrite("spawning \"%s\"", exepath);
+	snprintf(arguments, sizeof(arguments), "bsp2aas(%s,%s);", bsppath, aaspath);
+
+#ifdef _WIN32
+	if (_spawnl(_P_NOWAIT, exepath, exepath, arguments, NULL) < 0)
+	{
+		BotLib_Print(PRT_ERROR, "can't execute WinBSPC\n");
+	}
+#else
+	/* sub_1000e140 has no ELF counterpart; report the same failure. */
+	BotLib_Print(PRT_ERROR, "can't execute WinBSPC\n");
+#endif
+}
+
+/*
+=============
+AAS_ReportMissingAAS
+
+Retail's give-up tail at 0x1000eb6e: when autolaunchbspc is non-zero, spawn the
+compiler and print the multi-line PRT_EXIT notice, then report the missing file
+at PRT_FATAL.
+=============
+*/
+static void AAS_ReportMissingAAS(const char *mapname)
+{
+	if (LibVarValue("autolaunchbspc", "0") != 0.0f)
+	{
+		AAS_LaunchWinBSPC(mapname);
+		BotLib_Print(PRT_EXIT,
+			"\ncreating AAS for %s...\n"
+			"\nThis may take several minutes\n"
+			"\nYou cannot play the map %s with\n"
+			"bots before AAS (%s.aas) has been\n"
+			"created.\n"
+			"\nYou probably want to close Quake2 now\n"
+			"to free up processing power for the\n"
+			"tool which creates the AAS file.\n\n",
+			mapname,
+			mapname,
+			mapname);
+	}
+
+	BotLib_Print(PRT_FATAL, "no AAS file available\n");
+}
+
 static int AAS_ReturnAASLoadFailure(const aas_map_file_source_t *source,
 	int errorCode)
 {
@@ -6101,7 +6213,7 @@ static int AAS_ReturnAASLoadFailure(const aas_map_file_source_t *source,
 		return AAS_ReturnMapLoadFailure(errorCode);
 	}
 
-	BotLib_Print(PRT_FATAL, "no AAS file available\n");
+	AAS_ReportMissingAAS(aasworld.mapName);
 	return AAS_ReturnMapLoadFailure(BLERR_NOAASFILE);
 }
 
@@ -8757,7 +8869,7 @@ int AAS_LoadMap(const char *mapname,
 	}
 	if (!aasDiscovered)
 	{
-		BotLib_Print(PRT_FATAL, "no AAS file available\n");
+		AAS_ReportMissingAAS(mapname);
 		return AAS_ReturnMapLoadFailure(BLERR_NOAASFILE);
 	}
 	AAS_ClearAASData();

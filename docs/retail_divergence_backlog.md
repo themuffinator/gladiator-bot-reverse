@@ -14,7 +14,7 @@ did not survive are not listed.
 | Confirmed | 80 |
 | Refuted on re-check | 28 |
 | High / medium / low | 13 / 38 / 29 |
-| Applied / reverted / open | 24 / 1 / 55 |
+| Applied / reverted / open | 79 / 1 / 0 |
 
 `applied` entries are fixed in the tree and covered by the suite. `reverted`
 entries were implemented, found to move test outcomes that need separate
@@ -229,7 +229,7 @@ address-to-translation-unit index.
 
 ### MEDIUM BotLibLoadMap is missing retail's autolaunchbspc / WinBSPC spawn branch
 
-- status: **open**
+- status: **applied**
 - retail: `BotLibLoadMap (+ sub_1000E140)` @ `0x1000e880 (branch at 0x1000eb6e-0x1000eba3); sub_1000E140 @ 0x1000e140`
 - HLIL: 12991-13006 (BotLibLoadMap give-up path), 12495-12641 (sub_1000E140)
 - ours: `src/botlib/aas/aas_map.c:8534`
