@@ -42,7 +42,19 @@ float LibVarStringValue(const char *string)
 			string++;
 			if (*string == '\0')
 			{
-				return (float)value;
+				/*
+				 * 0x1003877c falls straight into 0x1003879a with no
+				 * terminator check: retail adds (0 - '0') / divisor here and
+				 * then keeps scanning past the NUL with dotfound set, so its
+				 * result for a trailing '.' depends on whatever follows the
+				 * GetMemory(strlen+1) block.  The reject at 0x10038798 fires
+				 * on the first nonzero non-digit, which makes 0.0f the modal
+				 * outcome; we stop in bounds and return that rather than
+				 * reproducing the out-of-bounds read.  The accumulated value
+				 * is the one result retail can never produce here, so it must
+				 * not be returned.
+				 */
+				return 0.0f;
 			}
 		}
 

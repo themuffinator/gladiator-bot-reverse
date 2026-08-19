@@ -31,24 +31,6 @@ static float AAS_MoveLibVarValue(const libvar_t *var, float fallback)
 
 /*
 =============
-AAS_MovePositiveLibVarValue
-
-Read a movement variable and preserve the Q3 physics fallback for zero values.
-=============
-*/
-static float AAS_MovePositiveLibVarValue(const libvar_t *var, float fallback)
-{
-	float value = AAS_MoveLibVarValue(var, fallback);
-	if (value <= 0.0f)
-	{
-		return fallback;
-	}
-
-	return value;
-}
-
-/*
-=============
 AAS_MoveVectorNormalize
 
 Normalize a vector in place and return its original length.
@@ -111,7 +93,7 @@ float AAS_WeaponJumpZVelocity(const vec3_t origin, float radiusdamage)
 {
 	if (origin == NULL)
 	{
-		return AAS_MovePositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
+		return AAS_MoveLibVarValue(Bridge_JumpVelocity(), 224.0f);
 	}
 
 	const vec3_t rocketoffset = {8.0f, 8.0f, -8.0f};
@@ -154,7 +136,7 @@ float AAS_WeaponJumpZVelocity(const vec3_t origin, float radiusdamage)
 	VectorScale(direction, 1600.0f * points / 200.0f,
 		knockbackvelocity);
 	return knockbackvelocity[2] +
-		AAS_MovePositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
+		AAS_MoveLibVarValue(Bridge_JumpVelocity(), 224.0f);
 }
 
 /*
@@ -612,17 +594,21 @@ int AAS_HorizontalVelocityForJump(float zvel, const vec3_t start, const vec3_t e
 
 	float gravity = AAS_MoveLibVarValue(Bridge_Gravity(), 800.0f);
 	float maxvelocity = AAS_MoveLibVarValue(Bridge_MaxVelocity(), 300.0f);
-	if (gravity <= 0.0f)
-	{
-		*velocity = maxvelocity;
-		return qfalse;
-	}
 
+	/*
+	 * Retail divides by sv_gravity unguarded, so a zero or negative value
+	 * propagates infinities and NaNs rather than short-circuiting.
+	 */
 	float jump_time = zvel / gravity;
 	float maxjump = 0.5f * gravity * jump_time * jump_time;
 	float top = start[2] + maxjump;
 	float height2fall = top - end[2];
-	if (height2fall < 0.0f)
+	/*
+	 * 0x10010837 tests C0 (`test ah,1`), which the x87 also sets when the
+	 * compare is unordered, so a NaN height2fall takes this branch too - the
+	 * exact case sv_gravity 0 produces.  Plain `< 0.0f` would fall through.
+	 */
+	if (!(height2fall >= 0.0f))
 	{
 		*velocity = maxvelocity;
 		return qfalse;
@@ -630,11 +616,6 @@ int AAS_HorizontalVelocityForJump(float zvel, const vec3_t start, const vec3_t e
 
 	float fall_time = sqrtf(height2fall / (0.5f * gravity));
 	float total_time = fall_time + jump_time;
-	if (fabsf(total_time) <= 1e-6f)
-	{
-		*velocity = maxvelocity;
-		return qfalse;
-	}
 
 	vec3_t dir;
 	VectorSubtract(end, start, dir);
@@ -679,19 +660,19 @@ int AAS_PredictClientMovement(aas_clientmove_t *move,
 	memset(move, 0, sizeof(*move));
 	unsigned char retail_stopevent = (unsigned char)stopevent;
 
-	float phys_friction = AAS_MovePositiveLibVarValue(Bridge_Friction(), 6.0f);
-	float phys_stopspeed = AAS_MovePositiveLibVarValue(Bridge_StopSpeed(), 100.0f);
-	float phys_gravity = AAS_MovePositiveLibVarValue(Bridge_Gravity(), 800.0f);
-	float phys_watergravity = AAS_MovePositiveLibVarValue(Bridge_WaterGravity(), 400.0f);
-	float phys_waterfriction = AAS_MovePositiveLibVarValue(Bridge_WaterFriction(), 1.0f);
-	float phys_maxwalkvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxWalkVelocity(), 300.0f);
-	float phys_maxcrouchvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxCrouchVelocity(), 100.0f);
-	float phys_maxswimvelocity = AAS_MovePositiveLibVarValue(Bridge_MaxSwimVelocity(), 150.0f);
+	float phys_friction = AAS_MoveLibVarValue(Bridge_Friction(), 6.0f);
+	float phys_stopspeed = AAS_MoveLibVarValue(Bridge_StopSpeed(), 100.0f);
+	float phys_gravity = AAS_MoveLibVarValue(Bridge_Gravity(), 800.0f);
+	float phys_watergravity = AAS_MoveLibVarValue(Bridge_WaterGravity(), 400.0f);
+	float phys_waterfriction = AAS_MoveLibVarValue(Bridge_WaterFriction(), 1.0f);
+	float phys_maxwalkvelocity = AAS_MoveLibVarValue(Bridge_MaxWalkVelocity(), 300.0f);
+	float phys_maxcrouchvelocity = AAS_MoveLibVarValue(Bridge_MaxCrouchVelocity(), 100.0f);
+	float phys_maxswimvelocity = AAS_MoveLibVarValue(Bridge_MaxSwimVelocity(), 150.0f);
 	float phys_maxacceleration = AAS_MoveLibVarValue(Bridge_MaxAcceleration(), 2200.0f);
-	float phys_maxstep = AAS_MovePositiveLibVarValue(Bridge_MaxStep(), 18.0f);
-	float phys_maxbarrier = AAS_MovePositiveLibVarValue(Bridge_MaxBarrier(), 50.0f);
-	float phys_maxsteepness = AAS_MovePositiveLibVarValue(Bridge_MaxSteepness(), 0.7f);
-	float phys_jumpvel = AAS_MovePositiveLibVarValue(Bridge_JumpVelocity(), 224.0f) * frametime;
+	float phys_maxstep = AAS_MoveLibVarValue(Bridge_MaxStep(), 18.0f);
+	float phys_maxbarrier = AAS_MoveLibVarValue(Bridge_MaxBarrier(), 50.0f);
+	float phys_maxsteepness = AAS_MoveLibVarValue(Bridge_MaxSteepness(), 0.7f);
+	float phys_jumpvel = AAS_MoveLibVarValue(Bridge_JumpVelocity(), 224.0f) * frametime;
 
 	vec3_t org;
 	VectorCopy(origin, org);

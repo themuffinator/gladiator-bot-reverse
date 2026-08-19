@@ -319,7 +319,7 @@ address-to-translation-unit index.
 
 ### LOW Movement libvars are silently replaced by Q3 defaults when their value is <= 0
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_ClientMovementPrediction / AAS_WeaponJumpZVelocity / AAS_HorizontalVelocityForJump` @ `0x1000f840, 0x1000f4d0, 0x10010780`
 - HLIL: 13440-13455 (raw libvar loads), 13376 (jumpvel add), 14029-14031 (gravity/maxvelocity)
 - ours: `src/botlib/aas/aas_move.c:39`
@@ -764,7 +764,7 @@ address-to-translation-unit index.
 
 ### LOW BotFreeWeaponWeights nulls the state pointers retail deliberately leaves dangling
 
-- status: **open**
+- status: **applied**
 - retail: `BotFreeWeaponWeights` @ `0x10035300`
 - HLIL: 41371-41386
 - reference: ref/gladiator-bot-restored/botlib/be_ai_weap.c:258-264
@@ -780,7 +780,7 @@ address-to-translation-unit index.
 
 ### LOW ReadFuzzySeperators_r: we free the partial separator chain on the "invalid name" case-body error; retail leaks it
 
-- status: **open**
+- status: **applied**
 - retail: `ReadFuzzySeperators_r` @ `0x10035a20`
 - HLIL: 41967-41970 — `if (eax_28 != 0)` (token is neither "return" nor "switch") -> `j_sub_10039200(arg1, "invalid name %s\n"); return 0`, with no `j_sub_10035960` (FreeFuzzySeperators_r) call, unlike every other error exit in this routine (41814, 41837, 42047)
 - ours: `src/botlib/ai_weight/ai_weight.c:637`
@@ -793,7 +793,7 @@ address-to-translation-unit index.
 
 ### LOW ReadWeightConfig: our parse-failure path frees the in-progress weight name and separator tree that retail leaks
 
-- status: **open**
+- status: **applied**
 - retail: `ReadWeightConfig` @ `0x10035fa0`
 - HLIL: 42152 (`result_2[*result_2 * 2 + 1] = j_sub_10038f90(not.d(i))` — name allocated at index numweights), 42170-42173 / 42212-42215 / 42259-42261 / 42316-42319 (every failure after that point does only `j_sub_100359b0(result_2); j_sub_1003e000(eax_4); return 0`), and 42322 (`*result_3 += 1` — numweights is incremented only after the whole entry succeeds)
 - ours: `src/botlib/ai_weight/ai_weight.c:759`
@@ -852,7 +852,7 @@ address-to-translation-unit index.
 
 ### LOW LibVarStringValue returns early on a trailing '.' where retail reads past the terminator
 
-- status: **open**
+- status: **applied**
 - retail: `LibVarStringValue` @ `0x10038750`
 - HLIL: 43831-43852 (dot branch at 1003876d/10038775, fall-through into label_10038798 at 1003879a: `x87_r6_2 = float.t(sx.d(*edx) - 0x30) / float.t(var_4)`)
 - reference: ref/gladiator-bot-restored/botlib/l_libvar.c:51-70
@@ -1086,7 +1086,7 @@ address-to-translation-unit index.
 
 ### MEDIUM PC_EvaluateTokens uses fixed 64-entry stack heaps for values/operators; retail heap-allocates each one with no cap
 
-- status: **open**
+- status: **applied**
 - retail: `PC_EvaluateTokens` @ `0x1003b9e0`
 - HLIL: 46709, 46798, 47373, 47384 (dev_tools/gladiator.dll.bndb_hlil.txt)
 - ours: `src/botlib/precomp/l_precomp.c:2431`
@@ -1099,7 +1099,7 @@ address-to-translation-unit index.
 
 ### MEDIUM PC_EvaluateTokens invents divide-by-zero and modulo-by-zero guards that retail does not have
 
-- status: **open**
+- status: **applied**
 - retail: `PC_EvaluateTokens` @ `0x1003b9e0`
 - HLIL: 47172-47181 (case 9 / case 0xa)
 - ours: `src/botlib/precomp/l_precomp.c:2779`

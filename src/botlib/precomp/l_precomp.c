@@ -2421,32 +2421,16 @@ int PC_OperatorPriority(int op)
 	return qfalse;
 } //end of the function PC_OperatorPriority
 
-//#define AllocValue()			GetClearedMemory(sizeof(pc_value_t));
-//#define FreeValue(val)		FreeMemory(val)
-//#define AllocOperator(op)		op = (pc_operator_t *) GetClearedMemory(sizeof(pc_operator_t));
-//#define FreeOperator(op)		FreeMemory(op);
-
-#define MAX_VALUES		64
-#define MAX_OPERATORS	64
-#define AllocValue(val)									\
-	if (numvalues >= MAX_VALUES) {						\
-		SourceError(source, "out of value space\n");		\
-		error = 1;										\
-		break;											\
-	}													\
-	else												\
-		val = &value_heap[numvalues++];
-#define FreeValue(val)
-//
-#define AllocOperator(op)								\
-	if (numoperators >= MAX_OPERATORS) {				\
-		SourceError(source, "out of operator space\n");	\
-		error = 1;										\
-		break;											\
-	}													\
-	else												\
-		op = &operator_heap[numoperators++];
-#define FreeOperator(op)
+//Retail PC_EvaluateTokens (0x1003b9e0) allocates every value_t with
+//GetClearedMemory(0x20) at 0x1003bab5 and every operator_t with
+//GetClearedMemory(0x14) at 0x1003bbe6, releasing both with FreeMemory at
+//0x1003c2f1 / 0x1003c308.  There is no cap on either list, and the strings
+//"out of value space" / "out of operator space" do not exist in the DLL; the
+//64-entry fixed heaps were Quake III's later rewrite.
+#define AllocValue(val)		val = (pc_value_t *) GetClearedMemory(sizeof(pc_value_t));
+#define FreeValue(val)		FreeMemory(val)
+#define AllocOperator(op)	op = (pc_operator_t *) GetClearedMemory(sizeof(pc_operator_t));
+#define FreeOperator(op)	FreeMemory(op)
 
 int PC_EvaluateTokens(pc_source_t *source, pc_token_t *tokens, signed long int *intvalue,
 																	double *floatvalue, int integer)
@@ -2464,11 +2448,6 @@ int PC_EvaluateTokens(pc_source_t *source, pc_token_t *tokens, signed long int *
 	int gotquestmarkvalue = qfalse;
 	int lastoperatortype = 0;
 	//
-	pc_operator_t operator_heap[MAX_OPERATORS];
-	int numoperators = 0;
-	pc_value_t value_heap[MAX_VALUES];
-	int numvalues = 0;
-
 	firstoperator = lastoperator = NULL;
 	firstvalue = lastvalue = NULL;
 	if (intvalue) *intvalue = 0;
@@ -2776,21 +2755,15 @@ int PC_EvaluateTokens(pc_source_t *source, pc_token_t *tokens, signed long int *
 									break;
 			case P_MUL:				v1->intvalue *= v2->intvalue;
 									v1->floatvalue *= v2->floatvalue; break;
-			case P_DIV:				if (!v2->intvalue || !v2->floatvalue)
-									{
-										SourceError(source, "divide by zero in #if/#elif\n");
-										error = 1;
-										break;
-									}
-									v1->intvalue /= v2->intvalue;
+			//0x1003bf1d (P_DIV) and 0x1003bf2f (P_MOD) fall straight through with
+			//no conditional branch and no SourceError; "divide by zero in
+			//#if/#elif" has no counterpart in the DLL's diagnostic block at
+			//0x1005f8d0..0x1005fba8.  The old !v2->floatvalue disjunct also
+			//rejected divisors retail divides by successfully, because the
+			//integer-only operators leave the float lane untouched.
+			case P_DIV:				v1->intvalue /= v2->intvalue;
 									v1->floatvalue /= v2->floatvalue; break;
-			case P_MOD:				if (!v2->intvalue)
-									{
-										SourceError(source, "divide by zero in #if/#elif\n");
-										error = 1;
-										break;
-									}
-									v1->intvalue %= v2->intvalue; break;
+			case P_MOD:				v1->intvalue %= v2->intvalue; break;
 			case P_ADD:				v1->intvalue += v2->intvalue;
 									v1->floatvalue += v2->floatvalue; break;
 			case P_SUB:				v1->intvalue -= v2->intvalue;

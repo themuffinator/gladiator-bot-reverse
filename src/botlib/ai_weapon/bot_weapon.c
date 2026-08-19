@@ -121,6 +121,16 @@ static void BotWeapon_ClearWeights(bot_weaponstate_t *state)
 		}
 	}
 
+	/*
+	 * Intentional deviation from retail.  BotFreeWeaponWeights (sub_10035300,
+	 * 0x10035371/0x1003537c) frees ws->weightconfig and ws->itemweights but
+	 * writes neither field back, and BotSetupClient's chat-failure path at
+	 * 0x10029593 returns without clearing the client slab - so re-setting up
+	 * the same client number double-frees both blocks, which is heap UB with
+	 * no deterministic behaviour worth reproducing.  Our ownership model
+	 * (owns_weights / fresh_weights, cached vs fresh configs) does not map
+	 * onto retail's unconditional two-field free either.  Clear the fields.
+	 */
 	state->weights = NULL;
 	state->config = NULL;
 	state->weight_config = NULL;

@@ -633,8 +633,17 @@ static bot_fuzzy_seperator_t *BotWeight_ReadFuzzySeperators(pc_source_t *source)
 				return NULL;
 			}
 		} else {
+			/*
+			 * Deliberate retail leak, not an oversight: 0x10035e61 returns
+			 * straight to the epilogue, jumping over the shared
+			 * FreeFuzzySeperators_r at 0x10035e63 that every other error exit
+			 * in this routine goes through (0x10035d64, 0x10035dxx, 0x10035e9x).
+			 * The whole partially built chain rooted at `first` stays
+			 * allocated, which the botlib memory counters report.  Q3's
+			 * be_ai_weight.c:230-234 carries the same omission - do not "fix"
+			 * it back.
+			 */
 			SourceError(source, "invalid name %s\n", token.string);
-			BotWeight_FreeFuzzySeperators(first);
 			return NULL;
 		}
 
@@ -707,61 +716,69 @@ static bool BotWeight_ParseWeights(pc_source_t *source, bot_weight_config_t *con
 		weight->name = NULL;
 		weight->first_seperator = NULL;
 
+		/* 0x10036113 uses GetMemory here and strcpy overwrites every byte;
+		   retail does not check the result. */
 		weight->name = GetClearedMemory(strlen(token.string) + 1);
 		if (weight->name == NULL) {
-			goto parse_failure;
+			return false;
 		}
 		strcpy(weight->name, token.string);
 
 		if (!PC_ExpectAnyToken(source, &token)) {
-			goto parse_failure;
+			return false;
 		}
 
 		bool requires_closing_brace = false;
 		if (strcmp(token.string, "{") == 0) {
 			requires_closing_brace = true;
 			if (!PC_ExpectAnyToken(source, &token)) {
-				goto parse_failure;
+				return false;
 			}
 		}
 
 		if (strcmp(token.string, "switch") == 0) {
 			root = BotWeight_ReadFuzzySeperators(source);
 			if (root == NULL) {
-				goto parse_failure;
+				return false;
 			}
 		} else if (strcmp(token.string, "return") == 0) {
 			root = GetClearedMemory(sizeof(bot_fuzzy_seperator_t));
 			if (root == NULL) {
-				goto parse_failure;
+				return false;
 			}
 			root->index = 0;
 			root->value = WEIGHT_MAX_VALUE;
 			if (!BotWeight_ReadFuzzyWeight(source, root)) {
-				goto parse_failure;
+				/*
+				 * The one failure path retail does free something on:
+				 * 0x10036388 releases the fresh separator before
+				 * FreeWeightConfig2.  A plain FreeMemory is exact - the node
+				 * has no children yet.
+				 */
+				FreeMemory(root);
+				return false;
 			}
 		} else {
 			SourceError(source, "invalid name %s\n", token.string);
-			goto parse_failure;
+			return false;
 		}
 
+		/*
+		 * 0x10036207 / 0x1003627a store the tree into
+		 * weights[numweights].firstseperator BEFORE the brace check at
+		 * 0x100362xx, and numweights is not incremented until 0x100362a6.
+		 * FreeWeightConfig2 walks only i < numweights, so every failure from
+		 * here back to the name allocation abandons the name block - and this
+		 * one abandons the separator tree with it.
+		 */
+		weight->first_seperator = root;
 		if (requires_closing_brace) {
 			if (!PC_ExpectTokenString(source, "}")) {
-				goto parse_failure;
+				return false;
 			}
 		}
 
-		weight->first_seperator = root;
 		config->num_weights += 1;
-		continue;
-
-	parse_failure:
-		BotWeight_FreeFuzzySeperators(root);
-		if (weight->name != NULL) {
-			FreeMemory(weight->name);
-			weight->name = NULL;
-		}
-		return false;
 	}
 
 	return true;

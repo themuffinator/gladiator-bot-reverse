@@ -109,14 +109,19 @@ static float AAS_VectorNormalize(vec3_t vector)
 
 /*
 =============
-AAS_ReachPositiveLibVarValue
+AAS_ReachPhysicsLibVarValue
 
-Read a reachability physics variable with its retail fallback.
+Read a reachability physics variable.
+
+Retail's sub_10011520 / sub_10011560 / sub_10011590 / sub_100116d0 dereference
+`*(handle + 0x10)` and divide by it unguarded (0x100115xx, 0x1001156x,
+0x1001159x, 0x100116xx), so a zero or negative value is used as given.  The
+fallback covers only a missing handle, which retail cannot have.
 =============
 */
-static float AAS_ReachPositiveLibVarValue(const libvar_t *var, float fallback)
+static float AAS_ReachPhysicsLibVarValue(const libvar_t *var, float fallback)
 {
-	if (var == NULL || var->value <= 0.0f)
+	if (var == NULL)
 	{
 		return fallback;
 	}
@@ -1226,7 +1231,7 @@ Return the maximum whole-unit fall distance before the retail damage threshold.
 */
 int AAS_FallDamageDistance(void)
 {
-	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
+	float gravity = AAS_ReachPhysicsLibVarValue(Bridge_Gravity(), 800.0f);
 	float maxzvelocity = sqrtf(30.0f * 10000.0f);
 	float time = maxzvelocity / gravity;
 	return (int)(0.5f * gravity * time * time);
@@ -1241,7 +1246,7 @@ Convert a fall distance into the retail squared-velocity damage delta.
 */
 float AAS_FallDelta(float distance)
 {
-	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
+	float gravity = AAS_ReachPhysicsLibVarValue(Bridge_Gravity(), 800.0f);
 	float time = sqrtf(fabsf(distance) * 2.0f / gravity);
 	float delta = time * gravity;
 	return delta * delta * 0.0001f;
@@ -1256,7 +1261,7 @@ Return the ballistic apex height for a vertical jump velocity.
 */
 float AAS_MaxJumpHeight(float phys_jumpvel)
 {
-	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
+	float gravity = AAS_ReachPhysicsLibVarValue(Bridge_Gravity(), 800.0f);
 	float time = phys_jumpvel / gravity;
 	return 0.5f * gravity * time * time;
 }
@@ -1270,8 +1275,8 @@ Return the maximum horizontal distance across the configured jump-fall height.
 */
 float AAS_MaxJumpDistance(float phys_jumpvel)
 {
-	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
-	float maxvelocity = AAS_ReachPositiveLibVarValue(Bridge_MaxVelocity(), 300.0f);
+	float gravity = AAS_ReachPhysicsLibVarValue(Bridge_Gravity(), 800.0f);
+	float maxvelocity = AAS_ReachPhysicsLibVarValue(Bridge_MaxVelocity(), 300.0f);
 	float maxjumpfallheight = LibVarGetValue("rs_maxjumpfallheight");
 	if (maxjumpfallheight <= 0.0f)
 	{
@@ -1290,8 +1295,8 @@ Return the Q3 decisecond estimate for completing a barrier jump.
 */
 unsigned short AAS_BarrierJumpTravelTime(void)
 {
-	float gravity = AAS_ReachPositiveLibVarValue(Bridge_Gravity(), 800.0f);
-	float jumpvelocity = AAS_ReachPositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
+	float gravity = AAS_ReachPhysicsLibVarValue(Bridge_Gravity(), 800.0f);
+	float jumpvelocity = AAS_ReachPhysicsLibVarValue(Bridge_JumpVelocity(), 224.0f);
 	return (unsigned short)(jumpvelocity / (gravity * 0.1f));
 }
 
@@ -2220,9 +2225,9 @@ int AAS_Reachability_Step_Barrier_WaterJump_WalkOffLedge(int area1num,
 		}
 	}
 
-	float maxstep = AAS_ReachPositiveLibVarValue(Bridge_MaxStep(), 18.0f);
-	float maxwaterjump = AAS_ReachPositiveLibVarValue(Bridge_MaxWaterJump(), 21.0f);
-	float maxbarrier = AAS_ReachPositiveLibVarValue(Bridge_MaxBarrier(), 50.0f);
+	float maxstep = AAS_ReachPhysicsLibVarValue(Bridge_MaxStep(), 18.0f);
+	float maxwaterjump = AAS_ReachPhysicsLibVarValue(Bridge_MaxWaterJump(), 21.0f);
+	float maxbarrier = AAS_ReachPhysicsLibVarValue(Bridge_MaxBarrier(), 50.0f);
 	if (groundcandidate.found && groundcandidate.dist >= 0.0f &&
 		groundcandidate.dist < maxstep)
 	{
@@ -2642,7 +2647,7 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 
 	const aas_area_t *area1 = &aasworld.areas[area1num];
 	const aas_area_t *area2 = &aasworld.areas[area2num];
-	float jumpvelocity = AAS_ReachPositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
+	float jumpvelocity = AAS_ReachPhysicsLibVarValue(Bridge_JumpVelocity(), 224.0f);
 	/*
 	 * Retail stores AAS_MaxJumpDistance verbatim: 0x10013d50 calls the helper
 	 * and 0x10013d55 stores the result with no intervening multiply.  The
@@ -2831,7 +2836,7 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 		const aas_plane_t *plane = &aasworld.planes[trace.planenum];
 		if (plane->normal[2] >= 0.7f &&
 			teststart[2] - trace.endpos[2] <=
-				AAS_ReachPositiveLibVarValue(Bridge_MaxBarrier(), 50.0f))
+				AAS_ReachPhysicsLibVarValue(Bridge_MaxBarrier(), 50.0f))
 		{
 			return qfalse;
 		}
@@ -2857,7 +2862,7 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 		const aas_plane_t *plane = &aasworld.planes[trace.planenum];
 		if (plane->normal[2] >= 0.7f &&
 			teststart[2] - trace.endpos[2] <=
-				AAS_ReachPositiveLibVarValue(Bridge_MaxBarrier(), 50.0f))
+				AAS_ReachPhysicsLibVarValue(Bridge_MaxBarrier(), 50.0f))
 		{
 			return qfalse;
 		}
@@ -2959,7 +2964,7 @@ int AAS_Reachability_Jump(int area1num, int area2num)
 	 * sv_maxwalkvelocity + 600). There is no walk-off-ledge special case and
 	 * no fall-damage penalty here.
 	 */
-	float maxwalkvelocity = AAS_ReachPositiveLibVarValue(
+	float maxwalkvelocity = AAS_ReachPhysicsLibVarValue(
 		Bridge_MaxWalkVelocity(), 300.0f);
 	reachability->traveltime = (unsigned short)(int)(
 		AAS_VectorDistance(bestend, beststart) * 240.0f / maxwalkvelocity +
@@ -2996,7 +3001,7 @@ int AAS_Reachability_Ladder(int area1num, int area2num)
 		return qfalse;
 	}
 
-	float jumpvelocity = AAS_ReachPositiveLibVarValue(Bridge_JumpVelocity(), 224.0f);
+	float jumpvelocity = AAS_ReachPhysicsLibVarValue(Bridge_JumpVelocity(), 224.0f);
 	float maxjumpheight = AAS_MaxJumpHeight(jumpvelocity);
 	const aas_area_t *area1 = &aasworld.areas[area1num];
 	const aas_area_t *area2 = &aasworld.areas[area2num];
