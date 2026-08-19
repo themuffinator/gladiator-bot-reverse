@@ -1,0 +1,43 @@
+/*
+ * Windows VERSIONINFO record for gladiator.dll.
+ *
+ * Generated from src/shared/gladiator_version.rc.in by
+ * cmake/ReconstructionVersion.cmake.  This is file metadata only -- it is
+ * readable from Explorer's Properties dialog and by any version-resource
+ * reader, and it has no effect on the module's runtime behaviour, so it
+ * carries no parity risk.
+ *
+ * FILEVERSION reports the reconstruction version.  PRODUCTVERSION reports the
+ * legacy botlib version the module reproduces, so a shipped DLL states both
+ * facts without either being mistaken for the other.
+ */
+
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    @GLADIATOR_RECON_VERSION_MAJOR@,@GLADIATOR_RECON_VERSION_MINOR@,@GLADIATOR_RECON_VERSION_PATCH@,0
+PRODUCTVERSION 0,96,0,0
+FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+FILEFLAGS      0
+FILEOS         VOS__WINDOWS32
+FILETYPE       VFT_DLL
+FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		BLOCK "040904B0"
+		BEGIN
+			VALUE "ProductName",      "@GLADIATOR_RECON_PRODUCT_NAME@"
+			VALUE "FileDescription",  "Gladiator Bot botlib for Quake II -- open reconstruction of Mr Elusive's original"
+			VALUE "FileVersion",      "@GLADIATOR_RECON_VERSION_FULL@"
+			VALUE "ProductVersion",   "BotLib v@GLADIATOR_LEGACY_BOTLIB_VERSION@ (legacy botlib ABI)"
+			VALUE "InternalName",     "gladiator"
+			VALUE "OriginalFilename", "gladiator.dll"
+			VALUE "Comments",         "Dedicated to Mr Elusive, whose Gladiator Bot and Quake III Arena bot library this work exists to preserve."
+		END
+	END
+	BLOCK "VarFileInfo"
+	BEGIN
+		VALUE "Translation", 0x409, 0x04B0
+	END
+END

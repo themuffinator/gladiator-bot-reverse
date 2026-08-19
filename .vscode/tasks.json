@@ -67,7 +67,7 @@
     {
       "label": "Build + Install gladiator.dll",
       "dependsOn": [
-        "Install gladiator.dll to C:\\q2Clean\\gladiator"
+        "Install gladiator.dll to E:\\Games\\q2Clean\\gladiator"
       ],
       "dependsOrder": "sequence",
       "problemMatcher": []

@@ -1,0 +1,343 @@
+name: Release
+
+# Manual only.  Releasing is a deliberate act: it publishes a gladiator.dll
+# that people will drop into a real Quake II install, so it is never triggered
+# by a push.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Reconstruction version to release (e.g. 1.0.0 or 1.1.0-rc1).
+          Leave empty to use GLADIATOR_RECON_VERSION from
+          cmake/ReconstructionVersion.cmake. This is the reconstruction
+          version, NOT the legacy 0.96 botlib version the module reports to
+          the host.
+        required: false
+        default: ''
+      draft:
+        description: 'Create the release as a draft (review before it goes public)'
+        type: boolean
+        required: false
+        default: true
+      prerelease:
+        description: 'Mark the release as a pre-release'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # Every job derives its archive name from this, so it is defined once.
+  ARCHIVE_STEM: q2-gladiator-botlib-reconstruction
+
+jobs:
+  # ---------------------------------------------------------------------------
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      legacy: ${{ steps.resolve.outputs.legacy }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve reconstruction version
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          declared=$(sed -n 's/^set(GLADIATOR_RECON_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' \
+                     cmake/ReconstructionVersion.cmake | head -1)
+          legacy=$(sed -n 's/^set(GLADIATOR_LEGACY_BOTLIB_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' \
+                   cmake/ReconstructionVersion.cmake | head -1)
+
+          if [ -z "$declared" ] || [ -z "$legacy" ]; then
+            echo "::error::could not parse versions from cmake/ReconstructionVersion.cmake"
+            exit 1
+          fi
+
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then
+            version="$declared"
+            echo "Using the version declared in cmake/ReconstructionVersion.cmake: $version"
+          elif [ "$version" != "$declared" ]; then
+            echo "::warning::Requested version $version differs from the declared" \
+                 "$declared. The build is being overridden with -DGLADIATOR_RECON_VERSION;" \
+                 "update cmake/ReconstructionVersion.cmake so the repository matches the release."
+          fi
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$version' is not MAJOR.MINOR.PATCH with an optional pre-release suffix"
+            exit 1
+          fi
+
+          if [ "$version" = "$legacy" ]; then
+            echo "::error::Reconstruction version must not be the legacy botlib version ($legacy)"
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::tag v$version already exists; bump GLADIATOR_RECON_VERSION"
+            exit 1
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "legacy=$legacy"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Summarise
+        shell: bash
+        run: |
+          {
+            echo "### Q2 Gladiator Bot Botlib Reconstruction"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Reconstruction version | \`${{ steps.resolve.outputs.version }}\` |"
+            echo "| Release tag | \`${{ steps.resolve.outputs.tag }}\` |"
+            echo "| Legacy botlib version reported to the host | \`BotLib v${{ steps.resolve.outputs.legacy }}\` |"
+            echo "| Draft | \`${{ inputs.draft }}\` |"
+            echo "| Pre-release | \`${{ inputs.prerelease }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: resolve-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # A partial release is worse than no release: if one platform breaks, stop
+      # before anything is published.
+      fail-fast: true
+      matrix:
+        include:
+          # 32-bit is the one retail Quake II and the original Gladiator mod can
+          # actually load; the 64-bit builds are for modern source ports.
+          - platform: win32
+            runner: windows-latest
+            module: gladiator.dll
+            cmake_args: >-
+              -DCMAKE_C_COMPILER=clang-cl
+              -DCMAKE_CXX_COMPILER=clang-cl
+              -DCMAKE_C_FLAGS=-m32
+              -DCMAKE_CXX_FLAGS=-m32
+              -DCMAKE_EXE_LINKER_FLAGS=/machine:x86
+              -DCMAKE_SHARED_LINKER_FLAGS=/machine:x86
+          - platform: win64
+            runner: windows-latest
+            module: gladiator.dll
+            cmake_args: >-
+              -DCMAKE_C_COMPILER=clang-cl
+              -DCMAKE_CXX_COMPILER=clang-cl
+          - platform: linux64
+            runner: ubuntu-latest
+            module: libgladiator.so
+            cmake_args: ''
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # ReconstructionVersion.cmake stamps the module with the commit it was
+          # built from, so the checkout needs real git metadata.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.platform == 'win32' && 'x86' || 'x64' }}
+
+      - name: Verify clang-cl is available
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The hosted Windows image ships LLVM, but pin the failure here rather
+          # than letting CMake fail with a less obvious message.
+          if ! command -v clang-cl >/dev/null; then
+            echo "clang-cl not on PATH; installing LLVM"
+            choco install llvm --no-progress -y
+            # $GITHUB_PATH only affects later steps, so make it usable here too.
+            echo "C:/Program Files/LLVM/bin" >> "$GITHUB_PATH"
+            export PATH="/c/Program Files/LLVM/bin:$PATH"
+          fi
+          clang-cl --version
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-release -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_TESTING=OFF \
+                -DGLADIATOR_RECON_VERSION='${{ needs.resolve-version.outputs.version }}' \
+                ${{ matrix.cmake_args }}
+
+      - name: Build the module
+        shell: bash
+        run: cmake --build build-release --target gladiator --parallel
+
+      - name: Verify the built module
+        shell: bash
+        run: |
+          set -euo pipefail
+          module="build-release/${{ matrix.module }}"
+          test -f "$module" || { echo "::error::$module was not produced"; exit 1; }
+
+          version='${{ needs.resolve-version.outputs.version }}'
+          legacy='${{ needs.resolve-version.outputs.legacy }}'
+
+          # The reconstruction marker must carry the version being released.
+          if ! grep -aq "Q2 Gladiator Bot Botlib Reconstruction $version" "$module"; then
+            echo "::error::$module does not carry the reconstruction marker for $version"
+            exit 1
+          fi
+
+          # ...and the legacy ABI string must be untouched, because that is what
+          # the Gladiator mod links against.
+          if ! grep -aq "BotLib v$legacy" "$module"; then
+            echo "::error::$module is missing the legacy \"BotLib v$legacy\" ABI string"
+            exit 1
+          fi
+
+          echo "verified $module"
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/package_release.py \
+            --binary "build-release/${{ matrix.module }}" \
+            --platform '${{ matrix.platform }}' \
+            --version '${{ needs.resolve-version.outputs.version }}' \
+            --output-dir dist/release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_STEM }}-${{ needs.resolve-version.outputs.version }}-${{ matrix.platform }}
+          path: dist/release/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect archives
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -name '*.zip' -exec mv {} release/ \;
+
+          count=$(find release -name '*.zip' | wc -l)
+          if [ "$count" -ne 3 ]; then
+            echo "::error::expected 3 archives (win32, win64, linux64), found $count"
+            find release -name '*.zip'
+            exit 1
+          fi
+
+          ( cd release && sha256sum *.zip > SHA256SUMS.txt )
+          cat release/SHA256SUMS.txt
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.resolve-version.outputs.version }}'
+          legacy='${{ needs.resolve-version.outputs.legacy }}'
+
+          {
+            echo "## Q2 Gladiator Bot Botlib Reconstruction $version"
+            echo
+            echo "An open reconstruction of the Gladiator Bot botlib that **Mr Elusive**"
+            echo "wrote for Quake II, rebuilt from the retail module so the original mod"
+            echo "keeps working on modern toolchains. This project is dedicated to his work."
+            echo
+            echo "### Versions"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Reconstruction version | \`$version\` |"
+            echo "| Legacy botlib version reported to the host | \`BotLib v$legacy\` |"
+            echo
+            echo "These are independent on purpose. The module still identifies itself to"
+            echo "Quake II as \`BotLib v$legacy\` — that string is part of the ABI the"
+            echo "Gladiator mod was built against. The reconstruction version describes"
+            echo "this project, and appears in the DLL's file properties and in"
+            echo "\`VERSION.txt\` inside each archive."
+            echo
+            echo "### Downloads"
+            echo
+            echo "| Archive | Use it for |"
+            echo "| --- | --- |"
+            echo "| \`…-win32.zip\` | **Retail Quake II and the original Gladiator mod.** Start here. |"
+            echo "| \`…-win64.zip\` | 64-bit Windows source ports. |"
+            echo "| \`…-linux64.zip\` | 64-bit Linux source ports. |"
+            echo
+            echo "Each archive contains the module, \`VERSION.txt\` with a SHA-256 and the"
+            echo "source commit, and the full \`docs/\` tree."
+            echo
+            echo "### Status"
+            echo
+            echo "The reconstruction is functionally complete: it loads in a real Quake II"
+            echo "dedicated server, the bots navigate, fight and chat, and every entry in"
+            echo "the retail divergence backlog has been applied. It is nevertheless a"
+            echo "reconstruction of a 1999 binary, and continued testing across more maps,"
+            echo "mods and source ports is expected to surface further differences."
+            echo "Please report anything that behaves unlike the original."
+            echo
+            echo "See \`CHANGELOG.md\` for the detailed change list."
+            echo
+            echo "---"
+            echo
+            echo "### SHA-256"
+            echo
+            echo '```'
+            cat release/SHA256SUMS.txt
+            echo '```'
+          } > release-notes.md
+
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create '${{ needs.resolve-version.outputs.tag }}' \
+            --title 'Q2 Gladiator Bot Botlib Reconstruction ${{ needs.resolve-version.outputs.version }}' \
+            --notes-file release-notes.md \
+            --target '${{ github.sha }}' \
+            ${{ inputs.draft && '--draft' || '' }} \
+            ${{ inputs.prerelease && '--prerelease' || '' }} \
+            release/*.zip release/SHA256SUMS.txt

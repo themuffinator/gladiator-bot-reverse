@@ -1,0 +1,54 @@
+#ifndef GLADIATOR_SHARED_GLADIATOR_VERSION_H
+#define GLADIATOR_SHARED_GLADIATOR_VERSION_H
+
+/*
+ * Generated from src/shared/gladiator_version.h.in by cmake/ReconstructionVersion.cmake.
+ * Do not edit the generated copy in the build tree; edit the template instead.
+ *
+ * Two version numbers exist in this project and they must not be conflated:
+ *
+ *   GLADIATOR_LEGACY_BOTLIB_VERSION
+ *       The version of the retail Gladiator botlib being reconstructed.
+ *       Frozen at 0.96.  BotVersion() returns "BotLib v" followed by this and
+ *       BotSetupLibrary prints the same string in its startup banner; the
+ *       original Gladiator mod and the parity contract both depend on the
+ *       exact bytes, so this changes only if a different retail build is ever
+ *       targeted.
+ *
+ *   GLADIATOR_RECON_VERSION
+ *       The version of this reconstruction.  Bumped per release to describe
+ *       reconstruction accuracy, build system and tooling changes.  It is
+ *       never reported to the host at runtime and therefore cannot perturb
+ *       parity.
+ */
+
+#define GLADIATOR_RECON_PRODUCT_NAME    "@GLADIATOR_RECON_PRODUCT_NAME@"
+
+#define GLADIATOR_RECON_VERSION         "@GLADIATOR_RECON_VERSION@"
+#define GLADIATOR_RECON_VERSION_MAJOR   @GLADIATOR_RECON_VERSION_MAJOR@
+#define GLADIATOR_RECON_VERSION_MINOR   @GLADIATOR_RECON_VERSION_MINOR@
+#define GLADIATOR_RECON_VERSION_PATCH   @GLADIATOR_RECON_VERSION_PATCH@
+
+/* Commit the module was built from, suffixed "-dirty" when the working tree
+   carried uncommitted changes, or "unknown" for a build from a source archive
+   with no git metadata. */
+#define GLADIATOR_RECON_GIT_COMMIT      "@GLADIATOR_RECON_GIT_COMMIT@"
+#define GLADIATOR_RECON_BUILD_DATE      "@GLADIATOR_RECON_BUILD_DATE@"
+
+/* "1.0.0 (a1b2c3d4e5f6, 2026-08-20)" */
+#define GLADIATOR_RECON_VERSION_FULL    "@GLADIATOR_RECON_VERSION_FULL@"
+
+#define GLADIATOR_LEGACY_BOTLIB_VERSION "@GLADIATOR_LEGACY_BOTLIB_VERSION@"
+
+/*
+ * Returns the reconstruction version as "<product> <version> (<commit>, <date>)
+ * [botlib ABI <legacy>]".
+ *
+ * This is diagnostic metadata for whoever is holding the binary; it is not part
+ * of the botlib ABI and is not exported from the module.  Hosts that ask the
+ * module for its version through the retail API still get "BotLib v0.96" from
+ * BotVersion(), unchanged.
+ */
+const char *BotReconstructionVersion(void);
+
+#endif /* GLADIATOR_SHARED_GLADIATOR_VERSION_H */

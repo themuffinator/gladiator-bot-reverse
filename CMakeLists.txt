@@ -1,21 +1,30 @@
 cmake_minimum_required(VERSION 3.16)
-project(gladiator-bot-reverse LANGUAGES C CXX)
 
+# Q2 Gladiator Bot Botlib Reconstruction -- an open reconstruction of the
+# Gladiator Bot botlib that Mr Elusive wrote for Quake II in 1999.
+#
+# The version carried here is the *reconstruction* version and is independent
+# of the legacy 0.96 botlib version the module reports to the host.  See
+# cmake/ReconstructionVersion.cmake for the distinction and the policy.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+project(Q2GladiatorBotlibReconstruction LANGUAGES C CXX)
+
 include(BotlibSources)
+include(ReconstructionVersion)
+
+message(STATUS
+    "${GLADIATOR_RECON_PRODUCT_NAME} ${GLADIATOR_RECON_VERSION_FULL} "
+    "(reproducing botlib v${GLADIATOR_LEGACY_BOTLIB_VERSION})")
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 include(GNUInstallDirs)
 
-# TODO: Define targets for shared utilities under src/shared.
-# Shared headers export Quake conventions (id386, idaxp, etc.)
+# Shared headers export Quake conventions (id386, idaxp, etc.) and the
+# generated reconstruction version header.
 add_subdirectory(src/shared)
-# TODO: Flesh out the remaining Q2 bridge entry points in src/q2bridge.
-# TODO: Expand the botlib interface implementation in src/botlib/interface.
 
-# Temporary target that keeps the reconstructed botlib utility sources building
-# while their functionality is filled in.
 add_subdirectory(src/botlib/common)
 add_subdirectory(src/botlib/precomp)
 add_subdirectory(src/botlib/aas)
@@ -46,6 +55,13 @@ add_library(gladiator SHARED)
 get_property(_gladiator_botlib_sources GLOBAL PROPERTY BOTLIB_REGISTERED_SOURCES)
 if(_gladiator_botlib_sources)
     target_sources(gladiator PRIVATE ${_gladiator_botlib_sources})
+endif()
+
+# File metadata only, and only where a resource compiler exists; the module's
+# runtime behaviour is identical with or without it.
+gladiator_generate_version_resource(_gladiator_version_resource)
+if(_gladiator_version_resource)
+    target_sources(gladiator PRIVATE "${_gladiator_version_resource}")
 endif()
 target_link_libraries(gladiator
     PRIVATE
@@ -116,14 +132,3 @@ include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
-
-# Test integration plan:
-# * Once the production targets above exist, expose them to the tests via
-#   add_subdirectory(src/shared ...), add_subdirectory(src/q2bridge ...), and
-#   add_subdirectory(src/botlib/interface ...) as appropriate so the test harness
-#   can link against their exported libraries.
-# * Enable CTest (enable_testing() and include(CTest)) and add a tests directory
-#   (add_subdirectory(tests)) that will host upcoming integration and unit checks.
-# * Inside tests/, compile lightweight mock bot libraries that mimic the
-#   loadable modules expected by the runtime so we can exercise dynamic loading
-#   behaviour during the test suite.

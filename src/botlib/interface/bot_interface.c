@@ -16,6 +16,7 @@
 #include <float.h>
 #include <math.h>
 
+#include "shared/gladiator_version.h"
 #include "shared/q_platform.h"
 #include "q2bridge/aas_translation.h"
 #include "q2bridge/botlib.h"
@@ -2369,6 +2370,40 @@ static char *BotVersion(void)
     static char version[] = "BotLib v0.96";
 
     return version;
+}
+
+/*
+ * Version marker for the reconstruction itself.
+ *
+ * BotVersion() above reports the legacy botlib version and must keep returning
+ * exactly "BotLib v0.96": the Gladiator mod links against that ABI and the
+ * parity contract pins the string by address (0x10037bef, see
+ * tests/reference/botlib_contract.json).  The reconstruction carries its own
+ * version so a shipped module can be identified, and it is kept strictly out
+ * of the retail code paths -- nothing below is reachable from BotSetupLibrary,
+ * so the startup banner still emits retail's four lines verbatim.
+ *
+ * The marker is an ordinary non-static const object rather than a string
+ * literal inside the function so that it survives into .rodata and can be
+ * recovered from a shipped binary with strings(1) / `what`.  It is not
+ * exported: the module marks only GetBotAPI with GLADIATOR_API, builds with
+ * WINDOWS_EXPORT_ALL_SYMBOLS off, and hides everything else on ELF/Mach-O.
+ */
+const char g_gladiatorReconstructionVersion[] =
+	"@(#) " GLADIATOR_RECON_PRODUCT_NAME " " GLADIATOR_RECON_VERSION_FULL
+	" [botlib ABI " GLADIATOR_LEGACY_BOTLIB_VERSION "]";
+
+/*
+=============
+BotReconstructionVersion
+
+Diagnostic accessor for the reconstruction version.  Deliberately absent from
+the retail export table; see the marker comment above.
+=============
+*/
+const char *BotReconstructionVersion(void)
+{
+	return g_gladiatorReconstructionVersion;
 }
 
 /*

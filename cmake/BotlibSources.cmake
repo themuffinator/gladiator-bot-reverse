@@ -90,7 +90,15 @@ function(audit_gladiator_sources)
     set(_registered_sources)
     foreach(_target IN LISTS AGS_TARGETS)
         _botlib_collect_target_sources("${_target}" _target_sources)
-        list(APPEND _registered_sources ${_target_sources})
+        foreach(_target_source IN LISTS _target_sources)
+            # The audit answers "is every .c under SOURCE_ROOT compiled, and does
+            # every compiled .c live under SOURCE_ROOT".  Non-C inputs -- the
+            # generated Windows VERSIONINFO resource, for one -- are outside its
+            # remit and legitimately live in the build tree.
+            if(_target_source MATCHES "\\.c$")
+                list(APPEND _registered_sources "${_target_source}")
+            endif()
+        endforeach()
     endforeach()
 
     list(REMOVE_DUPLICATES _registered_sources)

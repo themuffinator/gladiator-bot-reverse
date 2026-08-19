@@ -1,5 +1,6 @@
 #include "aas_local.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
