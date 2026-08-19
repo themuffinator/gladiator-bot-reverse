@@ -172,7 +172,17 @@ void AAS_ContinueInit(float time)
 	libvar_t *forcewrite = Bridge_ForceWrite();
 	int shouldwrite = aasworld.saveFile ||
 		(forcewrite != NULL && forcewrite->value != 0.0f);
-	if (shouldwrite && aasworld.aasFilePath[0] != '\0')
+	/*
+	 * 0x1000df7d gates the optimize+write block on savefile || forcewrite
+	 * alone, with no test on the filename.  Retail never clears
+	 * aasworld.filename - data_100667f0 has only the two writes in
+	 * BotLibLoadMap's loose/pak branch - so a zip-sourced AAS reaches here
+	 * with a stale or zero-filled name and AAS_WriteAASFile fails on it,
+	 * printing "couldn't write %s".  Skipping the block would also skip
+	 * AAS_Optimize, which swaps compacted vertex/edge/face arrays into
+	 * aasworld and changes every later sample and route.
+	 */
+	if (shouldwrite)
 	{
 		if (LibVarValue("nooptimize", "0") == 0.0f)
 		{
@@ -193,12 +203,13 @@ void AAS_ContinueInit(float time)
 		}
 	}
 
-	if (AAS_PrepareReachability() != BLERR_NOERROR)
-	{
-		BotLib_Print(PRT_ERROR,
-			"AAS_ContinueInit: failed to prepare reachability data\n");
-		return;
-	}
+	/*
+	 * 0x1000dfc9 and 0x1000dfce are unconditional: AAS_InitRouting then a tail
+	 * call to AAS_SetInitialized.  The routine's only early exit is the
+	 * AAS_ContinueInitReachability guard above, and retail references no error
+	 * string here at all.
+	 */
+	(void)AAS_PrepareReachability();
 	(void)AAS_InitRetailRoutingCaches();
 	aasworld.initialized = qtrue;
 	BotLib_Print(PRT_MESSAGE, "AAS initialized.\n");

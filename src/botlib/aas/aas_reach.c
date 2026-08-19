@@ -983,14 +983,20 @@ float AAS_AreaVolume(int areanum)
 		}
 
 		const aas_face_t *face = &aasworld.faces[facenum];
-		int side = face->backarea != areanum;
-		int planenum = face->planenum ^ side;
-		if (planenum < 0 || planenum >= aasworld.numPlanes)
+		/*
+		 * 0x100112c3 indexes aasworld.planes with the face's RAW planenum -
+		 * retail never reads face+0x14 here, and cannot: 0x1001123e reuses the
+		 * areanum argument slot as the volume accumulator before the loop
+		 * starts.  The `^ side` form is Quake III's later rewrite; flipping to
+		 * the mirrored plane negates the contribution of every face whose
+		 * faceindex entry is positive for this area.  ref be_aas_reach.c:211.
+		 */
+		if (face->planenum < 0 || face->planenum >= aasworld.numPlanes)
 		{
 			continue;
 		}
 
-		const aas_plane_t *plane = &aasworld.planes[planenum];
+		const aas_plane_t *plane = &aasworld.planes[face->planenum];
 		float distance = -(DotProduct(corner, plane->normal) - plane->dist);
 		volume += distance * AAS_FaceArea(face);
 	}
@@ -1323,30 +1329,13 @@ qboolean AAS_ReachabilityExists(int area1num, int area2num)
 		}
 	}
 
-	if (aasworld.areasettings == NULL || aasworld.reachability == NULL ||
-		area1num <= 0 || area1num >= aasworld.numAreaSettings ||
-		area2num <= 0 || area2num >= aasworld.numAreaSettings)
-	{
-		return qfalse;
-	}
-
-	const aas_areasettings_t *settings = &aasworld.areasettings[area1num];
-	if (settings->firstreachablearea < 0 || settings->numreachableareas < 0 ||
-		settings->firstreachablearea + settings->numreachableareas > aasworld.numReachability)
-	{
-		return qfalse;
-	}
-
-	for (int index = 0; index < settings->numreachableareas; ++index)
-	{
-		const aas_reachability_t *reach =
-			&aasworld.reachability[settings->firstreachablearea + index];
-		if (reach->areanum == area2num)
-		{
-			return qtrue;
-		}
-	}
-
+	/*
+	 * The whole retail body is the chain walk above; 0x10011722 returns 0
+	 * immediately after it, and the next symbol begins at 0x10011740.  Also
+	 * searching the stored lump would veto every pair already present in an
+	 * existing .aas, so a forcereachability regeneration would emit almost
+	 * nothing and then write that gutted set back over the file.
+	 */
 	return qfalse;
 }
 
@@ -3899,29 +3888,13 @@ int AAS_Reachability_Grapple(int area1num, int area2num)
 			continue;
 		}
 
-		int tracedareas[20];
-		int numareas = AAS_TraceAreas(areastart,
-			bsptrace.endpos,
-			tracedareas,
-			NULL,
-			20);
-		if (numareas >= 20)
-		{
-			continue;
-		}
-		int areaindex;
-		for (areaindex = 0; areaindex < numareas; ++areaindex)
-		{
-			if (AAS_AreaClusterPortal(tracedareas[areaindex]))
-			{
-				break;
-			}
-		}
-		if (areaindex < numareas)
-		{
-			continue;
-		}
-
+		/*
+		 * 0x100170b6 goes straight from these destination checks to the
+		 * allocation at 0x100170df; AAS_TraceAreas (sub_1001ba00) is not
+		 * called anywhere inside sub_10016ba0.  The cluster-portal and
+		 * 20-area rejects were Quake III's, and they drop the common case of
+		 * a hook fired between two rooms.
+		 */
 		VectorSubtract(bsptrace.endpos, areastart, direction);
 		aas_lreachability_t *reachability = AAS_LinkAdjacentReachability(
 			area1num,
@@ -4588,14 +4561,17 @@ int AAS_ContinueInitReachability(void)
 	}
 	if (aasworld.numReachabilityAreas + (int)framebudget >= aasworld.numAreas)
 	{
-		BotLib_Print(PRT_MESSAGE, "\r%6d%%", 100);
+		/* String data at 0x1005bd74 is "\r%6d%%%%" (8 content bytes): the
+		   single printf pass in the host's Print collapses it to two literal
+		   percent signs.  Retail's own authoring slip, reproduced. */
+		BotLib_Print(PRT_MESSAGE, "\r%6d%%%%", 100);
 		BotLib_Print(PRT_MESSAGE,
 			"\nplease wait while storing reachability...\n");
 	}
 	else
 	{
 		BotLib_Print(PRT_MESSAGE,
-			"\r%6d%%",
+			"\r%6d%%%%",
 			aasworld.numReachabilityAreas * 100 / aasworld.numAreas);
 	}
 	return qtrue;

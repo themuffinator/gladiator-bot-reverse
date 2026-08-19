@@ -46,7 +46,13 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_ContinueInit skips AAS_Optimize/AAS_WriteAASFile when the AAS filename is empty
 
-- status: **open**
+- status: **applied**
+- correction on applying: the entry's Fix text says to collapse the zipped
+  branch into an unconditional path copy, which contradicts its own analysis.
+  Retail's two writes to data_100667f0 are both in the loose/pak branch and
+  the zip fallback returns BLERR_NOERROR before either, so the zipped path
+  leaves the buffer untouched rather than writing the member name. Applied
+  per the analysis.
 - retail: `AAS_ContinueInit` @ `0x1000df30`
 - HLIL: 12420-12437
 - ours: `src/botlib/aas/aas_main.c:175`
@@ -59,7 +65,7 @@ address-to-translation-unit index.
 
 ### LOW Invented AAS_ContinueInit failure diagnostic and early return retail has no counterpart for
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_ContinueInit` @ `0x1000df30`
 - HLIL: 12437-12440
 - ours: `src/botlib/aas/aas_main.c:196`
@@ -390,7 +396,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_AreaVolume flips the face plane by backarea; retail uses the raw planenum
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_AreaVolume` @ `0x10011220`
 - HLIL: 14431-14473 (deciding: 14455-14462 `int32_t* ecx_7 = data_1006693c + ((eax_19 ^ edx_7) - edx_7) * 0x18` / `int32_t edx_8 = *ecx_7 * 5` / `float* eax_25 = eax_24 + (edx_8 << 2)`)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_reach.c:211 `plane = &aasworld.planes[face->planenum];`
@@ -404,7 +410,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_ReachabilityExists also searches the stored reachability lump; retail only walks the temporary per-area chain
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_ReachabilityExists` @ `0x10011700`
 - HLIL: 14607-14616: the whole body is `for (int32_t* i = *(data_1006675c + (arg1 << 2)); i != 0; i = i[0xb]) if (*i == arg2) return 1; return 0`
 - reference: ref/gladiator-bot-restored/botlib/be_aas_reach.c:352-364
@@ -460,7 +466,7 @@ address-to-translation-unit index.
 
 ### MEDIUM AAS_Reachability_Grapple adds an invented cluster-portal / 20-area trace rejection
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_Reachability_Grapple` @ `0x10016ba0`
 - HLIL: 19096-19110: `if ((*(data_10066954 + eax_36 * 0x1c) & 6) == 0 && eax_36 != arg1 && j_sub_10011700(arg1, eax_36) == 0 && j_sub_10011670(eax_36) != 0) { int32_t* eax_41 = j_sub_10010ff0(); ... }` — the allocation follows the contents/area checks immediately, with no trace-areas call in between
 - reference: ref/gladiator-bot-restored/botlib/be_aas_reach.c:2482-2507
@@ -474,7 +480,7 @@ address-to-translation-unit index.
 
 ### LOW Reachability progress message prints one percent sign; retail's format string emits two
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_ContinueInitReachability` @ `0x10018920`
 - HLIL: 21024 `data_10063fe8(1, "\r%6d%%%%", 0x64)` and 21029 `var_18_9 = "\r%6d%%%%"` (string data at 1005bd74: `char data_1005bd74[0x9] = "\r%6d%%%%", 0`)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_reach.c:3008 and :3013

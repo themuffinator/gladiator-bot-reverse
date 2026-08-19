@@ -3257,8 +3257,15 @@ static void test_reachability_area_and_link_helpers(void **state)
 	assert_int_equal(AAS_AreaLava(3), AAS_AREACONTENTS_LAVA);
 	assert_int_equal(AAS_AreaSlime(3), AAS_AREACONTENTS_SLIME);
 	assert_int_equal(AAS_AreaTeleporter(3), AAS_AREACONTENTS_TELEPORTER);
-	assert_true(AAS_ReachabilityExists(1, 2));
-	assert_true(AAS_ReachabilityExists(1, 3));
+	/*
+	 * Retail AAS_ReachabilityExists walks only the temporary per-area chain
+	 * built during generation and returns 0 immediately after it (0x10011722);
+	 * it never consults the stored reachability lump.  With no chain built,
+	 * every query must be false even though areasettings[1] points at two
+	 * stored reachabilities targeting areas 2 and 3.
+	 */
+	assert_false(AAS_ReachabilityExists(1, 2));
+	assert_false(AAS_ReachabilityExists(1, 3));
 	assert_false(AAS_ReachabilityExists(2, 1));
 
 	aas_link_t second = {0};

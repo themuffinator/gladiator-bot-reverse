@@ -8387,7 +8387,8 @@ static void AAS_ClearAASData(void)
 	aasworld.numReachabilityAreas = 0;
 	aasworld.aasChecksum = 0;
 	aasworld.saveFile = qfalse;
-	aasworld.aasFilePath[0] = '\0';
+	/* Retail's AAS_DumpAASData clears savefile but never touches
+	   data_100667f0, so the AAS filename deliberately carries over. */
 	aasworld.numAreas = 0;
 	aasworld.numBBoxes = 0;
 	aasworld.numVertexes = 0;
@@ -9263,11 +9264,15 @@ int AAS_LoadMap(const char *mapname,
 		AAS_PrintLoadedMapFile(&aasSource, qfalse);
 	}
 
-	if (aasSource.zipped)
-	{
-		aasworld.aasFilePath[0] = '\0';
-	}
-	else
+	/*
+	 * 0x1000eb32 / 0x1000eb50 are retail's only writes to data_100667f0, both
+	 * in the loose/pak branch; the aasN.zip fallback returns BLERR_NOERROR
+	 * before reaching either, so a zip-sourced AAS leaves whatever the buffer
+	 * already held - the previous map's name, or zeros at startup.  Retail
+	 * never clears it, and clearing it here made AAS_ContinueInit skip
+	 * AAS_Optimize and the write entirely.
+	 */
+	if (!aasSource.zipped)
 	{
 		const char *storedAASPath = aasSource.archived
 			? aasSource.logicalPath
