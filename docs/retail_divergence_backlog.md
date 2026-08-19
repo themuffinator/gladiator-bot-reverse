@@ -242,7 +242,7 @@ address-to-translation-unit index.
 
 ### LOW SOLID_BSP hit overwrites trace->ent with the entity number; retail copies the model trace verbatim
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_EntityCollision` @ `0x10003680`
 - HLIL: 5192-5217 (10003a42..10003aad)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_bspq2.c:513-521
@@ -256,7 +256,7 @@ address-to-translation-unit index.
 
 ### LOW AAS_TraceClientBBox startsolid path clears the trace direction, suppressing retail's plane-flip
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_TraceClientBBox` @ `0x1001b260`
 - HLIL: 23206-23265 (and the solid-leaf twin at 22876-22936)
 - ours: `src/botlib/aas/aas_map.c:2110`
@@ -269,7 +269,7 @@ address-to-translation-unit index.
 
 ### LOW Vis-decompression "0 repeat" diagnostic uses the wrong print level and adds a newline retail does not have
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_DecompressVis` @ `0x10005a60`
 - HLIL: 6756-6757 (10005ab2..10005af0); AAS_Error at 12072-12076 (1000d7e0..1000d810)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_bspq2.c:1574-1578
@@ -283,7 +283,7 @@ address-to-translation-unit index.
 
 ### LOW Surface-extent accumulator seeds ±FLT_MAX; retail seeds ±99999.0f
 
-- status: **open**
+- status: **applied**
 - retail: `CalcSurfaceExtents` @ `0x100071e0`
 - HLIL: 8061-8065 (10007248..10007265)
 - reference: ref/gladiator-bot-restored/botlib/be_aas_bspq2.c:2344-2346, 2386-2391
@@ -297,7 +297,7 @@ address-to-translation-unit index.
 
 ### LOW AAS data teardown frees aasworld.nodes, which retail's AAS_DumpAASData never touches
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_DumpAASData` @ `0x1000c490`
 - HLIL: 11382-11471 (note 11446-11454: after zeroing reachability it jumps straight to portals -- data_10066960 (numnodes) and data_10066964 (nodes) never appear)
 - ours: `src/botlib/aas/aas_map.c:8219`
@@ -310,7 +310,7 @@ address-to-translation-unit index.
 
 ### LOW AAS_WriteAASLump emits an invented diagnostic instead of retail's text
 
-- status: **open**
+- status: **applied**
 - retail: `AAS_WriteAASLump` @ `0x1000ce40`
 - HLIL: 11741-11744
 - ours: `src/botlib/aas/aas_map.c:9308`

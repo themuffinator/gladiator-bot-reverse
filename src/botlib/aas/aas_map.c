@@ -2169,7 +2169,13 @@ qboolean AAS_EntityCollision(int entnum,
 			 */
 			if (modeltrace.fraction < trace->fraction)
 			{
-				modeltrace.ent = entnum;
+				/*
+				 * 0x10003aad is a raw 0x54-byte copy of the model trace, so
+				 * trace->ent keeps the zero AAS_TraceBSPModel memset it to.
+				 * Stamping the entity number here would let the mover-riding
+				 * and visibility tests that compare trace.ent take branches
+				 * retail never takes.
+				 */
 				*trace = modeltrace;
 				return qtrue;
 			}
@@ -2255,6 +2261,19 @@ static void AAS_SetTraceBlocked(aas_trace_t *trace,
 		trace->startsolid = qtrue;
 		trace->fraction = 0.0f;
 		VectorCopy(trace_start, trace->endpos);
+		/*
+		 * Deliberate determinism, not a reconstruction gap.  Retail's two
+		 * startsolid arms (0x1001b5d2, 0x1001b765) write only startsolid and
+		 * fraction and leave the direction vector v1 holding stale stack
+		 * residue, which the shared tail at 0x1001b84c then dots against the
+		 * plane normal to decide `trace.planenum ^= 1`.  planenum is always 0
+		 * on this path, so retail's flip merely picks planes[1] over planes[0]
+		 * nondeterministically; Q3 fixed it with VectorClear (be_aas_sample.c
+		 * :520, :573).  We clear too, taking the dot == 0 branch as the
+		 * deterministic representative.  The only consumer that reads planenum
+		 * off a startsolid trace is the landed/onground test in
+		 * AAS_ClientMovementPrediction.
+		 */
 		VectorClear(direction);
 	}
 	else
@@ -3660,7 +3679,9 @@ qboolean AAS_InPVS(const vec3_t point1, const vec3_t point2)
 		unsigned char repeat = aasworld.bspVisibility[input++];
 		if (repeat == 0U)
 		{
-			BotLib_Print(PRT_ERROR, "AAS_DecompressVis: 0 repeat\n");
+			/* Retail calls AAS_Error (sub_1000d7e0), which prints at
+			   PRT_FATAL; the literal at 0x1005aac0 carries no newline. */
+			BotLib_Print(PRT_FATAL, "AAS_DecompressVis: 0 repeat");
 			return qfalse;
 		}
 		if (target_byte >= output &&
@@ -7147,15 +7168,20 @@ static int AAS_BuildBSPPointLightExtents(const aas_bspmodel_t *models,
 			face->texinfo < 0 || face->texinfo >= num_texinfo ||
 			!AAS_BSPPointLightSpanValid(face->firstedge,
 				(int)face->numedges,
-				num_surfedges) ||
-			face->numedges <= 0)
+				num_surfedges))
 		{
 			free(surface_extents);
 			return AAS_BSPPointLightDataFailure("face", face_index);
 		}
 
-		float mins[2] = {FLT_MAX, FLT_MAX};
-		float maxs[2] = {-FLT_MAX, -FLT_MAX};
+		/*
+		 * 0x10007248 / 0x10007258 seed the accumulator with +/-99999, not
+		 * +/-FLT_MAX, and 0x10007287's `numedges > 0` merely skips the vertex
+		 * loop - a zero-edge face keeps the seeds and carries them into the
+		 * truncation below rather than failing the load.
+		 */
+		float mins[2] = {99999.0f, 99999.0f};
+		float maxs[2] = {-99999.0f, -99999.0f};
 		for (int edge_offset = 0;
 			edge_offset < (int)face->numedges;
 			++edge_offset)
@@ -7201,22 +7227,19 @@ static int AAS_BuildBSPPointLightExtents(const aas_bspmodel_t *models,
 
 		for (int axis = 0; axis < 2; ++axis)
 		{
-			double texture_minimum =
-				floor((double)mins[axis] / 16.0) * 16.0;
-			double texture_maximum =
-				ceil((double)maxs[axis] / 16.0) * 16.0;
-			double extent = texture_maximum - texture_minimum;
-			if (!isfinite(texture_minimum) || !isfinite(extent) ||
-				texture_minimum < (double)SHRT_MIN ||
-				texture_minimum > (double)SHRT_MAX ||
-				extent < 0.0 || extent > (double)SHRT_MAX)
-			{
-				free(surface_extents);
-				return AAS_BSPPointLightDataFailure("face extent", face_index);
-			}
+			/*
+			 * 0x10007384-0x10007394 scale by 0.0625, truncate each bound to
+			 * int16 FIRST, and only then multiply by 16 and take the
+			 * difference - so an out-of-range face wraps rather than failing.
+			 */
+			short block_minimum =
+				(short)(int)floor((double)mins[axis] * 0.0625);
+			short block_maximum =
+				(short)(int)ceil((double)maxs[axis] * 0.0625);
 			surface_extents[face_index].texturemins[axis] =
-				(short)texture_minimum;
-			surface_extents[face_index].extents[axis] = (short)extent;
+				(short)(block_minimum * 16);
+			surface_extents[face_index].extents[axis] =
+				(short)((short)(block_maximum - block_minimum) * 16);
 		}
 
 		if (face->lightofs < 0)
@@ -7232,6 +7255,12 @@ static int AAS_BuildBSPPointLightExtents(const aas_bspmodel_t *models,
 		int width = (surface_extents[face_index].extents[0] >> 4) + 1;
 		int height = (surface_extents[face_index].extents[1] >> 4) + 1;
 		size_t sample_count = (size_t)width * (size_t)height;
+		/*
+		 * Deliberate deviation: retail validates nothing here and will happily
+		 * index the lightdata lump with the wrapped extents computed above.
+		 * Reproducing that means an out-of-bounds read on a malformed BSP, so
+		 * this guard stays and turns it into a clean load failure.
+		 */
 		if (width <= 0 || height <= 0 ||
 			sample_count > SIZE_MAX / 3U ||
 			(size_t)style_count > SIZE_MAX / (sample_count * 3U))
@@ -8359,6 +8388,16 @@ static void AAS_ClearAASData(void)
 		aasworld.areas = NULL;
 	}
 
+	/*
+	 * Deliberate deviation: retail's AAS_DumpAASData (0x1000c490) omits the
+	 * lump-0 bbox and lump-10 node frees - its chain starts at data_1006691c
+	 * and jumps from reachability straight to portals - so it leaks
+	 * numbboxes*32 + numnodes*12 bytes and 2 tracked blocks per AAS load,
+	 * which AAS_Shutdown then only memsets.  We release them, so
+	 * showmemoryusage / memorydump block counts legitimately disagree with
+	 * retail across map changes.  Nothing else differs: the loaded flag is
+	 * cleared alongside, and every consumer gates on it.
+	 */
 	if (aasworld.bboxes != NULL)
 	{
 		FreeMemory(aasworld.bboxes);
@@ -8407,6 +8446,7 @@ static void AAS_ClearAASData(void)
 		aasworld.reachability = NULL;
 	}
 
+	/* Second of retail's two omitted lump frees - see the bbox note above. */
 	if (aasworld.nodes != NULL)
 	{
 		FreeMemory(aasworld.nodes);
@@ -9501,8 +9541,16 @@ static int AAS_WriteAASLump(FILE *file,
 	if (length > 0U &&
 		(data == NULL || fwrite(data, length, 1U, file) != 1U))
 	{
+		/*
+		 * Retail's literal is "error writing lump %s\n" (0x1000ce93) with the
+		 * lump INDEX fed to %s - an upstream bug carried from
+		 * bspc/aas_file.c:409, whose retail effect is an access violation
+		 * inside the host's vsprintf rather than a log line.  The prefix is
+		 * reproduced; %d is a deliberate deviation, since reproducing the
+		 * fault buys no parity anything can assert on.
+		 */
 		BotLib_Print(PRT_ERROR,
-			"AAS_WriteAASLump: error writing lump %d\n",
+			"error writing lump %d\n",
 			(int)lumpnum);
 		return qfalse;
 	}

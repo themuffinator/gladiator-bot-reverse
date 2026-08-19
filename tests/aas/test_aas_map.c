@@ -818,9 +818,9 @@ static void test_aas_in_pvs_decodes_retail_visibility_rows(void **state)
 	visibility[21] = 0;
 	assert_false(AAS_InPVS(cluster_zero, cluster_one));
 	assert_int_equal(g_test_print_count, 1);
-	assert_int_equal(g_test_print_priority, PRT_ERROR);
+	assert_int_equal(g_test_print_priority, PRT_FATAL);
 	assert_string_equal(g_test_print_message,
-		"AAS_DecompressVis: 0 repeat\n");
+		"AAS_DecompressVis: 0 repeat");
 
 	aasworld.bspVisibility = NULL;
 	aasworld.bspVisibilitySize = 0U;
