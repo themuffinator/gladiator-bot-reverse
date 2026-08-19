@@ -275,6 +275,48 @@ static bool test_log_matches(int priority, const char *text)
 
 /*
 =============
+test_log_matches_bracketed
+
+Matches a rendered diagnostic by its leading and trailing text, for messages
+whose middle is an environment-dependent resolved path.
+=============
+*/
+static bool test_log_matches_bracketed(int priority,
+	const char *prefix,
+	const char *suffix)
+{
+	if (prefix == NULL || suffix == NULL)
+	{
+		return false;
+	}
+
+	const size_t prefix_length = strlen(prefix);
+	const size_t suffix_length = strlen(suffix);
+	for (int i = 0; i < g_test_log.count; ++i)
+	{
+		if (g_test_log.entries[i].priority != priority)
+		{
+			continue;
+		}
+
+		const char *text = g_test_log.entries[i].text;
+		const size_t length = strlen(text);
+		if (length < prefix_length + suffix_length)
+		{
+			continue;
+		}
+		if (strncmp(text, prefix, prefix_length) == 0 &&
+			strcmp(text + length - suffix_length, suffix) == 0)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+=============
 test_log_precedes
 
 Checks the exact ordering of two rendered diagnostics in the captured log.
@@ -2513,8 +2555,14 @@ static void test_retail_move_overwrites_inactive_partial_destination(void **stat
 				partial_state->weapon_state > 0 &&
 				partial_state->chat_state != NULL;
 		}
-		partial_chat_diagnostics = test_log_matches(PRT_ERROR,
-			"couldn't find chat missing_partial_move in bots/babe_t.c\n") &&
+		/*
+		 * The chat-not-found diagnostic reports the resolved container
+		 * (retail 0x1002ddc5 passes bot_fileref_t.path), which is an absolute
+		 * path here, so match on its ends rather than the whole line.
+		 */
+		partial_chat_diagnostics = test_log_matches_bracketed(PRT_ERROR,
+			"couldn't find chat missing_partial_move in ",
+			"bots/babe_t.c\n") &&
 			test_log_matches(PRT_FATAL,
 				"couldn't load chat missing_partial_move from bots/babe_t.c\n");
 

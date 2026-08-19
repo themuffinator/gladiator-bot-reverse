@@ -1,6 +1,7 @@
 #include "l_assets.h"
 
 #include "l_libvar.h"
+#include "l_log.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -812,6 +813,35 @@ static bool BotLib_ExtractPakEntry(const char *pak_file,
 
 /*
 =============
+BotLib_PathIsAbsolute
+
+Report whether a requested asset path is already fully qualified.
+
+Retail's resolver never receives one - sub_10041ba0 always composes
+<root><sep><slot><sep><request> - so passing an absolute request straight
+through diverges in no retail-reachable scenario, while host callers and the
+test harness do supply them.
+=============
+*/
+static bool BotLib_PathIsAbsolute(const char *path)
+{
+	if (path == NULL || path[0] == '\0')
+	{
+		return false;
+	}
+	if (path[0] == '/' || path[0] == '\\')
+	{
+		return true;
+	}
+	if (path[1] == ':' && isalpha((unsigned char)path[0]))
+	{
+		return true;
+	}
+	return false;
+}
+
+/*
+=============
 BotLib_SearchPakForAsset
 
 Searches packages in retail precedence order while retaining the winning
@@ -860,6 +890,14 @@ static bool BotLib_SearchPakForAsset(const char *root,
 
 	for (size_t i = 0; i < pak_count; ++i)
 	{
+		/*
+		 * 0x10042031 writes Log_Write("searching %s in %s", arg3, pakpath)
+		 * immediately before scanning the archive, gated on the pak existing.
+		 * The first argument is the REQUESTED relative name, not the
+		 * normalised pak key.  BotLib_CollectPakFiles already returns only
+		 * paks that exist, so no extra probe is needed.
+		 */
+		BotLib_LogWrite("searching %s in %s", relative, pak_files[i].path);
 		if (BotLib_ExtractPakEntry(pak_files[i].path,
 			target,
 			resolved,
@@ -890,10 +928,19 @@ static bool BotLib_CheckFilesystemPaths(const char *root,
 
     char candidate[BOTLIB_ASSET_MAX_PATH];
 
+    /*
+     * 0x10041f5f writes Log_Write("accessing %s", FileName) for every loose
+     * candidate it forms, unconditionally and BEFORE the _access(FileName, 4)
+     * test at 0x10041f65.  Our probe loop forms a different number of
+     * candidates than retail's (see the resolver's root machinery), so the
+     * line count will not match exactly; log one record per candidate we
+     * actually form.
+     */
     if (bare_name && !BotLib_IsStringEmpty(preferred_subdir)) {
         int written = snprintf(candidate, sizeof(candidate), "%s/%s/%s", root, preferred_subdir, requested);
         if (written >= 0 && (size_t)written < sizeof(candidate)) {
             BotLib_CopyPath(last_candidate, last_size, candidate);
+            BotLib_LogWrite("accessing %s", candidate);
             if (BotLib_FileExists(candidate)) {
                 BotLib_CopyPath(buffer, size, candidate);
                 return true;
@@ -904,6 +951,7 @@ static bool BotLib_CheckFilesystemPaths(const char *root,
     int written = snprintf(candidate, sizeof(candidate), "%s/%s", root, requested);
     if (written >= 0 && (size_t)written < sizeof(candidate)) {
         BotLib_CopyPath(last_candidate, last_size, candidate);
+        BotLib_LogWrite("accessing %s", candidate);
         if (BotLib_FileExists(candidate)) {
             BotLib_CopyPath(buffer, size, candidate);
             return true;
@@ -1027,8 +1075,26 @@ bool BotLib_ResolveAssetPathDetailed(const char *requested,
 		return false;
 	}
 
-	const bool bare_name = (strchr(requested, '/') == NULL && strchr(requested, '\\') == NULL);
-	if (!bare_name && BotLib_FileExists(requested))
+	/*
+	 * No CWD-relative shortcut here.  Retail sub_10041ba0 probes exactly
+	 * <root><sep><slot><sep><request> for root in {basedir (0x10041f92),
+	 * cddir (0x10041fba)} and slot in {gamedir (0x10041c2b), "baseq2"
+	 * (0x10041c3f)}, plus the pak0-9 scan under each; it never probes the
+	 * bare request except when both root and slot are empty.  Probing the CWD
+	 * first turned a retail "couldn't find %s" into a success, reported the
+	 * wrong source_path to the "loaded %s\\%s" provenance split, skipped the
+	 * pak scan, and defeated an explicitly set asset-root override.
+	 *
+	 * Note PC_LoadSourceFile keeps its own CWD probe (l_precomp.c), so
+	 * callers that load by logical name still see that second, independent
+	 * CWD-first lookup; it is tracked separately.
+	 */
+	const bool bare_name = (strchr(requested, '/') == NULL &&
+		strchr(requested, '\\') == NULL);
+
+	/* Fully qualified requests are taken as-is; only the CWD-relative probe
+	   was the divergence. */
+	if (BotLib_PathIsAbsolute(requested) && BotLib_FileExists(requested))
 	{
 		BotLib_CopyPath(resolution->resolved_path,
 			sizeof(resolution->resolved_path),

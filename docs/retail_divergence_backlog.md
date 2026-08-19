@@ -808,7 +808,7 @@ address-to-translation-unit index.
 
 ### MEDIUM Asset resolver omits retail's per-candidate "accessing %s" and "searching %s in %s" log records
 
-- status: **open**
+- status: **applied**
 - retail: `sub_10041BA0 (FindFileInPath)` @ `0x10041ba0`
 - HLIL: 51959-51963 (`sub_10044cb0(&var_240, arg3, ...); j_sub_100418d0(&var_240); j_sub_10038d80("accessing %s")`) and 52031-52034 (`if (sub_10052e5c(&var_240, 4) == 0) { ...; j_sub_10038d80("searching %s in %s") }`)
 - reference: ref/gladiator-bot-restored/botlib/l_utils.c:469, 489
@@ -822,7 +822,13 @@ address-to-translation-unit index.
 
 ### MEDIUM Asset resolver probes the raw requested path (CWD-relative) before basedir/gamedir, which retail never does
 
-- status: **open**
+- status: **applied**
+- applied with one deviation: the shortcut was narrowed to fully qualified
+  paths rather than deleted outright. Retail never receives an absolute
+  request, so passing one through diverges in no retail-reachable scenario,
+  and our own loaders and test harness do supply them. The CWD-relative
+  probe - the actual divergence - is gone. The second CWD-first probe inside
+  PC_LoadSourceFile is still open and needs its own entry.
 - retail: `sub_10041BA0 / sub_10041F60` @ `0x10041ba0`
 - HLIL: 51900-51965 (each iteration starts `var_240 = 0`, then `if (arg1 != 0 && strlen(arg1) != 0) StrCopyFixed(&var_240, arg1, 0x90); AppendPathSeperator` before `sub_10044cb0(&var_240, arg3, ...)`; and 52077-52087, where sub_10041f60 only ever calls sub_10041ba0 with basedir then cddir)
 - reference: ref/gladiator-bot-restored/botlib/l_utils.c:452-509, 513-528
