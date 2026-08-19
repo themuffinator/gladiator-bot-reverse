@@ -35,6 +35,7 @@
 #include "botlib/aas/aas_sound.h"
 #include "botlib/ai_move/mover_catalogue.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/precomp/l_precomp.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
@@ -684,6 +685,10 @@ static int aas_environment_teardown(void **state)
     }
 
     if (env->memory_initialised) {
+        /* This harness tears the arena down directly rather than through
+           BotShutdownLibrary, so it has to drop the precompiler's global
+           defines itself; they are allocated from the arena. */
+        PC_ShutdownLexer();
         BotMemory_Shutdown();
         env->memory_initialised = false;
     }
@@ -2610,6 +2615,15 @@ static int aas_link_heap_teardown(void **state)
 	(void)state;
 	AAS_Shutdown();
 	LibVar_Shutdown();
+	/*
+	 * The precompiler's global define list is file scope and its nodes are
+	 * allocated from the botlib arena, so it has to be dropped before the
+	 * arena goes away.  Leaving it behind made the list dangle into the next
+	 * test, where PC_LoadSourceFile faulted copying the globals into a new
+	 * source.  BotShutdownLibrary does this for production callers; harnesses
+	 * that tear the arena down directly have to do it themselves.
+	 */
+	PC_ShutdownLexer();
 	BotMemory_Shutdown();
 	BotInterface_SetImportTable(NULL);
 	return 0;

@@ -2404,7 +2404,9 @@ static int AAS_CollectBBoxAreasFromBounds(const vec3_t absmins,
 		return 0;
 	}
 
-	for (int areanum = 1; areanum <= aasworld.numAreas; ++areanum)
+	/* numareas counts the dummy slot 0, so the last valid area is
+	   numAreas - 1; <= read one aas_area_t past the end of the lump. */
+	for (int areanum = 1; areanum < aasworld.numAreas; ++areanum)
 	{
 		if (!AAS_BoxIntersectsArea(absmins, absmaxs, &aasworld.areas[areanum]))
 		{
@@ -9812,6 +9814,14 @@ void AAS_Shutdown(void)
 	TranslateEntity_SetWorldLoaded(qfalse);
 	AAS_ClearWorld();
 	AAS_FreeAASLinkHeap();
+	/*
+	 * The BSP link heap is a file-scope pointer allocated from the botlib
+	 * arena, and AAS_InitBSPLinkHeap only allocates when it is NULL.  Left
+	 * set across a shutdown it dangles as soon as the arena is released,
+	 * and the next init writes its free-list chain straight into freed
+	 * memory - a use-after-free on every library re-initialisation.
+	 */
+	AAS_FreeBSPLinkHeap();
 	AAS_SoundSubsystem_ResetState();
 	g_aasEntityLimitsConfigured = qfalse;
 	g_aasConfiguredMaxEntities = 0;

@@ -1,6 +1,7 @@
 #include "filesystem_helper.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -15,6 +16,29 @@ using bspc::FileSystemResolver;
 using bspc::InputFile;
 using bspc::NormalizeSeparators;
 using bspc::ReadFile;
+
+
+/*
+=============
+AssetRoot
+
+Resolve the Gladiator asset root, honouring GLADIATOR_ASSET_DIR.
+
+The rest of the suite resolves assets through that variable (tests/support/
+asset_env.c), and the parity fixture verifier accepts it too, so map fixtures
+can live outside the repository - which is where Quake II map data has to stay.
+Without this these cases could only run if a .bsp were committed.
+=============
+*/
+std::filesystem::path AssetRoot()
+{
+    const char *override_root = std::getenv("GLADIATOR_ASSET_DIR");
+    if (override_root != nullptr && override_root[0] != '\0')
+    {
+        return std::filesystem::path(override_root);
+    }
+    return std::filesystem::path(PROJECT_SOURCE_DIR) / "dev_tools/assets";
+}
 
 bool ReadRawFile(const std::filesystem::path &path, std::vector<std::byte> &out)
 {
@@ -98,8 +122,7 @@ std::string BytesToString(const std::vector<std::byte> &bytes)
 
 bool TestReadFileFromDisk()
 {
-    const std::filesystem::path project_root = PROJECT_SOURCE_DIR;
-    const std::filesystem::path source_path = project_root / "dev_tools/assets/syn.c";
+    const std::filesystem::path source_path = AssetRoot() / "syn.c";
 
     FileSystemResolver resolver;
     const std::string pattern = NormalizeSeparators(source_path.generic_string());
@@ -136,9 +159,9 @@ bool TestReadFileFromDisk()
 
 bool TestReadFileFromArchive()
 {
-    const std::filesystem::path project_root = PROJECT_SOURCE_DIR;
-    const std::filesystem::path source_path = project_root / "dev_tools/assets/syn.c";
-    const std::filesystem::path archive_path = project_root / "dev_tools/assets/pak7.pak";
+    const std::filesystem::path asset_root = AssetRoot();
+    const std::filesystem::path source_path = asset_root / "syn.c";
+    const std::filesystem::path archive_path = asset_root / "pak7.pak";
 
     FileSystemResolver resolver;
 
@@ -258,8 +281,7 @@ bool TestNormalizeNewlines()
 
 bool TestResolveCompanionsFromDisk()
 {
-    const std::filesystem::path project_root = PROJECT_SOURCE_DIR;
-    const std::filesystem::path bsp_fixture = project_root / "dev_tools/assets/maps/2box4.bsp";
+    const std::filesystem::path bsp_fixture = AssetRoot() / "maps/2box4.bsp";
 
     const std::filesystem::path temp_root = std::filesystem::temp_directory_path();
     const std::filesystem::path work_dir = temp_root / "bspc_fs_tests";
@@ -363,8 +385,7 @@ Runs filesystem regressions when the externally supplied BSP fixture exists.
 */
 int main()
 {
-	const std::filesystem::path bsp_fixture = std::filesystem::path(PROJECT_SOURCE_DIR) /
-		"dev_tools/assets/maps/2box4.bsp";
+	const std::filesystem::path bsp_fixture = AssetRoot() / "maps/2box4.bsp";
 	if (!std::filesystem::exists(bsp_fixture))
 	{
 		std::cout << "bspc filesystem regression skipped: missing "

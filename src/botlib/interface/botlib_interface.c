@@ -19,6 +19,7 @@
 #include "botlib/common/l_crc.h"
 #include "botlib/common/l_struct.h"
 #include "botlib/common/l_libvar.h"
+#include "botlib/precomp/l_precomp.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_utils.h"
@@ -485,6 +486,15 @@ int BotShutdownLibrary(void)
 	CRC_ResetSourceChecksums();
 
 	g_library_initialised = false;
+
+	/*
+	 * The precompiler's global define list is file scope and its nodes come
+	 * out of the botlib arena, so it has to be dropped BEFORE the arena goes
+	 * away.  Leaving it set made the pointer dangle: the next PC_LoadSourceFile
+	 * copies the globals into the new source and walked freed memory, which
+	 * faulted as soon as anything re-set up the library in the same process.
+	 */
+	PC_ShutdownLexer();
 
 	BotMemory_Shutdown();
 	BotGoal_ForgetLevelItemAllocations();
