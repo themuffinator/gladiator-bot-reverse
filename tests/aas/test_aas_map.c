@@ -72,6 +72,7 @@ typedef struct aas_test_environment_s {
     char asset_root[PATH_MAX];
     char previous_cwd[PATH_MAX];
     bool have_previous_cwd;
+    bool fixture_missing;
     bool libvar_initialised;
     bool memory_initialised;
     bool import_table_set;
@@ -544,6 +545,31 @@ static void test_unsetenv(const char *name)
 }
 #endif
 
+/*
+ * The map-fixture cases need the externally supplied test_nav.bsp/test_nav.aas
+ * pair, which the repository does not ship.
+ */
+static bool aas_map_fixture_present(const char *asset_root)
+{
+    static const char *const required[] = {"test_nav.bsp", "test_nav.aas"};
+
+    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); ++i) {
+        char map_probe[PATH_MAX];
+        snprintf(map_probe, sizeof(map_probe), "%s/maps/%s", asset_root, required[i]);
+
+        FILE *probe = fopen(map_probe, "rb");
+        if (probe == NULL) {
+            print_message("AAS regression harness skipped: missing %s in %s\n",
+                          required[i],
+                          asset_root);
+            return false;
+        }
+        fclose(probe);
+    }
+
+    return true;
+}
+
 static bool aas_environment_initialise(aas_test_environment_t *env)
 {
     if (env == NULL) {
@@ -566,24 +592,13 @@ static bool aas_environment_initialise(aas_test_environment_t *env)
         }
     }
 
-    char map_probe[PATH_MAX];
-    snprintf(map_probe, sizeof(map_probe), "%s/maps/test_nav.bsp", env->asset_root);
-    FILE *probe = fopen(map_probe, "rb");
-    if (probe == NULL) {
-        print_message("AAS regression harness skipped: missing test_nav.bsp in %s\n",
-                      env->asset_root);
-        return false;
+    /* A missing fixture is not a setup failure: record it so the gated cases
+       can skip() from their own bodies, and leave the working directory alone
+       because nothing is going to read the map. */
+    if (!aas_map_fixture_present(env->asset_root)) {
+        env->fixture_missing = true;
+        return true;
     }
-    fclose(probe);
-
-    snprintf(map_probe, sizeof(map_probe), "%s/maps/test_nav.aas", env->asset_root);
-    probe = fopen(map_probe, "rb");
-    if (probe == NULL) {
-        print_message("AAS regression harness skipped: missing test_nav.aas in %s\n",
-                      env->asset_root);
-        return false;
-    }
-    fclose(probe);
 
     if (getcwd(env->previous_cwd, sizeof(env->previous_cwd)) != NULL) {
         env->have_previous_cwd = true;
@@ -615,19 +630,22 @@ static void aas_environment_cleanup(aas_test_environment_t *env)
 }
 
 /*
- * The seven map-fixture cases below need the externally supplied
- * test_nav.bsp/test_nav.aas pair, which the repository does not ship; the
- * suite's CMake entry turns the resulting exit code 7 into a CTest skip.
+ * The setup only probes for the map fixture; the gated cases skip themselves.
  *
- * This function reports the missing fixture with a plain non-zero return
- * rather than cmocka_skip(). cmocka's skip() sets its global skip flag and
- * longjmps; when that happens inside a setup the harness reports the case as
- * an error but leaves the flag raised, and the next test that longjmps - i.e.
- * the next real assertion failure anywhere in the suite - is then reported as
- * SKIPPED instead of FAILED. That silently hid live failures in
+ * skip() cannot be called from here. cmocka's _skip raises global_skip_test and
+ * longjmps, but cmocka_run_one_test_or_fixture only consults and clears that
+ * flag around the test function, never around a fixture. Skipping from a setup
+ * therefore reports the case as an error AND leaves the flag raised, so the
+ * next test that longjmps - the next real assertion failure anywhere in the
+ * suite - is printed as SKIPPED. That silently hid live failures in
  * test_retail_entity_link_heaps_are_fixed_and_reused and
- * test_reachability_jump_generation_and_rejections. The exit code is the same
- * either way, so nothing about the CMake skip gate changes.
+ * test_reachability_jump_generation_and_rejections.
+ *
+ * So the setup succeeds either way and records the absent fixture in the
+ * environment, and each gated case opens with AAS_SKIP_WITHOUT_MAP_FIXTURE,
+ * which reaches skip() from the test body where cmocka handles it correctly.
+ * A non-zero exit then counts only genuine failures, which is why the suite no
+ * longer needs a SKIP_RETURN_CODE gate in CMake.
  */
 static int aas_environment_setup(void **state)
 {
@@ -688,8 +706,8 @@ static int aas_environment_teardown(void **state)
     if (env->memory_initialised) {
         /* This harness tears the arena down directly rather than through
            BotShutdownLibrary, so it has to drop the precompiler's global
-           defines itself; they are allocated from the arena. */
-        /* Same hazard for the CRC source-checksum list: file scope, records allocated from the arena. */
+           defines and the CRC source-checksum list itself; both are file
+           scope and both are allocated from the arena. */
         CRC_ResetSourceChecksums();
         PC_ShutdownLexer();
         BotMemory_Shutdown();
@@ -706,6 +724,19 @@ static int aas_environment_teardown(void **state)
     *state = NULL;
     return 0;
 }
+
+/*
+ * Reaches cmocka's skip() from the test body - see aas_environment_setup for
+ * why the fixture probe cannot do it itself.
+ */
+#define AAS_SKIP_WITHOUT_MAP_FIXTURE(state)                                    \
+    do {                                                                       \
+        const aas_test_environment_t *fixture_env =                            \
+            (const aas_test_environment_t *)(*(state));                        \
+        if (fixture_env == NULL || fixture_env->fixture_missing) {             \
+            skip();                                                            \
+        }                                                                      \
+    } while (0)
 
 static void assert_entity_area_membership(int ent, const int *expected, size_t expected_count)
 {
@@ -2425,7 +2456,7 @@ static void test_aas_loader_runs_retail_zip_fallback_as_a_separate_extraction_pa
 
 static void test_aas_loads_sample_map(void **state)
 {
-    (void)state;
+    AAS_SKIP_WITHOUT_MAP_FIXTURE(state);
 
     int status = AAS_LoadMap("test_nav", 0, NULL, 0, NULL, 0, NULL);
     assert_int_equal(status, BLERR_NOERROR);
@@ -2443,7 +2474,7 @@ static void test_aas_loads_sample_map(void **state)
 
 static void test_aas_entity_linking_and_reachability(void **state)
 {
-    (void)state;
+    AAS_SKIP_WITHOUT_MAP_FIXTURE(state);
 
     int status = AAS_LoadMap("test_nav", 0, NULL, 0, NULL, 0, NULL);
     assert_int_equal(status, BLERR_NOERROR);
@@ -2546,7 +2577,7 @@ origin and derived bounds are otherwise unchanged.
 */
 static void test_aas_entity_relinks_on_bsp_angle_change(void **state)
 {
-	(void)state;
+	AAS_SKIP_WITHOUT_MAP_FIXTURE(state);
 	assert_int_equal(AAS_LoadMap("test_nav", 0, NULL, 0, NULL, 0, NULL),
 		BLERR_NOERROR);
 
@@ -2625,8 +2656,12 @@ static int aas_link_heap_teardown(void **state)
 	 * test, where PC_LoadSourceFile faulted copying the globals into a new
 	 * source.  BotShutdownLibrary does this for production callers; harnesses
 	 * that tear the arena down directly have to do it themselves.
+	 *
+	 * The CRC source-checksum list carries the same hazard: also file scope,
+	 * also arena-allocated, and left dangling it made the next
+	 * CRC_RegisterSourceChecksum walk freed records and hand Q_stricmp a
+	 * garbage name.
 	 */
-	/* Same hazard for the CRC source-checksum list: file scope, records allocated from the arena. */
 	CRC_ResetSourceChecksums();
 	PC_ShutdownLexer();
 	BotMemory_Shutdown();
@@ -2679,16 +2714,9 @@ sound precached after the map load stays unmapped and queues no event - see
 0x1000ecf7 / 0x1000ed02 against the single build site at 0x1000ed73.
 =============
 */
-__attribute__((noinline)) static void temp_poison_stack(void)
-{
-	volatile char buf[196608];
-	memset((void *)buf, 0xBB, sizeof(buf));
-}
-
 static void test_retail_entity_configuration_initialises_sound_state(void **state)
 {
 	(void)state;
-	temp_poison_stack();
 	LibVarSet("max_soundinfo", "64");
 	LibVarSet("max_aassounds", "4");
 	LibVarSet("soundconfig", PROJECT_SOURCE_DIR "/dev_tools/assets/sounds.c");
@@ -3091,7 +3119,7 @@ static void test_retail_entity_link_heaps_are_fixed_and_reused(void **state)
 
 static void test_routing_frame_respects_framereachability(void **state)
 {
-    (void)state;
+    AAS_SKIP_WITHOUT_MAP_FIXTURE(state);
 
     LibVarSet("forcewrite", "0");
     LibVarSet("framereachability", "0");
@@ -3120,7 +3148,7 @@ static void test_routing_frame_respects_framereachability(void **state)
 
 static void test_routing_frame_forcewrite_toggle(void **state)
 {
-    (void)state;
+    AAS_SKIP_WITHOUT_MAP_FIXTURE(state);
 
     LibVarSet("framereachability", "4");
 
@@ -3142,7 +3170,7 @@ static void test_routing_frame_forcewrite_toggle(void **state)
 
 static void test_reachability_force_reachability_toggle(void **state)
 {
-    (void)state;
+    AAS_SKIP_WITHOUT_MAP_FIXTURE(state);
 
     LibVarSet("forcereachability", "0");
     LibVarSet("forceclustering", "0");
@@ -3168,7 +3196,7 @@ static void test_reachability_force_reachability_toggle(void **state)
 
 static void test_reachability_force_clustering_toggle(void **state)
 {
-    (void)state;
+    AAS_SKIP_WITHOUT_MAP_FIXTURE(state);
 
     LibVarSet("forcereachability", "0");
     LibVarSet("forceclustering", "1");
@@ -5585,8 +5613,6 @@ static void test_retail_entity_visible_keeps_samples_inside_pvs_gate(
 	BotInterface_SetImportTable(NULL);
 	memset(&aasworld, 0, sizeof(aasworld));
 }
-
-
 
 int main(void)
 {
