@@ -244,32 +244,6 @@ void LibVarDeAllocAll(void)
 
 /*
 =============
-LibVar_FetchFromImport
-
-Retains the bridge-only bootstrap path for values supplied before setup.
-=============
-*/
-static bool LibVar_FetchFromImport(const char *name, char *buffer, size_t buffer_size)
-{
-	const botlib_import_table_t *imports = BotInterface_GetImportTable();
-	if (imports == NULL || imports->BotLibVarGet == NULL || buffer == NULL || buffer_size == 0)
-	{
-		return false;
-	}
-
-	buffer[0] = '\0';
-	if (imports->BotLibVarGet(name, buffer, buffer_size) != 0)
-	{
-		buffer[0] = '\0';
-		return false;
-	}
-
-	buffer[buffer_size - 1] = '\0';
-	return true;
-}
-
-/*
-=============
 LibVar_Create
 
 Creates a linked variable, its value string, parsed value, and modified flag.
@@ -299,24 +273,6 @@ static libvar_t *LibVar_Create(const char *name, const char *string, int modifie
 	var->value = LibVarStringValue(var->string);
 	var->modified = modified;
 	return var;
-}
-
-/*
-=============
-LibVar_CreateFromImport
-
-Materialises a bridge bootstrap value as an ordinary modified retail libvar.
-=============
-*/
-static libvar_t *LibVar_CreateFromImport(const char *name)
-{
-	char buffer[BOTLIB_MAX_LIBVAR_STRING];
-	if (!LibVar_FetchFromImport(name, buffer, sizeof(buffer)))
-	{
-		return NULL;
-	}
-
-	return LibVar_Create(name, buffer, 1);
 }
 
 /*
@@ -411,6 +367,13 @@ void LibVar_ResetCache(void)
 LibVarGet
 
 Finds a variable case-insensitively without refreshing an existing value.
+
+Retail 0x10038910 is a side-effect-free walk of libvarlist that returns 0 when
+the name is absent (0x1003893b).  Creating the record on a miss made every
+getter allocate: with showmemoryusage or memorydump pushed in by the host, the
+AAS frame diagnostic allocated two tracked blocks through this path immediately
+before printing the very counters it reports.  Host-supplied names now reach the
+list through the setup-time seed instead.
 =============
 */
 libvar_t *LibVarGet(const char *var_name)
@@ -420,13 +383,7 @@ libvar_t *LibVarGet(const char *var_name)
 		return NULL;
 	}
 
-	libvar_t *var = LibVar_Find(var_name);
-	if (var != NULL)
-	{
-		return var;
-	}
-
-	return LibVar_CreateFromImport(var_name);
+	return LibVar_Find(var_name);
 }
 
 /*

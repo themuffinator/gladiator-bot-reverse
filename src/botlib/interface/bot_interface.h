@@ -35,6 +35,11 @@ int BotAI_CanAndWantsToRocketJump(const bot_client_state_t *state);
 int BotAI_RunNodeSwitchLoop(bot_client_state_t *state,
 	bot_ai_node_step_fn step,
 	void *context);
+/* Enumerate the bridge import cache so BotSetupLibrary can re-seed the
+   libvar list after its reset; see the comment on the definition. */
+bool BotInterface_ImportCacheEntry(int index,
+	const char **name,
+	const char **value);
 
 #ifdef __cplusplus
 } /* extern "C" */

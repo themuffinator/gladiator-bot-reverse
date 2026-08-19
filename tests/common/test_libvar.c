@@ -299,21 +299,31 @@ static void test_set_and_modified_semantics(void)
 
 /*
 =============
-test_import_bootstrap_does_not_refresh_existing_values
+test_get_is_a_pure_lookup_and_never_refreshes
 
-Pins the compatibility bootstrap while preserving retail cached-get behavior.
+Retail LibVarGet (0x10038910) walks libvarlist and returns 0 on a miss
+(0x1003893b): it neither queries the host nor allocates.  Host-supplied values
+reach the list through BotSetupLibrary's seed, not through the getter, so a
+name that is absent locally must stay absent and cost nothing.  A name that is
+present must not be refreshed from the host either.
 =============
 */
-static void test_import_bootstrap_does_not_refresh_existing_values(void)
+static void test_get_is_a_pure_lookup_and_never_refreshes(void)
 {
 	test_reset();
 
 	g_imports = &g_bootstrap_imports;
 	g_import_name = "engine_value";
 	g_import_value = "14";
+	assert(LibVarGet("engine_value") == NULL);
+	assert(g_import_get_count == 0);
+	assert(BotMemory_TotalAllocated() == 0);
+
+	/* Stand in for the setup-time seed that materialises host values. */
+	LibVarSet("engine_value", "14");
 	libvar_t *var = LibVarGet("engine_value");
 	assert(var != NULL);
-	assert(g_import_get_count == 1);
+	assert(g_import_get_count == 0);
 	assert(strcmp(var->string, "14") == 0);
 	assert(var->value == 14.0f);
 	assert(var->modified == 1);
@@ -324,7 +334,7 @@ static void test_import_bootstrap_does_not_refresh_existing_values(void)
 
 	g_import_value = "99";
 	assert(LibVarGet("ENGINE_VALUE") == var);
-	assert(g_import_get_count == 1);
+	assert(g_import_get_count == 0);
 	assert(strcmp(var->string, "14") == 0);
 	assert(var->value == 14.0f);
 
@@ -381,7 +391,7 @@ int main(void)
 	test_retail_struct_and_allocation_layout();
 	test_create_get_string_and_value_semantics();
 	test_set_and_modified_semantics();
-	test_import_bootstrap_does_not_refresh_existing_values();
+	test_get_is_a_pure_lookup_and_never_refreshes();
 	test_list_order_and_shutdown();
 
 	printf("bot_common_libvar_tests: all checks passed\n");

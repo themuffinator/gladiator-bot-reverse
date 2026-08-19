@@ -1986,6 +1986,41 @@ static void BotInterface_FreeImportCache(void)
 	g_botImportCache = NULL;
 }
 
+/*
+=============
+BotInterface_ImportCacheEntry
+
+Report the index'th host-set libvar held in the bridge import cache.
+
+BotSetupLibrary uses this to re-materialise the local libvar list after its
+reset, restoring the retail invariant that host values are already present
+before the first getter runs.  Iteration is by index rather than by name
+because the shim matches with case-sensitive strcmp while retail's LibVarGet
+uses _strcmpi.
+=============
+*/
+bool BotInterface_ImportCacheEntry(int index, const char **name, const char **value)
+{
+	if (index < 0 || name == NULL || value == NULL)
+	{
+		return false;
+	}
+
+	for (botlib_import_cache_entry_t *entry = g_botImportCache;
+		entry != NULL;
+		entry = entry->next)
+	{
+		if (index-- == 0)
+		{
+			*name = entry->name;
+			*value = entry->value;
+			return *name != NULL && *value != NULL;
+		}
+	}
+
+	return false;
+}
+
 static bool BotInterface_UpdateImportCache(const char *name, const char *value)
 {
     if (name == NULL || value == NULL)

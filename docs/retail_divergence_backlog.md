@@ -14,7 +14,7 @@ did not survive are not listed.
 | Confirmed | 80 |
 | Refuted on re-check | 28 |
 | High / medium / low | 13 / 38 / 29 |
-| Applied / reverted / open | 79 / 1 / 0 |
+| Applied / reverted / open | 80 / 0 / 0 |
 
 `applied` entries are fixed in the tree and covered by the suite. `reverted`
 entries were implemented, found to move test outcomes that need separate
@@ -855,7 +855,14 @@ address-to-translation-unit index.
 
 ### MEDIUM LibVarGet creates and links a new libvar on a miss; retail's is a pure lookup returning NULL
 
-- status: **reverted**
+- status: **applied**
+- applied on the second attempt by taking the entry's option 2. The earlier
+  revert removed the create-on-miss alone, which dropped every host-supplied
+  libvar that LibVar_ResetCache destroys during setup. BotSetupLibrary now
+  re-materialises the same set from the bridge import cache immediately after
+  the reset and before its first LibVarValue, so every retail getter stays
+  allocation-free and no host value is lost. LibVar_CreateFromImport and
+  LibVar_FetchFromImport became dead and were removed.
 - retail: `LibVarGet` @ `0x10038910`
 - HLIL: 43924-43936 (`for (int32_t* i = data_10063f20; i != 0; i = i[5]) { ... if (eax_2 == 0) return i } return 0`)
 - reference: ref/gladiator-bot-restored/botlib/l_libvar.c:125-135, 159-170

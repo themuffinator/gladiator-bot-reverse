@@ -22,6 +22,7 @@
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/common/l_utils.h"
+#include "botlib/interface/bot_interface.h"
 #include "botlib/interface/bot_state.h"
 #include "q2bridge/bridge_config.h"
 
@@ -388,14 +389,25 @@ int BotSetupLibrary(void)
 	Botlib_ResetSubsystemState();
 	Botlib_ResetLibraryVariables();
 	/*
-	 * DIVERGENCE, tracked separately: retail 0x10037bb0 never clears
-	 * libvarlist, so host values pushed through the exported BotLibVarSet
-	 * survive setup and every later getter is a pure find.  Dropping this
-	 * reset is the faithful behaviour, but it also lets the character and goal
-	 * fixtures' own weaponconfig/itemconfig reach setup for the first time,
-	 * which changes eight test outcomes that need triaging on their own.
+	 * Retail 0x10037bb0 never clears libvarlist, so host values pushed through
+	 * the exported BotLibVarSet are already present when setup runs its first
+	 * lookup, and every getter is a pure find.  We keep the reset for the
+	 * reinitialisation contract and immediately re-materialise the same set
+	 * from the bridge import cache, which is exactly what the host pushed in.
+	 * The seed must complete before the LibVarValue calls below, so that
+	 * LibVarGet, LibVarGetString, LibVarGetValue and LibVar never allocate.
 	 */
 	LibVar_ResetCache();
+	for (int index = 0;; ++index)
+	{
+		const char *cached_name = NULL;
+		const char *cached_value = NULL;
+		if (!BotInterface_ImportCacheEntry(index, &cached_name, &cached_value))
+		{
+			break;
+		}
+		LibVarSet(cached_name, cached_value);
+	}
 	CRC_ResetSourceChecksums();
 
 	/* Retail 0x10037c04 commits setup before its first libvar lookup. */
