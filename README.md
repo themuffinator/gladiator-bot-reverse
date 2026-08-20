@@ -1,10 +1,23 @@
+<div align="center">
+
 <img src="docs/images/logo-header.png" alt="Gladiator Bot — Reconstruction" width="720">
 
-# Q2 Gladiator Bot Botlib Reconstruction
+<h1>Q2 Gladiator Bot Botlib Reconstruction</h1>
 
-An open, buildable reconstruction of the **Gladiator Bot** botlib — the bot
-library that made Quake II's bots think — recovered from the retail
-`gladiator.dll` so the original mod keeps running on modern toolchains.
+<p>
+An open, buildable reconstruction of the <b>Gladiator Bot</b> botlib — the bot<br>
+library that made Quake II's bots think — recovered from the retail<br>
+<code>gladiator.dll</code> so the original mod keeps running on modern toolchains.
+</p>
+
+<p>
+<a href="https://github.com/themuffinator/Q2-Gladiator-Bot/releases/latest"><img src="https://img.shields.io/badge/Download-latest%20release-1e90ff?style=for-the-badge&logo=github&logoColor=white" alt="Download the latest release"></a>
+<a href="#building"><img src="https://img.shields.io/badge/Build-from%20source-0b6bcb?style=for-the-badge&logo=cmake&logoColor=white" alt="Build from source"></a>
+<a href="#project-status"><img src="https://img.shields.io/badge/Project-status-1c3f94?style=for-the-badge" alt="Project status"></a>
+<a href="docs/"><img src="https://img.shields.io/badge/Docs-reverse%20engineering-16224d?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
+</p>
+
+</div>
 
 ---
 
