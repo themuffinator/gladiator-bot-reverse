@@ -30,7 +30,9 @@ permissions:
   contents: read
 
 env:
-  # Every job derives its archive name from this, so it is defined once.
+  # Used for the upload-artifact names in this workflow only. The archive
+  # filenames themselves come from ARCHIVE_STEM in tools/package_release.py;
+  # the two must agree, so change them together.
   ARCHIVE_STEM: q2-gladiator-botlib-reconstruction
 
 jobs:
@@ -44,6 +46,13 @@ jobs:
       legacy: ${{ steps.resolve.outputs.legacy }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The duplicate-tag guard below asks git whether refs/tags/v<version>
+          # already exists. A default checkout fetches no tags, so the guard
+          # would pass for every version and only fail later, at the point of
+          # actually creating the release.
+          fetch-tags: true
+          fetch-depth: 0
 
       - name: Resolve reconstruction version
         id: resolve
@@ -122,6 +131,7 @@ jobs:
           - platform: win32
             runner: windows-latest
             module: gladiator.dll
+            game_module: src/game/gamex86.dll
             cmake_args: >-
               -DCMAKE_C_COMPILER=clang-cl
               -DCMAKE_CXX_COMPILER=clang-cl
@@ -132,12 +142,17 @@ jobs:
           - platform: win64
             runner: windows-latest
             module: gladiator.dll
+            game_module: src/game/gamex86_64.dll
             cmake_args: >-
               -DCMAKE_C_COMPILER=clang-cl
               -DCMAKE_CXX_COMPILER=clang-cl
           - platform: linux64
             runner: ubuntu-latest
-            module: libgladiator.so
+            # Paired arch-suffixed names, extending what retail shipped
+            # (gladi386.so + gamei386.so). The game module dlopens the botlib
+            # by this exact name, so the two must stay in step.
+            module: gladx86_64.so
+            game_module: src/game/gamex86_64.so
             cmake_args: ''
 
     steps:
@@ -189,19 +204,22 @@ jobs:
                 -DGLADIATOR_RECON_VERSION='${{ needs.resolve-version.outputs.version }}' \
                 ${{ matrix.cmake_args }}
 
-      - name: Build the module
+      - name: Build the modules
         shell: bash
-        run: cmake --build build-release --target gladiator --parallel
+        run: cmake --build build-release --target gladiator game --parallel
 
-      - name: Verify the built module
+      - name: Verify the built modules
         shell: bash
         run: |
           set -euo pipefail
           module="build-release/${{ matrix.module }}"
-          test -f "$module" || { echo "::error::$module was not produced"; exit 1; }
-
+          game="build-release/${{ matrix.game_module }}"
           version='${{ needs.resolve-version.outputs.version }}'
           legacy='${{ needs.resolve-version.outputs.legacy }}'
+
+          for f in "$module" "$game"; do
+            test -f "$f" || { echo "::error::$f was not produced"; exit 1; }
+          done
 
           # The reconstruction marker must carry the version being released.
           if ! grep -aq "Q2 Gladiator Bot Botlib Reconstruction $version" "$module"; then
@@ -216,7 +234,14 @@ jobs:
             exit 1
           fi
 
-          echo "verified $module"
+          # The game module is only useful if it still exports the entry point
+          # the engine looks for.
+          if ! grep -aq "GetGameAPI" "$game"; then
+            echo "::error::$game does not export GetGameAPI"
+            exit 1
+          fi
+
+          echo "verified $module and $game"
 
       - name: Package
         shell: bash
@@ -224,6 +249,7 @@ jobs:
           set -euo pipefail
           python tools/package_release.py \
             --binary "build-release/${{ matrix.module }}" \
+            --binary "build-release/${{ matrix.game_module }}" \
             --platform '${{ matrix.platform }}' \
             --version '${{ needs.resolve-version.outputs.version }}' \
             --output-dir dist/release
@@ -282,6 +308,9 @@ jobs:
             echo "wrote for Quake II, rebuilt from the retail module so the original mod"
             echo "keeps working on modern toolchains. This project is dedicated to his work."
             echo
+            echo "Each archive ships **both halves of the mod**: the reconstructed botlib"
+            echo "and Mr Elusive's own v0.96 game module, built from his released source."
+            echo
             echo "### Versions"
             echo
             echo "| | |"
@@ -303,8 +332,9 @@ jobs:
             echo "| \`…-win64.zip\` | 64-bit Windows source ports. |"
             echo "| \`…-linux64.zip\` | 64-bit Linux source ports. |"
             echo
-            echo "Each archive contains the module, \`VERSION.txt\` with a SHA-256 and the"
-            echo "source commit, and the full \`docs/\` tree."
+            echo "Each archive contains both modules, \`INSTALL.txt\`, \`VERSION.txt\` with a"
+            echo "SHA-256 per module and the source commit, and the full \`docs/\` tree."
+            echo "Game assets (\`pak*.pak\`) are not included."
             echo
             echo "### Status"
             echo

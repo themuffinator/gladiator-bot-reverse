@@ -21,7 +21,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Build gladiator.dll",
+      "label": "Build Gladiator modules",
       "type": "shell",
       "command": "cmake",
       "args": [
@@ -29,6 +29,7 @@
         ".vscode-build",
         "--target",
         "gladiator",
+        "game",
         "--parallel"
       ],
       "options": {
@@ -45,7 +46,7 @@
       "problemMatcher": "$msCompile"
     },
     {
-      "label": "Install gladiator.dll to E:\\Games\\q2Clean\\gladiator",
+      "label": "Install Gladiator modules",
       "type": "process",
       "command": "pwsh",
       "args": [
@@ -56,18 +57,22 @@
         ".vscode/install_gladiator.ps1"
       ],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "//": "The one place the install destination is defined. install_gladiator.ps1 reads it, and no task label repeats it.",
+          "GLADIATOR_INSTALL_DIR": "E:\\Games\\q2Clean\\gladiator"
+        }
       },
       "dependsOn": [
-        "Build gladiator.dll"
+        "Build Gladiator modules"
       ],
       "dependsOrder": "sequence",
       "problemMatcher": []
     },
     {
-      "label": "Build + Install gladiator.dll",
+      "label": "Build + Install Gladiator modules",
       "dependsOn": [
-        "Install gladiator.dll to E:\\Games\\q2Clean\\gladiator"
+        "Install Gladiator modules"
       ],
       "dependsOrder": "sequence",
       "problemMatcher": []

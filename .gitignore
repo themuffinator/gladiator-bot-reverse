@@ -5,3 +5,15 @@ build*
 /Testing
 /ref/gladiator-bot-restored
 /headless-parity-captures
+# Python bytecode from tools/
+__pycache__/
+*.pyc
+# Visual Studio IDE scratch state (see docs/project_status.md)
+.vs/
+*.suo
+*.ipch
+*.VC.db
+*.vsidx
+
+# Stray object from `-o /dev/null` on Windows
+NUL.obj

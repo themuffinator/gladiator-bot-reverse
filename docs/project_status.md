@@ -23,6 +23,7 @@ condition of a reconstruction, not a sign something has gone wrong.
 | Export table of a built module | Exactly one symbol, `GetBotAPI`, matching retail |
 | AAS file format | Version 3 read and written; version 2 accepted, as retail |
 | Builds | win32 (clang-cl), win64 (clang-cl), linux64 (GCC 13) |
+| Game module | Builds and links on all three targets, exporting only `GetGameAPI` |
 | Runtime | Boots a Quake II dedicated server; bots play, not merely connect |
 
 ### Test suite
@@ -37,9 +38,9 @@ A local `ctest` run at the commit above, configured with
 | Skipped (missing optional assets or environment) | 3 |
 | Failed | 1 |
 
-The three skips are the headless Quake II harness (needs a licensed Quake II
-install), and two `bspc` CLI checks. They skip by design rather than fail, so
-that a developer without game assets can still run the suite.
+The three skips are `headless_quake2_parity` (needs a licensed Quake II
+install), `bspc_filesystem`, and `bspc_cli_modes`. They skip by design rather
+than fail, so that a developer without game assets can still run the suite.
 
 ## Known issues
 
@@ -78,7 +79,30 @@ a nondeterministic stale-stack read. Each is recorded in the divergence backlog
 with a comment at its call site. They are listed here so a later audit does not
 re-open them as gaps.
 
-### 5. Documentation drift
+### 5. Game module: observer mode is absent
+
+`p_observer.c` is not in Mr Elusive's source release. Nothing breaks — observer
+mode is gated on `OBSERVER`, which he left commented out, and every call site
+is inside `#ifdef OBSERVER`, so the default configuration never compiled or
+linked it. The module builds and links cleanly without it on all three targets.
+
+The consequence is simply that observer mode is unavailable. Enabling it would
+mean reconstructing the file from the retail `gamex86.dll`. See
+[game_source_integration.md](game_source_integration.md).
+
+The game module is otherwise untested at runtime by this project: it builds and
+exports the right entry point, but it has not been exercised in a server the
+way the botlib has.
+
+### 6. No LICENSE file
+
+The repository ships no `LICENSE`. This matters more now that releases carry
+Mr Elusive's game source, which itself incorporates id Software, Xatrix, Rogue
+and Rocket Arena 2 code. See
+[game_source_integration.md](game_source_integration.md) for the provenance
+chain; choosing a licence is a decision for the project owner.
+
+### 7. Documentation drift
 
 Some documents under `docs/` are working notes from the reverse-engineering
 effort rather than descriptions of current state, and a few describe a `src2/`

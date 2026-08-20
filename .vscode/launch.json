@@ -29,7 +29,7 @@
         "+addbot"
       ],
       "cwd": "E:\\Games\\q2Clean",
-      "preLaunchTask": "Install gladiator.dll to E:\\Games\\q2Clean\\gladiator",
+      "preLaunchTask": "Install Gladiator modules",
       "stopAtEntry": false,
       "console": "externalTerminal"
     }

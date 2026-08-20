@@ -37,6 +37,13 @@ The summary below is by subsystem rather than by commit.
   - **Elementary actions**, the **precompiler/lexer**, and the **common**
     layer (memory, libvars, CRC, structured logging, asset resolution).
   - **Q2 bridge** translating between the Quake II game module and the botlib.
+- **The game module** — Mr Elusive's own v0.96 game source
+  (`gladq2096gamesrc.zip`) integrated at `src/game/` and built as a first-class
+  CMake target, so the repository now produces both halves of the mod. It
+  builds for win32, win64 and linux64, exports only `GetGameAPI`, and is
+  preserved essentially untouched: seven portability changes, each marked
+  `PORT(...)` at its site. See
+  [docs/game_source_integration.md](docs/game_source_integration.md).
 - **`bspc`** — reconstruction of the AAS compiler, covering the `map2bsp`,
   `bsp2bsp`, `map2aas` and `bsp2aas` pipelines, with golden-file tests.
 - **Parity test suite** — cmocka fixtures asserting behaviour against
@@ -51,8 +58,9 @@ The summary below is by subsystem rather than by commit.
   recoverable marker string, published as a Windows `VERSIONINFO` record, and
   used to name release archives.
 - **Manual release workflow** — `.github/workflows/release.yml` builds win32,
-  win64 and linux64 modules, packages each with the documentation, and
-  publishes a GitHub release.
+  win64 and linux64, packages **both modules** per platform with `INSTALL.txt`,
+  a per-module SHA-256 and the documentation tree, and publishes a GitHub
+  release.
 
 ### Fixed
 
@@ -65,6 +73,22 @@ The summary below is by subsystem rather than by commit.
   the AAS map suite.
 - `INT_MIN` was used in `aas_route.c` without `<limits.h>`, which built under
   MSVC and clang-cl through transitive includes but broke the GCC/Linux build.
+- Eight defects in the 1999 game source that MSVC6 accepted and modern C
+  rejects: two `static` definitions following `extern` declarations, two
+  function pointers stored in slots of a different type (real undefined
+  behaviour), a forward declaration with implicit `int`, an undeclared
+  function, a set of MSVC-only CRT spellings, and the 64-bit botlib filename.
+  Details in [docs/game_source_integration.md](docs/game_source_integration.md).
+- The Linux botlib was emitted as `libgladiator.so`, a name the game module
+  never looks for — it `dlopen`s a hard-coded filename with no fallback, so the
+  two shipped modules could not find each other and no bot would ever spawn.
+  Both halves are now arch-suffixed and paired, following what the retail Linux
+  release actually shipped (`gladi386.so` beside `gamei386.so`).
+- The game module exported nothing when built with the GNU-driver `clang`: the
+  export branch keyed off `MSVC`, which is false for that toolchain, so the
+  module linked cleanly with an empty export table and the engine could not
+  load it. The branch now keys off the compiler frontend variant, and an
+  unhandled toolchain is a hard error rather than a silently useless module.
 
 ### Notes on deliberate divergences
 

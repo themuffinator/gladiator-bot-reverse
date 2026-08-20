@@ -14,6 +14,7 @@ reader does not mistake an old plan for current state.
 | --- | --- |
 | [../README.md](../README.md) | Project overview, build instructions, and current status |
 | [project_status.md](project_status.md) | Where the reconstruction actually stands, what is verified, and every known issue |
+| [game_source_integration.md](game_source_integration.md) | The other half of the mod: Mr Elusive's game source, its provenance, and the seven portability changes made to it |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release history |
 | [reconstruction_versioning.md](reconstruction_versioning.md) | Why there are two version numbers and how releases are cut |
 
@@ -29,6 +30,16 @@ Accurate descriptions of the tree as it stands.
 | [source_parity_measurement.md](source_parity_measurement.md) | A measurement snapshot. Numbers are as of the commit named inside it, not necessarily HEAD |
 | [retail_function_map.md](retail_function_map.md) | Address-to-translation-unit index for the retail module |
 | [botlib_ai_function_map.md](botlib_ai_function_map.md) | Address map for the AI subsystems |
+
+## The game module
+
+`src/game/` is Mr Elusive's own released game source rather than a
+reconstruction, so this project's parity rules do not apply to it.
+
+| Document | What it covers |
+| --- | --- |
+| [game_source_integration.md](game_source_integration.md) | Provenance, licensing, structure, the seven `PORT(...)` changes, build configuration, and the `p_observer.c` question |
+| [`../src/game/ORIGINAL_README.txt`](../src/game/ORIGINAL_README.txt) | Mr Elusive's own readme from the source release — the authoritative statement of what it contains |
 
 ## Subsystem reference
 
@@ -58,9 +69,10 @@ How individual subsystems work, and where they came from.
 
 ## Historical and superseded
 
-Kept for provenance. **Do not treat these as instructions for current work** —
-they describe an intake approach built around a `src2/` staging tree that was
-never created, and paths inside them do not resolve.
+Kept for provenance. **Do not treat these as instructions for current work.**
+The first three describe an intake approach built around a `src2/` staging tree
+that was never created, so paths inside them do not resolve; the fourth is
+simply a record of work already completed.
 
 | Document | Status |
 | --- | --- |

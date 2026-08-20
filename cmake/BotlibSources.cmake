@@ -70,7 +70,7 @@ endfunction()
 function(audit_gladiator_sources)
     set(options)
     set(oneValueArgs SOURCE_ROOT)
-    set(multiValueArgs TARGETS)
+    set(multiValueArgs TARGETS EXCLUDE_DIRS)
     cmake_parse_arguments(AGS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if(NOT AGS_SOURCE_ROOT)
@@ -86,6 +86,20 @@ function(audit_gladiator_sources)
         CONFIGURE_DEPENDS
         "${AGS_SOURCE_ROOT}/*.c"
     )
+
+    # Directories deliberately left out of this build (an optional module
+    # switched off) are not orphaned sources, so drop them before comparing.
+    foreach(_excluded IN LISTS AGS_EXCLUDE_DIRS)
+        get_filename_component(_excluded_abs "${_excluded}" ABSOLUTE)
+        set(_kept)
+        foreach(_source IN LISTS _tree_sources)
+            string(FIND "${_source}" "${_excluded_abs}/" _at)
+            if(NOT _at EQUAL 0)
+                list(APPEND _kept "${_source}")
+            endif()
+        endforeach()
+        set(_tree_sources ${_kept})
+    endforeach()
 
     set(_registered_sources)
     foreach(_target IN LISTS AGS_TARGETS)

@@ -33,6 +33,14 @@ add_subdirectory(src/botlib/ai)
 add_subdirectory(src/q2bridge)
 add_subdirectory(src/botlib/interface)
 
+# Mr Elusive's v0.96 game module.  Independent of the botlib above: it is a
+# separate DLL that finds the botlib at runtime through GetBotAPI.
+option(BUILD_GAME_MODULE
+    "Build the Gladiator game module (gamex86.dll / gamex86_64.dll / gamex86_64.so)" ON)
+if(BUILD_GAME_MODULE)
+    add_subdirectory(src/game)
+endif()
+
 set(_botlib_source_directories
     ${PROJECT_SOURCE_DIR}/src/botlib/common
     ${PROJECT_SOURCE_DIR}/src/botlib/precomp
@@ -79,6 +87,26 @@ set_target_properties(gladiator
         WINDOWS_EXPORT_ALL_SYMBOLS OFF
 )
 
+# The game module dlopens the botlib by a hard-coded filename (src/game/
+# bl_spawn.c), so the name CMake emits has to be the name it asks for.  The
+# 1999 Linux release shipped `gladi386.so` next to `gamei386.so` and `bspci386`
+# -- every binary arch-suffixed, no `lib` prefix -- so extend that rule rather
+# than leaving the default `libgladiator.so`, which nothing would ever look for.
+# Windows is already correct: retail shipped `gladiator.dll` and the game
+# module's Win32 default is that exact string on both word sizes.
+if(UNIX AND NOT APPLE)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_gladiator_output_name "gladx86_64")
+    else()
+        set(_gladiator_output_name "gladi386")
+    endif()
+    set_target_properties(gladiator
+        PROPERTIES
+            PREFIX ""
+            OUTPUT_NAME "${_gladiator_output_name}"
+    )
+endif()
+
 if(UNIX)
     set_target_properties(gladiator
         PROPERTIES
@@ -105,11 +133,19 @@ elseif(UNIX)
     )
 endif()
 
+# Every .c under src/ must belong to exactly one shipped module.
+set(_gladiator_audit_targets gladiator q2bridge)
+set(_gladiator_audit_excludes)
+if(BUILD_GAME_MODULE)
+    list(APPEND _gladiator_audit_targets game)
+else()
+    list(APPEND _gladiator_audit_excludes "${PROJECT_SOURCE_DIR}/src/game")
+endif()
+
 audit_gladiator_sources(
     SOURCE_ROOT "${PROJECT_SOURCE_DIR}/src"
-    TARGETS
-        gladiator
-        q2bridge
+    TARGETS ${_gladiator_audit_targets}
+    EXCLUDE_DIRS ${_gladiator_audit_excludes}
 )
 
 install(

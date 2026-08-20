@@ -42,11 +42,21 @@ are ours.
 
 ## What this is
 
-The retail Gladiator Bot shipped as a closed binary. This repository rebuilds
-that binary's botlib from source, matching its observable behaviour routine by
-routine against the original, so that:
+The Gladiator Bot is two binaries, and this repository builds both:
 
-- **The original mod still works.** The module keeps the `BotLib v0.96` ABI and
+| Module | What it is | Origin |
+| --- | --- | --- |
+| `gladiator.dll` / `gladx86_64.so` | The botlib — the bot AI | **Reconstructed** here from the retail binary |
+| `gamex86.dll` / `gamex86_64.so` | The game module — Quake II mod logic | **Mr Elusive's own source**, which he released |
+
+The botlib shipped only as a closed binary, so it had to be rebuilt from the
+retail module, matching its observable behaviour routine by routine. The game
+source he published himself, and it is preserved here essentially untouched —
+see [docs/game_source_integration.md](docs/game_source_integration.md).
+
+The result is a complete, buildable mod:
+
+- **The original mod still works.** The botlib keeps the `BotLib v0.96` ABI and
   reads and writes the original AAS file format unchanged. Existing Gladiator
   `.aas` files and asset packs load as they always did.
 - **It builds today.** CMake, current compilers, 32-bit and 64-bit, Windows and
@@ -127,9 +137,10 @@ Full policy: [docs/reconstruction_versioning.md](docs/reconstruction_versioning.
 
 Builds are published from the **Release** workflow
 ([`.github/workflows/release.yml`](.github/workflows/release.yml)), run
-manually from the Actions tab. Each release ships three archives, each
-containing the module, a `VERSION.txt` with a SHA-256 and the source commit,
-and the full documentation tree:
+manually from the Actions tab. Each release ships three archives, each carrying
+**both modules** — the botlib and the game module — plus `INSTALL.txt`, a
+`VERSION.txt` with a SHA-256 per module and the source commit, and the full
+documentation tree:
 
 | Archive | Use it for |
 | --- | --- |
@@ -140,10 +151,12 @@ and the full documentation tree:
 32-bit is the one that matters for retail Quake II — the original engine cannot
 load a 64-bit module. The 64-bit builds are for modern source ports.
 
+Game assets (`pak*.pak`) are not included; the archives ship code only.
+
 To build the same archive locally:
 
 ```bash
-python tools/package_release.py --binary build/gladiator.dll --platform win32
+python tools/package_release.py --platform win32 --binary build-x86/gladiator.dll --binary build-x86/src/game/gamex86.dll
 ```
 
 ## Building
@@ -164,8 +177,9 @@ CMake 3.16+, Ninja, and Python 3.8+ on every platform.
 python dev_tools/bootstrap_cmake.py
 ```
 
-This configures `build/` and builds the module. Use it if you hit
-`missing CMakeCache.txt` after a fresh clone.
+This configures `build/` and builds the botlib. Use it if you hit
+`missing CMakeCache.txt` after a fresh clone. It does not build the game
+module — for that, use the explicit commands below.
 
 ### 32-bit Windows module (what retail Quake II loads)
 
@@ -174,20 +188,25 @@ cmake -S . -B build-x86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF 
 ```
 
 ```bash
-cmake --build build-x86 --target gladiator --parallel
+cmake --build build-x86 --target gladiator game --parallel
 ```
 
-### 64-bit module
+### 64-bit modules
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 ```
 
 ```bash
-cmake --build build --target gladiator --parallel
+cmake --build build --target gladiator game --parallel
 ```
 
-The build emits `gladiator.dll` on Windows and `libgladiator.so` elsewhere,
+The `gladiator` target is the botlib; `game` is Mr Elusive's game module, which
+lands in `build/src/game/`. Pass `-DBUILD_GAME_MODULE=OFF` to skip it and build
+the botlib alone.
+
+The build emits `gladiator.dll` on Windows and `gladx86_64.so` on 64-bit
+Linux (`gladi386.so` on 32-bit, the name retail shipped),
 alongside a static archive per subsystem.
 
 ### Installing into a staging tree
@@ -211,10 +230,13 @@ cmake -S . -B build -G Ninja -DBUILD_TESTING=ON
 cmake --build build --target botlib_parity_tests
 ```
 
-CMake fetches cmocka over HTTPS on first configure. If the host cannot reach
-GitHub, re-run with `-DBOTLIB_PARITY_FRAMEWORK=none` or
-`-DBOTLIB_PARITY_ENABLE_SOURCES=OFF` to skip the cmocka targets and still build
-the module.
+CMake fetches cmocka over HTTPS from `gitlab.com` on first configure. If the
+host cannot reach it, re-run with `-DBOTLIB_PARITY_ENABLE_SOURCES=OFF` to skip
+the cmocka targets and still build the modules.
+
+Setting `-DBOTLIB_PARITY_FRAMEWORK=none` on its own does **not** work: with
+`BOTLIB_PARITY_ENABLE_SOURCES` still ON, `tests/CMakeLists.txt` force-resets
+the framework back to `cmocka` and fetches anyway.
 
 Fixtures that need binary map assets will skip; see
 [docs/parity_testing_guide.md](docs/parity_testing_guide.md) for what to stage.
@@ -246,6 +268,7 @@ still prefers explicit overrides.
 | Path | Contents |
 | --- | --- |
 | `src/botlib/` | The reconstructed botlib: `aas/`, `ai*/`, `common/`, `precomp/`, `ea/`, `interface/` |
+| `src/game/` | Mr Elusive's v0.96 game module, preserved — see [docs/game_source_integration.md](docs/game_source_integration.md) |
 | `src/q2bridge/` | Translation between the Quake II game module and the botlib |
 | `src/shared/` | Cross-cutting headers and the generated version header |
 | `tools/bspc/` | Reconstruction of the AAS compiler |
@@ -271,7 +294,12 @@ Additional public functions must be marked `GLADIATOR_API` to be exported.
   [Gladiator Bot for Quake II](https://mrelusive.com/oldprojects/gladiator/gladiator.html),
   the Area Awareness System, BSPC, and the
   [Quake III Arena bot library](https://github.com/id-Software/Quake-III-Arena/tree/master/code/botlib).
-  All of the design in this repository is his.
+  All of the design in this repository is his, and `src/game/` is his own
+  released source rather than a reconstruction.
+- **Xatrix** (*The Reckoning*), **Rogue** (*Ground Zero*), **Zoid** (Quake II
+  CTF) and **David Wright** (Rocket Arena 2 bot support) — the game source he
+  built on incorporates work from each; see
+  [`src/game/ORIGINAL_README.txt`](src/game/ORIGINAL_README.txt).
 - **id Software** — Quake II and Quake III Arena, and for releasing the Quake III
   Arena source under the GPL, without which reconstructing the Gladiator botlib
   would have been guesswork.

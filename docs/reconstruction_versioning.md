@@ -94,10 +94,10 @@ legacy `0.96`, or already has a tag. Each built module is checked for both the
 reconstruction marker *and* the legacy `BotLib v0.96` string before it is
 packaged, so a release cannot ship a module that lost either.
 
-To produce the same archive locally:
+To produce the same archive locally — both modules, as the release ships them:
 
 ```bash
-python tools/package_release.py --binary build-x86/gladiator.dll --platform win32
+python tools/package_release.py --platform win32 --binary build-x86/gladiator.dll --binary build-x86/src/game/gamex86.dll
 ```
 
 ## Overriding the version for a build
