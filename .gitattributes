@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Preserved 1999 releases: byte-for-byte as Mr Elusive distributed them.
+# `* text=auto` above would otherwise be free to normalise anything it
+# misdetects as text, which would silently invalidate SHA256SUMS.txt.
+# Later patterns win, so the two text files are re-exempted below.
+archive/** binary
+archive/README.md text diff
+archive/SHA256SUMS.txt text diff

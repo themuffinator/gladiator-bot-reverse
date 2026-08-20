@@ -4,7 +4,7 @@ The Gladiator Bot is two binaries. This repository now builds both.
 
 | Module | What it is | Where it comes from |
 | --- | --- | --- |
-| `gladiator.dll` / `gladx86_64.so` | The botlib — the bot AI | **Reconstructed** from the retail binary by this project |
+| `gladiator.dll` / `gladiator_x64.so` | The botlib — the bot AI | **Reconstructed** from the retail binary by this project |
 | `gamex86.dll` / `gamex86_64.so` | The game module — Quake II mod logic | **Mr Elusive's own source**, released publicly |
 
 They are separate DLLs that meet only at one boundary: the game module locates
@@ -75,7 +75,7 @@ no site looks unexplained on its own.
 | `m_flyer.c` | `flyer_blocked` returns `qboolean`, not `int` | `monsterinfo.blocked` is `qboolean (*)(edict_t *, float)`; every other `*_blocked` handler already returns `qboolean`. |
 | `m_boss31.c` | `extern void SP_monster_makron(...)` | Forward declaration with implicit `int`; the definition in `m_boss32.c` returns `void`. |
 | `g_ctf.h` | Declared `stuffcmd` | Defined in `g_ctf.c`, called from `p_client.c` under `CTF_HOOK`, never declared. Implicit declarations are now errors. |
-| `bl_spawn.c` | 64-bit branch for the default botlib filename | The two `botlib` cvar defaults were `gladiator.dll` / `gladi386.so`. The 32-bit name is exactly what retail shipped and is untouched; a 64-bit build now asks for `gladx86_64.so`, which is what it actually produces. Without this the Linux archive shipped two modules that could not find each other. |
+| `bl_spawn.c` | `BOTLIB_DEFAULT_LIBRARY`, selected by platform and word size | The two `botlib` cvar defaults were `gladiator.dll` / `gladi386.so`, with Windows returning the same name for both word sizes. Retail's 32-bit names are untouched; 64-bit builds now ask for `gladiator_x64.dll` / `gladiator_x64.so`, which is what they actually produce. Defined once rather than at both call sites, so the two cannot drift. |
 
 No behaviour changes. The two function-pointer fixes remove real undefined
 behaviour: calling through a mismatched pointer type worked by accident on
@@ -133,16 +133,22 @@ game module `dlopen`s the botlib by a hard-coded filename and
 | Build | Game module | Botlib |
 | --- | --- | --- |
 | Windows 32-bit | `gamex86.dll` — what retail Quake II loads | `gladiator.dll` |
-| Windows 64-bit | `gamex86_64.dll` | `gladiator.dll` |
+| Windows 64-bit | `gamex86_64.dll` | `gladiator_x64.dll` |
 | Linux 32-bit | `gamei386.so` | `gladi386.so` |
-| Linux 64-bit | `gamex86_64.so` | `gladx86_64.so` |
+| Linux 64-bit | `gamex86_64.so` | `gladiator_x64.so` |
 
-The 32-bit row is exactly what the 1999 release shipped: the retail Linux
-archives (`gladq2096_linux-x86-glibc.tar.gz` and the libc5 build) contain
-`gamei386.so`, `gladi386.so` and `bspci386` — every binary arch-suffixed, no
-`lib` prefix. The 64-bit row applies that same rule to a new architecture
-rather than inventing a scheme, and `bl_spawn.c` carries a `PORT(arch)` change
-so its two hard-coded defaults select the right one.
+The 32-bit rows are exactly what the 1999 release shipped: retail Windows had
+`gladiator.dll` beside `gamex86.dll`, and the retail Linux archives
+(`gladq2096_linux-x86-glibc.tar.gz` and the libc5 build) contain `gamei386.so`,
+`gladi386.so` and `bspci386` — no `lib` prefix anywhere.
+
+The 64-bit builds cannot reuse those names. Both word sizes would collide on
+one filename, so they could not sit in the same mod directory, and a mismatched
+pair fails at load time with little to show for it. They therefore carry an
+explicit `_x64`, the same reason the game module ships `gamex86.dll` and
+`gamex86_64.dll` side by side. `bl_spawn.c` defines `BOTLIB_DEFAULT_LIBRARY`
+once, under a `PORT(arch)` note, so the name it asks for and the name CMake
+emits cannot drift apart — `BotLoadLibrary` has no fallback and no search.
 
 This is why the botlib target overrides `PREFIX` on Linux: CMake's default
 `libgladiator.so` is a name nothing would ever look for.

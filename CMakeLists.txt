@@ -83,28 +83,36 @@ target_link_libraries(gladiator
 )
 set_target_properties(gladiator
     PROPERTIES
-        OUTPUT_NAME gladiator
         WINDOWS_EXPORT_ALL_SYMBOLS OFF
 )
 
-# The game module dlopens the botlib by a hard-coded filename (src/game/
-# bl_spawn.c), so the name CMake emits has to be the name it asks for.  The
-# 1999 Linux release shipped `gladi386.so` next to `gamei386.so` and `bspci386`
-# -- every binary arch-suffixed, no `lib` prefix -- so extend that rule rather
-# than leaving the default `libgladiator.so`, which nothing would ever look for.
-# Windows is already correct: retail shipped `gladiator.dll` and the game
-# module's Win32 default is that exact string on both word sizes.
+# The game module loads the botlib by a hard-coded filename (BOTLIB_DEFAULT_LIBRARY
+# in src/game/bl_spawn.c) with no fallback and no search, so the name emitted here
+# has to be the name it asks for. Keep these two in step.
+#
+#   Windows 32-bit  gladiator.dll       retail's name, kept exactly
+#   Windows 64-bit  gladiator_x64.dll
+#   Linux   32-bit  gladi386.so         retail's name, kept exactly
+#   Linux   64-bit  gladiator_x64.so
+#
+# The 64-bit builds need distinct names for the same reason the game module has
+# gamex86.dll and gamex86_64.dll: without them the two word sizes collide on one
+# filename, cannot sit in the same mod directory, and a mismatched pair fails at
+# load time with little to show for it.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(_gladiator_output_name "gladiator_x64")
+elseif(WIN32)
+    set(_gladiator_output_name "gladiator")
+else()
+    set(_gladiator_output_name "gladi386")
+endif()
+
+set_target_properties(gladiator PROPERTIES OUTPUT_NAME "${_gladiator_output_name}")
+
 if(UNIX AND NOT APPLE)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(_gladiator_output_name "gladx86_64")
-    else()
-        set(_gladiator_output_name "gladi386")
-    endif()
-    set_target_properties(gladiator
-        PROPERTIES
-            PREFIX ""
-            OUTPUT_NAME "${_gladiator_output_name}"
-    )
+    # Retail's .so names carry no `lib` prefix, and the game module asks for the
+    # bare name; CMake's default would produce libgladiator_x64.so.
+    set_target_properties(gladiator PROPERTIES PREFIX "")
 endif()
 
 if(UNIX)

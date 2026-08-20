@@ -141,7 +141,10 @@ jobs:
               -DCMAKE_SHARED_LINKER_FLAGS=/machine:x86
           - platform: win64
             runner: windows-latest
-            module: gladiator.dll
+            # 64-bit carries an explicit _x64 name so it cannot collide with
+            # the 32-bit build in a mod directory; must match
+            # BOTLIB_DEFAULT_LIBRARY in src/game/bl_spawn.c.
+            module: gladiator_x64.dll
             game_module: src/game/gamex86_64.dll
             cmake_args: >-
               -DCMAKE_C_COMPILER=clang-cl
@@ -151,7 +154,7 @@ jobs:
             # Paired arch-suffixed names, extending what retail shipped
             # (gladi386.so + gamei386.so). The game module dlopens the botlib
             # by this exact name, so the two must stay in step.
-            module: gladx86_64.so
+            module: gladiator_x64.so
             game_module: src/game/gamex86_64.so
             cmake_args: ''
 

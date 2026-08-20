@@ -15,6 +15,31 @@
 #include "bl_redirgi.h"
 #include "bl_botcfg.h"
 
+/* PORT(arch): default botlib filename, per platform AND word size.
+
+   Retail shipped gladiator.dll on Windows and gladi386.so on Linux, beside
+   gamex86.dll / gamei386.so. Those 32-bit names are reproduced exactly. A
+   64-bit build cannot reuse them: the two builds would collide on one
+   filename in a single mod directory, and the loader would try to open a
+   module of the wrong machine type with only a vague failure to show for
+   it. 64-bit builds therefore carry an explicit _x64 name, matching what
+   CMakeLists.txt emits for the botlib target.
+
+   Defined once because BotLoadLibrary has no fallback and no search: the
+   name here and the name CMake emits must agree exactly, and two copies of
+   this decision in one file would eventually disagree. */
+#if defined(WIN32) || defined(_WIN32)
+  #if defined(_WIN64)
+    #define BOTLIB_DEFAULT_LIBRARY "gladiator_x64.dll"
+  #else
+    #define BOTLIB_DEFAULT_LIBRARY "gladiator.dll"
+  #endif
+#elif defined(__x86_64__) || defined(__amd64__)
+  #define BOTLIB_DEFAULT_LIBRARY "gladiator_x64.so"
+#else
+  #define BOTLIB_DEFAULT_LIBRARY "gladi386.so"
+#endif
+
 //#define TOURNEY
 
 #ifdef TOURNEY
@@ -558,18 +583,7 @@ void BotAddDeathmatch(edict_t *ent)
 		BotFreeLibrary(lib);
 		return;
 	} //end if*/
-/* PORT(arch): retail's Linux release shipped gladi386.so beside gamei386.so
-   and bspci386, so the 32-bit name below is correct as-is.  A 64-bit build
-   emits gladx86_64.so (see CMakeLists.txt), extending that same arch-suffix
-   rule, so pick the matching name rather than dlopen a file that is not
-   there -- BotLoadLibrary has no fallback. */
-#if defined(WIN32) || defined(_WIN32)
-	AddBotToQueue(ent, gi.cvar("botlib", "gladiator.dll", 0)->string, uinfo);
-#elif defined(__x86_64__) || defined(__amd64__)
-	AddBotToQueue(ent, gi.cvar("botlib", "gladx86_64.so", 0)->string, uinfo);
-#else
-	AddBotToQueue(ent, gi.cvar("botlib", "gladi386.so", 0)->string, uinfo);
-#endif
+	AddBotToQueue(ent, gi.cvar("botlib", BOTLIB_DEFAULT_LIBRARY, 0)->string, uinfo);
 } //end of the function AddDeathmatchBot
 //===========================================================================
 // become a bot
@@ -592,18 +606,7 @@ void BotBecomeDeathmatch(edict_t *ent)
 	} //end if
 
 	//load the default library
-/* PORT(arch): retail's Linux release shipped gladi386.so beside gamei386.so
-   and bspci386, so the 32-bit name below is correct as-is.  A 64-bit build
-   emits gladx86_64.so (see CMakeLists.txt), extending that same arch-suffix
-   rule, so pick the matching name rather than dlopen a file that is not
-   there -- BotLoadLibrary has no fallback. */
-#if defined(WIN32) || defined(_WIN32)
-	lib = BotUseLibrary(gi.cvar("botlib", "gladiator.dll", 0)->string);
-#elif defined(__x86_64__) || defined(__amd64__)
-	lib = BotUseLibrary(gi.cvar("botlib", "gladx86_64.so", 0)->string);
-#else
-	lib = BotUseLibrary(gi.cvar("botlib", "gladi386.so", 0)->string);
-#endif
+	lib = BotUseLibrary(gi.cvar("botlib", BOTLIB_DEFAULT_LIBRARY, 0)->string);
 	if (!lib)
 	{
 		gi.cprintf(ent, PRINT_HIGH, "%s not available\n", gi.cvar("botlib", "", 0)->string);

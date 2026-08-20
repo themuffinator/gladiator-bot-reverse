@@ -17,3 +17,6 @@ __pycache__/
 
 # Stray object from `-o /dev/null` on Windows
 NUL.obj
+# The preservation archive is deliberately tracked. This negation is a guard:
+# it keeps a future broad rule (*.zip, *.exe, ...) from swallowing it.
+!archive/**

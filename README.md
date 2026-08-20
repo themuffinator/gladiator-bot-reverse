@@ -1,3 +1,5 @@
+<img src="docs/images/logo-header.png" alt="Gladiator Bot — Reconstruction" width="720">
+
 # Q2 Gladiator Bot Botlib Reconstruction
 
 An open, buildable reconstruction of the **Gladiator Bot** botlib — the bot
@@ -46,7 +48,7 @@ The Gladiator Bot is two binaries, and this repository builds both:
 
 | Module | What it is | Origin |
 | --- | --- | --- |
-| `gladiator.dll` / `gladx86_64.so` | The botlib — the bot AI | **Reconstructed** here from the retail binary |
+| `gladiator.dll` / `gladiator_x64.so` | The botlib — the bot AI | **Reconstructed** here from the retail binary |
 | `gamex86.dll` / `gamex86_64.so` | The game module — Quake II mod logic | **Mr Elusive's own source**, which he released |
 
 The botlib shipped only as a closed binary, so it had to be rebuilt from the
@@ -159,6 +161,50 @@ To build the same archive locally:
 python tools/package_release.py --platform win32 --binary build-x86/gladiator.dll --binary build-x86/src/game/gamex86.dll
 ```
 
+## The original releases
+
+Mr Elusive's own distribution files are mirrored in [`archive/`](archive/),
+byte for byte, exactly as published on
+[his download page](https://mrelusive.com/oldprojects/gladiator/download.shtml.htm).
+They are the ground truth this reconstruction is measured against, and a
+hedge against the day that site stops answering. Sections, descriptions and
+dates below follow his page; checksums and provenance are in
+[`archive/README.md`](archive/README.md).
+
+### Gladiator bot
+
+| File | Size | Date | Description |
+| --- | ---: | --- | --- |
+| `gladq2096_win32-x86.exe` | 1.1 MB | 1999-07-20 | [v0.96 for Win32 x86](archive/gladiator-bot/gladq2096_win32-x86.exe) |
+| `gladq2096_linux-x86-libc5.tar.gz` | 886 kB | 1999-08-02 | [v0.96 for Linux x86 libc5](archive/gladiator-bot/gladq2096_linux-x86-libc5.tar.gz) |
+| `gladq2096_linux-x86-glibc.tar.gz` | 886 kB | 1999-08-02 | [v0.96 for Linux x86 glibc](archive/gladiator-bot/gladq2096_linux-x86-glibc.tar.gz) |
+| `gladq2096gamesrc.zip` | 539 kB | 1999-08-02 | [v0.96 game source](archive/gladiator-bot/gladq2096gamesrc.zip) |
+
+### Bot characters
+
+| File | Size | Date | Description |
+| --- | ---: | --- | --- |
+| `gbc092_epilepsy.zip` | 5 kB | 1999-04-01 | [EPiLePSy (by Zindahsh)](archive/bot-characters/gbc092_epilepsy.zip) |
+| `gbc092_ernie.zip` | 3 kB | 1999-04-05 | [Evil Ernie (by Felix)](archive/bot-characters/gbc092_ernie.zip) |
+| `gbc092_fuel.zip` | 4 kB | 1999-04-05 | [Fuel (by Felix)](archive/bot-characters/gbc092_fuel.zip) |
+| `gbc092_garf.zip` | 5 kB | 1999-04-10 | [garF (by Blair Williams)](archive/bot-characters/gbc092_garf.zip) |
+| `gbc092_morphias.zip` | 3 kB | 1999-04-10 | [MorpHias (by Blair Williams)](archive/bot-characters/gbc092_morphias.zip) |
+| `gbc092_keyboy.zip` | 4 kB | 1999-04-15 | [KeyBoy (by Zindahsh)](archive/bot-characters/gbc092_keyboy.zip) |
+| `gbc092_garf9.zip` | 14 kB | 1999-05-02 | [9 chars (by Blair Williams)](archive/bot-characters/gbc092_garf9.zip) |
+| `gbc092_swarm.zip` | 4 kB | 1999-05-10 | [Swarm (by Jason)](archive/bot-characters/gbc092_swarm.zip) |
+
+### WinBSPC
+
+| File | Size | Date | Description |
+| --- | ---: | --- | --- |
+| `winbspc12.zip` | 117 kB | 1999-05-20 | [WinBSPC v1.2 Win32 x86](archive/bspc/winbspc12.zip) |
+| `bspc12_win32-x86.zip` | 103 kB | 1999-05-20 | [BSPC v1.2 Win32 x86](archive/bspc/bspc12_win32-x86.zip) |
+| `bspc12_linux-x86-libc5.tar.gz` | 108 kB | 1999-05-20 | [BSPC v1.2 Linux x86 libc5](archive/bspc/bspc12_linux-x86-libc5.tar.gz) |
+| `bspc12_linux-x86-glibc.tar.gz` | 108 kB | 1999-05-20 | [BSPC v1.2 Linux x86 glibc](archive/bspc/bspc12_linux-x86-glibc.tar.gz) |
+
+His page also lists a *Misc* section — Omicron Bot and MeQCC. Neither is part
+of the Gladiator Bot, so neither is mirrored here.
+
 ## Building
 
 ### Prerequisites
@@ -205,7 +251,7 @@ The `gladiator` target is the botlib; `game` is Mr Elusive's game module, which
 lands in `build/src/game/`. Pass `-DBUILD_GAME_MODULE=OFF` to skip it and build
 the botlib alone.
 
-The build emits `gladiator.dll` on Windows and `gladx86_64.so` on 64-bit
+The build emits `gladiator.dll` on Windows and `gladiator_x64.so` on 64-bit
 Linux (`gladi386.so` on 32-bit, the name retail shipped),
 alongside a static archive per subsystem.
 
